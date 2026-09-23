@@ -39,8 +39,8 @@ import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.j
 import { manifestIssues, manifestHeadline, manifestProvenance, manifestFreshness, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness } from './lib/stop-notes-freshness.js';
 import { stopHandlingFlags, itemHandlingFlags, stopNeedsTractor, tallyHandlingFlags, HANDLING_FLAGS } from './lib/handling-flags.js';
-import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-base-options.js';
-import { map3dEnabled, cameraFor2dView, map3dHint, shouldEnter3dOnKey, shouldExit3dOnKey, paint3dControl, webglUsable, MAP3D_BUTTON_CSS, MAP3D_NO_WEBGL } from './lib/map-3d.js';
+import { mapBaseOptions, mapLiveOptions, mapIdKey, usesMapId, keepView } from './lib/map-base-options.js';
+import { map3dEnabled, cameraFor2dView, hintForRange, isCtrlDragStart, dragCrossedThreshold, isEscape, cameraMoved, twoDViewFor3dCamera, paint3dControl, control3dSpec, webglUsable, vectorFellBack, MAP3D_BUTTON_CSS, MAP3D_NO_WEBGL, MAP3D_NO_VECTOR } from './lib/map-3d.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.56.1';
+const APP_VERSION = '1.57.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.57.0', '3D WORKS LIKE GOOGLE MAPS NOW: A MODE YOU STAY IN, GOOGLE\u2019S OWN CONTROLS, AND IT IS ON ROUTING TOO. Chad: \u201cIt is kind of working but not like it does when you are on google maps and you put it in globe view and use the 3d view there \u2026 make mine work like that.\u201d FIRST, AN HONEST ACCOUNTING: the fixes for his last two complaints about this (\u201ci cant pan around the building\u201d, and \u201ci need this on the routing tab too\u201d) were built in #962 and NEVER SHIPPED \u2014 it sat open with a merge conflict while main moved from 1.42 to 1.56, so everything he has used since was still v1.38.0. This release carries all of it, and then the redesign on top. WHY IT DID NOT FEEL LIKE GOOGLE MAPS, in two verified facts. (1) GOOGLE\u2019S 3D ELEMENT SHIPS ITS OWN COMPASS, ZOOM, TILT, TURN AND MOVE CONTROLS, ON BY DEFAULT \u2014 and v1.38.0\u2019s layer sat at z-11, UNDER the board\u2019s data grid (z-12) and its filter, status and flag cards (z-15 to z-22), which is exactly where those controls live. They were there all along, buried. The layer is z-40 now, above every in-map overlay and below every modal, and the controls are requested explicitly rather than left to a default. (2) V1.38.0 WAS A PEEK AND GOOGLE MAPS IS A MODE. It opened on Ctrl and vanished the instant Ctrl was released \u2014 but Ctrl is also the key Google\u2019s 3D map reads for turn and tilt, so the gesture that opened the view fought the gesture that uses it. 3D STAYS NOW, until Back, Escape or the button. THE WAY IN IS CTRL+DRAG, GOOGLE\u2019S OWN GESTURE, NOT A BARE CTRL \u2014 and that is the one change in how you use it worth saying out loud. As a peek, a bare Ctrl that opened and closed was a flicker. As a MODE, Ctrl is the first key of Ctrl+C, Ctrl+F and Ctrl+R: a dispatcher copying a PRO would be thrown into full-screen 3D and LEFT there, with a load billed for it. Ctrl+drag is the same physical motion that tilts the board today \u2014 it lands on the photographs now instead of grey blocks \u2014 and it has to MOVE six pixels before it counts, so a Ctrl+click is never taken. The listener only watches: nothing on either map is ever prevented or stopped, which a test pins. INSIDE 3D, CTRL+DRAG IS GOOGLE\u2019S, and it can no longer snap you back \u2014 opening while already open does nothing. AND YOU LAND WHERE YOU FLEW, the other half of \u201clike Google Maps\u201d: orbit to the back of a building to find the dock, leave, and the flat board takes that centre, zoom and heading. FLAT \u2014 tilt is never carried back, because a tilted vector map is the grey-block view that started all this. BUT A LOOK-AND-LEAVE PUTS THE BOARD BACK EXACTLY, and that is a logistics call rather than a copy of Google: the entry camera is clamped to 4,000m so a whole-metro Ctrl+drag lands at building height, and without this a dispatcher who opened 3D over Atlanta and left without touching it would come back to a board zoomed in on one warehouse. It also undoes the few pixels the drag had already moved the flat map before 3D took over. The zoom the board lands on is the exact inverse of the entry maths, and a test round-trips it. ON ROUTING TOO, FROM ONE HOOK \u2014 this repo already paid once for building a control twice (the satellite toggle drifted into two implementations), so both screens call useMap3dPeek. THE ROUTE WORKBENCH IS NOT CHANGED: rwb-boundary is green with no approval token, and nothing here touches what the map paints, what box / lasso / ninja select, what Send or Save writes, or any card guard \u2014 it lays a separate element OVER the map and takes it away. THE FAILURES ARE NAMED, NOT BLANK: a browser whose WebGL is software gets a sentence instead of Google\u2019s empty \u201cOops\u201d card (the v1.38.0 check asked whether WebGL existed at all, and a software context passed it \u2014 the real signal is getRenderingType() reading RASTER on a map we asked to be VECTOR, skipped when Hide place labels makes raster deliberate), and Google\u2019s own gmp-error is listened for. THE HINT IS LIVE AND ITS ADVICE CHANGED: it follows the camera on every range change and says \u201cscroll in on the building\u201d, because \u201czoom the board in, then hold Ctrl again\u201d was right for a peek and wrong in a mode; it is never printed beside an error, where zooming cannot help. VITE_MAP_3D=off still puts the whole feature back, both screens at once. 49 tests on lib/map-3d.js, 5,453 green.'],
   ['1.56.1', 'HOURS WE TYPED NOW SHOW ON THE COMPARE ROW, HOWEVER ORDINARY THE WINDOW LOOKS. Chad, 2026-09-22, with AMERICAS VALUE CHANNEL wearing a clock chip on NOR 2 and INTUITIVE SURGICAL — “Set by a dispatcher”, 8:00a–3:30p — wearing nothing: “if we have put the hours in they should be flagging in the compare panel like americas value channel.” ANSWERED FROM THE CODE, NOT GUESSED: run through classifyTimeMark those two are hours_narrow_window and null. AVC opens at 11:00a, past the 9:00a opens-late dial, and shuts at 4:00p, inside the 5:00p pivot — a pinched day. Intuitive Surgical misses every dial: its 3:30p close is LATER than the 3:00p early-close pivot and its 8:00a open is EARLIER than the 9:00a one, so the rule calls it an ordinary working day and stays silent. THAT IS THE RIGHT ANSWER FOR THE MAP AND THE WRONG ONE FOR A COMPARE CARD, and the two surfaces are allowed to differ because they are doing different jobs: on the map the question is which of 700 pins constrains the day, and v0.65 cut 116 clock icons down to the ones worth looking at precisely because noise there is expensive; on a Compare card the question is what you need to know about each of fourteen stops while you sequence them, and a window somebody here took the trouble to type is exactly that. THE MAP IS UNTOUCHED — classifyTimeMark is unchanged, the new kind is deliberately absent from TIME_MARK_KEYS so no pin can reach it, and it is excluded from the Legend because a legend of map paint that lists a mark the map never draws is a legend that lies. TYPED ONLY, NOT PARSED: manual_overrides.receiving_hours is a human taking ownership of the field, the same provenance board-flags already weights as red on any predicted overrun. Parsed hours are a different confidence and a far bigger population, so widening to them is Chad’s call and not a detail slipped in here. A plain slate clock, no arrows: every other hours mark draws arrows because ONE edge is the story, and here neither edge is remarkable while the whole window is the message — which the chip prints beside it. 11 new tests, mutation-checked (short-circuit the new branch and three go red). One commit, so git revert is the whole way back.'],
   ['1.56.0', 'THE FLAG SWEEPS NOW RUN ON THE SCANNER’S OWN FIVE-MINUTE TICK, AND A DOCK THAT SHUTS BEFORE LUNCH GETS A RED AT THIRTY MINUTES. Chad, 2026-09-22, after a night AWC INC was predicted 77 minutes past an 11:00a close and nobody was texted: “RUN THE FLAG SWEEPS RIGHT AFTER OUR SCANS SO THEY ARE MUCH MORE CURRENT NOT ONCE PER HOUR AS THE FLAG SWEEPS ARE FREE AND COST NOTHING WITH NUVIZZ”; “BUMP UP TO 24 PER SWEEP TRAILER AND BOX CAP TO 8 EACH”; and “i want it to flag at 30 mins late for anything that closes at 11 am or before.” THE CLUMP WAS THE CADENCE, MEASURED NOT GUESSED. He doubted seven texts could mean seven loads built between 4:45 and 5:00, and he was right: replaying the SAME board at 2:00a, 4:00a, 5:00a and 6:00a returns an identical flag set (0 critical / 3 red / 3 amber), so the clock explains none of it. The evening sweep ran 0 0-11 (hourly) while the scanner runs */5 and acts on its own plan — every 20 minutes in the small hours, every 15 through the 5am rollout — so a board that changed at 4:47a was not looked at until 5:00a and everything it brought in arrived on one phone in one breath. Both sweeps now fire */5, the same tick as the scan. They read Firestore only and make ZERO NuVizz calls, which is why the cost rule does not reach them. NO “has the board changed” GATE, deliberately: it was the obvious economy and it buys a new way to go silent, and the sweep is already idempotent — createDocIfAbsent claims one message per subject per board day, so looking again is safe and cheap is the right trade against silence. THE EARLY-CLOSE FLOOR IS A LOGISTICS ARGUMENT, NOT AN ENGINEERING ONE. Thirty minutes late to a 5pm dock is usually nothing; thirty minutes late to an 11am dock is a redelivery, because the only moment anybody could have fixed it was hours earlier while the route could still be rebuilt. So a predicted overrun of 30+ minutes against a close of 11:00a or earlier is a RED whatever the model’s confidence. MODEL_ERROR_MIN IS UNTOUCHED and that is the point: the 90-minute unanchored band is a measurement over 39 sealed days and 24,238 stops, not a policy dial, so critical still means “misses even allowing for the model being as wrong as it usually is”. Only ONE thing moves — whether an early-close overrun reaches a person. IT ONLY EVER MOVES AUTO-DETECTED HOURS, and that is worth saying: severityTier already returned red for any overrun against dispatcher-TYPED hours, so a typed dock was never the silent case. AWC’s 11:00a was parsed from order text, which is exactly why it came back amber. THE FIRST DRAFT OF THE TEST PROVED NOTHING — it used typed hours, so every assertion sat behind a branch the fixture could not reach and the suite went green with the rule wired to nothing. Rebuilt on parsed hours, 60 minutes past an 11:00a close, and mutation-checked: unwire the floor and it goes red. The two cap tests that broke were rewritten to READ the caps rather than retype them, because a cap test edited on every bump is one that will eventually be edited to go green. 5,433 green. TWO SWITCHES, BOTH HOUSE SHAPE (default ON, an off-word turns them off, anything malformed leaves them ON): FLAG_SWEEP_EVERY_TICK=off puts BOTH sweeps back on the old cadence with no redeploy, and FLAG_EARLY_CLOSE=off removes the 30-minute floor from the texts and the emails. Said plainly, because a half-reverted state is worse than none: FLAG_EARLY_CLOSE silences the phone, and the board keeps showing the stronger tier until a deploy carries the revert — a dispatcher standing at the screen should still SEE it. And eta-flag-check?earlyClose=off now rehearses the board without the floor and lists every row it is carrying, by name, so what the policy costs is a question anyone can ask on a real board instead of arguing about.'],
   ['1.55.0', 'A HYDRAULIC STACKER NOW EMAILS THE DAY IT LANDS, TEXTS THE NIGHT IT GOES ON THE WRONG TRUCK, AND EVERY FLAG CARD CARRIES ITS PRO. Chad, 2026-09-22, photographing the wall display with WEST RIDGE riding MICHAEL FRYE: \u201cI want those to fire an email the moment one of those hits our system so that we can address it hopefully the day before we have to deliver it\u201d; \u201cfire a text to the dispatchers at night when they\u2019re planning these loads if they\u2019ve put one on a box truck\u201d; \u201cI would like the pro number to be up there\u201d; and remove the auto-detected caveat to save space. FOUR ASKS, THREE OF THEM ONE FEATURE. THE FREIGHT FACT AND THE TRUCK MISTAKE ARE TWO DIFFERENT MESSAGES, which is the whole design. board-flags R4b only fires when a stacker is ALREADY riding a box, because it needs a route with a known truck class - so it can say nothing at all about an order nobody has planned yet, which is exactly the order worth hearing about while the fix is still free. The EMAIL therefore asks a smaller question with no truck in it (does this order carry freight that needs a tractor?) and fires per order, once, the first time it appears on any board; the TEXT is R4b, per route, at 9pm, when the mistake has actually been made. MEASURED BEFORE SHIPPING, because an email-per-order is the shape that turns into a filter rule if it is wrong: across five real boards (09-16/17/18/21/22, 4,008 stops) stacker orders ran 2,0,1,0,1 - 0.8 a board, about one email a day - and of those four exactly ONE was on a box route, so three of the four would never have been mentioned under R4b alone. The night text is quieter still at one per five days. CLAIMED ONCE PER ORDER PER BOARD DAY on the same createDocIfAbsent ratchet the flag email and the SMS already use, shared by BOTH sweeps - so the 20-minute day pass cannot send 39 times, and the evening pass, the only one that ever sees TOMORROW\u2019s board, cannot duplicate it. A failed send does NOT un-claim: a flaky provider must not become an inbox nobody reads. THE PRO IS RESOLVED, NEVER ASSUMED EQUAL TO THE STOP NUMBER, and a mutation check is why: on the 09-22 board all 834 rows have stopNbr === primaryPro, so the first version of that test passed even with the resolution replaced by `s.stopNbr` outright. A PICKUP is where they diverge - NuVizz numbers those RA60109098 - and an RA number printed under the word PRO is a number nobody can look up. It now rides the flag row itself, so the panel, the wall display, both texts and the email all read one field. THE AUTO-DETECTED CAVEAT IS GONE FROM THE HOURS CARD and the provenance is not: the panel footer still says amber rows use auto-detected hours, and the stop card has carried the full dispatcher-set / auto-detected / source-not-recorded line WITH the parsed text since v1.23.1. 22 new tests, mutation-checked three ways (drop the rule from the selector, let the claim be re-won, assume the PRO - each goes red on exactly the tests that claim to guard it). Two existing tests pinned the old behaviour and were REWRITTEN rather than weakened, each recording whose call moved the rule. 5,401 green. STACKER_ALERT=off turns the email off; the text rides the existing flag-SMS switches.'],
@@ -11992,6 +11993,268 @@ function DebugCaptureSheet({ open, onClose, captureRef }) {
 }
 
 /**
+ * THE 3D PEEK, ONCE, FOR EVERY MAP THAT WANTS ONE.
+ *
+ * Chad, 2026-09-17: "i need this on the routing tab too." Two screens now open the same
+ * photorealistic view, and this repo has already paid for what happens when one control gets
+ * built twice: the satellite toggle grew two implementations that drifted in wording and in
+ * on/off treatment until a pure spec was pulled out to stop it. This is that lesson applied
+ * before the drift rather than after it — one hook, one element policy, one set of rules.
+ *
+ * What stays per-screen is only what genuinely differs: the dispatch Map hands Google a plain
+ * DOM button so it stacks with the crosshair, while Routing renders a React button in its own
+ * tool rail. The hook exposes `on` and `toggle` and lets each build its own control.
+ *
+ * THE SPEND IS ENFORCED HERE, not remembered by two callers. A 3D map load bills Google's
+ * IMMERSIVE MAPS SKU — a SEPARATE meter from the DYNAMIC MAPS one the boards run on, with
+ * HALF the free allowance (5,000/month vs 10,000, then $7.00/1,000 on both). Google bills per
+ * ELEMENT CREATED, not per look, so each screen builds ONE element per page session and every
+ * peek after that only moves its camera and un-hides the layer.
+ */
+function useMap3dPeek({ google, mapRef, mapDiv, enabled, satellite, askedForVector, mapReady }) {
+  const layerRef = useRef(null);
+  const elRef = useRef(null);       // the ONE Map3DElement — see above on the spend
+  const markerRef = useRef(null);   // the pin on the building you were looking at
+  const btnRef = useRef(null);      // the dispatch Map's DOM control (Routing leaves it null)
+  const toggleRef = useRef(null);   // latest toggle fn, for that once-created button
+  const busyRef = useRef(false);    // a second drag must not start a second library load
+  // Read by listeners bound ONCE, so they never have to be torn down on a state change.
+  const onRef = useRef(false);
+  // Where WE put the 3D camera on the way in, and the flat board as it was before we did —
+  // together they tell a look-and-leave (put the board back exactly) from a flight (land the
+  // board where the flight ended). See cameraMoved in lib/map-3d.js.
+  const entryCamRef = useRef(null);
+  const board2dRef = useRef(null);
+  const [on, setOn] = useState(false);
+  const [range, setRange] = useState(null);   // LIVE, from gmp-rangechange — drives the hint
+  const [error, setError] = useState(null);
+
+  /** The flat board exactly as it stands: centre, zoom, heading, tilt. */
+  const snapshot2d = useCallback(() => {
+    const m = mapRef.current;
+    if (!m) return null;
+    const v = keepView(m, null, null);
+    let heading = 0; let tilt = 0;
+    try { heading = m.getHeading?.() ?? 0; } catch { heading = 0; }
+    try { tilt = m.getTilt?.() ?? 0; } catch { tilt = 0; }
+    return { center: v.center, zoom: v.zoom, heading, tilt };
+  }, [mapReady]); // eslint-disable-line
+
+  /**
+   * INTO 3D, AND IT STAYS. `from` is the flat board as it stood when the gesture STARTED —
+   * a Ctrl+drag has already nudged the 2D map by the time it crosses the threshold, and the
+   * camera should be built from where the dispatcher was looking, not from where the first
+   * six pixels of their drag had moved it.
+   */
+  const open = useCallback(async (from = null) => {
+    if (!enabled || !google || !mapRef.current || !layerRef.current) return;
+    // ALREADY IN 3D: nothing to do. Ctrl+drag in here is Google's own turn-and-tilt, and a
+    // re-entry would snap the camera back to the board every time the dispatcher tried to
+    // look round the side of a building — the exact fight v1.38.0 had with its own key.
+    if (onRef.current) return;
+    const board = from || snapshot2d();
+    if (!board || !board.center) return;
+    // MEASURE THE 2D MAP, NEVER THE 3D LAYER. The layer is display:none until it opens, and a
+    // hidden element's clientHeight is 0; a zero height makes the range maths refuse
+    // (correctly), so the FIRST open would compute no camera and do nothing, for ever.
+    const heightPx = mapDiv.current?.clientHeight || layerRef.current.clientHeight || window.innerHeight || 0;
+    const cam = cameraFor2dView({ center: board.center, zoom: board.zoom, heading: board.heading, heightPx, satellite });
+    // A CAMERA FLOWN TO A MADE-UP DEFAULT IS WORSE THAN A GESTURE THAT DID NOTHING, because
+    // the dispatcher would believe the picture. Declining to open is the honest outcome.
+    if (!cam) return;
+    if (busyRef.current) return;
+
+    if (!elRef.current) {
+      // BEFORE ANYTHING IS BUILT OR BILLED. A browser with no usable WebGL gets Google's own
+      // blank "Oops" card — no failed request, no exception — which is the white rectangle
+      // this repo has already had to turn into a sentence twice.
+      if (!webglUsable()) {
+        setError(MAP3D_NO_WEBGL); onRef.current = true; setOn(true); return;
+      }
+      // AND THE SHARPER ONE. A SOFTWARE WebGL context passes the check above and still cannot
+      // drive Google's 3D renderer. Google says so itself on the 2D map: a map we asked to be
+      // VECTOR reporting RASTER has already failed this browser once. Skipped when no vector
+      // map was asked for, where raster is deliberate and blaming the machine would be a lie.
+      let renderingType = null;
+      try { renderingType = mapRef.current.getRenderingType?.() ?? null; } catch { renderingType = null; }
+      if (vectorFellBack({ askedForVector, renderingType })) {
+        setError(MAP3D_NO_VECTOR); onRef.current = true; setOn(true); return;
+      }
+      busyRef.current = true;
+      try {
+        const lib = await google.maps.importLibrary('maps3d');
+        // Guard the race: two quick drags must not both construct (two elements = two billed
+        // loads, and two WebGL canvases stacked on the board).
+        if (!elRef.current) {
+          const el = new lib.Map3DElement({
+            center: cam.center, range: cam.range, tilt: cam.tilt, heading: cam.heading, mode: cam.mode,
+            // GOOGLE'S OWN CONTROLS, ON — and stated rather than left to a default. The
+            // compass, zoom, tilt, turn and move buttons are what make this feel like Google
+            // Maps rather than a picture, and in v1.38.0 they were there all along: the layer
+            // sat UNDER the board's grid and cards, which buried them. The layer is above the
+            // furniture now (see Map3DLayer); this says in code that they are meant to show.
+            defaultUIHidden: false,
+          });
+          el.style.width = '100%';
+          el.style.height = '100%';
+          // GOOGLE'S OWN FAILURE, NAMED. gmp-error is documented as "triggered on
+          // initialization failure" — the case that otherwise arrives as a blank card inside
+          // a perfectly successful construction, which no try/catch here can see.
+          el.addEventListener('gmp-error', (ev) => {
+            const msg = ev?.detail?.message || ev?.message || 'Google could not start the 3D map';
+            setError(String(msg));
+          });
+          // THE HINT IS LIVE. It used to be computed once from the entry frame and nag for as
+          // long as the view was open, even after the dispatcher had zoomed right in.
+          el.addEventListener('gmp-rangechange', () => {
+            try { setRange(Number(el.range)); } catch { /* keep the last reading */ }
+          });
+          elRef.current = el;
+          if (layerRef.current) layerRef.current.appendChild(el);
+          // THE PIN IS NOT DECORATION. At 300m over an industrial park of near-identical
+          // tilt-wall units, "which of these roofs is the stop" is the question standing
+          // between the dispatcher and the answer they came for.
+          try {
+            if (lib.Marker3DElement) {
+              const pin = new lib.Marker3DElement({ position: cam.center, altitudeMode: 'CLAMP_TO_GROUND' });
+              markerRef.current = pin;
+              el.appendChild(pin);
+            }
+          } catch { /* imagery without a pin still answers most of the question */ }
+        }
+        setError(null);
+      } catch (e) {
+        // NEVER REPORT AN INTENT AS AN OUTCOME — the refusal opens the layer so it can be read.
+        setError(e?.message ? String(e.message) : 'Google refused the 3D map');
+        busyRef.current = false;
+        onRef.current = true; setOn(true);
+        return;
+      }
+      busyRef.current = false;
+    } else {
+      const el = elRef.current;
+      // RE-ATTACH IF THE CONTAINER MOVED UNDER IT. Phone and desktop are different render
+      // trees, so crossing the breakpoint destroys the div the element was appended to.
+      // Without this the element is orphaned and it reads as failed imagery.
+      try {
+        if (layerRef.current && el.parentNode !== layerRef.current) layerRef.current.appendChild(el);
+      } catch { /* an element that refuses to move is still better than none */ }
+      try {
+        el.center = cam.center; el.range = cam.range; el.tilt = cam.tilt;
+        el.heading = cam.heading; el.mode = cam.mode;
+        if (markerRef.current) markerRef.current.position = cam.center;
+      } catch { /* a camera that refuses to move still shows the last good view */ }
+    }
+    board2dRef.current = board;
+    entryCamRef.current = { center: cam.center, range: cam.range, heading: cam.heading };
+    setRange(cam.range);
+    onRef.current = true;
+    setOn(true);
+  }, [enabled, google, satellite, askedForVector, mapReady, snapshot2d]); // eslint-disable-line
+
+  /**
+   * OUT OF 3D, AND YOU LAND WHERE YOU FLEW — the other half of "like Google Maps".
+   *
+   * If the dispatcher moved the 3D camera (orbited to the back of a building to find the
+   * dock), the flat board takes that centre, zoom and heading, FLAT — tilt is not carried,
+   * because a tilted vector map is the grey-block view that started all this. If they only
+   * looked, the board goes back to EXACTLY the view they left, including undoing the few
+   * pixels a Ctrl+drag had already moved it before 3D took over.
+   *
+   * Closing KEEPS the element — that is the whole cost design. Only the layer is hidden.
+   */
+  const close = useCallback(() => {
+    const el = elRef.current;
+    const m = mapRef.current;
+    if (el && m && onRef.current) {
+      try {
+        const now = { center: el.center, range: el.range, heading: el.heading };
+        const heightPx = mapDiv.current?.clientHeight || 0;
+        const flight = cameraMoved(entryCamRef.current, now) ? twoDViewFor3dCamera({ ...now, heightPx }) : null;
+        if (flight) {
+          m.setCenter(flight.center);
+          m.setZoom(flight.zoom);
+          try { m.setHeading?.(flight.heading); } catch { /* raster maps have no heading */ }
+          try { m.setTilt?.(0); } catch { /* raster maps have no tilt */ }
+        } else if (board2dRef.current && board2dRef.current.center) {
+          const b = board2dRef.current;
+          m.setCenter(b.center);
+          if (Number.isFinite(b.zoom)) m.setZoom(b.zoom);
+          try { m.setHeading?.(b.heading || 0); } catch { /* raster maps have no heading */ }
+          try { m.setTilt?.(b.tilt || 0); } catch { /* raster maps have no tilt */ }
+        }
+      } catch { /* a camera we cannot read leaves the board where it is — never a guess */ }
+    }
+    onRef.current = false;
+    setOn(false);
+  }, [mapReady]); // eslint-disable-line
+
+  useEffect(() => { onRef.current = on; }, [on]);
+
+  // ── THE WAY IN: CTRL+DRAG, GOOGLE'S OWN GESTURE ─────────────────────────────
+  // Watches only — nothing here is ever prevented or stopped, so a Ctrl+click, a plain drag,
+  // or anything else on the map reaches whatever it was meant for untouched. Listening on the
+  // window (capture) rather than on the map div, because phone and desktop render different
+  // map divs and a listener on the old one would go deaf after a breakpoint crossing.
+  useEffect(() => {
+    if (!enabled) return undefined;
+    let drag = null;   // { x, y, id, board } while a Ctrl+drag is deciding whether it is one
+    const onDown = (ev) => {
+      drag = null;
+      if (onRef.current || !isCtrlDragStart(ev)) return;
+      const host = mapDiv.current;
+      if (!host || !host.contains(ev.target)) return;   // only a drag that starts ON the map
+      drag = { x: ev.clientX, y: ev.clientY, id: ev.pointerId, board: snapshot2d() };
+    };
+    const onMove = (ev) => {
+      if (!drag) return;
+      if (drag.id !== undefined && ev.pointerId !== undefined && ev.pointerId !== drag.id) return;
+      // Ctrl let go mid-drag: that is an ordinary pan now, not a request for 3D.
+      if (!(ev.ctrlKey || ev.metaKey)) { drag = null; return; }
+      if (dragCrossedThreshold(drag, { x: ev.clientX, y: ev.clientY })) {
+        const from = drag.board; drag = null;
+        open(from);
+      }
+    };
+    const onUp = () => { drag = null; };
+    const onKey = (ev) => { if (onRef.current && isEscape(ev)) close(); };
+    window.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+    window.addEventListener('pointercancel', onUp, true);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+      window.removeEventListener('pointercancel', onUp, true);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [enabled, open, close, snapshot2d]); // eslint-disable-line
+
+  useEffect(() => { toggleRef.current = () => { if (onRef.current) close(); else open(); }; }, [open, close]);
+  useEffect(() => { paint3dControl(btnRef.current, on); }, [on, mapReady]);
+
+  return {
+    on, error, layerRef, btnRef, toggleRef, open, close,
+    hint: hintForRange(range),
+  };
+}
+
+/** The cube mark as a React node. The dispatch Map's control is a DOM button painted from
+ *  cube3dSvg(); Routing's is a React button in its tool rail. Same path either way — two
+ *  controls for one feature drawing two different marks is exactly the drift the satellite
+ *  toggle had to be rescued from. */
+function Cube3dIcon({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 2 21 7v10l-9 5-9-5V7z" /><path d="M12 12l9-5" /><path d="M12 12v10" /><path d="M12 12L3 7" />
+    </svg>
+  );
+}
+
+/**
  * THE 3D LAYER — Google's photorealistic map, over the spot the board was looking at.
  *
  * ALWAYS MOUNTED, ONLY HIDDEN. The Map3DElement lives inside this div and is built once per
@@ -12007,22 +12270,34 @@ function DebugCaptureSheet({ open, onClose, captureRef }) {
  * photograph with one strip of chrome. What differs between phone and desktop is how it is
  * ENTERED (a thumb on the button; a finger on Ctrl), and those are genuinely two paths.
  */
-function Map3DLayer({ layerRef, on, pinned, hint, error, onClose }) {
+function Map3DLayer({ layerRef, on, hint, error, onClose }) {
   return (
     <div
       ref={layerRef}
       data-overlay-layer
       aria-hidden={on ? 'false' : 'true'}
-      className="absolute inset-0 z-[11] bg-slate-900"
+      // z-[40] — AND THIS WAS THE BUG THAT MADE IT FEEL BROKEN. At z-[11] this layer was the
+      // LOWEST overlay on the map: the bottom data grid (z-12), the filter card, the status
+      // pill and the flag rail (z-15/16/20/22) all rendered ON TOP of the 3D view. They ate
+      // both the picture and the drags that started inside them, so panning worked only in a
+      // shrinking middle band. 40 clears every in-map overlay (the highest is 30) and stays
+      // far below the real modals, which are `fixed` at 60+ and 1000+.
+      className="absolute inset-0 z-[40] bg-slate-900"
       style={{ display: on ? 'block' : 'none' }}
     >
-      {/* The strip says what you are looking at and how to leave. A peek needs no exit — you
-          are holding the key that opened it — so the button only appears when pinned. */}
+      {/* The strip says what you are looking at and how to leave. 3D is a MODE now — it stays
+          until you leave it — so the way out is always on screen, not only when "pinned". */}
       <div className="absolute top-0 left-0 right-0 z-[2] flex items-center gap-2 px-3 py-2 bg-gradient-to-b from-black/70 to-transparent pointer-events-none">
         <span className="text-[11px] font-semibold tracking-wide text-white/90 uppercase">3D view</span>
-        {hint && <span className="text-[11px] text-amber-300 truncate">{hint}</span>}
+        {/* NOT ALONGSIDE AN ERROR, and this is a wrong instruction rather than mere clutter:
+            "zoom the board in, then hold Ctrl again" is useless advice to somebody whose
+            browser cannot draw a 3D map at all, and following it teaches them the feature is
+            broken in a way they can fix. Caught by looking at the rendered layer on the
+            deploy preview, where both lines came up together. */}
+        {!error && hint && <span className="text-[11px] text-amber-300 truncate">{hint}</span>}
         <span className="flex-1" />
-        {pinned && (
+        <span className="hidden md:inline text-[11px] text-white/70">Esc to leave</span>
+        {on && (
           <button
             type="button"
             onClick={onClose}
@@ -12390,32 +12665,14 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const satelliteBtnRef = useRef(null);
   const satelliteToggleRef = useRef(null);
   // ── HOLD CTRL AND SEE THE BUILDING ──────────────────────────────────────────
-  // Google will not render photorealistic 3D inside a google.maps.Map at any tilt, so this
-  // is a SECOND map element laid over the first, pointed at the same spot. The rules (the
-  // camera maths, the switch, which keys count) live in lib/map-3d.js, pure and tested;
-  // what is left here is the element, the DOM and the listener.
+  // Google will not render photorealistic 3D inside a google.maps.Map at any tilt, so this is
+  // a SECOND map element laid over the first. The rules are pure in lib/map-3d.js; the wiring
+  // is shared with Routing in useMap3dPeek, so the two screens cannot drift apart.
   //
   // NOT ON THE TELEVISION. Nobody holds Ctrl on a wall, TV mode deliberately runs the raster
   // map because the set could not drive WebGL at all (v1.31.4), and a 3D element is WebGL
   // with a bill attached. Excluded by construction rather than by remembering.
   const map3dAvailable = MAP_3D_ON && !tvMode;
-  const map3dDiv = useRef(null);
-  const map3dElRef = useRef(null);      // the ONE Map3DElement — see below on the spend
-  const map3dMarkerRef = useRef(null);  // the pin on the building you were looking at
-  const map3dBtnRef = useRef(null);     // the on-map button (the mobile half of this feature)
-  const map3dToggleRef = useRef(null);  // latest toggle fn, for that once-created button
-  const map3dBusyRef = useRef(false);   // a held key must not start a second library load
-  // "Am I pinned?" read through a ref by the key listener, so that listener is bound ONCE
-  // and never torn down on a state change — a rebuild mid-hold drops the keyup that closes
-  // the peek, and the view stays up over a board nobody realises they cannot see.
-  const map3dPinnedRef = useRef(false);
-  const [map3dOn, setMap3dOn] = useState(false);
-  const [map3dPinned, setMap3dPinned] = useState(false);  // button = stays; Ctrl = peek
-  const [map3dCamera, setMap3dCamera] = useState(null);   // drives the too-high hint
-  // A KEY THAT IS NOT PERMITTED MUST SAY SO. 3D Maps bills the Immersive Maps SKU and can be
-  // disabled on the key independently of everything else this app uses — in which case Ctrl
-  // would do nothing at all, forever, with no way to tell that from "the gesture is broken".
-  const [map3dError, setMap3dError] = useState(null);
   const clustererRef = useRef(null);
   const markersRef = useRef([]);
   const driverMarkersRef = useRef([]);
@@ -13372,8 +13629,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       const btn3d = document.createElement('button');
       btn3d.type = 'button';
       btn3d.style.cssText = MAP3D_BUTTON_CSS;
-      btn3d.addEventListener('click', () => map3dToggleRef.current && map3dToggleRef.current());
-      map3dBtnRef.current = btn3d;
+      btn3d.addEventListener('click', () => map3d.toggleRef.current && map3d.toggleRef.current());
+      map3d.btnRef.current = btn3d;
       paint3dControl(btn3d, false);
       // Not on the wall — see the tvMode options above.
       if (!tvMode) mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(btn3d);
@@ -13429,163 +13686,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     paintSatelliteControl(satelliteBtnRef.current, mapFilters.satellite);
   }, [mapFilters.satellite, mapReady]);
 
-  // ── OPEN THE 3D VIEW ON WHAT THE BOARD IS LOOKING AT ────────────────────────
-  //
-  // THE SPEND, AND WHY THIS FUNCTION IS SHAPED THE WAY IT IS. A 3D map load bills Google's
-  // IMMERSIVE MAPS SKU — a SEPARATE meter from the DYNAMIC MAPS one the board runs on, with
-  // HALF the monthly free allowance (5,000 vs 10,000, then $7.00/1,000 on both). Google's
-  // SKU page is explicit that panning and zooming an existing map cost nothing, so the price
-  // is per ELEMENT CREATED. The element is therefore built ONCE per page session, on the
-  // first Ctrl, and every look after that only moves its camera and un-hides it. A dispatcher
-  // who peeks two hundred times in a morning costs one load, not two hundred.
-  const open3d = useCallback(async (pinned) => {
-    if (!map3dAvailable || !google || !mapRef.current || !map3dDiv.current) return;
-    // WHAT THE 2D MAP IS SHOWING, READ FROM THE MAP ITSELF rather than from state — state
-    // lags a pan, and landing one gesture behind is landing on the wrong building.
-    const view = keepView(mapRef.current, null, null);
-    let heading = 0;
-    try { heading = mapRef.current.getHeading?.() ?? 0; } catch { heading = 0; }
-    // MEASURE THE 2D MAP, NEVER THE 3D LAYER — and this one would have shipped as "Ctrl does
-    // nothing". The layer is display:none until it opens, and a hidden element's clientHeight
-    // is 0; a zero height makes the range maths refuse (correctly), so the FIRST press would
-    // have computed no camera and opened nothing, for ever. The map div beside it is the same
-    // box and is always visible. Found by reading the change back asking how it fails
-    // silently, which is the only way this one gets found before a dispatcher finds it.
-    const heightPx = mapDiv.current?.clientHeight || map3dDiv.current.clientHeight || window.innerHeight || 0;
-    const cam = cameraFor2dView({
-      center: view.center, zoom: view.zoom, heading, heightPx,
-      satellite: mapFilters.satellite,
-    });
-    // A CAMERA FLOWN TO A MADE-UP DEFAULT IS WORSE THAN A GESTURE THAT DID NOTHING, because
-    // the dispatcher would believe the picture. Declining to open is the honest outcome.
-    if (!cam) return;
-    setMap3dCamera(cam);
-    if (map3dBusyRef.current) return;
-
-    if (!map3dElRef.current) {
-      // BEFORE ANYTHING IS BUILT OR BILLED. A browser with no usable WebGL gets Google's own
-      // blank "Oops" card inside the layer — no failed request, no exception, nothing for the
-      // catch below to report — which is the white rectangle this repo has already had to
-      // turn into a sentence twice. Named here instead, and a browser that cannot show a 3D
-      // map never buys one.
-      if (!webglUsable()) {
-        setMap3dError(MAP3D_NO_WEBGL);
-        setMap3dPinned(true);
-        setMap3dOn(true);
-        return;
-      }
-      map3dBusyRef.current = true;
-      try {
-        const lib = await google.maps.importLibrary('maps3d');
-        // Guard the race: two quick Ctrl presses must not both construct (two elements =
-        // two billed loads, and two WebGL canvases stacked on the board).
-        if (!map3dElRef.current) {
-          const el = new lib.Map3DElement({
-            center: cam.center, range: cam.range, tilt: cam.tilt, heading: cam.heading, mode: cam.mode,
-          });
-          el.style.width = '100%';
-          el.style.height = '100%';
-          map3dElRef.current = el;
-          if (map3dDiv.current) map3dDiv.current.appendChild(el);
-          // THE PIN IS NOT DECORATION. At 300m over an industrial park of near-identical
-          // tilt-wall units, "which of these roofs is the stop" is the question standing
-          // between the dispatcher and the answer they came for. Guarded on its own, so a
-          // marker class this channel does not carry costs the imagery rather than replacing
-          // it with an error.
-          try {
-            if (lib.Marker3DElement) {
-              const pin = new lib.Marker3DElement({ position: cam.center, altitudeMode: 'CLAMP_TO_GROUND' });
-              map3dMarkerRef.current = pin;
-              el.appendChild(pin);
-            }
-          } catch { /* imagery without a pin still answers most of the question */ }
-        }
-        setMap3dError(null);
-      } catch (e) {
-        // NEVER REPORT AN INTENT AS AN OUTCOME. A key without 3D Maps enabled fails exactly
-        // here, and without this the gesture would silently do nothing for ever — which is
-        // indistinguishable from a broken keyboard.
-        setMap3dError(e?.message ? String(e.message) : 'Google refused the 3D map');
-        map3dBusyRef.current = false;
-        // AND THE MESSAGE HAS TO BE ON SCREEN LONG ENOUGH TO READ. Returning here without
-        // opening left the refusal written onto a layer that was still display:none — the
-        // error existed and nobody could ever see it, which is the exact failure the error
-        // was added to prevent. It opens, and it opens PINNED: a peek would vanish the
-        // instant Chad let go of the key he is holding to read it.
-        setMap3dPinned(true);
-        setMap3dOn(true);
-        return;
-      }
-      map3dBusyRef.current = false;
-    } else {
-      // The re-use path: move the camera, cost nothing.
-      const el = map3dElRef.current;
-      // RE-ATTACH IF THE CONTAINER MOVED UNDER IT. Phone and desktop are different render
-      // trees, so dragging a window across the breakpoint with 3D open destroys the div the
-      // element was appended to and builds a fresh empty one. Without this the element is
-      // orphaned: the camera still moves, nothing is on screen, and it looks like the
-      // imagery failed. appendChild moves a node that already has a parent, so this is a
-      // no-op in the ordinary case.
-      try {
-        if (map3dDiv.current && el.parentNode !== map3dDiv.current) map3dDiv.current.appendChild(el);
-      } catch { /* an element that refuses to move is still better than none */ }
-      try {
-        el.center = cam.center; el.range = cam.range; el.tilt = cam.tilt;
-        el.heading = cam.heading; el.mode = cam.mode;
-        if (map3dMarkerRef.current) map3dMarkerRef.current.position = cam.center;
-      } catch { /* a camera that refuses to move still shows the last good view */ }
-    }
-    setMap3dPinned(!!pinned);
-    setMap3dOn(true);
-  }, [map3dAvailable, google, mapFilters.satellite, mapReady]);
-
-  // Closing keeps the element — that is the whole cost design. Only the layer is hidden.
-  const close3d = useCallback(() => {
-    setMap3dOn(false);
-    setMap3dPinned(false);
-  }, []);
-
-  // ── THE GESTURE CHAD ASKED FOR ──────────────────────────────────────────────
-  // Hold Ctrl (or ⌘) → peek; let go → straight back to the board. The button below is the
-  // pinned version, and the mobile half, since a phone has no Ctrl key.
-  useEffect(() => {
-    if (!map3dAvailable) return undefined;
-    const inField = () => {
-      const a = document.activeElement;
-      if (!a) return false;
-      const tag = String(a.tagName || '').toLowerCase();
-      return tag === 'input' || tag === 'textarea' || tag === 'select' || a.isContentEditable === true;
-    };
-    const onDown = (ev) => { if (shouldEnter3dOnKey(ev, { inTextField: inField() })) open3d(false); };
-    const onUp = (ev) => {
-      // A PINNED VIEW IGNORES THE KEY. Someone who pressed the button and then happens to
-      // touch Ctrl has not asked to be thrown back to the flat map.
-      if (!map3dPinnedRef.current && shouldExit3dOnKey(ev)) close3d();
-    };
-    // The browser stops sending keyup when the window loses focus mid-hold (⌘-Tab away with
-    // Ctrl down). Without this the peek would still be up on return, over a board the
-    // dispatcher thinks they are looking at.
-    const onBlur = () => { if (!map3dPinnedRef.current) close3d(); };
-    window.addEventListener('keydown', onDown);
-    window.addEventListener('keyup', onUp);
-    window.addEventListener('blur', onBlur);
-    return () => {
-      window.removeEventListener('keydown', onDown);
-      window.removeEventListener('keyup', onUp);
-      window.removeEventListener('blur', onBlur);
-    };
-  }, [map3dAvailable, open3d, close3d]);
-
-  useEffect(() => { map3dPinnedRef.current = map3dPinned; }, [map3dPinned]);
-
-  // Keep the on-map 3D button pointed at live state and painted to match — same shape as the
-  // satellite control it stacks beside, for the same reason: it is created once by Google.
-  useEffect(() => {
-    map3dToggleRef.current = () => { if (map3dOn) close3d(); else open3d(true); };
-  }, [map3dOn, open3d, close3d]);
-  useEffect(() => {
-    paint3dControl(map3dBtnRef.current, map3dOn);
-  }, [map3dOn, mapReady]);
+  const map3d = useMap3dPeek({
+    google, mapRef, mapDiv,
+    enabled: map3dAvailable,
+    satellite: mapFilters.satellite,
+    askedForVector: usesMapId(mapIdForView, mapFilters.hideLabels),
+    mapReady,
+  });
 
   // Keep the Recenter button's action pointed at the current board: fit to all
   // currently-shown stops (or fall back to the default center when none).
@@ -14523,7 +14630,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         <div ref={mapDiv} className="absolute inset-0" />
         {/* PHONE: the 3D layer is entered by the on-map button — there is no Ctrl key here. */}
         {map3dAvailable && (
-          <Map3DLayer layerRef={map3dDiv} on={map3dOn} pinned={map3dPinned} hint={map3dHint(map3dCamera)} error={map3dError} onClose={close3d} />
+          <Map3DLayer layerRef={map3d.layerRef} on={map3d.on} hint={map3d.hint}
+            error={map3d.error} onClose={map3d.close} />
         )}
         {/* Box/lasso multi-select: capture overlay (while a tool is armed) + the
             tool controls (kept above the overlay so you can switch/cancel). */}
@@ -15065,7 +15173,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         <div ref={mapDiv} className="absolute inset-0" />
         {/* DESKTOP: hold Ctrl to peek, or press the on-map 3D button to pin it open. */}
         {map3dAvailable && (
-          <Map3DLayer layerRef={map3dDiv} on={map3dOn} pinned={map3dPinned} hint={map3dHint(map3dCamera)} error={map3dError} onClose={close3d} />
+          <Map3DLayer layerRef={map3d.layerRef} on={map3d.on} hint={map3d.hint}
+            error={map3d.error} onClose={map3d.close} />
         )}
         {/* Box/lasso multi-select: capture overlay + tool controls (above it). */}
         {selectMode && (
@@ -20052,7 +20161,7 @@ function TruckProfileEditor({ p, picked, onTogglePicked, onSave }) {
   );
 }
 
-function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable, legendInventory = null, inFlow = false, satellite = false, onToggleSatellite = null }) {
+function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable, legendInventory = null, inFlow = false, satellite = false, onToggleSatellite = null, map3dOn = false, onToggle3d = null }) {
   // Chad: "put a map legend button here to show what all the different icons that are
   // currently on the map mean." The rail is where a dispatcher's thumb already is, and it
   // is the only furniture on this screen — the Routing map had no legend of any kind, on
@@ -20084,6 +20193,12 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
           dispatcher flips to read a dock or a yard. */}
       {onToggleSatellite && (
         <Btn active={satellite} onClick={onToggleSatellite} title={satelliteControlSpec(satellite).label}><Globe size={16} /></Btn>
+      )}
+      {/* 3D, beside satellite, because they answer the same question one step apart: satellite
+          asks "what is on this lot", 3D asks "which side of that building is the dock on".
+          Same cube the dispatch Map's control draws — one feature, one mark. */}
+      {onToggle3d && (
+        <Btn active={map3dOn} onClick={onToggle3d} title={control3dSpec(map3dOn).label}><Cube3dIcon size={16} /></Btn>
       )}
       <Btn active={legendOpen} onClick={() => setLegendOpen((v) => !v)} title="Legend — what the marks on this map mean"><Info size={16} /></Btn>
     </div>
@@ -22805,6 +22920,22 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // no labels, hybrid does. Persisted.
   const [routeHideLabels, setRouteHideLabels] = useState(() => { try { return localStorage.getItem('routing.hideLabels') === 'on'; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem('routing.hideLabels', routeHideLabels ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideLabels]);
+
+  // ── HOLD CTRL AND SEE THE BUILDING, ON ROUTING TOO ──────────────────────────
+  // Chad, 2026-09-17: "i need this on the routing tab too."
+  //
+  // ADDITIVE ONLY, and deliberately so: this screen's map is the Route Workbench, which is
+  // frozen. Nothing here changes what the map PAINTS for a planned, staged or sent stop, what
+  // box / lasso / ninja SELECT picks up, what SEND or Save writes, or any guard around closing
+  // a card. It lays a separate element OVER the map and takes it away again. Same hook as the
+  // dispatch Map, so the two cannot drift apart.
+  const routeMap3d = useMap3dPeek({
+    google, mapRef, mapDiv,
+    enabled: MAP_3D_ON,
+    satellite: routeSatellite,
+    askedForVector: usesMapId(MAP_ID, routeHideLabels),
+    mapReady,
+  });
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
     setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setRouteHideTerminal(false); setLeftPanelOn(false); setRightCollapsed(false);
@@ -26053,6 +26184,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         {appBarSlot && createPortal(phoneGearEl, appBarSlot)}
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
+          {MAP_3D_ON && (
+            <Map3DLayer layerRef={routeMap3d.layerRef} on={routeMap3d.on}
+              hint={routeMap3d.hint} error={routeMap3d.error} onClose={routeMap3d.close} />
+          )}
           <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
               with the Board Flags chip stacked above it. */}
@@ -26092,7 +26227,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                     tab). In a column the chip's height MOVES the tools. Found by the
                     overlap guard, 2026-08-19. */}
                 <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className="bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title="Review selected stops in the Setup panel">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>
-                <RoutingMapTools inFlow selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} satellite={routeSatellite} onToggleSatellite={() => setRouteSatellite((v) => !v)} />
+                <RoutingMapTools inFlow selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} satellite={routeSatellite} onToggleSatellite={() => setRouteSatellite((v) => !v)} map3dOn={routeMap3d.on} onToggle3d={MAP_3D_ON ? () => (routeMap3d.on ? routeMap3d.close() : routeMap3d.open()) : null} />
               </div>
             )}
           {/* On mobile the selected list lives in the Setup sheet (tap the chip) — a full-width map
@@ -26270,6 +26405,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
+          {MAP_3D_ON && (
+            <Map3DLayer layerRef={routeMap3d.layerRef} on={routeMap3d.on}
+              hint={routeMap3d.hint} error={routeMap3d.error} onClose={routeMap3d.close} />
+          )}
         <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} />
         {/* THE BOARD-STATUS CARD IS NOT ON THE MAP ANY MORE (desktop). It is portalled onto
             the app bar, left of More — see #desktop-appbar-slot for the geometry and why
@@ -26286,7 +26425,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
             is hidden, and a flag count that goes quiet is pixel-identical to a clean board,
             which is the one failure on this map nobody can see happening. */}
         <div className="absolute top-32 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{flagsOverlay()}</div>
-        {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} satellite={routeSatellite} onToggleSatellite={() => setRouteSatellite((v) => !v)} />}
+        {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} satellite={routeSatellite} onToggleSatellite={() => setRouteSatellite((v) => !v)} map3dOn={routeMap3d.on} onToggle3d={MAP_3D_ON ? () => (routeMap3d.on ? routeMap3d.close() : routeMap3d.open()) : null} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
         {viewing && (

@@ -211,7 +211,7 @@ export function control3dSpec(on) {
   const lit = !!on;
   return {
     on: lit,
-    label: lit ? '3D view on — back to the flat map' : '3D view off — see the buildings (or hold Ctrl)',
+    label: lit ? '3D view on — back to the flat map' : '3D view off — see the buildings (or Ctrl+drag the map)',
     ariaPressed: lit ? 'true' : 'false',
     background: lit ? MAP3D_ON_BG : MAP3D_OFF_BG,
     stroke: lit ? MAP3D_ON_STROKE : MAP3D_OFF_STROKE,
@@ -243,32 +243,145 @@ export function paint3dControl(el, on) {
 export const MAP3D_BUTTON_CSS = 'border:none;border-radius:2px;box-shadow:0 1px 4px rgba(0,0,0,0.3);width:40px;height:40px;margin:0 10px 10px 0;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;';
 
 /**
- * SHOULD THIS KEY EVENT OPEN 3D?
+ * HOW YOU GET INTO 3D, AND WHY IT IS A DRAG NOW RATHER THAN A HOLD.
  *
- * Pure so the awkward cases are pinned by a test rather than discovered on the board:
+ * Chad, 2026-09-23: "It is kind of working but not like it does when you are on google maps
+ * and you put it in globe view and use the 3d view there … make mine work like that."
  *
- *  - A REPEAT is not a new press. Holding a key fires keydown continuously at the OS repeat
- *    rate; without this the handler runs ~30 times a second for as long as Chad holds Ctrl.
- *  - CTRL WITH ANYTHING ELSE IS A SHORTCUT, NOT THIS. Ctrl+R, Ctrl+F, Ctrl+Shift+I — a
- *    dispatcher reloading the board must not get a 3D view on the way out. Only a bare Ctrl
- *    (or bare ⌘ on a Mac, where Ctrl is not the modifier anybody reaches for) counts.
- *  - A KEYSTROKE INSIDE A TEXT FIELD BELONGS TO THE TEXT FIELD. The board has a search box
- *    and this screen has note fields; Ctrl pressed in one of those is the start of a
- *    copy/paste, not a request for imagery.
+ * In Google Maps, 3D is a MODE you stay in, and Ctrl+drag is how you tilt INTO it and turn
+ * around once there. v1.38.0 made it a PEEK instead — open on Ctrl, gone the instant Ctrl was
+ * released — and that is exactly why it did not feel like Google Maps: Ctrl is also the key
+ * the 3D map reads for rotate and tilt, so the gesture that opened the view fought the
+ * gesture that uses it.
+ *
+ * Once it is a mode, a BARE Ctrl cannot be the way in any more. Ctrl is the first key of
+ * Ctrl+C, Ctrl+F and Ctrl+R — a dispatcher copying a PRO off the board would be thrown into
+ * a full-screen 3D view and LEFT there, with an Immersive Maps load billed for it. As a peek
+ * that was a flicker; as a mode it is a trap. So the way in is Google's own: hold Ctrl (or
+ * ⌘) and DRAG the map. It is the same physical motion that tilts the board today — it just
+ * lands on the photographs now instead of grey blocks.
+ *
+ * A DRAG, NOT A PRESS: the threshold means a Ctrl+CLICK is never taken. Nothing in this app
+ * uses one today (checked: no ctrlKey/metaKey anywhere in src/), and the listener never
+ * swallows an event either way — it only watches, so a click reaches whatever wants it.
  */
-export function shouldEnter3dOnKey(ev = {}, { inTextField = false } = {}) {
-  if (inTextField) return false;
-  if (ev.repeat) return false;
-  if (ev.altKey) return false;
-  if (ev.shiftKey) return false;
-  return ev.key === 'Control' || ev.key === 'Meta';
+export const DRAG_THRESHOLD_PX = 6;
+
+/** Is this pointer-down the start of a Ctrl+drag? Primary button only — a right-button drag
+ *  is Google's own rotate on the 2D map and is not ours to take. Shift or Alt alongside is a
+ *  different chord and is left alone. */
+export function isCtrlDragStart(ev = {}) {
+  if (ev.button !== undefined && ev.button !== 0) return false;
+  if (ev.altKey || ev.shiftKey) return false;
+  return !!(ev.ctrlKey || ev.metaKey);
 }
 
-/** The mirror: has the modifier that opened a PEEK been let go? Any release of either
- *  modifier closes it — a peek that outlives the key that opened it is a mode nobody asked
- *  to be in, sitting on top of the board. */
-export function shouldExit3dOnKey(ev = {}) {
-  return ev.key === 'Control' || ev.key === 'Meta';
+/** Has a pointer moved far enough from where it went down to count as a drag? */
+export function dragCrossedThreshold(start, now, px = DRAG_THRESHOLD_PX) {
+  if (!start || !now) return false;
+  const dx = Number(now.x) - Number(start.x);
+  const dy = Number(now.y) - Number(start.y);
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+  return Math.hypot(dx, dy) >= px;
+}
+
+/** Escape leaves 3D. Once a view outlives the key that opened it, there has to be a key
+ *  that closes it, and Escape is the one every dispatcher already tries first. */
+export function isEscape(ev = {}) {
+  return ev.key === 'Escape' || ev.key === 'Esc';
+}
+
+/**
+ * Read a lat/lng off whatever Google hands back. LatLng exposes lat()/lng() METHODS;
+ * LatLngAltitude and literals expose plain numbers. Reading the wrong shape gives a function
+ * where a number should be, and `Number(fn)` is NaN — a camera handoff built on that would
+ * fly the board to nowhere. Null when it cannot be read honestly.
+ */
+export function readLatLng(v) {
+  if (!v) return null;
+  let lat; let lng;
+  try {
+    lat = typeof v.lat === 'function' ? v.lat() : v.lat;
+    lng = typeof v.lng === 'function' ? v.lng() : v.lng;
+  } catch { return null; }
+  return isRealPoint(lat, lng) ? { lat: Number(lat), lng: Number(lng) } : null;
+}
+
+/** Zoom bounds for the handoff back to the flat map — the dispatch board's own useful range. */
+export const HANDOFF_MIN_ZOOM = 3;
+export const HANDOFF_MAX_ZOOM = 21;
+
+/**
+ * The inverse of rangeForView: what 2D zoom frames what a 3D camera `range` metres back is
+ * framing. Solved from the same two relations, so a round trip lands where it started (the
+ * test proves it). Deliberately NOT clamped to MAP3D_MAX_RANGE — that ceiling is about where
+ * a camera is dropped on the way IN; on the way OUT the dispatcher's own zoom-out is honoured.
+ */
+export function zoomForRange({ range, lat, heightPx, fovDeg = MAP3D_FOV } = {}) {
+  if (range === null || range === undefined || range === '' || typeof range === 'boolean') return null;
+  if (lat === null || lat === undefined || lat === '' || typeof lat === 'boolean') return null;
+  const r = Number(range); const phi = Number(lat); const h = Number(heightPx); const fov = Number(fovDeg);
+  if (!Number.isFinite(r) || r <= 0 || !Number.isFinite(phi) || !Number.isFinite(h) || h <= 0) return null;
+  if (!Number.isFinite(fov) || fov <= 0 || fov >= 180) return null;
+  const groundHeight = r * 2 * Math.tan(fov * Math.PI / 360);
+  const mpp = groundHeight / h;
+  const z = Math.log2(EQUATOR_METERS_PER_PIXEL * Math.cos(phi * Math.PI / 180) / mpp);
+  if (!Number.isFinite(z)) return null;
+  return Math.min(HANDOFF_MAX_ZOOM, Math.max(HANDOFF_MIN_ZOOM, z));
+}
+
+/** How far the 3D camera has to move before leaving 3D moves the board. */
+export const HANDOFF_MIN_METRES = 25;
+export const HANDOFF_MIN_RANGE_RATIO = 0.1;
+export const HANDOFF_MIN_HEADING_DEG = 3;
+
+/** Metres between two points — equirectangular, which is exact enough at yard scale. */
+export function metresBetween(a, b) {
+  if (!a || !b) return Infinity;
+  const R = 6371008.8;
+  const x = (b.lng - a.lng) * Math.PI / 180 * Math.cos(((a.lat + b.lat) / 2) * Math.PI / 180);
+  const y = (b.lat - a.lat) * Math.PI / 180;
+  return Math.hypot(x, y) * R;
+}
+
+/**
+ * DID THE DISPATCHER GO ANYWHERE IN 3D?
+ *
+ * THE LOGISTICS CALL THIS ENCODES: Google Maps keeps you where you flew when you drop back to
+ * 2D, and that is right for somebody who orbited round to the back of a building to find the
+ * dock. But the ENTRY camera is clamped (see MAP3D_MAX_RANGE), so somebody who opened 3D over
+ * the whole metro and left without touching anything would otherwise come back zoomed in to
+ * building height — their board rearranged by a look. So the board only follows a camera the
+ * dispatcher actually MOVED; a look-and-leave returns them to exactly the board they left.
+ */
+export function cameraMoved(entry, now) {
+  if (!entry || !now) return false;
+  const a = readLatLng(entry.center); const b = readLatLng(now.center);
+  if (!a || !b) return false;
+  if (metresBetween(a, b) >= HANDOFF_MIN_METRES) return true;
+  const r0 = Number(entry.range); const r1 = Number(now.range);
+  if (Number.isFinite(r0) && Number.isFinite(r1) && r0 > 0 && Math.abs(r1 - r0) / r0 >= HANDOFF_MIN_RANGE_RATIO) return true;
+  const h0 = Number(entry.heading); const h1 = Number(now.heading);
+  if (Number.isFinite(h0) && Number.isFinite(h1)) {
+    const d = Math.abs((((h1 - h0) % 360) + 540) % 360 - 180);
+    if (d >= HANDOFF_MIN_HEADING_DEG) return true;
+  }
+  return false;
+}
+
+/**
+ * The flat-map view to land on after a 3D flight: centre, zoom and heading, FLAT. Tilt is not
+ * carried back, and on purpose — a tilted vector map is the grey-block view Chad did not want,
+ * and Google Maps drops back to flat too. Null when the 3D camera cannot be read, in which
+ * case the board is left exactly where it was rather than moved to a guess.
+ */
+export function twoDViewFor3dCamera({ center, range, heading, heightPx } = {}) {
+  const c = readLatLng(center);
+  if (!c) return null;
+  const zoom = zoomForRange({ range, lat: c.lat, heightPx });
+  if (zoom === null) return null;
+  const h = Number(heading);
+  return { center: c, zoom, heading: Number.isFinite(h) ? ((h % 360) + 360) % 360 : 0 };
 }
 
 /**
@@ -309,10 +422,53 @@ export const MAP3D_NO_WEBGL =
   'This browser cannot draw a 3D map — it has no working WebGL. The flat map still works.';
 
 /**
+ * THE SHARPER SIGNAL, and the one that actually matches the failure that was WATCHED.
+ *
+ * webglUsable() above only catches a browser with NO WebGL context at all. The preview run
+ * that produced Google's blank "Oops" card had a context — a SOFTWARE one (SwiftShader) —
+ * so that check would have passed it straight through, and saying otherwise would have been
+ * a fix claimed for a bug it does not cover.
+ *
+ * What DID name it, in Google's own words, was the console line "Attempted to load a Vector
+ * Map, but failed. Falling back to Raster." That state is readable: `map.getRenderingType()`
+ * returns RASTER on a map we asked to be VECTOR. A browser that cannot drive the 2D vector
+ * renderer will not drive a 3D one either, so this is the cheapest reliable proof available
+ * before anything is built or billed.
+ *
+ * THE FALSE POSITIVE THIS MUST NOT HAVE: "Hide place labels" DELIBERATELY drops the mapId to
+ * make Google honour a style, which makes the map raster ON PURPOSE (see map-base-options.js).
+ * Reporting a broken browser there would be a confident lie about the dispatcher's machine,
+ * so the check only applies when a vector map was actually asked for. UNINITIALIZED is not a
+ * verdict either — the map simply has not decided yet.
+ */
+export function vectorFellBack({ askedForVector, renderingType } = {}) {
+  if (!askedForVector) return false;
+  const t = String(renderingType ?? '').toUpperCase();
+  return t === 'RASTER';
+}
+
+export const MAP3D_NO_VECTOR =
+  'This browser could not draw the 3D map — it fell back to the flat map, which means its '
+  + 'graphics (WebGL) cannot drive Google’s 3D renderer. The flat map still works.';
+
+/**
  * The sentence printed over a 3D view that is too high to answer the question it was opened
  * to answer. Null when the view is close enough to read doors, so the caller renders nothing.
  */
 export function map3dHint(camera) {
   if (!camera) return null;
-  return camera.detailed ? null : 'Too high to read doors — zoom the board in, then hold Ctrl again';
+  return hintForRange(camera.range);
+}
+
+/**
+ * The same sentence, from a live range. In a MODE the advice changes: v1.38.0 said "zoom the
+ * board in, then hold Ctrl again", which was right for a peek and is wrong now — you zoom
+ * right there, with the wheel or Google's own + button. Recomputed on every gmp-rangechange,
+ * so the line goes away the moment the camera is close enough, instead of nagging from the
+ * entry frame for as long as the view is open.
+ */
+export function hintForRange(range) {
+  const r = Number(range);
+  if (range === null || range === undefined || !Number.isFinite(r)) return null;
+  return r <= MAP3D_DETAIL_RANGE ? null : 'Too high to read doors — scroll in on the building';
 }

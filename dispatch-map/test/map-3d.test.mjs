@@ -12,7 +12,9 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import {
   map3dEnabled, isRealPoint, metersPerPixel, rangeForView, cameraFor2dView, map3dMode,
-  control3dSpec, paint3dControl, shouldEnter3dOnKey, shouldExit3dOnKey, map3dHint,
+  control3dSpec, paint3dControl, map3dHint, hintForRange,
+  isCtrlDragStart, dragCrossedThreshold, isEscape, readLatLng, zoomForRange, cameraMoved,
+  twoDViewFor3dCamera, metresBetween, DRAG_THRESHOLD_PX, HANDOFF_MIN_ZOOM, HANDOFF_MAX_ZOOM,
   MAP3D_TILT, MAP3D_MIN_RANGE, MAP3D_MAX_RANGE, MAP3D_DETAIL_RANGE,
 } from '../src/lib/map-3d.js';
 
@@ -121,7 +123,10 @@ test('HYBRID whichever way the board satellite toggle is set — the street name
 test('a view too high to read doors SAYS SO, rather than letting the imagery take the blame', () => {
   const far = cameraFor2dView({ center: FORest_PARK, zoom: 12, heightPx: 900 });
   assert.equal(far.detailed, false);
-  assert.match(map3dHint(far), /zoom the board in/i);
+  // In a MODE you zoom right there. "zoom the board in, then hold Ctrl again" was right for
+  // a peek and is wrong advice now, so the sentence changed with the design.
+  assert.match(map3dHint(far), /scroll in/i);
+  assert.doesNotMatch(map3dHint(far), /hold Ctrl/i);
 
   const close = cameraFor2dView({ center: FORest_PARK, zoom: 19, heightPx: 900 });
   assert.equal(close.detailed, true);
@@ -130,40 +135,121 @@ test('a view too high to read doors SAYS SO, rather than letting the imagery tak
   assert.equal(map3dHint(null), null);
 });
 
-// ── THE KEY ──────────────────────────────────────────────────────────────────
-test('a bare Ctrl opens it; ⌘ does too, because Ctrl is not the modifier a Mac reaches for', () => {
-  assert.equal(shouldEnter3dOnKey({ key: 'Control' }), true);
-  assert.equal(shouldEnter3dOnKey({ key: 'Meta' }), true);
-  assert.equal(shouldEnter3dOnKey({ key: 'Shift' }), false);
-  assert.equal(shouldEnter3dOnKey({ key: 'a' }), false);
+// ── THE GESTURE ──────────────────────────────────────────────────────────────
+// Chad, 2026-09-23: "It is kind of working but not like it does when you are on google maps
+// and you put it in globe view and use the 3d view there … make mine work like that."
+// In Google Maps 3D is a MODE, and Ctrl+drag is how you tilt INTO it and turn around in it.
+test('CTRL+DRAG IS THE WAY IN — Google Maps\' own gesture, and ⌘ on a Mac', () => {
+  assert.equal(isCtrlDragStart({ button: 0, ctrlKey: true }), true);
+  assert.equal(isCtrlDragStart({ button: 0, metaKey: true }), true);
+  assert.equal(isCtrlDragStart({ button: 0 }), false, 'a plain drag is a pan, always');
 });
 
-test('HOLDING A KEY FIRES KEYDOWN ~30 TIMES A SECOND — a repeat is not a new press', () => {
-  // Without this the handler runs for as long as Chad holds Ctrl, every frame he holds it.
-  assert.equal(shouldEnter3dOnKey({ key: 'Control', repeat: true }), false);
+test('A BARE CTRL DOES NOTHING NOW — in a mode you stay in, Ctrl+C on a PRO would be a trap', () => {
+  // As a peek, a Ctrl keydown that opened 3D and closed on release was a flicker. As a MODE it
+  // would throw a dispatcher copying a PRO into full-screen 3D and LEAVE them there, with an
+  // Immersive Maps load billed for it. There is no key path in any more — only a drag.
+  const lib = { isCtrlDragStart, dragCrossedThreshold };
+  assert.equal(typeof lib.isCtrlDragStart, 'function');
+  return readFile(fileURLToPath(new URL('../src/App.jsx', import.meta.url)), 'utf8').then((src) => {
+    assert.ok(!/shouldEnter3dOnKey/.test(src), 'no keydown may open 3D');
+    assert.ok(!/addEventListener\('keyup'/.test(src.slice(src.indexOf('function useMap3dPeek'), src.indexOf('function Cube3dIcon'))),
+      'and nothing in the 3D hook may close it on a key RELEASE — that was the peek');
+  });
 });
 
-test('CTRL+R MUST NOT FLASH A 3D VIEW ON THE WAY TO A RELOAD — Ctrl with anything else is a shortcut', () => {
-  assert.equal(shouldEnter3dOnKey({ key: 'Control', shiftKey: true }), false);
-  assert.equal(shouldEnter3dOnKey({ key: 'Control', altKey: true }), false);
-  // The letter key of a Ctrl+R arrives as key:'r', which is not a modifier and so is ignored.
-  assert.equal(shouldEnter3dOnKey({ key: 'r', ctrlKey: true }), false);
+test('A RIGHT-BUTTON DRAG IS GOOGLE\'S 2D ROTATE, AND SHIFT/ALT ARE OTHER CHORDS — none of them are ours', () => {
+  assert.equal(isCtrlDragStart({ button: 2, ctrlKey: true }), false);
+  assert.equal(isCtrlDragStart({ button: 0, ctrlKey: true, shiftKey: true }), false);
+  assert.equal(isCtrlDragStart({ button: 0, ctrlKey: true, altKey: true }), false);
 });
 
-test('Ctrl inside the board search box belongs to the search box — it is the start of a paste', () => {
-  assert.equal(shouldEnter3dOnKey({ key: 'Control' }, { inTextField: true }), false);
+test('A CTRL+CLICK IS NEVER TAKEN — it has to MOVE before it counts as a drag', () => {
+  const at = { x: 500, y: 300 };
+  assert.equal(dragCrossedThreshold(at, { x: 500, y: 300 }), false, 'a click that never moved');
+  assert.equal(dragCrossedThreshold(at, { x: 503, y: 302 }), false, 'a shaky click');
+  assert.equal(dragCrossedThreshold(at, { x: 500 + DRAG_THRESHOLD_PX, y: 300 }), true, 'a drag');
+  assert.equal(dragCrossedThreshold(null, at), false);
+  assert.equal(dragCrossedThreshold(at, { x: 'x', y: 1 }), false);
 });
 
-test('letting go closes the peek — a peek that outlives its key is a mode nobody asked to be in', () => {
-  assert.equal(shouldExit3dOnKey({ key: 'Control' }), true);
-  assert.equal(shouldExit3dOnKey({ key: 'Meta' }), true);
-  assert.equal(shouldExit3dOnKey({ key: 'Shift' }), false);
+test('Escape leaves — once a view outlives the key that opened it, a key has to close it', () => {
+  assert.equal(isEscape({ key: 'Escape' }), true);
+  assert.equal(isEscape({ key: 'Esc' }), true, 'older browsers spell it this way');
+  assert.equal(isEscape({ key: 'Control' }), false, 'Ctrl is Google\'s turn-and-tilt inside 3D, not a way out');
+});
+
+// ── THE HANDOFF: YOU LAND WHERE YOU FLEW ─────────────────────────────────────
+test('reads a point off every shape Google hands back — methods, numbers, and nothing', () => {
+  assert.deepEqual(readLatLng({ lat: () => 33.6, lng: () => -84.3 }), { lat: 33.6, lng: -84.3 }, 'LatLng has methods');
+  assert.deepEqual(readLatLng({ lat: 33.6, lng: -84.3, altitude: 0 }), { lat: 33.6, lng: -84.3 }, 'LatLngAltitude has numbers');
+  assert.equal(readLatLng(null), null);
+  assert.equal(readLatLng({ lat: null, lng: null }), null, 'Number(null) is 0 — not a point in the Atlantic');
+  assert.equal(readLatLng({ lat: () => { throw new Error('dead'); }, lng: 1 }), null);
+});
+
+test('zoomForRange is the exact inverse of rangeForView — a round trip lands where it started', () => {
+  for (const zoom of [14, 16, 18, 19.5]) {
+    const range = rangeForView({ zoom, lat: FORest_PARK.lat, heightPx: 900 });
+    if (range === MAP3D_MIN_RANGE || range === MAP3D_MAX_RANGE) continue; // the clamps are one-way on purpose
+    const back = zoomForRange({ range, lat: FORest_PARK.lat, heightPx: 900 });
+    assert.ok(Math.abs(back - zoom) < 1e-9, `z${zoom} → ${range}m → z${back}`);
+  }
+});
+
+test('ZOOMING OUT IN 3D IS HONOURED ON THE WAY OUT — the entry ceiling is not applied twice', () => {
+  // MAP3D_MAX_RANGE stops a whole-metro board dropping the camera 363km up on the way IN.
+  // If the dispatcher then zooms OUT in 3D on purpose, the board must follow them out.
+  // The property, not a guessed number: a camera the dispatcher pulled back PAST the entry
+  // ceiling must land the board further out than the ceiling itself would. (60km over a 900px
+  // map is ~z11.6 — checked by hand: ~42 m/px x 900px = ~38km of ground = ~60km of range.)
+  const atCeiling = zoomForRange({ range: MAP3D_MAX_RANGE, lat: FORest_PARK.lat, heightPx: 900 });
+  const pulledBack = zoomForRange({ range: 60000, lat: FORest_PARK.lat, heightPx: 900 });
+  assert.ok(pulledBack < atCeiling - 3, `pulled back to 60km (z${pulledBack}) must land well beyond the ceiling (z${atCeiling})`);
+  assert.equal(zoomForRange({ range: 1e9, lat: 0, heightPx: 900 }), HANDOFF_MIN_ZOOM, 'but never off the planet');
+  assert.equal(zoomForRange({ range: 1, lat: 0, heightPx: 900 }), HANDOFF_MAX_ZOOM);
+  assert.equal(zoomForRange({ range: null, lat: 33, heightPx: 900 }), null, 'Number(null) is 0 — no zoom from nothing');
+  assert.equal(zoomForRange({ range: 800, lat: 33, heightPx: 0 }), null);
+});
+
+test('A LOOK-AND-LEAVE PUTS THE BOARD BACK EXACTLY — opening 3D must not rearrange the board', () => {
+  // The entry camera is CLAMPED, so a whole-metro board opened in 3D and closed untouched would
+  // otherwise come back zoomed to building height: the board rearranged by a look.
+  const entry = { center: { lat: 33.6187, lng: -84.3733 }, range: 4000, heading: 0 };
+  assert.equal(cameraMoved(entry, { ...entry }), false);
+  assert.equal(cameraMoved(entry, { center: { lat: 33.61871, lng: -84.37331 }, range: 4010, heading: 1 }), false,
+    'float noise from Google echoing the camera back is not a flight');
+});
+
+test('A FLIGHT MOVES THE BOARD — orbit to the back of the building, and that is where you land', () => {
+  const entry = { center: { lat: 33.6187, lng: -84.3733 }, range: 800, heading: 0 };
+  assert.equal(cameraMoved(entry, { ...entry, center: { lat: 33.6195, lng: -84.3733 } }), true, 'panned ~90m');
+  assert.equal(cameraMoved(entry, { ...entry, range: 400 }), true, 'zoomed in');
+  assert.equal(cameraMoved(entry, { ...entry, heading: 180 }), true, 'turned round to the back');
+  assert.equal(cameraMoved(entry, { ...entry, heading: 359 }), false, '359° is 1° from 0°, not 359°');
+  assert.ok(metresBetween({ lat: 33.6187, lng: -84.3733 }, { lat: 33.6195, lng: -84.3733 }) > 80);
+});
+
+test('THE BOARD LANDS FLAT — tilt is never carried back, because tilted 2D is the grey-block view', () => {
+  const v = twoDViewFor3dCamera({ center: { lat: 33.6195, lng: -84.3733, altitude: 0 }, range: 800, heading: 455, heightPx: 900 });
+  assert.deepEqual(v.center, { lat: 33.6195, lng: -84.3733 });
+  assert.equal(v.heading, 95, 'heading carries, normalised');
+  assert.ok(!('tilt' in v), 'no tilt in the handoff at all');
+  assert.equal(twoDViewFor3dCamera({ center: null, range: 800, heading: 0, heightPx: 900 }), null,
+    'an unreadable camera leaves the board where it is — never a guess');
+});
+
+test('the hint is recomputed from the LIVE range, so it goes away once you are close enough', () => {
+  assert.match(hintForRange(MAP3D_DETAIL_RANGE + 1), /scroll in/i);
+  assert.equal(hintForRange(MAP3D_DETAIL_RANGE), null);
+  assert.equal(hintForRange(null), null);
+  assert.equal(hintForRange('x'), null);
 });
 
 // ── THE BUTTON ───────────────────────────────────────────────────────────────
 test('the button says WHICH WAY IT WILL GO, and names the Ctrl gesture nobody would otherwise find', () => {
   const off = control3dSpec(false);
-  assert.match(off.label, /hold Ctrl/i);
+  assert.match(off.label, /Ctrl\+drag/i);
   assert.equal(off.ariaPressed, 'false');
   const on = control3dSpec(true);
   assert.match(on.label, /back to the flat map/i);
@@ -196,10 +282,10 @@ test('ONE ELEMENT PER SESSION, NOT ONE PER LOOK — the Immersive Maps SKU bills
     // Guarded BOTH before the await and again after it: the library load is async, so two
     // quick Ctrl presses can both reach the constructor otherwise — two elements, two bills,
     // two WebGL canvases stacked on the board.
-    const guards = src.match(/if\s*\(\s*!\s*map3dElRef\.current\s*\)/g) || [];
+    const guards = src.match(/if\s*\(\s*!\s*elRef\.current\s*\)/g) || [];
     assert.ok(guards.length >= 2, `the construction must be guarded on both sides of the await, found ${guards.length}`);
     // And the close path must NOT destroy it — hiding is the whole cost design.
-    assert.ok(!/map3dElRef\.current\s*=\s*null/.test(src),
+    assert.ok(!/elRef\.current\s*=\s*null/.test(src),
       'closing must hide the layer, never drop the element (the next open would re-bill)');
   });
 });
@@ -233,21 +319,25 @@ test('THE HEIGHT COMES FROM THE VISIBLE MAP, NOT THE HIDDEN LAYER — this one s
   });
 });
 
-test('A REFUSED KEY IS READ, NOT JUST RECORDED — the error opens the layer, and opens it pinned', () => {
+test('A REFUSED KEY IS READ, NOT JUST RECORDED — the error opens the layer so it can be read', () => {
   return readFile(APP, 'utf8').then((src) => {
     // Writing the refusal onto a layer that stays display:none is an error nobody can see,
     // which is the exact failure the error exists to prevent. And a PEEK would vanish the
     // moment Chad let go of the key he is holding in order to read it.
-    const block = src.slice(src.indexOf('setMap3dError(e?.message'));
-    const upto = block.slice(0, block.indexOf('return;'));
-    assert.ok(/setMap3dOn\(true\)/.test(upto), 'the error path must open the layer');
-    assert.ok(/setMap3dPinned\(true\)/.test(upto), 'and pin it, so releasing Ctrl does not hide the message');
+    // Anchored on the 3D refusal message itself: "setError(e?.message" also appears in the
+    // debug-capture component 150 lines earlier, and anchoring there silently measured the
+    // wrong function. A window that can land on the wrong code proves nothing.
+    const at = src.indexOf("'Google refused the 3D map'");
+    assert.ok(at > -1, 'the 3D refusal path must exist');
+    const upto = src.slice(at, src.indexOf('return;', at));
+    assert.ok(/setOn\(true\)/.test(upto), 'the error path must open the layer');
+    assert.ok(/onRef\.current = true/.test(upto), 'and mark it open, so Escape and Back can take it away again');
   });
 });
 
 test('CROSSING THE PHONE/DESKTOP BREAKPOINT RE-ATTACHES THE ELEMENT — an orphan looks like failed imagery', () => {
   return readFile(APP, 'utf8').then((src) => {
-    assert.ok(/el\.parentNode\s*!==\s*map3dDiv\.current\s*\)\s*map3dDiv\.current\.appendChild\(el\)/.test(src),
+    assert.ok(/el\.parentNode\s*!==\s*layerRef\.current\s*\)\s*layerRef\.current\.appendChild\(el\)/.test(src),
       'the re-use path must re-attach when the container was rebuilt under it');
   });
 });
@@ -292,8 +382,113 @@ test('WHEN IT CANNOT TELL, IT LETS GOOGLE TRY — refusing on a false negative i
 
 test('the check runs BEFORE the element is constructed, not after', async () => {
   const src = await readFile(APP, 'utf8');
-  const open = src.slice(src.indexOf('if (!map3dElRef.current) {'));
+  const open = src.slice(src.indexOf('if (!elRef.current) {'));
   const gl = open.indexOf('webglUsable()');
   const build = open.indexOf('importLibrary');
   assert.ok(gl > -1 && build > -1 && gl < build, 'the WebGL check must precede the library load');
+});
+
+// ── THE FAILURE THAT WAS ACTUALLY WATCHED ────────────────────────────────────
+// webglUsable() only catches a browser with NO context. The preview run that produced
+// Google's blank "Oops" had a SOFTWARE context (SwiftShader) and sailed through it. What
+// named the failure was Google's own 2D verdict: a map asked to be VECTOR reporting RASTER.
+test('a vector map that fell back to raster has already failed this browser once — do not build a 3D one', async () => {
+  const { vectorFellBack, MAP3D_NO_VECTOR } = await import('../src/lib/map-3d.js');
+  assert.equal(vectorFellBack({ askedForVector: true, renderingType: 'RASTER' }), true);
+  assert.equal(vectorFellBack({ askedForVector: true, renderingType: 'raster' }), true);
+  assert.match(MAP3D_NO_VECTOR, /WebGL/);
+  assert.match(MAP3D_NO_VECTOR, /flat map still works/i);
+});
+
+test('a working vector map is not a complaint, and UNINITIALIZED is not a verdict', async () => {
+  const { vectorFellBack } = await import('../src/lib/map-3d.js');
+  assert.equal(vectorFellBack({ askedForVector: true, renderingType: 'VECTOR' }), false);
+  assert.equal(vectorFellBack({ askedForVector: true, renderingType: 'UNINITIALIZED' }), false);
+  assert.equal(vectorFellBack({ askedForVector: true, renderingType: null }), false);
+  assert.equal(vectorFellBack({}), false);
+});
+
+test('HIDE PLACE LABELS MAKES IT RASTER ON PURPOSE — blaming the machine there would be a confident lie', async () => {
+  const { vectorFellBack } = await import('../src/lib/map-3d.js');
+  // The toggle drops the mapId deliberately (see map-base-options.js). Raster is the
+  // intended state, not a broken browser, and the dispatcher must not be told otherwise.
+  assert.equal(vectorFellBack({ askedForVector: false, renderingType: 'RASTER' }), false);
+});
+
+test('the raster check is wired to the REAL asked-for-vector rule on BOTH screens, not a guess', async () => {
+  const src = await readFile(APP, 'utf8');
+  // The hook takes askedForVector from its caller, so the honesty of the check lives at the
+  // two call sites. Each must hand it usesMapId() — the same function map-base-options
+  // decides the base with — so neither screen can claim a broken browser on a map that is
+  // raster ON PURPOSE because "Hide place labels" is on.
+  assert.ok(/askedForVector:\s*usesMapId\(mapIdForView,\s*mapFilters\.hideLabels\)/.test(src),
+    'the dispatch Map must pass usesMapId');
+  assert.ok(/askedForVector:\s*usesMapId\(MAP_ID,\s*routeHideLabels\)/.test(src),
+    'Routing must pass usesMapId too');
+  assert.ok(/vectorFellBack\(\{\s*askedForVector,\s*renderingType\s*\}\)/.test(src),
+    'and the hook must consult it');
+});
+
+test('ROUTING GETS IT TOO — Chad asked for it there, and one hook serves both so they cannot drift', async () => {
+  const src = await readFile(APP, 'utf8');
+  const hookCalls = src.match(/=\s*useMap3dPeek\(\{/g) || [];   // calls, not the definition
+  assert.equal(hookCalls.length, 2, `expected the dispatch Map and Routing, found ${hookCalls.length}`);
+  // Four layers: mobile + desktop on each screen. The television deliberately gets none.
+  const layers = src.match(/<Map3DLayer\b/g) || [];
+  assert.equal(layers.length, 4, `expected two views on each of two screens, found ${layers.length}`);
+});
+
+test('THE LAYER SITS ABOVE THE BOARD FURNITURE — at z-11 the data grid ate the drags', async () => {
+  const src = await readFile(APP, 'utf8');
+  // Chad: "i cant pan around the building". The layer was the LOWEST overlay on the map: the
+  // bottom data grid (z-12), filters, status pill and flag rail (z-15/16/20/22) all drew on
+  // top of it and swallowed pointer events. The highest in-map overlay is 30; real modals are
+  // `fixed` at 60+, so anything in between is correct and 40 is what it uses.
+  const m = src.match(/data-overlay-layer[\s\S]{0,900}?className="absolute inset-0 z-\[(\d+)\] bg-slate-900"/);
+  assert.ok(m, 'the 3D layer must declare an explicit z-index');
+  const z = Number(m[1]);
+  assert.ok(z > 30, `the layer must clear every in-map overlay (max 30), got ${z}`);
+  assert.ok(z < 60, `and stay below the modal band (60+), got ${z}`);
+});
+
+test('IT IS A MODE — Ctrl+drag inside 3D is Google\'s turn-and-tilt, never a re-entry that snaps you back', async () => {
+  const src = await readFile(APP, 'utf8');
+  const hook = src.slice(src.indexOf('function useMap3dPeek'), src.indexOf('function Cube3dIcon'));
+  // v1.38.0's fight: Ctrl opened the view AND was the key the 3D map reads for rotate. Now an
+  // open() while already open does nothing, so turning round a building never re-frames it.
+  assert.ok(/if \(onRef\.current\) return;/.test(hook), 'open() must be a no-op while 3D is up');
+  assert.ok(/isCtrlDragStart\(ev\)/.test(hook) && /dragCrossedThreshold\(/.test(hook), 'the way in is a Ctrl+DRAG');
+  assert.ok(/isEscape\(ev\)/.test(hook), 'Escape must leave');
+  // The listener only WATCHES: nothing may be prevented or stopped, so a Ctrl+click and every
+  // other gesture on both maps (the Route Workbench's included) reach what they were meant for.
+  assert.ok(!/preventDefault\(\)|stopPropagation\(\)|stopImmediatePropagation\(\)/.test(hook),
+    'the 3D hook must never swallow an event');
+});
+
+test('GOOGLE\'S OWN CONTROLS ARE ASKED FOR, AND GOOGLE\'S OWN FAILURE IS HEARD', async () => {
+  const src = await readFile(APP, 'utf8');
+  // The compass / zoom / tilt / turn buttons are what make this feel like Google Maps; in
+  // v1.38.0 they were there but buried under the board's grid and cards.
+  assert.ok(/defaultUIHidden:\s*false/.test(src), 'Google\'s 3D controls must be requested explicitly');
+  assert.ok(/addEventListener\('gmp-error'/.test(src), 'Google\'s init failure must be listened for, not left as a blank card');
+  assert.ok(/addEventListener\('gmp-rangechange'/.test(src), 'the hint must follow the live camera');
+});
+
+test('LEAVING HANDS THE CAMERA BACK — a flight lands the board, a look puts it back exactly', async () => {
+  const src = await readFile(APP, 'utf8');
+  const hook = src.slice(src.indexOf('function useMap3dPeek'), src.indexOf('function Cube3dIcon'));
+  assert.ok(/cameraMoved\(entryCamRef\.current, now\)/.test(hook), 'close must tell a flight from a look');
+  assert.ok(/twoDViewFor3dCamera\(/.test(hook), 'a flight lands the board through the tested handoff');
+  assert.ok(/board2dRef\.current/.test(hook), 'a look puts back the board as it was BEFORE the drag nudged it');
+  // The layer is hidden, never unmounted — the element is the thing that costs money.
+  assert.ok(!/elRef\.current\s*=\s*null/.test(hook));
+});
+
+test('THE "ZOOM IN" HINT IS NOT SHOWN BESIDE AN ERROR — it is wrong advice, not just clutter', async () => {
+  // Watched on the deploy preview: "Too high to read doors — zoom the board in" came up
+  // next to "this browser cannot draw the 3D map". Zooming cannot fix a browser, and
+  // following the hint teaches a dispatcher the feature is broken in a way they can fix.
+  const src = await readFile(APP, 'utf8');
+  assert.ok(/\{!error && hint && <span/.test(src),
+    'the hint must be suppressed while an error is on the layer');
 });
