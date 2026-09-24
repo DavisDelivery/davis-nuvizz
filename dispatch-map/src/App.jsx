@@ -71,7 +71,7 @@ import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } f
 import { formatCompletionPct } from './lib/completion-pct.js';
 import { isTvPath, tvRailRows, tvVerdict, tvFeedState, TV_RAIL_LIMIT } from './lib/tv-mode.js';
 import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent, tvImageFailure, boundsOf, snapBounds } from './lib/tv-static-map.js';
-import { driverLabelLines, driverFixStale } from './lib/driver-label.js';
+import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
@@ -176,7 +176,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.65.0';
+const APP_VERSION = '1.65.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -230,6 +230,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.65.1', 'HIDE THE DRIVER LABELS, KEEP THE TRUCKS. Chad: “I want a live drivers toggle like there is but one that just turns the labels off so trucks show but not truck number or drivers name.” A NEW ROW, “Hide driver labels”, DIRECTLY UNDER “Show drivers (live)” in Filters — on all three surfaces that carry the drivers switch: the desktop Map’s Filters dropdown, the wall display’s Filters card, and the phone’s filter tab. Ticked, every truck stays exactly where it is and the white name plates (“7792 · Brent D.”) come off. THE SETTING ALREADY EXISTED; ITS SWITCH WAS IN THE WRONG PLACE. Read off the code: showDriverLabels has lived in MapScreen for months, but its only control was a “Hide labels” button in the DESKTOP LEFT SIDEBAR under the legend — and the wall display has no sidebar, so on the television there was no way to turn the plates off at all. The phone was worse: plates default OFF below the mobile breakpoint and the phone never renders that sidebar, so a phone could not turn them ON. Both are fixed by the same row. The sidebar button is left where it is — it drives the same setting, so the two always agree, and removing it would be a change nobody asked for. BOTH OF THE WALL’S MAP MODES ALREADY HONOURED THE SETTING (the picture’s truck overlay and the live map’s driver-label overlay); only the control was missing. VERIFIED IN THE BUILT BUNDLE, not from the diff: on /tv, 3 trucks and 3 plates → tick → 3 trucks and 0 plates, and still 0 after a reload because it is remembered per device, so ticking it on the television changes only the television. PHRASED “HIDE” SO TICKED MEANS OFF, matching its neighbours (Hide terminal markers, Hide stem out, Hide place labels) — a panel where half the switches mean on and half mean off is a panel that gets read wrong. AND IT GREYS OUT WHEN THERE ARE NO TRUCKS TO LABEL. With live drivers off, or on a past date where the Motive feed does not apply, the switch would move and change nothing — which teaches whoever is holding the remote that the panel is broken. It stays visible, greyed, keeps the choice already made, and its hover text says why (“Turn on Show drivers (live) first”, or “only available for today’s date” — never pointing at a switch that is itself greyed). One rule in lib/driver-label.js (driverLabelsToggle) shared by all three surfaces, because the same fact drifting apart across screens is how this app has got things wrong before. 6 new tests. AN ADD, NOT A CHANGE: nothing that worked before behaves differently, so it is one commit and `git revert` is the whole way back. The dispatch Map only — the Route Workbench is not touched.'],
   ['1.65.0', 'DAVIS DELIVERY LABELS \u2014 ITS OWN LABEL, PRINTED BY THE ORDER, SAVED WITH IT. Chad: \u201cThis is supposed to be its own label, separate entity \u2026 just something we can print by the order, but it is not a delivery ticket. It is not a manifest \u2026 just like we can print a delivery ticket.\u201d ONE LETTER PAGE PER PIECE (skids first, then loose): the service date, SHIP TO in big type, SKID 1 of 2 beside the order\u2019s skid / loose / total / weight, one barcode across the page (DD/<NuVizz stop #>/<piece>), the stop # and reference, items and delivery notes, the website QR and \u201cWE CAN DELIVER FOR YOU TOO!\u201d. It opens in the SAME viewer and Print button as the Delivery Ticket, so it prints the way a ticket prints and never opens a new window (which strands the iPad home-screen app). SAVED WITH THE ORDER: every order created from New Order, Bulk add and the Estes manifest push saves its label to its own Firestore collection (order-labels) \u2014 nothing else reads or writes it \u2014 so a label can be printed again any time; ZERO NuVizz calls. WHERE: NEW ORDER is always LIVE now (Chad: \u201ctake the beta out of here and just make it live all the time\u201d); after Create it offers Print label and Delivery ticket, and a Labels & tickets list shows every order created on a day with Label and Ticket beside each. BULK ADD: the SERVICE DATE is on the main page, out of the Pickup drop-down (Chad: \u201cit should be on main page for that upload\u201d), shown as a weekday date and locked while a batch sends; Create and the Estes push offer Print labels for the batch; Pushed to NuVizz has Select all, a tick per row, Print labels for the selected, and a Label button on every row \u2014 a clean run lands there with its batch already ticked. The \u201cA NEW load (one import)\u201d mode is not touched (Chad: \u201cthe labels shouldn\u2019t touch the new load\u201d). One order that cannot be printed (a character a barcode cannot carry, or over 99 pieces) is left out and NAMED; the rest still print. LOAD-SCAN v0.51.0 READS IT: camera and gun, matched on the EXACT stop number, one page = one piece, capped at the manifest count; two pages of one order side by side each book once; a Davis read never changes how a Uline label books; LOADSCAN_DAVIS_LABELS=off turns reading it off with no deploy. Also fixed there: a hand-added or over-the-count piece on a stop whose number has fewer than 7 digits (SHP29379) was silently refused by the server while the phone marked it synced. THE WMS reads it too (its own PR). The Delivery Ticket, the manifest print and the Route Workbench are not changed. ALSO, FOUND BY THIS PR\u2019S CI: the Claude shadow tab\u2019s settings change-log named each row by the save\u2019s millisecond, so two saves in the same millisecond collided and the second change went unlogged; each row now carries a random tail.'],
   ['1.64.0', 'YOUR OWN TRUCK CAPS ON THE CLAUDE SHADOW TAB, OVER THE LEARNED ONES. Chad: “truck capacity should be learned from all the data we have and we should have a ui where we can customize it.” The learned capacity card now has Edit caps. Type a cap in skid spots beside any driver or route and it replaces the learned one for that driver or route; clear the box and the learned cap is back. A driver or route with no history yet (a new hire, a new route) can be given a cap too. The loose-pieces-per-skid-spot setting (10 by default, one number for every truck) is editable, and changing it rebuilds every learned number on the spot: at 5 loose to a spot, 17 skids and 30 bags is 23 spots, not 20. Each row says whether its cap is yours or learned, and who set yours and when; every change, a cleared cap included, is kept in a log. THINGS THAT WILL NOT HAPPEN: a cleared box is never saved as a cap of 0 (a truck that holds nothing) — blank means use the learned cap, and anything that is not a number from 1 to 60 is refused with the reason; two dispatchers saving different drivers at the same moment cannot erase each other, because every cap is its own record; a save that times out is read back before it is called failed, and one that cannot be confirmed says so; only the boxes you actually change are sent, so a Refresh mid-edit cannot overwrite somebody else’s save; turning a phone sideways does not lose what was typed; and if the settings cannot be read, every row says unknown instead of pretending there are no caps. NOT DECIDED YET, and the card says so: when a load’s driver and its route both have a cap, which one it is held to — that is Chad’s call, and nothing plans with these numbers yet. Nothing here touches the board, the Build Panel, the learned engine or any dispatcher setting; it writes only the shadow’s own records, and CLAUDE_SHADOW=off stops it with everything else.'],
   ['1.63.0', 'THE CLAUDE SHADOW LEARNS TRUCK CAPACITY FROM EVERY SEALED DAY, PER DRIVER AND PER ROUTE, LOOSE PIECES INCLUDED. Chad: \u201ctruck capacity should be learned from all the data we have\u201d, learned \u201cfrom the routes they\u2019re assigned to\u201d, and \u201cif they put 17 skids on a box truck, you then can\u2019t put 30 bags of peanuts as well.\u201d The Claude shadow tab now shows what each driver and each route has actually carried out of the dock, read from the sealed history (82 days, back to June 4) at zero NuVizz calls. A truck trip is one route with one driver on one day, deliveries only, and ONLY STOPS THAT RODE THE TRUCK THAT DAY: a delivered stop counts when its delivery stamp is on that day, an unable-to-deliver when its last update is, and a stop still out for delivery when the day sealed does not count at all, because an order nobody closed keeps its route and driver and gets re-filed onto the next day (the same rule the learned engine adopted after the DAWSONVILLE/CRUMPTON replay). Pickups come back on the truck and take no outbound room; an order still scheduled at the end of the day never left. Freight is measured in skid spots, skids plus loose pieces at 10 loose to a spot, so 17 skids and 30 bags is 20 spots. The learned cap is the fuller end of what they have carried, the 95th percentile of their trips, and it needs 20 trips, because below 20 the 95th percentile is simply the single fullest trip and one mis-keyed day would set it; the typical load, the most ever and the fullest trip sit beside it so the number can be checked against a real day. A TRUCK LEARNED TWICE ITS SIZE IS PREVENTED: when the day\u2019s load roster shows more live loads under a route name than the history has trips for it, one trip absorbed two loads and is left out; when the roster cannot say (no roster that day, which is all of June, or a missing stop count), the trip is left out too rather than guessed clean. Every trip and stop left out is counted on screen by reason. The shadow also records each route\u2019s planned stop order and the order it was actually driven, for the planner to learn from. It learns every night at 4:30 AM ET after the history seals, and on Learn now, which learns as many days as fit in about 15 seconds, shows exactly what that run did, and leaves the rest for the next press or the night. Nothing here changes the board, the Build Panel, the learned engine or any setting a dispatcher uses; it writes only the shadow\u2019s own records, nothing plans with these numbers yet, and CLAUDE_SHADOW=off stops it with everything else. Customizing the numbers is the next release.'],
@@ -7392,7 +7393,7 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
 // `drawnAsImage` — the wall display renders its map as a static picture, which can show pins
 // and nothing else. The rows that only mean something to a live vector map are hidden there
 // rather than left inert; see the call site for why a dead toggle is worse than a missing one.
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null, drawnAsImage = false, tvLiveMap = null, setTvLiveMap = null }) {
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null, drawnAsImage = false, tvLiveMap = null, setTvLiveMap = null, showDriverLabels = null, setShowDriverLabels = null }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
   // Clustering is off by default now; with icons memoized, unclustered rendering is far
   // cheaper, so only warn on genuinely huge boards rather than nagging every busy day.
@@ -7438,6 +7439,22 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
       {vehicleDisabled && (
         <div className="text-[10px] text-slate-500 italic -mt-1 mb-1 leading-tight">Live drivers only available for today.</div>
       )}
+      {setShowDriverLabels && (() => {
+        // Trucks stay, plates go. Chad: "one that just turns the labels off so trucks show but
+        // not truck number or drivers name." The rule — including why it greys out when there
+        // are no trucks to label — is driverLabelsToggle in lib/driver-label.js, shared with
+        // the phone's filter tab so the two can never disagree about what the switch means.
+        const t = driverLabelsToggle({ labelsOn: showDriverLabels, driversOn: filters.showVehicleLocation, vehicleDisabled });
+        return (
+          <MapFilterToggle
+            label="Hide driver labels"
+            checked={t.hidden}
+            onChange={(v) => setShowDriverLabels(!v)}
+            disabled={t.disabled}
+            disabledHint={t.hint}
+          />
+        );
+      })()}
       {!drawnAsImage && (
         <MapFilterToggle
           label="Show clustered markers"
@@ -11861,6 +11878,7 @@ function MobileFiltersTab({
   filters, setFilters, counts,
   mapFilters, setMapFilters,
   showRoutes, setShowRoutes, vehicleDisabled, boardDate, legendInventory,
+  showDriverLabels = null, setShowDriverLabels = null,
 }) {
   const setMF = (key) => (v) => setMapFilters((prev) => ({ ...prev, [key]: v }));
   // Collapsed by default, like the desktop panel — this sheet is primarily filters, and a
@@ -11903,6 +11921,25 @@ function MobileFiltersTab({
           {vehicleDisabled && (
             <div className="text-[10px] text-slate-500 italic -mt-1 leading-tight">Live drivers only available for today.</div>
           )}
+          {/* THE PHONE HAD NO WAY TO SHOW PLATES AT ALL. Labels default OFF below the mobile
+              breakpoint (see showDriverLabels in MapScreen) and the only control was a button
+              in the desktop sidebar, which a phone never renders — so this row is the first
+              time a phone can change it, in either direction. */}
+          {setShowDriverLabels && (() => {
+            // Same rule as the desktop and wall-display Filters panel (driverLabelsToggle in
+            // lib/driver-label.js), so the phone and the big screens can never disagree about
+            // what this switch means or when it greys out.
+            const t = driverLabelsToggle({ labelsOn: showDriverLabels, driversOn: mapFilters.showVehicleLocation, vehicleDisabled });
+            return (
+              <MapFilterToggle
+                label="Hide driver labels"
+                checked={t.hidden}
+                onChange={(v) => setShowDriverLabels(!v)}
+                disabled={t.disabled}
+                disabledHint={t.hint}
+              />
+            );
+          })()}
           {/* M5 — Show Routes lives in the mobile filters drawer (P3.7). */}
           <MapFilterToggle
             label="Show routes"
@@ -15162,6 +15199,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 setCollapsed={setToolbarCollapsed}
                 stopCount={filteredStops.length}
                 vehicleDisabled={!dateIsToday}
+                showDriverLabels={showDriverLabels}
+                setShowDriverLabels={setShowDriverLabels}
                 showRoutes={showRoutes}
                 setShowRoutes={setShowRoutes}
                 boardDate={selectedDate}
@@ -15657,6 +15696,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               showRoutes={showRoutes}
               setShowRoutes={setShowRoutes}
               vehicleDisabled={!dateIsToday}
+              showDriverLabels={showDriverLabels}
+              setShowDriverLabels={setShowDriverLabels}
               boardDate={selectedDate}
               legendInventory={legendInventory}
             />
@@ -16046,6 +16087,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 setCollapsed={setToolbarCollapsed}
                 stopCount={filteredStops.length}
                 vehicleDisabled={!dateIsToday}
+                showDriverLabels={showDriverLabels}
+                setShowDriverLabels={setShowDriverLabels}
                 showRoutes={showRoutes}
                 setShowRoutes={setShowRoutes}
                 boardDate={selectedDate}
