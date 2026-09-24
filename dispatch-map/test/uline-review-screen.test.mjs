@@ -44,7 +44,8 @@ test('THE WRITE IS THE BRUSH\'S WRITE — a merge of the shared payload into cus
   assert.match(hook, /await setDoc\(doc\(db, 'customer_notes', row\.key\), fields, \{ merge: true \}\);/);
   // v1.62.2: a "No tractor trailer" answer is noTractorWrite (the vehicle mark AND the profile
   // tick); every other vehicle answer is the plain vehicle mark.
-  assert.match(hook, /fields = ticks \? noTractorWrite\(row\.key, stamp, fv\) : eligibilityPayload\(row\.key, change\.eligibility, stamp\);/);
+  // v1.62.3: and Tractor OK is tractorOkWrite (the vehicle mark AND Uline's stamp off).
+  assert.match(hook, /fields = ticks \? noTractorWrite\(row\.key, stamp, fv\)\s*: unstamps \? tractorOkWrite\(row\.key, stamp, fv\)\s*: eligibilityPayload\(row\.key, change\.eligibility, stamp\);/);
   assert.match(hook, /const w = buildingTypeWrite\(row\.key, change\.buildingType, stamp, fv\);/);
   assert.match(hook, /fields = undoWrite\(row\.key, change, stamp, fv\);/);
   // Firestore's own sentinels, handed to the pure builders — never a hand-built list.
@@ -455,4 +456,34 @@ test('NOTHING NEW TOUCHES NUVIZZ', () => {
   for (const name of ['UlineThreeD', 'UlineBuildingType', 'UlineViewFrame', 'UlineExpandedBar']) {
     assert.doesNotMatch(fnSource(name), /callWrite|setStopAddress|addStopNote|nuvizz-write/, name);
   }
+});
+
+// ── v1.62.3: "Tractor OK" takes Uline's stamp off the customer profile ─────────────────
+// Chad: "same thing if we marked it tractor ok it should remove the uline straight truck advisory
+// stamp on the order profile."
+
+test('EVERY "TRACTOR OK" TAKES ULINE\'S STAMP OFF — the button, T, full screen and Change to… share one path', () => {
+  const hook = fnSource('useUlineReview');
+  assert.match(hook, /const unstamps = nextElig === 'tractor';/);
+  assert.match(hook, /if \(unstamps\) \{ prev\.restriction = \{ \.\.\.restrictionSnapshot\(row\), op: 'uline-off' \}; nextRestr = afterUlineOff\(row\); \}/, 'Undo knows which list write to put back');
+  assert.match(fnSource('UlineDecisionButtons'), /onClick=\{\(\) => go\('tractor'\)\}/);
+  assert.match(fnSource('UlineReviewDesktop'), /u\.decide\(row, k === 'n' \? 'box_only' : 'tractor'\)/, 'T');
+  // The undo snapshot's `op` is bookkeeping, not a row field.
+  assert.match(hook, /if \('restriction' in change\) \{ const \{ op, \.\.\.snap \} = change\.restriction; nextRestr = snap; \}/);
+});
+
+test('A TRACTOR OK ANSWERED BEFORE THE CHANGE CAN BE FINISHED IN ONE TAP — the stamp alone, the vehicle date untouched', () => {
+  const list = fnSource('UlineDecidedList');
+  assert.match(list, /\{r\.decision === 'tractor' && r\.ulineOn !== false && \(/);
+  assert.match(list, /onClick=\{\(\) => u\.apply\(r, \{ ulineOff: true \}\)\}/);
+  assert.match(list, /Take Uline’s stamp off the profile/);
+  const hook = fnSource('useUlineReview');
+  const only = hook.slice(hook.indexOf('} else if (change.ulineOff) {'), hook.indexOf('} else {', hook.indexOf('} else if (change.ulineOff) {')));
+  assert.match(only, /fields = \{ match_key: row\.key, \.\.\.ulineUntickFields\(fv\), last_updated: stamp \};/);
+  assert.doesNotMatch(only, /eligibilityPayload|tractorOkWrite|vehicle_eligibility/);
+});
+
+test('CLEAR IS NOT OFFERED ONCE ULINE\'S STAMP IS OFF — it would say the flag takes over, and there is none', () => {
+  const list = fnSource('UlineDecidedList');
+  assert.match(list, /\{r\.ulineOn !== false && \(\s*<button type="button" onClick=\{\(\) => u\.decide\(r, null\)\}/);
 });

@@ -147,6 +147,9 @@ export function buildUlineRows(days, notesByKey, { positionOf, addressOf, tracto
           // what its Undo must put back exactly (v1.62.2).
           ntt: (Array.isArray(note?.equipment_restrictions) ? note.equipment_restrictions : []).includes(NO_TRACTOR_KEY),
           restrictionLock: restrictionLockOf(note),
+          // Uline's own stamp on the profile — always on at load (it is what put the row here);
+          // Tractor OK takes it off (v1.62.3), and Undo needs to know it was there.
+          ulineOn: hasUlineAdvisory(note),
         };
         const t = typeof tractorOf === 'function' ? tractorOf(mk) : null;
         if (t && (Number(t.count) > 0 || t.last)) row.tractor = { count: Number(t.count) || 0, last: s(t.last) || null };
@@ -247,6 +250,7 @@ export function noTractorWrite(matchKey, stamp, fv) {
 export function restrictionSnapshot(row) {
   return {
     ntt: row?.ntt === true,
+    ulineOn: row?.ulineOn !== false,
     restrictionLock: row?.restrictionLock === true ? true : row?.restrictionLock === false ? false : null,
     baseDecision: row?.baseDecision || 'undecided',
   };
@@ -261,6 +265,70 @@ export const TICKED = Object.freeze({ ntt: true, restrictionLock: true, baseDeci
 export function noTractorUntickFields(was, fv) {
   const out = {};
   if (was?.ntt !== true) out.equipment_restrictions = fv.arrayRemove(NO_TRACTOR_KEY);
+  if (was?.restrictionLock !== true) {
+    out.manual_overrides = { equipment_restrictions: was?.restrictionLock === false ? false : fv.deleteField() };
+  }
+  return out;
+}
+
+// ── "TRACTOR OK" TAKES ULINE'S STAMP OFF THE CUSTOMER PROFILE (v1.62.3) ────────────────
+//
+// Chad, the day the tick shipped: "same thing if we marked it tractor ok it should remove the
+// uline straight truck advisory stamp on the order profile." So Tractor OK now writes what a
+// dispatcher unticking "Uline: straight truck (advisory)" on the stop card writes — the stop
+// card's own toggle (App.jsx toggleRestriction), key out and list locked:
+//
+//   equipment_restrictions − 'uline_straight_truck'
+//   manual_overrides.equipment_restrictions = true        ← the lock
+//
+// THE LOCK IS WHAT MAKES THE REMOVAL STICK, and that is the whole reason v1.60.0 left the list
+// alone: the scanner adds every flag it detects to an UNLOCKED list on every scan
+// (customer-notes-writer.ts), and Uline writes "straight truck" on every order — so an unlocked
+// removal comes back with the next Uline order. The scanner's own dismiss list
+// (auto_scan_dismissed) would also stop it, but nothing in this app writes that field; the lock is
+// the path a person already uses, and the one the stop card shows.
+//
+// WHAT IT DOES NOT CHANGE, read off the code: Tractor OK already let the router send a 53′
+// (vehicle_eligibility 'tractor' drops every trailer blocker, equipmentReqsFrom) and already kept
+// the 9pm alert quiet (dispatcherTrailerBlock returns early on 'tractor'). The stamp coming off
+// changes what the profile and the pin say — and the customer leaves this tab on the next load,
+// because Uline's stamp is what put it here.
+//
+// Only offered where no person's no stands (Tractor OK is an undecided row's answer, and Change
+// to Tractor OK needs canMoveTowardTractor). The one trailer blocker that can still sit ADVISORY on
+// such a list is a legacy no_tractor_trailer the v0.2.0 scanner lifted from Uline's text
+// (restrictionConfidence; measured on four boards: none, trailer-block.js). The lock hardens it —
+// the chip was already lit on the profile — so the row says so: see afterUlineOff.
+
+/** The profile half of a Tractor OK answer: Uline's stamp off, the list locked. */
+export function ulineUntickFields(fv) {
+  return {
+    equipment_restrictions: fv.arrayRemove(ULINE_KEY),
+    manual_overrides: { equipment_restrictions: true },
+  };
+}
+
+/** The whole Tractor OK answer: Tractor-trailer OK AND Uline's stamp off, one write. */
+export function tractorOkWrite(matchKey, stamp, fv) {
+  return { ...eligibilityPayload(matchKey, 'tractor', stamp), ...ulineUntickFields(fv) };
+}
+
+/** The row after the stamp comes off and the list is locked — what ulineDecision reads off the
+ *  written note on the next load. A no_tractor_trailer still on the list becomes a person's once
+ *  the list is locked (restrictionConfidence), so the row lands 'confirmed' under the answer. */
+export function afterUlineOff(row) {
+  return {
+    ulineOn: false,
+    restrictionLock: true,
+    baseDecision: row?.ntt === true ? 'confirmed' : (row?.baseDecision || 'undecided'),
+  };
+}
+
+/** Undo of taking the stamp off: it goes back on only if it was there; the lock goes back to its
+ *  old value, or is DELETED when there was none. */
+export function ulineRestoreFields(was, fv) {
+  const out = {};
+  if (was?.ulineOn !== false) out.equipment_restrictions = fv.arrayUnion(ULINE_KEY);
   if (was?.restrictionLock !== true) {
     out.manual_overrides = { equipment_restrictions: was?.restrictionLock === false ? false : fv.deleteField() };
   }
@@ -342,6 +410,11 @@ export function undoWrite(matchKey, prev, stamp, fv) {
   const fields = {};
   if (prev && 'buildingType' in prev) Object.assign(fields, buildingTypePayload(matchKey, prev.buildingType, stamp));
   if (prev && 'eligibility' in prev) Object.assign(fields, eligibilityPayload(matchKey, prev.eligibility, stamp));
-  if (prev && 'restriction' in prev) Object.assign(fields, { match_key: s(matchKey), ...noTractorUntickFields(prev.restriction, fv), last_updated: stamp });
+  if (prev && 'restriction' in prev) {
+    // One list write per press, so one inverse: the tick comes off (No tractor trailer), or
+    // Uline's stamp goes back on (Tractor OK). Firestore takes one transform per field per write.
+    const inverse = prev.restriction?.op === 'uline-off' ? ulineRestoreFields : noTractorUntickFields;
+    Object.assign(fields, { match_key: s(matchKey), ...inverse(prev.restriction, fv), last_updated: stamp });
+  }
   return fields;
 }
