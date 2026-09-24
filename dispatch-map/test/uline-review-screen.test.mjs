@@ -42,7 +42,7 @@ test('THE WRITE IS THE BRUSH\'S WRITE — a merge of the shared payload into cus
   // ONE write path (v1.61.0) — the vehicle answer, a building-type chip and Undo all go through
   // the same merged setDoc, and every payload comes from a tested builder in uline-review.js.
   assert.match(hook, /await setDoc\(doc\(db, 'customer_notes', row\.key\), fields, \{ merge: true \}\);/);
-  // v1.62.1: a "No tractor trailer" answer is noTractorWrite (the vehicle mark AND the profile
+  // v1.62.2: a "No tractor trailer" answer is noTractorWrite (the vehicle mark AND the profile
   // tick); every other vehicle answer is the plain vehicle mark.
   assert.match(hook, /fields = ticks \? noTractorWrite\(row\.key, stamp, fv\) : eligibilityPayload\(row\.key, change\.eligibility, stamp\);/);
   assert.match(hook, /const w = buildingTypeWrite\(row\.key, change\.buildingType, stamp, fv\);/);
@@ -95,7 +95,7 @@ test('A LOCATION A PERSON ALREADY MARKED "NO" IS NEVER GIVEN A ONE-TAP TRACTOR O
   // had separately marked would overrule them. Confirmed rows get no controls; the stop card is
   // where that person's mark is changed.
   const list = fnSource('UlineDecidedList');
-  // v1.62.1: and a box-only row with a person's no UNDER it (the profile tick an answer here now
+  // v1.62.2: and a box-only row with a person's no UNDER it (the profile tick an answer here now
   // writes) gets no Change to Tractor OK and no Clear either — only the stop card changes it.
   assert.match(list, /const toTractor = canMoveTowardTractor\(r\);/);
   assert.match(list, /const other = r\.decision === 'box_only' \? \(toTractor \? 'tractor' : null\) : r\.decision === 'tractor' \? 'box_only' : null;/);
@@ -413,7 +413,7 @@ test('the Undo line names every half of a Residential press', () => {
   assert.match(fnSource('useUlineReview'), /'No tractor trailer — Box truck only, ticked on the customer profile'/);
 });
 
-// ── v1.62.1: "No tractor trailer" ticks the customer profile ────────────────────────
+// ── v1.62.2: "No tractor trailer" ticks the customer profile ────────────────────────
 // Chad: "if i select no tractor trailer it should then select the no tractor trailer icon on the
 // customer profile and it didn't."
 
@@ -431,7 +431,7 @@ test('EVERY "NO TRACTOR TRAILER" TICKS THE PROFILE — button, N, full screen an
 });
 
 test('A LOCATION DECIDED BEFORE THE FIX CAN BE FINISHED IN ONE TAP — the tick alone, the vehicle stamp untouched', () => {
-  // Box truck only without the chip: answered here before v1.62.1, or painted in Routing.
+  // Box truck only without the chip: answered here before v1.62.2, or painted in Routing.
   const list = fnSource('UlineDecidedList');
   assert.match(list, /\{r\.decision === 'box_only' && !r\.ntt && \(/);
   assert.match(list, /onClick=\{\(\) => u\.apply\(r, \{ tick: true \}\)\}/);

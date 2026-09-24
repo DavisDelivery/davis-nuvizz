@@ -144,7 +144,7 @@ export function buildUlineRows(days, notesByKey, { positionOf, addressOf, tracto
           tractor: null,
           buildingType: normalizeBuildingType(note?.building_type),
           // The profile's "No tractor trailer" chip and the list lock — what a tick changes and
-          // what its Undo must put back exactly (v1.62.1).
+          // what its Undo must put back exactly (v1.62.2).
           ntt: (Array.isArray(note?.equipment_restrictions) ? note.equipment_restrictions : []).includes(NO_TRACTOR_KEY),
           restrictionLock: restrictionLockOf(note),
         };
@@ -194,7 +194,7 @@ export function eligibilityPayload(matchKey, next, stamp) {
   };
 }
 
-// ── "NO TRACTOR TRAILER" TICKS THE CUSTOMER PROFILE TOO (v1.62.1) ──────────────────
+// ── "NO TRACTOR TRAILER" TICKS THE CUSTOMER PROFILE TOO (v1.62.2) ──────────────────
 //
 // Chad, after answering No tractor trailer here and opening the customer: "if i select no tractor
 // trailer it should then select the no tractor trailer icon on the customer profile and it
@@ -326,7 +326,7 @@ export const BOX_ONLY_BUILDING_TYPES = new Set(['residential']);
  * Returns { fields, eligibility, ticks } — `eligibility` is 'box_only' when the press also
  * decided the vehicle question (so the screen moves the row and Undo restores it), and `ticks`
  * says it also ticked the profile's No tractor trailer: Residential's "no tractor" is the same
- * whole answer the No tractor trailer button gives (v1.62.1), not half of it.
+ * whole answer the No tractor trailer button gives (v1.62.2), not half of it.
  */
 export function buildingTypeWrite(matchKey, type, stamp, fv) {
   const bt = normalizeBuildingType(type);

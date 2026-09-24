@@ -63,7 +63,7 @@ const inject = {
 
 const L = liftFromApp({
   targets: [
-    'useLegendInventory', 'MapLegendBody', 'StopShiplifySection', 'BuildingTypePicker',
+    'useLegendInventory', 'MapLegendBody', 'StopShiplifySection', 'StopShiplifyTest', 'BuildingTypePicker',
     'ShiplifyTabContext', 'setShiplifyOn', '__shiplifyOn', '__publishShiplify', '__publishTractorLocs',
     'setLimeAsOfOn', 'LimeAsOfNotice',
     // Read only inside try { } in the stores, so a ReferenceError there would be swallowed rather
@@ -76,6 +76,7 @@ const L = liftFromApp({
     renderToStaticMarkup(React.createElement(l.MapLegendBody, { inventory: null, showAll: true, onShowAll: () => {}, shiplifySwitch: true, limeAsOfSwitch: true }));
     renderToStaticMarkup(React.createElement(l.MapLegendBody, { inventory: SAMPLE_INV, showAll: false, onShowAll: () => {}, tab: 'routing' }));
     renderToStaticMarkup(React.createElement(l.StopShiplifySection, { stop: { matchKey: 'x', addr1: '1 A St', zip: '30000' }, note: { building_type: 'school' } }));
+    renderToStaticMarkup(React.createElement(l.StopShiplifyTest, { stop: { matchKey: 'x', addr1: '1 A St', zip: '30000' }, note: null }));
     renderToStaticMarkup(React.createElement(l.BuildingTypePicker, { draft: { match_key: 'x' }, setD: () => {}, pad: '', tap: undefined, stop: null }));
     renderToStaticMarkup(React.createElement(l.LimeAsOfNotice));
     l.setShiplifyOn('map', true);
@@ -293,4 +294,50 @@ test('LEGEND COUNTS EQUAL WHAT THE MAP DREW — Map and Routing semantics, every
     selectedIds: selected, searchMatchIds: search, shiplify,
   });
   assert.deepEqual(expectFrom(routingInv), routingDrawn);
+});
+
+// ── the Shiplify box reads LAST (Chad, 2026-09-24: "move this to the very bottom of an order profile") ──
+
+const part = (tab, stop, note, p, wrap = null) => renderToStaticMarkup(
+  React.createElement(L.ShiplifyTabContext.Provider, { value: { tab, boardDate: null } },
+    React.createElement(L.StopShiplifySection, { stop, note, part: p, wrap })),
+);
+
+test('the section splits: "place" keeps the building type and no-tractor line, "test" is only the Shiplify box', () => {
+  const place = part('routing', schoolStop, null, 'place');
+  assert.match(place, /data-place-mark="school"/);
+  assert.match(place, /No tractor trailer: School\./);
+  assert.doesNotMatch(place, /data-shiplify-block/, 'the box is no longer up with the address');
+  const box = part('routing', schoolStop, null, 'test');
+  assert.match(box, /data-shiplify-block/);
+  assert.match(box, /Shiplify test, Sep 18, 2026/);
+  assert.doesNotMatch(box, /data-place-mark|No tractor trailer:/, 'the box does not repeat the place lines');
+});
+
+test('the box\'s own section wrapper is drawn only when there is a box — no empty strip with the switch off', () => {
+  assert.match(part('map', elsewhere, null, 'test', 'px-4 py-3 border-t text-sm'), /class="px-4 py-3 border-t text-sm"[\s\S]*Not in the Shiplify test/);
+  L.setShiplifyOn('map', false);
+  assert.equal(part('map', elsewhere, null, 'test', 'px-4 py-3 border-t text-sm'), '', 'nothing at all, not an empty bordered div');
+  L.setShiplifyOn('map', true);
+});
+
+test('StopShiplifyTest is the box in its own bottom section', () => {
+  const html = renderToStaticMarkup(React.createElement(L.ShiplifyTabContext.Provider, { value: { tab: 'map', boardDate: null } },
+    React.createElement(L.StopShiplifyTest, { stop: schoolStop, note: null })));
+  assert.match(html, /^<div class="px-4 py-3 border-t text-sm">[\s\S]*data-shiplify-block/);
+  assert.doesNotMatch(html, /data-place-mark/);
+});
+
+test('in the desktop sidebar and the phone drawer the box comes AFTER Recent deliveries, and is not drawn twice', () => {
+  // Read off the real source: both hosts stack Data → PROs → Customer notes → Recent deliveries,
+  // and the box must follow the last of them. StopDataSections must not ALSO draw it there.
+  const hosts = [...APP_SRC.matchAll(/<StopRecentDeliveries stop=\{stop\} note=\{note\} \/>\s*\n\s*<StopShiplifyTest stop=\{live\} note=\{note\} \/>/g)];
+  assert.equal(hosts.length, 2, 'sidebar and drawer each end with the Shiplify box');
+  const full = [...APP_SRC.matchAll(/<StopDataSections [^>]*onSaveContacts=\{saveContacts\}[^>]*\/>/g)].map((m) => m[0]);
+  assert.equal(full.length, 2);
+  for (const tag of full) assert.match(tag, /shiplifyTestHere=\{false\}/, 'the host that draws it last tells StopDataSections not to');
+  // The stop lookup shows StopDataSections alone, so there the box is the last thing it draws.
+  const body = APP_SRC.slice(APP_SRC.indexOf('function StopDataSections('), APP_SRC.indexOf('function StopShiplifyTest('));
+  assert.ok(body.indexOf('part="test"') > body.indexOf('Updated {fmtClockShort(live.listUpdatedDTTM)}'), 'after the last line of the panel');
+  assert.ok(body.indexOf('part="place"') > 0 && body.indexOf('part="place"') < body.indexOf('part="test"'));
 });

@@ -174,7 +174,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.62.1';
+const APP_VERSION = '1.62.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -228,7 +228,8 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.62.1', 'NO TRACTOR TRAILER ON THE ULINE TAB NOW TICKS IT ON THE CUSTOMER PROFILE. Chad: \u201cwhen working in the address history if i select no tractor trailer it should then select the no tractor trailer icon on the customer profile and it didn\u2019t.\u201d It did not because the tab wrote only the Vehicle mark (Box truck only), and the stop card keeps that and the Equipment restrictions chip as two separate statements on purpose (v0.99.3). EVERY No tractor trailer on the tab \u2014 the button, N, the full-screen bar, Change to\u2026 and Residential \u2014 now writes both, the chip EXACTLY as the stop card\u2019s own toggle writes it: no_tractor_trailer added to Equipment restrictions (a union, so nothing else on the list is touched) and the list locked as a dispatcher\u2019s. The lock is what makes it a person\u2019s mark \u2014 the pin draws a solid \u201cno\u201d instead of Uline\u2019s half-and-half \u2014 and without it the scanner\u2019s legacy migration could swap the tick back to the Uline advisory on the next scan. WHAT IT DOES NOT CHANGE, read off the code: the router already kept a Box truck only customer off a tractor and the 9pm trailer alert already treated one riding a tractor route as a conflict, so no truck and no alert moves \u2014 only what the profile and the pin say. Undo puts back exactly what was there, the lock included. Once the profile is ticked a person\u2019s no stands under the answer, so the decided list no longer offers Change to Tractor OK or Clear on that row: the stop card, where both marks sit, is where it is changed (the v1.60.0 rule for Tractor OK over a person\u2019s no). Customers answered No tractor trailer on the tab BEFORE this fix, or painted Box truck only in Routing, show a \u201cTick No tractor trailer on the profile\u201d button in the decided list \u2014 one tap each, and the Vehicle mark\u2019s own date is left alone. Nothing is sent to NuVizz.'],
+  ['1.62.2', 'NO TRACTOR TRAILER ON THE ULINE TAB NOW TICKS IT ON THE CUSTOMER PROFILE. Chad: \u201cwhen working in the address history if i select no tractor trailer it should then select the no tractor trailer icon on the customer profile and it didn\u2019t.\u201d It did not because the tab wrote only the Vehicle mark (Box truck only), and the stop card keeps that and the Equipment restrictions chip as two separate statements on purpose (v0.99.3). EVERY No tractor trailer on the tab \u2014 the button, N, the full-screen bar, Change to\u2026 and Residential \u2014 now writes both, the chip EXACTLY as the stop card\u2019s own toggle writes it: no_tractor_trailer added to Equipment restrictions (a union, so nothing else on the list is touched) and the list locked as a dispatcher\u2019s. The lock is what makes it a person\u2019s mark \u2014 the pin draws a solid \u201cno\u201d instead of Uline\u2019s half-and-half \u2014 and without it the scanner\u2019s legacy migration could swap the tick back to the Uline advisory on the next scan. WHAT IT DOES NOT CHANGE, read off the code: the router already kept a Box truck only customer off a tractor and the 9pm trailer alert already treated one riding a tractor route as a conflict, so no truck and no alert moves \u2014 only what the profile and the pin say. Undo puts back exactly what was there, the lock included. Once the profile is ticked a person\u2019s no stands under the answer, so the decided list no longer offers Change to Tractor OK or Clear on that row: the stop card, where both marks sit, is where it is changed (the v1.60.0 rule for Tractor OK over a person\u2019s no). Customers answered No tractor trailer on the tab BEFORE this fix, or painted Box truck only in Routing, show a \u201cTick No tractor trailer on the profile\u201d button in the decided list \u2014 one tap each, and the Vehicle mark\u2019s own date is left alone. Nothing is sent to NuVizz.'],
+  ['1.62.1', 'THE SHIPLIFY TEST BOX IS THE LAST THING ON AN ORDER NOW. Chad, 2026-09-24, pointing at the box: \u201cmove this to the very bottom of an order profile.\u201d It sat up with the address, between the tractor line and the order\u2019s own details, where a trial result was the first thing read on every order. It is reference material, so it now comes after Recent deliveries on the desktop sidebar and on the phone drawer, and last on the stop lookup (which has no Recent deliveries section). ONLY THE BOX MOVED. The building type (the school/church/government mark and who set it) and the red no-tractor line stay up with the address, because they are about which truck can go there \u2014 the same thing the tractor line beside them says. With a tab\u2019s Shiplify switch off the box is absent entirely, and its new section draws no empty strip. 4 new tests, one mutation-checked (put the box back above Recent deliveries and it goes red). One commit, so git revert is the whole way back.'],
   ['1.62.0', 'STOPS BY ADDRESS AND BY CITY, OVER ALL DATES UNLESS A DAY OR A RANGE IS SET. Chad: “need to be able to look up stops by address & city as there are times i may want to see every delivery done in that city so will need some date ranges as well as specific dates date ranges should default to all unless set.” WHAT THE SCREEN DID WITH AN ADDRESS BEFORE THIS: the one box sent anything with a space in it to the customer-NAME search, so “1100 Northside Dr”, “Atlanta” and “30318” all searched business names and found nothing. Stop lookup now has two tabs — Order or customer, and Address or city — and the second takes a street address, a city, a state and a ZIP, with All dates / One day / Range under them. ALL IS THE DEFAULT AND IT IS NOT REMEMBERED: every visit starts on it, because a day picked last Tuesday and silently kept would narrow this morning’s search without anybody choosing to. WHY IT NEEDED A NIGHTLY INDEX, measured off the code rather than guessed: the warehouse is stored one day per folder with nothing keyed by place, the endpoint has 26 seconds, and “all dates” as a sweep is every stop ever captured — 57,227 at the last backfill, the thing the year view already refused to do for the same reason. So when a day seals, one SEARCH DIGEST is written for it (history_search, a new post-seal hook): every stop that day reduced to the columns a search needs and a row shows. All dates is then one read per day we hold, about 110 today, instead of one per stop. ONE DOCUMENT PER DAY, NOT PER CITY, ON PURPOSE: a city-keyed index would silently miss every stop whose stored city is not spelled the way the rep typed it, and the postal city and the town a customer names are routinely different. Scanning the day means an ADDRESS search never depends on the city field, and a city search can say “this address also has stops filed under SANDY SPRINGS” instead of a bare zero. THE MATCHING RULES, and which way each errs: the house number is exact and is the house number (110 never finds 1100, and “100 Main” never finds 5100 Main St Ste 100 through its suite — a false match hands a rep the wrong building’s proof of delivery); Drive/Dr, Suite/Ste, Northwest/NW, Building/Bldg and case never decide a match; the city is exact, never a prefix, because Peachtree City and Peachtree Corners are forty miles apart and the totals for one must not absorb the other — the cities that start with what was typed are OFFERED, with counts, never added. A WHOLE ADDRESS PASTED INTO THE FIRST BOX IS TAKEN APART — “1100 Northside Dr, Atlanta, GA 30318” is a street, a city, a state and a ZIP, not a six-word street name that no stop could ever match — conservatively: without commas only a trailing ZIP and a state code that is not also a street word move (NE is north-east and CT is Court, so they never do), and a box the rep filled in by hand always wins over a pasted part. EVERY DAY WE HOLD BUT COULD NOT SEARCH IS NAMED on screen, amber, above the counts, so an index gap can never read as “we never delivered there”. Today and the board ahead come from the live board; a sealed day is never also read from the board, so nothing counts twice. The answer is the counts over EVERY match (stops, delivered, came back, not closed out), month by month, the busiest addresses (tap one to narrow), the cities and the drivers, then the newest 500 stops listed in the customer view’s own day tables with the order opening under its row. BACKFILL: history-search-rebuild builds the digest for days sealed before this shipped — ten a call, oldest first, with a dry run that says what it would build — Firestore only. STOP_SEARCH=off puts every side back at once: the nightly write, the rebuild and the search, which then says it is switched off rather than showing zero. AND A BUG IN THE CUSTOMER VIEW, found building this because the same rows render here: the shared row builder read null as zero (Number(null) is 0), and the scanner writes explicit nulls for an unplanned stop’s sequence, cartons and weight — so every such stop read “stop 0 · 0 pc · 0 plt · 0 lb”, sorted to the TOP of its day, and never reached its volume for a piece count. Null is null now, in both views; a real zero is still a zero. 45 new tests (13 end to end against the Firestore fake, every key rule mutation-checked — broken on purpose and seen to fail), two probes on each layout guard, zero NuVizz calls anywhere in it.'],
   ['1.61.0', 'THE ULINE TAB GETS THE 3D VIEW, BIGGER PICTURES, A FULL SCREEN THAT STAYS IN THE BROWSER, AND BUILDING-TYPE BUTTONS. Chad: \u201cI want my 3d view here as well also when you click full screen i want it to stay within the browser we have a lot of gray space on this page we could be using to make this maps bigger\u201d \u2014 and: \u201cgive me options to label building type like this is residential \u2026 double duty as residentials we don\u2019t allow to be planned on tractors.\u201d 3D: the Map\u2019s photorealistic 3D, aimed at the building at a 67.5\u00b0 tilt with Google\u2019s compass and tilt controls to turn it and look down the side for doors. ONE 3D view for the whole review, re-pointed per location, because Google bills 3D per view created; it stays covered until the new building has landed (the v1.60.3 rule). BIGGER: the tab drops the dashboard width cap. From above and 3D sit side by side, sized so that row ends at the bottom of the window, with the street view the full width under them \u2014 measured on a 1920\u00d71080 screen each picture is 761\u00d7476 (1.60.0\u2019s were 380 tall), on a 2560\u00d71440 screen 1081\u00d7836. Two across at most, on purpose: three across a 1080p screen were no bigger than 1.60.0\u2019s two. The name and Uline\u2019s words sit on the left and the answers and building type on the right, so the pictures start higher up the page; a narrower desktop gets one picture per row rather than slivers. FULL SCREEN FILLS THE BROWSER WINDOW, NOT THE MONITOR: Google\u2019s own full-screen buttons are off; ours keeps the name, the three answers and (on a desktop) the building type across the top, and Esc closes it. The picture is restyled, not rebuilt, so going full screen is no new Google load, and Google is told the new size so the map fills it and stays on the building. On a phone the Above / 3D / Street switch comes along into full screen and the answers sit three across, so the building keeps the screen. BUILDING TYPE on the card: Residential, School, Church, Government, None \u2014 the same field the stop card sets. READ OFF THE CODE: a Residential type on its own keeps nothing off a tractor today \u2014 the router never reads building type, and the board\u2019s no-tractor place flag covers School, Church and Government only. So the Residential chip here does the double duty in ONE write: it labels the place Residential AND saves Box truck only, which the router does obey. The chip and the line under it say so, and Undo puts both back. School, Church and Government save the label only; they already raise the red place flag when one is on a tractor route. Nothing is sent to NuVizz.'],
   ['1.60.3', 'THE ULINE TAB SHOWED ONE CUSTOMER\u2019S BUILDING UNDER ANOTHER CUSTOMER\u2019S NAME. Chad, on F13 at 475 Wilbanks Rd, Alto, the row after BURMAN PRINTING: \u201cThis stop is showing the street view from previous stop because i\u2019m assuming there isn\u2019t one for this stop so if that is case just make it say so.\u201d It was Burman\u2019s front door \u2014 7980 and their sign \u2014 on the one screen whose whole job is judging a building by its picture, with the answer buttons right under it. A dispatcher could have marked F13 box-truck-only off another company\u2019s photo. THE NOTE WAS THERE AND COULD NOT BE SEEN. When Google has no panorama near a pin the pane already set \u201cGoogle has no street view within 80 m of this pin\u201d \u2014 but Google paints the panorama with its own z-indexes, nothing contained them, and the LAST building\u2019s panorama rose above the note meant to cover it. The satellite pane had the same flaw on a row with no pin. THREE GUARDS NOW, because each one alone has already been enough to fail: the picture is HIDDEN unless it is proven to be this building (only the lookup for the current pin can mark it good, and a late answer for the previous one is dropped); Google\u2019s layers are contained so a note can never be painted over again; and \u201cno panorama here\u201d is caught as the rejection it now arrives as, with the stale panorama told to stop drawing as well. Hidden, not unmounted \u2014 the map and the panorama keep their size and come back drawn, and nothing is rebuilt or re-billed. Shipped on its own, ahead of the 3D view and the bigger maps, because it was live.'],
@@ -9372,7 +9373,13 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
 //   stop       the stop, carrying its matchKey
 //   note       its customer_notes document
 //   limeHere   the lime banner above is showing (a tractor-proven location, as painted)
-function StopShiplifySection({ stop, note, limeHere = false }) {
+// `part` splits the section in two (Chad, 2026-09-24, on the Shiplify box: "move this to the very
+// bottom of an order profile"): 'place' is the building type and the no-tractor line, which stay
+// up with the address because they are about the truck; 'test' is the Shiplify trial box, which
+// is reference material and now reads last. Absent renders both, as before. `wrap` is a class for
+// a wrapper drawn only when there is something inside it — a host that puts the box in its own
+// padded section must not leave an empty bordered strip when the switch is off.
+function StopShiplifySection({ stop, note, limeHere = false, part = null, wrap = null }) {
   const shiplifyCtx = React.useContext(ShiplifyTabContext);
   // The record (null with this tab's switch off), the place mark and who set it, and the tractor
   // FACT the no-tractor rule is lifted by — not the lime paint (see useTractorFacts).
@@ -9389,14 +9396,14 @@ function StopShiplifySection({ stop, note, limeHere = false }) {
       {/* WHAT KIND OF PLACE THIS IS, AND WHO SAID SO. The mark on the pin, named, with its
           source — a dispatcher's Building type, or Shiplify's record while this tab's switch is
           on — so nobody has to guess whether a school icon is a fact or a trial. */}
-      {place.mark && (
+      {part !== 'test' && place.mark && (
         <div className="flex items-center gap-1.5 text-xs text-slate-700 -mx-0.5 mb-1" data-place-mark={place.mark}>
           <PlaceMarkIcon kind={place.mark} size={16} />
           <span className="font-semibold">{PLACE_MARK_LABEL[place.mark]}</span>
           <span className="text-slate-500">· {place.source === 'dispatcher' ? 'Set by dispatcher' : 'From Shiplify'}</span>
         </div>
       )}
-      {placeRule?.applies && (
+      {part !== 'test' && placeRule?.applies && (
         <div className="text-xs font-semibold rounded px-2 py-1 -mx-0.5 mb-1"
              style={{ color: '#7f1d1d', background: 'rgba(220,38,38,0.08)', border: '1px solid #fca5a5' }}
              data-place-no-tractor>
@@ -9406,7 +9413,8 @@ function StopShiplifySection({ stop, note, limeHere = false }) {
       {/* THE SHIPLIFY TEST, in words. Hidden entirely while this tab's Shiplify switch is off;
           never blank while it is on — no record says "Not in the Shiplify test", and a trial
           nobody has imported yet says that instead of pretending the stop was checked. */}
-      {shiplifyTab.on && (
+      {part !== 'place' && shiplifyTab.on && (
+        <div className={wrap || undefined}>
         <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 -mx-0.5 mb-1 text-xs" data-shiplify-block>
           <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wide mb-0.5">{SHIPLIFY_TEST_LABEL}</div>
           {shiplifyTab.data.status === 'loading' || shiplifyTab.data.status === 'idle'
@@ -9429,12 +9437,13 @@ function StopShiplifySection({ stop, note, limeHere = false }) {
                   )}
           {limeNoDock && <div className="mt-1 text-slate-500">{limeNoDock}</div>}
         </div>
+        </div>
       )}
     </>
   );
 }
 
-function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, onSaveContacts, savingNote = false, noteSaveError = null }) {
+function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, onSaveContacts, savingNote = false, noteSaveError = null, shiplifyTestHere = true }) {
   // `stop` is the already-merged "live" stop the PARENT owns (see useLiveStop). The parent
   // holds the refresh overlay so the header status badge updates too — not just this body.
   // `onRefreshed` bubbles a fresh /stop/info pull (Refresh button, timeline open, or the
@@ -9504,7 +9513,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
           </span>
         </div>
       )}
-      <StopShiplifySection stop={stop.matchKey ? stop : { ...stop, matchKey: panelMatchKey }} note={note} limeHere={!!tractorInfo} />
+      <StopShiplifySection part="place" stop={stop.matchKey ? stop : { ...stop, matchKey: panelMatchKey }} note={note} limeHere={!!tractorInfo} />
       <div>
         {/* Two NuVizz records carry this order number (the Estes-0828068215 case). The board is
             showing the LIVE one, but by-number lookups (portal search included) can answer with
@@ -9671,7 +9680,25 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
       {live.listUpdatedDTTM && fmtClockShort(live.listUpdatedDTTM) && (
         <div className="pt-2 text-[11px] text-slate-400">Updated {fmtClockShort(live.listUpdatedDTTM)}</div>
       )}
+      {/* THE SHIPLIFY BOX, LAST. Here only where this panel IS the whole profile (the stop lookup);
+          the sidebar and the phone drawer put it after Recent deliveries instead. */}
+      {shiplifyTestHere && (
+        <StopShiplifySection part="test" wrap="pt-2" stop={stop.matchKey ? stop : { ...stop, matchKey: panelMatchKey }} note={note} limeHere={!!tractorInfo} />
+      )}
     </div>
+  );
+}
+
+// The Shiplify box as the LAST section of an order profile, for the hosts that stack more
+// sections under StopDataSections (desktop sidebar, phone drawer). Derives the same match key
+// and tractor fact StopDataSections does, from the same shared (fetched-once) sources.
+function StopShiplifyTest({ stop, note }) {
+  const shiplifyCtx = React.useContext(ShiplifyTabContext);
+  const tractorLocs = useTractorLocations(shiplifyCtx.boardDate);
+  const matchKey = stop.matchKey || normalizeMatchKey(stop.businessName || '', stop.addr1 || '', stop.city || '', stop.zip || '');
+  return (
+    <StopShiplifySection part="test" wrap="px-4 py-3 border-t text-sm"
+      stop={stop.matchKey ? stop : { ...stop, matchKey }} note={note} limeHere={!!tractorLocs.get(matchKey)} />
   );
 }
 
@@ -10420,10 +10447,11 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
       </div>
 
       <div className="overflow-y-auto flex-1">
-        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} shiplifyTestHere={false} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} stop={stop} />
         <StopRecentDeliveries stop={stop} note={note} />
+        <StopShiplifyTest stop={live} note={note} />
       </div>
 
       {editing && (
@@ -12125,10 +12153,11 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
           <StatusBadge kind={classifyStopStatus(live)} />
           <DnsBadge note={note} showDrivers />
         </div>
-        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} shiplifyTestHere={false} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} stop={stop} />
         <StopRecentDeliveries stop={stop} note={note} />
+        <StopShiplifyTest stop={live} note={note} />
       </div>
       {/* Sticky save bar — visible while editing */}
       {editing && (
@@ -33381,7 +33410,7 @@ function useUlineReview(nonce) {
    * notes and every other restriction are never touched — and the row moves only once Firestore
    * has ACKNOWLEDGED it.
    *
-   * EVERY "NO TRACTOR TRAILER" TICKS THE PROFILE (v1.62.1) — the button, N, the full-screen bar,
+   * EVERY "NO TRACTOR TRAILER" TICKS THE PROFILE (v1.62.2) — the button, N, the full-screen bar,
    * Change to…, Residential — because they all arrive here. Chad: "if i select no tractor trailer
    * it should then select the no tractor trailer icon on the customer profile and it didn't."
    */
@@ -33409,7 +33438,7 @@ function useUlineReview(nonce) {
       what = w.eligibility ? `${label} — and No tractor trailer (Box truck only, ticked on the customer profile)` : `${label} (building type)`;
     } else if (change.tick) {
       // The profile chip ALONE, for a location already Box truck only — decided here before
-      // v1.62.1, or painted in Routing. The vehicle mark is not rewritten, so its stamp still
+      // v1.62.2, or painted in Routing. The vehicle mark is not rewritten, so its stamp still
       // says when that decision was made (v0.99.3: a stamp that tracks other edits is worse
       // than none).
       fields = { match_key: row.key, ...noTractorTickFields(fv), last_updated: stamp };
@@ -33931,7 +33960,7 @@ function UlineDecidedList({ u, stacked = false }) {
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <span title={d?.hint} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white" style={{ background: d?.color }}>{d?.label}</span>
-                  {/* Box truck only WITHOUT the profile chip: decided here before v1.62.1, or painted
+                  {/* Box truck only WITHOUT the profile chip: decided here before v1.62.2, or painted
                       in Routing. One tap finishes it the way the answer now does. */}
                   {r.decision === 'box_only' && !r.ntt && (
                     <button type="button" onClick={() => u.apply(r, { tick: true })} disabled={u.busyKey === r.key}

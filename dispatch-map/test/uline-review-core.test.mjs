@@ -228,7 +228,7 @@ test('RESIDENTIAL SAVES THE TYPE AND BOX TRUCK ONLY, IN ONE WRITE', () => {
   assert.equal(w.fields.vehicle_eligibility, 'box_only');
   assert.equal(w.fields.vehicle_eligibility_by, 'dispatcher');
   assert.equal(w.fields.building_type_by, 'dispatcher');
-  // v1.62.1: Residential's "no tractor" is the WHOLE answer — the profile chip too.
+  // v1.62.2: Residential's "no tractor" is the WHOLE answer — the profile chip too.
   assert.equal(w.ticks, true);
   assert.deepEqual(w.fields.equipment_restrictions, { op: 'arrayUnion', v: [NO_TRACTOR_KEY] });
   assert.deepEqual(w.fields.manual_overrides, { equipment_restrictions: true });
@@ -263,7 +263,7 @@ test('UNDO PUTS BACK EXACTLY WHAT THE PRESS CHANGED — both fields after a Resi
   assert.ok(!('building_type' in eligOnly));
 });
 
-// ── v1.62.1: "No tractor trailer" ticks the customer profile ─────────────────────────────
+// ── v1.62.2: "No tractor trailer" ticks the customer profile ─────────────────────────────
 // Chad: "if i select no tractor trailer it should then select the no tractor trailer icon on the
 // customer profile and it didn't."
 
