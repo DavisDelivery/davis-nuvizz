@@ -171,7 +171,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.60.1';
+const APP_VERSION = '1.60.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -225,7 +225,8 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.60.1', 'THE ULINE TAB SHOWED ONE CUSTOMER\u2019S BUILDING UNDER ANOTHER CUSTOMER\u2019S NAME. Chad, on F13 at 475 Wilbanks Rd, Alto, the row after BURMAN PRINTING: \u201cThis stop is showing the street view from previous stop because i\u2019m assuming there isn\u2019t one for this stop so if that is case just make it say so.\u201d It was Burman\u2019s front door \u2014 7980 and their sign \u2014 on the one screen whose whole job is judging a building by its picture, with the answer buttons right under it. A dispatcher could have marked F13 box-truck-only off another company\u2019s photo. THE NOTE WAS THERE AND COULD NOT BE SEEN. When Google has no panorama near a pin the pane already set \u201cGoogle has no street view within 80 m of this pin\u201d \u2014 but Google paints the panorama with its own z-indexes, nothing contained them, and the LAST building\u2019s panorama rose above the note meant to cover it. The satellite pane had the same flaw on a row with no pin. THREE GUARDS NOW, because each one alone has already been enough to fail: the picture is HIDDEN unless it is proven to be this building (only the lookup for the current pin can mark it good, and a late answer for the previous one is dropped); Google\u2019s layers are contained so a note can never be painted over again; and \u201cno panorama here\u201d is caught as the rejection it now arrives as, with the stale panorama told to stop drawing as well. Hidden, not unmounted \u2014 the map and the panorama keep their size and come back drawn, and nothing is rebuilt or re-billed. Shipped on its own, ahead of the 3D view and the bigger maps, because it was live.'],
+  ['1.60.2', 'THE ULINE TAB SHOWED ONE CUSTOMER\u2019S BUILDING UNDER ANOTHER CUSTOMER\u2019S NAME. Chad, on F13 at 475 Wilbanks Rd, Alto, the row after BURMAN PRINTING: \u201cThis stop is showing the street view from previous stop because i\u2019m assuming there isn\u2019t one for this stop so if that is case just make it say so.\u201d It was Burman\u2019s front door \u2014 7980 and their sign \u2014 on the one screen whose whole job is judging a building by its picture, with the answer buttons right under it. A dispatcher could have marked F13 box-truck-only off another company\u2019s photo. THE NOTE WAS THERE AND COULD NOT BE SEEN. When Google has no panorama near a pin the pane already set \u201cGoogle has no street view within 80 m of this pin\u201d \u2014 but Google paints the panorama with its own z-indexes, nothing contained them, and the LAST building\u2019s panorama rose above the note meant to cover it. The satellite pane had the same flaw on a row with no pin. THREE GUARDS NOW, because each one alone has already been enough to fail: the picture is HIDDEN unless it is proven to be this building (only the lookup for the current pin can mark it good, and a late answer for the previous one is dropped); Google\u2019s layers are contained so a note can never be painted over again; and \u201cno panorama here\u201d is caught as the rejection it now arrives as, with the stale panorama told to stop drawing as well. Hidden, not unmounted \u2014 the map and the panorama keep their size and come back drawn, and nothing is rebuilt or re-billed. Shipped on its own, ahead of the 3D view and the bigger maps, because it was live.'],
+  ['1.60.1', 'THE ENGINE SCREEN\u2019S ROUTE MAP IS BACK AFTER A TAB SWITCH. Chad, 2026-09-24, on Engine \u2192 Sequencing with BEN 2 selected: \u201cMap is missing on bottom right hand corner.\u201d The panel showed its own light-grey background and no map, and no \u2018map failed to load\u2019 line \u2014 because nothing had failed. REPRODUCED BEFORE IT WAS FIXED, in a real browser, not reasoned about: on first entry the route map is in the panel; after Sequencing \u2192 Assignment \u2192 Sequencing the panel is empty and BEN 2\u2019s two lines and four pins are drawn into a map nobody can see. THE CAUSE: the Sequencing view is mounted only while its tab is showing, so that round-trip throws the map\u2019s <div> away and mounts a new one. The map was created once per Engine screen (it watched only `google`, and refused to run while a map already existed), so it stayed bound to the <div> that had left the page and every route after that was drawn into it. It has been this way since the Engine tab was built (v0.47.0) \u2014 no recent merge caused it. THE FIX: the map now follows its <div> \u2014 a new <div> gets a map of its own, and a <div> leaving takes its map, pins and lines with it, whatever made it leave. THE PRICE, SAID OUT LOUD: coming back to Sequencing now costs one more Google map load (billed per map created); a round-trip goes from one load to two, because the Assignment view already costs one each time it opens. A NEW BROWSER GUARD in CI (verify:engine-map) answers Google\u2019s script with a stand-in that records which element every map is created in and which map every pin and line is drawn on, then does the round-trip. It FAILS on the code before this change and passes on this one. Engine screen only: the Map, the Build Panel and the Route Workbench are not touched. One commit, so git revert is the whole way back.'],
   ['1.60.0', 'ULINE SAYS STRAIGHT TRUCK ONLY AT A CUSTOMER — NOW YOU CAN LOOK AT THE BUILDING AND DECIDE WHETHER IT IS RIGHT. Chad: \u201cin our address history we built i want to add a tab inside it of the uline advisory straight truck only tab where the ui shows close up views of the building for each flag and we can quickly decide if we are going to make it no tractor trailer or not.\u201d Address history has a fourth tab, Uline straight truck. WHY IT MATTERS IN TRUCKS, READ OFF THE CODE RATHER THAN ASSUMED. The flag is written when Uline\u2019s own order instructions say straight truck \u2014 another company\u2019s free text about its own shipment. The map calls it advisory and draws it half-and-half; the 9pm trailer alert ignores it. THE AUTO-BUILDER DOES NOT: routing-build-background lists uline_straight_truck in TRAILER_BLOCKERS beside no_tractor_trailer, so every Uline-flagged customer is held off a 53\u2032 today whether or not one would fit. A wrong flag is a box-truck slot spent every day that customer has freight; a right one nobody has confirmed is a \u201cno\u201d the map still draws as a maybe. WHAT THE TAB SHOWS, one location at a time: the building from above (satellite, zoom 19, with a scale bar, so \u201cis that lot 75 feet deep\u201d is a reading and not an impression) and from the street (Street View, turned to FACE the building \u2014 it opens facing the way the camera car drove, which on a frontage road is a picture of the road); what Uline actually wrote, quoted; whether one of OUR tractors has delivered there before and when; the building type when a dispatcher has set one (a school or church says so); and every stop on the board the answer covers. THE ANSWER IS A FIELD THAT ALREADY EXISTS \u2014 customer_notes.vehicle_eligibility, the same mark the Routing brush paints and the stop card\u2019s vehicle picker sets. No tractor trailer saves Box truck only: red on the map, forced onto a box by the router, and the trailer-conflict alert starts watching it. Tractor OK saves Tractor-trailer OK: the router stops holding it to a box because of Uline\u2019s note. Skip saves nothing. It is saved to the CUSTOMER, so it holds for every future order there, and a location decided in Routing or on a stop card does not come back here asking the same question. A third door into the same room, not a new room \u2014 three readers (the map, the router, the alert) already agree on those two values. THE CASE THAT MUST NOT GET A ONE-TAP ANSWER: Tractor OK drops EVERY trailer restriction on a customer, not only Uline\u2019s. A location where a person has already said no \u2014 a ticked restriction, a locked restriction list, a Davis-typed Address 2 \u201cNO TRACTOR TRL\u201d \u2014 is listed as decided, with no buttons, and the stop card is where that person\u2019s mark is changed. Read with confirmedBlockerKeys, the function the map paints by, so the tab and the pin cannot disagree about whether somebody has spoken. TWO VIEWS. Desktop: the list beside the building, both pictures side by side, keys N / T / S under the hand, and a keystroke inside a field or with a modifier does nothing. Phone: one building per screen, the satellite by default and Street View one tap away (a panorama nobody opened is a billed load), and three thumb-height answers. Undo after every answer, restoring exactly what was there before. A row moves only once Firestore has acknowledged the save. ONE map and ONE panorama for the whole review, re-pointed per location, never one per row. BOARD-SCOPED, AND THAT IS A FACT ABOUT THE DATA: a customer note has no address or pin of its own, only overrides \u2014 the street and the coordinates come from the stop. So the tab covers every Uline-flagged customer on today\u2019s board and the next two business days, the same horizon the problem-address queue works; a flagged customer with no freight on the board has no building to show until it comes up. Zero NuVizz calls, proven by running the endpoint through a Firestore fake that throws on any other network call. Tractor history is read for the flagged locations only, never the whole collection.'],
   ['1.59.2', 'THE 8:30 MORNING PLAN NOW KEEPS THE ORDER OF EVERY ROUTE. Chad: \u201cthe att_plan should be keeping the order the routes are in as well \u2026 it\u2019s hard to grade the learned routing engine against the routes if it\u2019s not learning and looking at the order of the routes.\u201d The 8:30 freeze (att_plan) recorded which driver, load and route every planned stop was on, and dropped WHERE on the route it sat, so the morning plan could say which truck and never in what order. Each frozen stop now also keeps its position on the route (NuVizz\u2019s ShipTo Display Seq, the delivery order the board already shows), its planned arrival, and the load\u2019s own id where the scan has it, which keeps two same-named loads apart. Starts with the next 8:30 freeze; mornings already frozen stay as they were. Nothing is removed or renamed and the attempts list and the driver scorecard read exactly what they read before; the one visible difference is that the Stops lookup can now show a stop\u2019s route position from the morning plan when that plan is the only copy of the stop it finds. A stop with no position records none rather than 0. Zero NuVizz calls: the freeze still reads only the board it already reads.'],
   ['1.59.1', 'THE CLAUDE SHADOW GUARD, REBUILT AFTER THREE ADVERSARIAL REVIEWS \u2014 AND A RUNTIME LOCK UNDER IT. 1.59.0 merged itself the moment CI went green, before the review of it had finished (auto-merge takes every green claude/* branch), so this release is that review landing. Nothing plans yet and nothing a dispatcher sees changes except the Claude shadow tab\u2019s test-call card. THE GUARD IS NOW AN ALLOWLIST. The 1.59.0 guard looked for bad names, and the review found eighteen ways to spell the same thing differently: a same-origin call to nuvizz-manual-scan, raw Firestore credentials, a tab inside a path that the URL parser turns into \u2018..\u2019, an import alias, a re-export through a file it did not read. Now every module the shadow reaches must be shadow code or on a short reviewed list with its reason, every binding imported from a shared module is named, ONE file may touch the network (the Messages API only) and ONE file may write (every write wrapped in the claude_shadow_ prefix check, exactly). A SECOND REVIEW FOUND ELEVEN MORE (fetch reached as global[\u2018fe\u2019+\u2018tch\u2019], an indirect eval, createRequire, a checked path rewritten after the check), and the lesson was that reading code cannot catch every spelling. SO A RUNTIME LOCK SITS UNDER THE GUARD: every shadow function wraps fetch as it loads and again first thing in its handler, and refuses any host but Anthropic\u2019s and Firestore\u2019s and any Firestore write outside claude_shadow_*, judged on the request as it will actually be sent. The lock is pinned by hash, so it changes only with somebody re-reading it. Every bypass from both reviews is a failing test (36 tests in the guard\u2019s file). ALSO: the gateway refuses control characters in a path; the test call\u2019s confirm dialog quotes a ceiling computed from the code (about 4.9\u00a2, usually well under 1\u00a2) instead of promising under 1\u00a2; the card tells an answered refusal from an API error from a timeout that may still be billed; the tab says it WILL plan rather than that it plans; and the tablet layout guard now measures it. The Build Panel and the Route Workbench are not touched.'],
@@ -28789,7 +28790,20 @@ function EngineScreen() {
   const movedSet = useMemo(() => new Set(movedStops.map((s) => s.pro)), [movedStops]);
 
   // ── map ──
-  const mapDiv = useRef(null);
+  // THE MAP FOLLOWS ITS <div>, NOT THE SCREEN. Chad, 2026-09-24, on Engine → Sequencing with BEN 2
+  // selected: "Map is missing on bottom right hand corner." The Sequencing view is mounted only
+  // while its tab is showing, so Sequencing → Assignment → Sequencing throws the map's <div> away
+  // and mounts a new one. The map used to be created once per EngineScreen (deps [google], and it
+  // bailed while mapRef already held one), so it stayed bound to the <div> that had left the page:
+  // every route after that was drawn into a map nobody could see, and the new panel showed its own
+  // grey background. Reproduced in a real browser before this change (scripts/verify-engine-map).
+  //
+  // A callback ref makes the element state: a new <div> creates a map of its own, and a <div>
+  // leaving drops its map with it — whatever made it leave, not just this one tab switch.
+  // THE PRICE, SAID OUT LOUD: returning to Sequencing is now one more Google map load (the
+  // Dynamic Maps SKU bills per map created). The Assignment view already costs one each time it
+  // is opened, so a round-trip goes from one load to two.
+  const [mapEl, setMapEl] = useState(null);
   const mapRef = useRef(null);
   const [mapReady, setMapReady] = useState(0);
   const markersRef = useRef([]);
@@ -28797,14 +28811,21 @@ function EngineScreen() {
   const lastBoundsRef = useRef(null); // last fitted bounds, so a resize can refit
 
   useEffect(() => {
-    if (!google || !mapDiv.current || mapRef.current) return;
-    mapRef.current = new google.maps.Map(mapDiv.current, {
+    if (!google || !mapEl) return undefined;
+    const map = new google.maps.Map(mapEl, {
       center: ROUTING_DEPOT, zoom: 9, mapTypeControl: false, streetViewControl: false, fullscreenControl: false,
       gestureHandling: 'greedy',
       ...(MAP_ID ? { mapId: MAP_ID } : {}),
     });
+    mapRef.current = map;
     setMapReady((n) => n + 1);
-  }, [google]);
+    return () => {
+      markersRef.current.forEach((m) => m.setMap(null));
+      linesRef.current.forEach((l) => l.setMap(null));
+      markersRef.current = []; linesRef.current = [];
+      if (mapRef.current === map) mapRef.current = null;
+    };
+  }, [google, mapEl]);
 
   useEffect(() => {
     if (!google || !mapRef.current) return;
@@ -28874,8 +28895,8 @@ function EngineScreen() {
   // non-zero size (and on every later resize), which is what stops the tiles
   // from staying blank.
   useEffect(() => {
-    if (!google || !mapDiv.current) return undefined;
-    const el = mapDiv.current;
+    if (!google || !mapEl) return undefined;
+    const el = mapEl;
     const kick = () => {
       if (!mapRef.current || !el.offsetWidth || !el.offsetHeight) return;
       google.maps.event.trigger(mapRef.current, 'resize');
@@ -28885,7 +28906,7 @@ function EngineScreen() {
     const ro = new ResizeObserver(kick);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [google, mapReady]);
+  }, [google, mapEl, mapReady]);
 
   const mapModeBtn = (id, label) => (
     <button
@@ -29042,7 +29063,7 @@ function EngineScreen() {
               </div>
               <div className="flex gap-1">{mapModeBtn('dispatch', 'Dispatch')}{mapModeBtn('engine', 'Engine')}{mapModeBtn('diff', 'Diff')}</div>
             </div>
-            <div ref={mapDiv} className="w-full h-[320px] bg-slate-100" />
+            <div ref={setMapEl} className="w-full h-[320px] bg-slate-100" />
             {mapsError && <div className="text-[11px] text-red-600 px-3 py-1">⚠ map failed to load: {String(mapsError)}</div>}
             {mapMode === 'diff' && selected && (
               <div className="px-3 py-2 border-t max-h-[130px] overflow-y-auto">

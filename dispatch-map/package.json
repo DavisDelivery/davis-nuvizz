@@ -22,6 +22,7 @@
     "verify:routing-topbar": "node scripts/verify-routing-topbar.mjs dist",
     "verify:shiplify": "node scripts/verify-shiplify.mjs dist",
     "verify:tv-map": "node scripts/verify-tv-map.mjs dist",
+    "verify:engine-map": "node scripts/verify-engine-map.mjs dist",
     "perf:routing": "node scripts/perf-routing.mjs dist",
     "verify:effect-deps": "node scripts/check-effect-deps.mjs",
     "rollback": "node scripts/rollback.mjs"
