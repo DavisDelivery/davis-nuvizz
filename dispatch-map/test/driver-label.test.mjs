@@ -91,3 +91,48 @@ test('a one-word name does not grow a stray initial, and a missing truck number 
 test('a three-part name takes the LAST part as the initial, not the middle one', () => {
   assert.equal(driverPlateName({ driverName: 'Jean de Vries' }), 'Jean V.');
 });
+
+// ── the "Hide driver labels" row ────────────────────────────────────────────
+// Chad: "I want a live drivers toggle like there is but one that just turns the labels off so
+// trucks show but not truck number or drivers name."
+import { driverLabelsToggle } from '../src/lib/driver-label.js';
+
+test('TICKED MEANS THE PLATES ARE OFF — same convention as Hide place labels beside it', () => {
+  assert.equal(driverLabelsToggle({ labelsOn: true, driversOn: true }).hidden, false);
+  assert.equal(driverLabelsToggle({ labelsOn: false, driversOn: true }).hidden, true);
+});
+
+test('with trucks on the map the switch is live and says nothing', () => {
+  const t = driverLabelsToggle({ labelsOn: true, driversOn: true, vehicleDisabled: false });
+  assert.equal(t.disabled, false);
+  assert.equal(t.hint, null);
+});
+
+test('NO TRUCKS, NO SWITCH THAT PRETENDS TO WORK — greyed, and it says why', () => {
+  // A switch that moves and changes nothing teaches the person holding the remote that the
+  // panel is broken; they then stop trusting the switches that do work.
+  const t = driverLabelsToggle({ labelsOn: true, driversOn: false, vehicleDisabled: false });
+  assert.equal(t.disabled, true);
+  assert.match(t.hint, /Show drivers \(live\)/, 'the hint names the switch that fixes it');
+});
+
+test('on a past date the reason given is the date, not the drivers switch', () => {
+  // Live drivers cannot be turned on for yesterday, so pointing at that switch would send
+  // somebody to a control that is itself greyed out.
+  const t = driverLabelsToggle({ labelsOn: true, driversOn: true, vehicleDisabled: true });
+  assert.equal(t.disabled, true);
+  assert.match(t.hint, /today/);
+  assert.doesNotMatch(t.hint, /Show drivers \(live\) first/);
+});
+
+test('the stored preference survives being greyed out — it is shown, not reset', () => {
+  // Turning drivers off must not flip the labels choice the dispatcher made.
+  assert.equal(driverLabelsToggle({ labelsOn: false, driversOn: false }).hidden, true);
+  assert.equal(driverLabelsToggle({ labelsOn: true, driversOn: false }).hidden, false);
+});
+
+test('called with nothing, it is a greyed row rather than a crash', () => {
+  const t = driverLabelsToggle();
+  assert.equal(t.disabled, true);
+  assert.equal(typeof t.hidden, 'boolean');
+});

@@ -89,3 +89,33 @@ export function driverLabelLines(d = {}, nowMs = Date.now()) {
   }
   return { line1, line2, stale: driverFixStale(d.locatedAt, nowMs) };
 }
+
+/**
+ * PURE. THE "HIDE DRIVER LABELS" ROW — one rule for every surface that offers it.
+ *
+ * Chad: "I want a live drivers toggle like there is but one that just turns the labels off so
+ * trucks show but not truck number or drivers name."
+ *
+ * WHY THIS IS A FUNCTION AND NOT THREE INLINE CONDITIONS: the row sits on three separate
+ * surfaces — the desktop Map's Filters dropdown, the wall display's Filters card, and the
+ * phone's filter tab — and "two facts, one row" drifting apart across surfaces is the shape
+ * this app has got wrong before. One function, three callers, and a test.
+ *
+ * PHRASED AS "HIDE", so ticked means the plates are OFF — the same convention as its
+ * neighbours in the panel ("Hide terminal markers", "Hide stem out", "Hide place labels"),
+ * because a panel where half the switches mean "on" and half mean "off" is a panel read wrong.
+ *
+ * DISABLED WHEN THERE ARE NO TRUCKS TO LABEL. With live drivers off (or on a past date, where
+ * the Motive feed does not apply) this switch would move and change nothing — the worst
+ * control on any screen, because it teaches the person holding the remote that the panel is
+ * broken, and they stop trusting the switches that do work. It stays visible, greyed, and
+ * says why, rather than vanishing and leaving somebody hunting for it.
+ *
+ * @returns {{hidden: boolean, disabled: boolean, hint: string|null}}
+ */
+export function driverLabelsToggle({ labelsOn, driversOn, vehicleDisabled } = {}) {
+  let hint = null;
+  if (vehicleDisabled) hint = "Live drivers only available for today's date.";
+  else if (!driversOn) hint = 'Turn on Show drivers (live) first — there are no trucks to label.';
+  return { hidden: !labelsOn, disabled: hint !== null, hint };
+}
