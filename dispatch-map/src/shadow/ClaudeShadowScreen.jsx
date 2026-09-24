@@ -72,7 +72,7 @@ function useShadowStatus() {
       else if (j.calls === 1 && j.result) {
         const unsaved = !j.recorded?.last || !j.recorded?.log || j.recorded?.error;
         setFresh({ ...j.result, unsaved: !j.recorded?.last });
-        if (unsaved) setProbeMsg(`The call was made, but its record was not fully written (${j.recorded?.error || [!j.recorded?.last && 'last-call document', !j.recorded?.log && 'call log'].filter(Boolean).join(' and ')}).`);
+        if (unsaved) setProbeMsg(`The call was made, but its record was not fully written (${j.recorded?.error || [!j.recorded?.last && 'last-call record', !j.recorded?.log && 'call log'].filter(Boolean).join(' and ')}).`);
       } else setProbeMsg(j.error ? `No call was made: ${j.error}` : `No call was made (HTTP ${r.status}).`);
       await load();
     } catch (e) {
@@ -123,13 +123,20 @@ function SwitchCard({ s }) {
 // What the API did with the request, in the three ways it can go. A timeout is not a "no": the
 // request left and may be billed, and the card says exactly that.
 function answerLine(p) {
+  const why = p.error ? ` — ${p.error}` : '';
   if (p.ok) return <Verdict good>yes (HTTP {p.httpStatus})</Verdict>;
-  if (p.answered) return <Verdict good={false}>refused, HTTP {p.httpStatus}{p.error ? ` — ${p.error}` : ''}</Verdict>;
-  return <Verdict good={false}>no answer — {p.error || 'network error'}; the request was sent and may still be billed</Verdict>;
+  if (p.answered && p.httpStatus >= 200 && p.httpStatus < 300) return <Verdict good={false}>answered HTTP {p.httpStatus}, but the body could not be read{why} — it was likely billed; cost unknown</Verdict>;
+  if (p.answered && p.httpStatus >= 500) return <Verdict good={false}>API error, HTTP {p.httpStatus}{why}</Verdict>;
+  if (p.answered) return <Verdict good={false}>refused, HTTP {p.httpStatus}{why}</Verdict>;
+  if (p.timedOut) return <Verdict good={false}>no answer in time{why} — the request was sent and may still be billed</Verdict>;
+  return <Verdict good={false}>no answer{why} — whether it reached the API is not known</Verdict>;
 }
 
 function ProbeCard({ s, fresh, probing, probeMsg, onProbe }) {
-  const p = fresh || s.lastProbe;
+  // This tab's own call until the server holds one at least as new — then the stored one, so a
+  // Refresh never keeps showing an older verdict than the record.
+  const stored = s.lastProbe;
+  const p = fresh && !(stored && String(stored.at) >= String(fresh.at)) ? fresh : (stored || fresh);
   return (
     <section className="rounded-xl border bg-white p-4">
       <h2 className="text-sm font-semibold text-slate-800 inline-flex items-center gap-2"><FlaskConical size={14} /> Test call</h2>

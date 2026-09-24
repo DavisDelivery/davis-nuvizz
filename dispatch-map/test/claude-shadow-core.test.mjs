@@ -298,3 +298,79 @@ test('a model the key cannot reach is RECORDED as a failure (502), not reported 
     } finally { fake.restore(); }
   });
 });
+
+// ── the runtime egress lock ──────────────────────────────────────────────────
+
+import { judgeRequest, lockEgress, egressLocked, EgressRefused } from '../netlify/functions/lib/claude-shadow/egress.mts';
+
+const FS = 'https://firestore.googleapis.com/v1/projects/p/databases/(default)/documents';
+
+test('THE LOCK REFUSES NuVizz, the site\'s own functions and every foreign host — however the request was spelled', () => {
+  for (const u of [
+    'https://portal.nuvizz.com/openapi/entity/filterdata/PkgRoute/DAVIS',
+    'https://dd-dispatch-map.netlify.app/.netlify/functions/nuvizz-manual-scan?date=2026-09-25',
+    'https://routes.googleapis.com/directions/v2:computeRoutes',
+    'http://api.anthropic.com/v1/messages',
+    'not a url',
+  ]) assert.throws(() => judgeRequest(u, 'GET', undefined), EgressRefused, u);
+});
+
+test('THE LOCK LETS THROUGH the Messages API, the OAuth token call and Firestore READS', () => {
+  judgeRequest('https://api.anthropic.com/v1/messages', 'POST', '{}');
+  judgeRequest('https://oauth2.googleapis.com/token', 'POST', 'grant');
+  judgeRequest(`${FS}/att_plan/davis__2026-09-25`, 'GET', undefined);
+  judgeRequest(`${FS}/nuvizz_stop_index/davis__2026-09-25/stops?pageSize=300`, 'GET', undefined);
+  judgeRequest(`${FS}:runQuery`, 'POST', '{}');
+});
+
+test('THE LOCK REFUSES every Firestore WRITE outside claude_shadow_* — PATCH, DELETE, create and commit', () => {
+  assert.throws(() => judgeRequest(`${FS}/att_plan/davis__2026-09-25`, 'PATCH', '{}'), EgressRefused);
+  assert.throws(() => judgeRequest(`${FS}/nuvizz_stop_index/davis__2026-09-25`, 'DELETE', undefined), EgressRefused);
+  assert.throws(() => judgeRequest(`${FS}/customer_notes`, 'POST', '{}'), EgressRefused);
+  const commit = (name) => JSON.stringify({ writes: [{ update: { name: `projects/p/databases/(default)/documents/${name}`, fields: {} } }] });
+  assert.throws(() => judgeRequest(`${FS}:commit`, 'POST', commit('att_plan/davis__2026-09-25')), EgressRefused);
+  assert.throws(() => judgeRequest(`${FS}:commit`, 'POST', JSON.stringify({ writes: [{ delete: 'projects/p/databases/(default)/documents/nuvizz_ops/scan_config' }] })), EgressRefused);
+  assert.throws(() => judgeRequest(`${FS}:commit`, 'POST', 'not json'), EgressRefused, 'a commit the lock cannot read is refused');
+  // The tab-between-dots path the store refuses: by the time the lock sees the URL, the parser has
+  // made it '..' and resolved it — so it is judged as what it IS, a write to att_plan.
+  assert.throws(() => judgeRequest(`${FS}/claude_shadow_runs/.\t./att_plan/davis__2026-09-25`, 'PATCH', '{}'), EgressRefused);
+  assert.throws(() => judgeRequest(`${FS}:commit`, 'POST', commit('claude_shadow_runs/.\t./att_plan/x')), EgressRefused);
+});
+
+test('THE LOCK LETS THROUGH writes under claude_shadow_* — the shadow\'s own records', () => {
+  judgeRequest(`${FS}/claude_shadow_meta/probe_last`, 'PATCH', '{}');
+  judgeRequest(`${FS}/claude_shadow_meta/probe_last?updateMask.fieldPaths=a`, 'PATCH', '{}');
+  judgeRequest(`${FS}/claude_shadow_probes/2026-09-24T21:30:00.000Z`, 'DELETE', undefined);
+  judgeRequest(`${FS}:commit`, 'POST', JSON.stringify({ writes: [{ update: { name: 'projects/p/databases/(default)/documents/claude_shadow_probes/x', fields: {} }, currentDocument: { exists: false } }] }));
+});
+
+test('THE LOCK wraps fetch, sends exactly what it judged, and cannot be talked past by a getter', async () => {
+  const real = globalThis.fetch;
+  const sent = [];
+  globalThis.fetch = async (url, init) => { sent.push({ url, method: init?.method }); return new Response('{}'); };
+  try {
+    lockEgress();
+    assert.equal(egressLocked(), true);
+    lockEgress(); // idempotent
+    await globalThis.fetch(`${FS}/claude_shadow_meta/x`, { method: 'PATCH', body: '{}' });
+    await assert.rejects(() => globalThis.fetch('https://portal.nuvizz.com/x'), EgressRefused);
+    await assert.rejects(() => globalThis.fetch(new Request('https://api.anthropic.com/v1/messages')), EgressRefused, 'Request objects are refused: they carry a method and body the lock would have to trust');
+    let reads = 0;
+    const sly = { get method() { reads += 1; return reads === 1 ? 'GET' : 'PATCH'; } };
+    await globalThis.fetch(`${FS}/att_plan/davis__2026-09-25`, sly);
+    assert.equal(sent.at(-1).method, 'GET', 'what went out is what was judged');
+    assert.equal(sent.length, 2, 'refused requests never reached the network');
+  } finally { globalThis.fetch = real; }
+  assert.equal(egressLocked(), false, 'restoring fetch removes the lock, and the next lockEgress() puts it back');
+});
+
+test('THE ENDPOINT locks egress before it does anything else', async () => {
+  const real = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response('{}');
+    await withEnv({ CLAUDE_SHADOW: 'off' }, async () => {
+      await (await load())(POST({ action: 'probe', confirm: true }));
+      assert.equal(egressLocked(), true);
+    });
+  } finally { globalThis.fetch = real; }
+});

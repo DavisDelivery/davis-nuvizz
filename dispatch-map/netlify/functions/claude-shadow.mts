@@ -17,8 +17,13 @@
 // fails the build if it ever reaches a module that talks to NuVizz or a host other than
 // api.anthropic.com and Firestore.
 //
+// A RUNTIME NET SITS UNDER THAT GUARD: lockEgress() (lib/claude-shadow/egress.mts) runs first on
+// every invocation and refuses any request to a host but Anthropic's and Firestore's, and any
+// Firestore write outside claude_shadow_*, however the request was spelled.
+//
 // CLAUDE_SHADOW=off (off/0/false/no) refuses the call with a 409 and makes none. The GET
 // still answers, so the switch's position can always be read back.
+import { lockEgress } from './lib/claude-shadow/egress.mts';
 import { isFirestoreEnabled, getDoc } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
 import { claudeShadowEnabled, shadowModel, anthropicKeyConfigured, SHADOW_PREFIX } from './lib/claude-shadow/config.mts';
@@ -55,6 +60,8 @@ function statusBody(lastProbe: any, lastProbeNote: string | null) {
 }
 
 export default async (req: Request): Promise<Response> => {
+  // FIRST, before anything can fetch: only Anthropic and Firestore reads/shadow writes get out.
+  lockEgress();
   if (req.method === 'GET') {
     const gate = await requireUser(req, { role: 'viewer' });
     if (!gate.ok) return gate.response;

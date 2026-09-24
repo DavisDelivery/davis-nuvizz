@@ -13,7 +13,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { checkShadowIsolation, DEFAULT_ROOT } from '../scripts/check-shadow-isolation.mjs';
+
+// The fixture carries the REAL egress lock, byte for byte: the guard pins its hash.
+const EGRESS = readFileSync(join(DEFAULT_ROOT, 'netlify/functions/lib/claude-shadow/egress.mts'), 'utf8');
 
 const STORE = `
   import { setDoc, deleteDoc } from '../firestore.mts';
@@ -25,13 +29,18 @@ const STORE = `
 
 const CLEAN = {
   'netlify/functions/claude-shadow-fixture.mts': `
+    import { lockEgress } from './lib/claude-shadow/egress.mts';
     import { getDoc } from './lib/firestore.mts';
     import { requireUser } from './lib/require-user.mts';
     import { shadowSet } from './lib/claude-shadow/store.mts';
     import { plan } from './lib/claude-shadow/plan.mts';
     import { callMessages } from './lib/claude-shadow/anthropic.mts';
-    export default async (req: Request) => { await requireUser(req); await getDoc('x/y'); await shadowSet('claude_shadow_x/y', plan()); return callMessages({}, {}); };
+    export default async (req: Request) => {
+      lockEgress();
+      await requireUser(req); await getDoc('x/y'); await shadowSet('claude_shadow_x/y', plan()); return callMessages({}, {});
+    };
   `,
+  'netlify/functions/lib/claude-shadow/egress.mts': EGRESS,
   'netlify/functions/lib/claude-shadow/plan.mts': `
     // A comment that mentions https://portal.nuvizz.com, NUVIZZ_DAVIS_USER, fetch() and
     // /.netlify/functions/nuvizz-manual-scan is prose, not a call.
@@ -96,7 +105,7 @@ test('the clean tree passes — and a comment naming NuVizz, fetch and a functio
 
 test('two shadow functions and two screen files are checked together — the next PRs add both', async () => {
   const r = await check({
-    'netlify/functions/claude-shadow-second.mts': `import { plan } from './lib/claude-shadow/plan.mts'; export default async () => plan();`,
+    'netlify/functions/claude-shadow-second.mts': `import { lockEgress } from './lib/claude-shadow/egress.mts'; import { plan } from './lib/claude-shadow/plan.mts'; export default async () => { lockEgress(); return plan(); };`,
     'src/shadow/Other.jsx': `import React from 'react'; export default function O() { return <span />; }`,
   });
   assert.deepEqual(r.violations, []);
@@ -136,7 +145,7 @@ test('REVIEW: a host assembled from pieces, or node:https, FAILS — only the do
   const pieces = await check({ [PLAN]: `const H = 'https:' + '//' + 'evil.example'; export function plan() { fetch(H); return {}; }` });
   assert.ok(has(pieces, 'network'), rules(pieces).join());
   const https = await check({ [PLAN]: `import https from 'node:https'; export function plan() { https.get('x'); return {}; }` });
-  assert.ok(has(https, 'network-builtin'), rules(https).join());
+  assert.ok(has(https, 'builtin'), rules(https).join());
   const glob = await check({ [PLAN]: `export function plan() { return (globalThis as any)['fe' + 'tch']('x'); }` });
   assert.ok(has(glob, 'owned-forbidden'), rules(glob).join());
 });
@@ -262,6 +271,89 @@ test('a guard with nothing to check FAILS rather than passing', async () => {
   const r = await check({}, [ENTRY, SCREEN]);
   assert.deepEqual(rules(r), ['empty']);
   assert.equal(r.violations.length, 2);
+});
+
+// ── ROUND TWO: the review of the allowlist, kept ─────────────────────────────
+
+test('REVIEW 2: fetch reached without naming it — global[...], indirect eval, Reflect, .constructor — FAILS', async () => {
+  for (const body of [
+    "const g: any = global; g[['fe','tch'].join('')]('https://x.invalid');",
+    "(0, eval)(['fe','tch'].join(''));",
+    "Reflect.construct(Object, []);",
+    "(() => 0).constructor('return 1')();",
+  ]) {
+    const r = await check({ [PLAN]: `export function plan() { ${body} return {}; }` });
+    assert.ok(has(r, 'owned-forbidden'), `${body}: ${rules(r)}`);
+  }
+});
+
+test('REVIEW 2: the network without fetch — createRequire, getBuiltinModule, _http_client, any builtin — FAILS', async () => {
+  const cr = await check({ [PLAN]: `import { createRequire } from 'node:module'; export function plan() { return createRequire; }` });
+  assert.ok(has(cr, 'builtin') && has(cr, 'owned-forbidden'), rules(cr).join());
+  const gb = await check({ [PLAN]: `export function plan() { return process.getBuiltinModule(['node:ht','tps'].join('')); }` });
+  assert.ok(has(gb, 'owned-forbidden'), rules(gb).join());
+  const hc = await check({ [PLAN]: `import { ClientRequest } from '_http_client'; export function plan() { return ClientRequest; }` });
+  assert.ok(has(hc, 'builtin') || has(hc, 'import'), rules(hc).join());
+});
+
+test('REVIEW 2: a store writer whose checked path is then rewritten FAILS — writer(assertShadowPath(p).replace(…)) is not checked', async () => {
+  const rep = await check({ 'netlify/functions/lib/claude-shadow/store.mts': STORE.replace('setDoc(assertShadowPath(p), d)', "setDoc(assertShadowPath(p).replace('claude_shadow_x', 'att_plan'), d)") });
+  assert.ok(has(rep, 'store'), rules(rep).join());
+  const cat = await check({ 'netlify/functions/lib/claude-shadow/store.mts': STORE.replace('setDoc(assertShadowPath(p), d)', "setDoc(assertShadowPath(p) + '/../../att_plan/x', d)") });
+  assert.ok(has(cat, 'store'), rules(cat).join());
+});
+
+test('REVIEW 2: a mutable MESSAGES_URL FAILS — the door\'s address must be a const literal nothing can reassign', async () => {
+  const door = CLEAN['netlify/functions/lib/claude-shadow/anthropic.mts'];
+  const letted = await check({ 'netlify/functions/lib/claude-shadow/anthropic.mts': door.replace('export const MESSAGES_URL', 'export let MESSAGES_URL') + `\nexport function setUrl(u: string) { MESSAGES_URL = u; }` });
+  assert.ok(has(letted, 'door'), rules(letted).join());
+});
+
+test('REVIEW 2: the screen — an aliased apiFetch, window[...], <img src>, <form action> — FAILS', async () => {
+  const alias = await check({ [SCREEN]: `import React from 'react'; import { apiFetch as call } from '../lib/api.js'; export default function S() { call('/.netlify/functions/claude-shadow'); return <div />; }` });
+  assert.ok(has(alias, 'browser-endpoint'), rules(alias).join());
+  const win = await check({ [SCREEN]: `import React from 'react'; export default function S() { window[['fe','tch'].join('')]('/x'); return <div />; }` });
+  assert.ok(has(win, 'browser-global'), rules(win).join());
+  const img = await check({ [SCREEN]: `import React from 'react'; export default function S({ u }) { return <img src={u} />; }` });
+  assert.ok(has(img, 'browser-element'), rules(img).join());
+  const form = await check({ [SCREEN]: `import React from 'react'; export default function S() { return <form action="/.netlify/functions/nuvizz-write" method="post" />; }` });
+  assert.ok(has(form, 'browser-element'), rules(form).join());
+});
+
+test('REVIEW 2: a lib/ bridge into the shadow lib FAILS — nothing but shadow code may import it', async () => {
+  const r = await check({
+    'netlify/functions/lib/bridge.mts': `export { plan } from './claude-shadow/plan.mts';`,
+    'netlify/functions/nightly.mts': `import { plan } from './lib/bridge.mts'; export default async () => plan();`,
+  });
+  assert.ok(has(r, 'entry-name'), rules(r).join());
+  assert.ok(r.violations.some((x) => x.file === 'netlify/functions/lib/bridge.mts'));
+});
+
+test('REVIEW 2: a directory-form claude-shadow function is walked, and must lock egress like any other', async () => {
+  const ok = await check({ 'netlify/functions/claude-shadow-dir/claude-shadow-dir.mts': `import { lockEgress } from '../lib/claude-shadow/egress.mts'; import { plan } from '../lib/claude-shadow/plan.mts'; export default async () => { lockEgress(); return plan(); };` });
+  assert.deepEqual(ok.violations, []);
+  assert.ok(ok.serverEntries.includes('netlify/functions/claude-shadow-dir/claude-shadow-dir.mts'));
+  const bad = await check({ 'netlify/functions/claude-shadow-dir/index.mts': `import { nuvizzGet } from '../lib/nuvizz-request.mts'; export default async () => nuvizzGet();`, 'netlify/functions/lib/nuvizz-request.mts': `export const nuvizzGet = () => 1;` });
+  assert.ok(has(bad, 'nuvizz-module') && has(bad, 'egress'), rules(bad).join());
+});
+
+test('REVIEW 2: a reviewed shared module that calls the site\'s own functions FAILS — reviewed is not unread', async () => {
+  const r = await check({ 'netlify/functions/lib/require-user.mts': `export async function requireUser(req: Request) { await fetch(new URL('/.netlify/functions/nuvizz-manual-scan', req.url)); return { ok: true }; }` });
+  assert.ok(has(r, 'site-function'), rules(r).join());
+});
+
+test('REVIEW 2: reading the board by collection name is not "NuVizz" — nuvizz_stop_index is a Firestore collection', async () => {
+  const r = await check({ [PLAN]: `import { getDoc } from '../firestore.mts'; export async function plan() { return getDoc('nuvizz_stop_index/davis__2026-09-25'); }` });
+  assert.deepEqual(r.violations, []);
+});
+
+test('THE RUNTIME NET: a shadow function that does not lock egress FIRST fails', async () => {
+  const none = await check({ [ENTRY]: CLEAN[ENTRY].replace('lockEgress();', '') });
+  assert.ok(has(none, 'egress'), rules(none).join());
+  const late = await check({ [ENTRY]: CLEAN[ENTRY].replace('lockEgress();\n      await requireUser(req);', 'await requireUser(req); lockEgress();') });
+  assert.ok(has(late, 'egress'), rules(late).join());
+  const edited = await check({ 'netlify/functions/lib/claude-shadow/egress.mts': EGRESS.replace("'oauth2.googleapis.com'", "'oauth2.googleapis.com', 'portal.nuvizz.com'") });
+  assert.ok(has(edited, 'egress'), rules(edited).join());
 });
 
 // ── the real repo ─────────────────────────────────────────────────────────────

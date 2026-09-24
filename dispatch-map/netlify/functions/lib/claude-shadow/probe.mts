@@ -65,6 +65,7 @@ export interface ProbeResult {
   // may still have been billed, which is exactly what the tab must not dress up as "no".
   answered: boolean;
   ok: boolean;
+  timedOut: boolean;
   httpStatus: number | null;
   error: string | null;
   servedModel: string | null;    // what the response says ran
@@ -89,6 +90,7 @@ export function readProbeResult(requestedModel: string, call: CallResult, at: st
     requestedModel,
     answered: call.httpStatus !== null,
     ok: call.ok,
+    timedOut: call.timedOut === true,
     httpStatus: call.httpStatus,
     error: call.error,
     servedModel,
