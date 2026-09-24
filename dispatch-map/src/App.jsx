@@ -176,7 +176,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.66.0';
+const APP_VERSION = '1.66.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -230,6 +230,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.66.1', 'THE STOP CARD\u2019S LINKS, ALL SHOWING. Chad, on the order card: \u201cmove label to left of ticket also why is there a drop down for more text driver shouldn\u2019t even be there just make all the buttons beside more live hyperlinks just add find business and a google maps button.\u201d The action row now reads Text \u00b7 Call \u00b7 Navigate \u00b7 Label \u00b7 Ticket. The \u201cMore\u201d fold is gone: Street View, Find business, Google Maps, Edit address, Correct pin and History are always on the card, each a live link at the 44px tap height. Text driver is off that row; the Route block below still carries the driver\u2019s own number. Map and Routing, desktop and phone; nothing else on the card moved.'],
   ['1.66.0', 'PRINT A DAVIS LABEL FROM ANY ORDER\u2019S CARD, AND SEE A TRUCK\u2019S PLATE ON HOVER WHEN THE LABELS ARE OFF. Chad: add a Print label action to the order panel, and hover-to-show labels for when driver labels are toggled off. LABEL ON THE ORDER PANEL: the stop card\u2019s action row (Text \u00b7 Call \u00b7 Navigate \u00b7 Ticket) gains Label, on the Map and in Routing, desktop and phone \u2014 any order on the board, whenever. The page is built from the board\u2019s CURRENT numbers, so a label printed today carries today\u2019s skids and loose (the count the load-out app caps at) and the ship-to as the card shows it, a dispatcher\u2019s address fix included; the label saved when the order was created in New Order or Bulk add, if there is one, fills in only the reference, the delivery notes and the ship-from. One Firestore read, ZERO NuVizz calls, and the same viewer and Print button as the Delivery Ticket. The Delivery Ticket itself is not changed. HOVER PLATES: with \u201cHide driver labels\u201d on (v1.65.1), resting the mouse on a truck shows that truck\u2019s plate \u2014 the same two lines the labels draw \u2014 and moving off takes it away. Mouse and trackpad only: on a phone a tap never sends the \u201cmouse left\u201d that would hide it, and a tap already opens the driver\u2019s card. Map tab only; the Route Workbench is not touched.'],
   ['1.65.1', 'HIDE THE DRIVER LABELS, KEEP THE TRUCKS. Chad: “I want a live drivers toggle like there is but one that just turns the labels off so trucks show but not truck number or drivers name.” A NEW ROW, “Hide driver labels”, DIRECTLY UNDER “Show drivers (live)” in Filters — on all three surfaces that carry the drivers switch: the desktop Map’s Filters dropdown, the wall display’s Filters card, and the phone’s filter tab. Ticked, every truck stays exactly where it is and the white name plates (“7792 · Brent D.”) come off. THE SETTING ALREADY EXISTED; ITS SWITCH WAS IN THE WRONG PLACE. Read off the code: showDriverLabels has lived in MapScreen for months, but its only control was a “Hide labels” button in the DESKTOP LEFT SIDEBAR under the legend — and the wall display has no sidebar, so on the television there was no way to turn the plates off at all. The phone was worse: plates default OFF below the mobile breakpoint and the phone never renders that sidebar, so a phone could not turn them ON. Both are fixed by the same row. The sidebar button is left where it is — it drives the same setting, so the two always agree, and removing it would be a change nobody asked for. BOTH OF THE WALL’S MAP MODES ALREADY HONOURED THE SETTING (the picture’s truck overlay and the live map’s driver-label overlay); only the control was missing. VERIFIED IN THE BUILT BUNDLE, not from the diff: on /tv, 3 trucks and 3 plates → tick → 3 trucks and 0 plates, and still 0 after a reload because it is remembered per device, so ticking it on the television changes only the television. PHRASED “HIDE” SO TICKED MEANS OFF, matching its neighbours (Hide terminal markers, Hide stem out, Hide place labels) — a panel where half the switches mean on and half mean off is a panel that gets read wrong. AND IT GREYS OUT WHEN THERE ARE NO TRUCKS TO LABEL. With live drivers off, or on a past date where the Motive feed does not apply, the switch would move and change nothing — which teaches whoever is holding the remote that the panel is broken. It stays visible, greyed, keeps the choice already made, and its hover text says why (“Turn on Show drivers (live) first”, or “only available for today’s date” — never pointing at a switch that is itself greyed). One rule in lib/driver-label.js (driverLabelsToggle) shared by all three surfaces, because the same fact drifting apart across screens is how this app has got things wrong before. 6 new tests. AN ADD, NOT A CHANGE: nothing that worked before behaves differently, so it is one commit and `git revert` is the whole way back. The dispatch Map only — the Route Workbench is not touched.'],
   ['1.65.0', 'DAVIS DELIVERY LABELS \u2014 ITS OWN LABEL, PRINTED BY THE ORDER, SAVED WITH IT. Chad: \u201cThis is supposed to be its own label, separate entity \u2026 just something we can print by the order, but it is not a delivery ticket. It is not a manifest \u2026 just like we can print a delivery ticket.\u201d ONE LETTER PAGE PER PIECE (skids first, then loose): the service date, SHIP TO in big type, SKID 1 of 2 beside the order\u2019s skid / loose / total / weight, one barcode across the page (DD/<NuVizz stop #>/<piece>), the stop # and reference, items and delivery notes, the website QR and \u201cWE CAN DELIVER FOR YOU TOO!\u201d. It opens in the SAME viewer and Print button as the Delivery Ticket, so it prints the way a ticket prints and never opens a new window (which strands the iPad home-screen app). SAVED WITH THE ORDER: every order created from New Order, Bulk add and the Estes manifest push saves its label to its own Firestore collection (order-labels) \u2014 nothing else reads or writes it \u2014 so a label can be printed again any time; ZERO NuVizz calls. WHERE: NEW ORDER is always LIVE now (Chad: \u201ctake the beta out of here and just make it live all the time\u201d); after Create it offers Print label and Delivery ticket, and a Labels & tickets list shows every order created on a day with Label and Ticket beside each. BULK ADD: the SERVICE DATE is on the main page, out of the Pickup drop-down (Chad: \u201cit should be on main page for that upload\u201d), shown as a weekday date and locked while a batch sends; Create and the Estes push offer Print labels for the batch; Pushed to NuVizz has Select all, a tick per row, Print labels for the selected, and a Label button on every row \u2014 a clean run lands there with its batch already ticked. The \u201cA NEW load (one import)\u201d mode is not touched (Chad: \u201cthe labels shouldn\u2019t touch the new load\u201d). One order that cannot be printed (a character a barcode cannot carry, or over 99 pieces) is left out and NAMED; the rest still print. LOAD-SCAN v0.51.0 READS IT: camera and gun, matched on the EXACT stop number, one page = one piece, capped at the manifest count; two pages of one order side by side each book once; a Davis read never changes how a Uline label books; LOADSCAN_DAVIS_LABELS=off turns reading it off with no deploy. Also fixed there: a hand-added or over-the-count piece on a stop whose number has fewer than 7 digits (SHP29379) was silently refused by the server while the phone marked it synced. THE WMS reads it too (its own PR). The Delivery Ticket, the manifest print and the Route Workbench are not changed. ALSO, FOUND BY THIS PR\u2019S CI: the Claude shadow tab\u2019s settings change-log named each row by the save\u2019s millisecond, so two saves in the same millisecond collided and the second change went unlogged; each row now carries a random tail.'],
@@ -9508,8 +9509,6 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
   // The assigned driver's mobile, for the Route block's tap-to-text line (null until the
   // roster answers, and for drivers with no number on file).
   const driverPhone = useDriverPhone(live.driverName);
-  // Secondary actions fold away by default; nothing is removed, only tucked (Enhancement 6).
-  const [moreOpen, setMoreOpen] = useState(false);
   // Same target GoogleMapsLink used: pin coords when we have them, else the address string.
   const mapsNavUrl = useMemo(() => {
     const addr = [live.addr1, live.city, live.state, live.zip].filter(Boolean).join(', ');
@@ -9590,40 +9589,36 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
           <a href={mapsNavUrl} target="_blank" rel="noopener noreferrer" className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title="Open in Google Maps">
             <MapPin size={16} className="text-slate-500" /> Navigate
           </a>
+          <StopLabelButton stop={live} note={note} phone={textPhone} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5 disabled:opacity-60" />
           <button onClick={() => setShowTicket(true)} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title="Print-ready Delivery Ticket">
             <FileText size={16} className="text-slate-500" /> Ticket
           </button>
-          <StopLabelButton stop={live} note={note} phone={textPhone} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5 disabled:opacity-60" />
         </div>
-        <button onClick={() => setMoreOpen((o) => !o)} className="mt-1.5 text-[11px] text-slate-500 hover:text-slate-800" aria-expanded={moreOpen}>
-          More: Street View · Edit address · Correct pin · History {moreOpen ? '▴' : '▾'}
-        </button>
-        {moreOpen && (
-          <div className="flex items-center gap-x-4 gap-y-1 flex-wrap">
-            <StreetViewLink stop={live} />
-            <WebSearchLink stop={live} />
-            {onEditAddress && (
-              <button onClick={() => onEditAddress(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-                <MapPin size={13} /> Edit address
-              </button>
-            )}
-            {onMoveLocation && (
-              <button onClick={() => onMoveLocation(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-                <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
-              </button>
-            )}
-            {onTextDriver && live.driverName && (
-              <button onClick={() => onTextDriver(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" title={`Text ${live.driverName} — prefilled with this order's PRO and customer`}>
-                <MessageSquare size={13} /> Text driver ({live.driverName})
-              </button>
-            )}
-            {onOpenHistory && (
-              <button onClick={() => onOpenHistory(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" title="This customer's past PROs and who delivered them">
-                <Clock size={13} /> History
-              </button>
-            )}
-          </div>
-        )}
+        {/* EVERY LINK, ALWAYS SHOWING — no "More" fold. Chad: "why is there a drop down for more
+            … just make all the buttons beside more live hyperlinks just add find business and a
+            google maps button." Text driver is not on this card any more ("shouldn't even be
+            there"); the Route block below still carries the driver's own number. In flow and
+            wrapping, so on a phone the row moves rather than overlapping anything. */}
+        <div className="mt-1 flex items-center gap-x-4 flex-wrap">
+          <StreetViewLink stop={live} />
+          <WebSearchLink stop={live} />
+          <GoogleMapsLink stop={live} />
+          {onEditAddress && (
+            <button onClick={() => onEditAddress(live)} className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" style={{ minHeight: 44 }}>
+              <MapPin size={13} /> Edit address
+            </button>
+          )}
+          {onMoveLocation && (
+            <button onClick={() => onMoveLocation(live)} className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" style={{ minHeight: 44 }}>
+              <MapPin size={13} /> Correct pin{note?.location_override ? ' · custom saved' : ''}
+            </button>
+          )}
+          {onOpenHistory && (
+            <button onClick={() => onOpenHistory(live)} className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" style={{ minHeight: 44 }} title="This customer's past PROs and who delivered them">
+              <Clock size={13} /> History
+            </button>
+          )}
+        </div>
       </div>
       <div className="pt-2">
         <OrderItemsSection stop={live} />
