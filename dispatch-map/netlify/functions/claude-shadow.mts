@@ -9,6 +9,14 @@
 //                                         the learned truck-capacity model and the last learning run
 //   GET ?view=learn-plan                  DRY RUN of learning: which sealed days a run would read.
 //                                         Firestore reads only; writes nothing.
+//   POST {action:"settings", change}      capacity settings (lib/claude-shadow/settings.mts): loose
+//                                         pieces per skid spot, and a cap for a driver or route that
+//                                         replaces the learned one. Checked whole — one bad value refuses
+//                                         the change and writes nothing (400, every reason). Then each
+//                                         cap is its own claude_shadow_caps document, the ratio three
+//                                         masked fields, every change a log row; each item is reported
+//                                         saved / failed / unknown, and the numbers are rebuilt when they
+//                                         are not at the saved ratio.
 //   POST {action:"learn"}                 "Learn now": the nightly learning run, here and now, within
 //                                         LEARN_NOW_BUDGET_MS — as many sealed days as fit, the rest
 //                                         left for the next press or the nightly run. Returns the run
@@ -38,8 +46,10 @@ import { claudeShadowEnabled, shadowModel, anthropicKeyConfigured, SHADOW_PREFIX
 import { shadowSet, shadowCreate } from './lib/claude-shadow/store.mts';
 import { callMessages } from './lib/claude-shadow/anthropic.mts';
 import { buildProbeRequest, readProbeResult, probeCeilingUsd, PROBE_EFFORT, PROBE_MAX_TOKENS } from './lib/claude-shadow/probe.mts';
-import { CAPACITY_PATH, LEARN_LAST_PATH } from './lib/claude-shadow/learn-core.mts';
+import { CAPACITY_PATH, LEARN_LAST_PATH, DEFAULT_LOOSE_PER_SKID } from './lib/claude-shadow/learn-core.mts';
 import { planLearn, learnRefusal, runLearn } from './lib/claude-shadow/learn.mts';
+import { withOverrides, ratioInForce, CAP_BOUNDS, LOOSE_PER_SKID_BOUNDS } from './lib/claude-shadow/settings-core.mts';
+import { readSettings, saveSettings } from './lib/claude-shadow/settings.mts';
 
 export const PROBE_LAST_PATH = 'claude_shadow_meta/probe_last';
 export const PROBE_LOG_COLLECTION = 'claude_shadow_probes';
@@ -64,8 +74,8 @@ function statusBody(lastProbe: any, lastProbeNote: string | null, learned: any =
     keyConfigured: anthropicKeyConfigured(),
     prefix: SHADOW_PREFIX,
     probe: { effort: PROBE_EFFORT, maxTokens: PROBE_MAX_TOKENS, ceilingUsd: probeCeilingUsd(m.model) },
-    built: ['switches', 'write gateway', 'isolation guard', 'test call', 'learned truck capacity and route order'],
-    notBuilt: ['capacity settings', 'snapshot', 'plan run', 'late-manifest flag', 'grading', 'comparison screen'],
+    built: ['switches', 'write gateway', 'isolation guard', 'test call', 'learned truck capacity and route order', 'capacity settings'],
+    notBuilt: ['snapshot', 'plan run', 'late-manifest flag', 'grading', 'comparison screen'],
     lastProbe,
     lastProbeNote,
     learned,
@@ -96,12 +106,27 @@ export default async (req: Request): Promise<Response> => {
     }
     // Three independent reads; one failing must not blank the other two.
     const read = (path: string) => getDoc(path).then((d) => ({ d, e: null as string | null }), (e) => ({ d: null, e: String(e?.message || e) }));
-    const [probe, learned, learnLast] = await Promise.all([read(PROBE_LAST_PATH), read(CAPACITY_PATH), read(LEARN_LAST_PATH)]);
+    const [probe, learned, learnLast, settings] = await Promise.all([read(PROBE_LAST_PATH), read(CAPACITY_PATH), read(LEARN_LAST_PATH), readSettings()]);
     const note = probe.e ? `could not read ${PROBE_LAST_PATH}: ${probe.e}` : probe.d ? null : 'no test call has been recorded yet';
+    const model = learned.d;
     return J({
-      ...statusBody(probe.d, note, learned.d, learnLast.d),
-      learnedNote: learned.e ? `could not read ${CAPACITY_PATH}: ${learned.e}` : learned.d ? null : 'nothing has been learned yet',
+      // Each driver's and route's cap RESOLVED — yours if you set one, else the learned one. When the
+      // settings cannot be read, every row says "unknown" rather than presenting "no cap of yours"
+      // as a fact, and the editor stays shut.
+      ...statusBody(probe.d, note, withOverrides(model, settings.caps, { unknown: !!settings.error }), learnLast.d),
+      learnedNote: learned.e ? `could not read ${CAPACITY_PATH}: ${learned.e}` : model ? null : 'nothing has been learned yet',
       learnLastNote: learnLast.e ? `could not read ${LEARN_LAST_PATH}: ${learnLast.e}` : null,
+      settings: {
+        loosePerSkid: settings.settings?.loosePerSkid ?? null,
+        loosePerSkidAt: settings.settings?.loosePerSkidAt ?? null,
+        loosePerSkidBy: settings.settings?.loosePerSkidBy ?? null,
+        defaultLoosePerSkid: DEFAULT_LOOSE_PER_SKID,
+        // The numbers below were built at a different ratio than the one saved — a rebuild that has
+        // not landed yet. Said on screen, not hidden.
+        ratioPending: !settings.error && !!model && ratioInForce(settings.settings) !== model.loosePerSkid,
+        bounds: { cap: CAP_BOUNDS, loosePerSkid: LOOSE_PER_SKID_BOUNDS },
+      },
+      settingsNote: settings.error ? `could not read the capacity settings: ${settings.error} — which caps are yours is not known right now` : null,
     });
   }
   if (req.method !== 'POST') return J({ ok: false, error: 'method not allowed' }, 405);
@@ -112,6 +137,12 @@ export default async (req: Request): Promise<Response> => {
 
   let body: any = {};
   try { body = await req.json(); } catch { return J({ ok: false, error: 'bad json', calls: 0 }, 400); }
+  if (body?.action === 'settings') {
+    const refused = learnRefusal();
+    if (refused) return J({ ok: false, error: `settings are off here: ${refused}`, calls: 0 }, 409);
+    const r = await saveSettings(body?.change, gate.user?.username ?? null);
+    return J({ ...r.body, calls: 0 }, r.status);
+  }
   if (body?.action === 'learn') {
     const refused = learnRefusal();
     if (refused) return J({ ok: false, error: `learning is off here: ${refused}`, calls: 0 }, 409);

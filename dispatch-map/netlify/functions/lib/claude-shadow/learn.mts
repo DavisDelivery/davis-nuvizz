@@ -67,6 +67,41 @@ export function loosePerSkidFrom(settings: any): { value: number; source: 'setti
   return { value: DEFAULT_LOOSE_PER_SKID, source: 'default' };
 }
 
+/**
+ * THE CAPACITY MODEL, REBUILT from every stored day summary at the ratio in force, and written.
+ * Called by every learning run, and by a settings save that moves the ratio — no history re-read.
+ * `settings` may be passed by a caller that has just written it; otherwise it is read here, and a
+ * read that THROWS is not "no setting": the previous model stays, and the caller is told why.
+ */
+export async function rebuildModel(deps: LearnDeps = LIVE, settings?: any) {
+  let s = settings;
+  if (s === undefined) {
+    try { s = await deps.getDoc(SETTINGS_PATH); }
+    catch (e: any) { throw new Error(`settings read failed (${String(e?.message || e)}) — the previous model was kept`); }
+  }
+  const days = await deps.listDocs(LEARN_DAYS_COLLECTION, { mask: ['date', 'learnVersion', 'roster', 'stampGate', 'counts', 'trips'] });
+  const build = async (settingsDoc: any) => {
+    const lps = loosePerSkidFrom(settingsDoc);
+    const model = { ...buildCapacityModel(days, { loosePerSkid: lps.value }, deps.now().toISOString()), loosePerSkidSource: lps.source };
+    await deps.shadowSet(CAPACITY_PATH, model);
+    return model;
+  };
+  let model = await build(s);
+  // CONVERGE ON THE SAVED RATIO. A learning run and a settings save can overlap: the run reads the
+  // old ratio, the save rebuilds at the new one, and the run's model lands last. So every rebuild
+  // re-reads the ratio AFTER its own write, and builds once more if it has moved — the last writer
+  // always checks. A second disagreement is reported, not looped on.
+  const fresh = await deps.getDoc(SETTINGS_PATH).catch(() => undefined);
+  if (fresh !== undefined && loosePerSkidFrom(fresh).value !== model.loosePerSkid) {
+    model = await build(fresh);
+    const again = await deps.getDoc(SETTINGS_PATH).catch(() => undefined);
+    if (again !== undefined && loosePerSkidFrom(again).value !== model.loosePerSkid) {
+      throw new Error('the loose-per-skid setting kept changing while the numbers were rebuilt');
+    }
+  }
+  return model;
+}
+
 /** WHAT A RUN WOULD DO, without doing it: the sealed days, and which of them need learning. */
 export async function planLearn(deps: LearnDeps = LIVE) {
   const [manifests, learned] = await Promise.all([
@@ -151,15 +186,8 @@ export async function runLearn(opts: { trigger: string; by?: string | null; maxD
     record.learned.sort();
     record.refreshed.sort();
 
-    // A thrown settings read is NOT "no setting": the previous model stays, and the run says why.
-    let settings: any;
-    try { settings = await deps.getDoc(SETTINGS_PATH); }
-    catch (e: any) { throw new Error(`settings read failed (${String(e?.message || e)}) — the previous model was kept`); }
-    const days = await deps.listDocs(LEARN_DAYS_COLLECTION, { mask: ['date', 'learnVersion', 'roster', 'stampGate', 'counts', 'trips'] });
-    const lps = loosePerSkidFrom(settings);
-    record.loosePerSkid = lps;
-    const model = { ...buildCapacityModel(days, { loosePerSkid: lps.value }, deps.now().toISOString()), loosePerSkidSource: lps.source };
-    await deps.shadowSet(CAPACITY_PATH, model);
+    const model = await rebuildModel(deps);
+    record.loosePerSkid = { value: model.loosePerSkid, source: model.loosePerSkidSource };
     record.modelWritten = true;
     record.modelDays = model.days.count;
     record.ok = record.failed.length === 0 && record.deferred === 0;
