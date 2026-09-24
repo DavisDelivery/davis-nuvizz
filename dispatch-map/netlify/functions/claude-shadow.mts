@@ -7,7 +7,8 @@
 //
 //   GET                                   status: switch, model, key configured, last test call
 //   POST {action:"probe", dry:true}       the exact request that WOULD be sent. No call.
-//   POST {action:"probe", confirm:true}   ONE Messages API call (well under 1¢ at list price),
+//   POST {action:"probe", confirm:true}   ONE Messages API call (at most ~4.9¢ at list price —
+//                                         see PROBE_INPUT_TOKEN_BOUND — and usually well under 1¢),
 //                                         recorded to claude_shadow_meta/probe_last and
 //                                         claude_shadow_probes/<at>, then returned.
 //
@@ -23,7 +24,7 @@ import { requireUser } from './lib/require-user.mts';
 import { claudeShadowEnabled, shadowModel, anthropicKeyConfigured, SHADOW_PREFIX } from './lib/claude-shadow/config.mts';
 import { shadowSet, shadowCreate } from './lib/claude-shadow/store.mts';
 import { callMessages } from './lib/claude-shadow/anthropic.mts';
-import { buildProbeRequest, readProbeResult } from './lib/claude-shadow/probe.mts';
+import { buildProbeRequest, readProbeResult, probeCeilingUsd, PROBE_EFFORT, PROBE_MAX_TOKENS } from './lib/claude-shadow/probe.mts';
 
 export const PROBE_LAST_PATH = 'claude_shadow_meta/probe_last';
 export const PROBE_LOG_COLLECTION = 'claude_shadow_probes';
@@ -44,6 +45,7 @@ function statusBody(lastProbe: any, lastProbeNote: string | null) {
     modelRejected: m.rejected,
     keyConfigured: anthropicKeyConfigured(),
     prefix: SHADOW_PREFIX,
+    probe: { effort: PROBE_EFFORT, maxTokens: PROBE_MAX_TOKENS, ceilingUsd: probeCeilingUsd(m.model) },
     built: ['switches', 'write gateway', 'isolation guard', 'test call'],
     notBuilt: ['snapshot', 'plan run', 'late-manifest flag', 'grading', 'comparison screen'],
     lastProbe,
@@ -56,7 +58,7 @@ export default async (req: Request): Promise<Response> => {
   if (req.method === 'GET') {
     const gate = await requireUser(req, { role: 'viewer' });
     if (!gate.ok) return gate.response;
-    if (!isFirestoreEnabled()) return J(statusBody(null, 'FIREBASE_SA not set — the last test call cannot be read'));
+    if (!isFirestoreEnabled()) return J(statusBody(null, 'Firestore is not configured on this site — the last test call cannot be read'));
     try {
       const last = await getDoc(PROBE_LAST_PATH);
       return J(statusBody(last, last ? null : 'no test call has been recorded yet'));
@@ -99,7 +101,7 @@ export default async (req: Request): Promise<Response> => {
       recorded.error = String(e?.message || e);
     }
   } else {
-    recorded.error = 'FIREBASE_SA not set';
+    recorded.error = 'Firestore is not configured on this site';
   }
-  return J({ ok: result.reached, calls: 1, result, recorded }, result.reached ? 200 : 502);
+  return J({ ok: result.ok, calls: 1, result, recorded }, result.ok ? 200 : 502);
 };

@@ -10,7 +10,7 @@ import { installFirestoreFake } from './_firestore-fake.mjs';
 import { claudeShadowEnabled, shadowModel, DEFAULT_SHADOW_MODEL, SHADOW_PREFIX } from '../netlify/functions/lib/claude-shadow/config.mts';
 import { assertShadowPath, shadowSet, shadowPatch, shadowCreate, shadowDelete, ShadowPathError } from '../netlify/functions/lib/claude-shadow/store.mts';
 import { usageCost, callMessages, MESSAGES_URL } from '../netlify/functions/lib/claude-shadow/anthropic.mts';
-import { buildProbeRequest, readProbeResult, PROBE_TOOL } from '../netlify/functions/lib/claude-shadow/probe.mts';
+import { buildProbeRequest, readProbeResult, PROBE_TOOL, probeCeilingUsd, PROBE_INPUT_TOKEN_BOUND } from '../netlify/functions/lib/claude-shadow/probe.mts';
 
 // ── switches ──────────────────────────────────────────────────────────────────
 
@@ -47,6 +47,16 @@ test('THE GATEWAY REFUSES a write to the board, att_plan, the roster and nuvizz_
       'claude_shadow_runs',        // a collection path, not a document
       '/claude_shadow_runs/x',     // absolute
       'claude_shadow_runs/../customer_notes/x',
+      // The URL parser fetch() uses deletes TAB, LF and CR before resolving the path, so each of
+      // these became a '..' and landed on the board, the freeze or the scan config (review finding,
+      // reproduced against Node's own fetch). Refused on the control character now.
+      'claude_shadow_runs/.\t./att_plan/davis__2026-09-25',
+      'claude_shadow_runs/.\n./nuvizz_ops/scan_config',
+      'claude_shadow_x/\t..\t/nuvizz_stop_index/davis__2026-09-25',
+      'claude_shadow_runs/.\r./att_plan/davis__2026-09-25',
+      'claude_shadow_runs/%2e%2e/att_plan/davis__2026-09-25',
+      'claude_shadow_runs/ x/doc',
+      'claude_shadow_runs/a#b',
       '',
     ]) {
       await assert.rejects(() => shadowSet(p, { x: 1 }), ShadowPathError, `shadowSet ${p}`);
@@ -69,8 +79,14 @@ test('THE GATEWAY WRITES inside claude_shadow_* and only there', async () => {
   } finally { fake.restore(); }
 });
 
-test('assertShadowPath returns the path it was given when it is legal', () => {
-  assert.equal(assertShadowPath('claude_shadow_runs/davis__2026-09-25/rounds/3'), 'claude_shadow_runs/davis__2026-09-25/rounds/3');
+test('assertShadowPath returns the path it was given when it is legal — ISO stamps, stop numbers and load names all pass', () => {
+  for (const p of [
+    'claude_shadow_runs/davis__2026-09-25/rounds/3',
+    'claude_shadow_probes/2026-09-24T21:30:00.000Z',
+    'claude_shadow_plans/davis__2026-09-25/loads/DUL 2',
+    "claude_shadow_plans/davis__2026-09-25/stops/ESTES-0538243875",
+    "claude_shadow_plans/davis__2026-09-25/loads/O'NEAL (A&B), TRL",
+  ]) assert.equal(assertShadowPath(p), p);
 });
 
 // ── cost ─────────────────────────────────────────────────────────────────────
@@ -122,6 +138,12 @@ test('THE PROBE ASKS IN THE SHAPE THE PLAN LOOP NEEDS: effort set explicitly, au
   assert.equal(r.tools[0].input_schema.additionalProperties, false);
 });
 
+test('THE TEST CALL\'S CEILING is computed from the code, not promised: 2,000 in + 2,048 out at claude-opus-5-5 list price', () => {
+  assert.equal(probeCeilingUsd('claude-opus-5-5'), 0.049);
+  assert.equal(PROBE_INPUT_TOKEN_BOUND, 2000);
+  assert.equal(probeCeilingUsd('claude-opus-9'), null, 'no price row, no ceiling claimed');
+});
+
 const TOOL_REPLY = {
   model: 'claude-opus-5-5', stop_reason: 'tool_use',
   content: [{ type: 'thinking', thinking: '' }, { type: 'tool_use', id: 't1', name: PROBE_TOOL.name, input: { loads: ['A', 'B'] } }],
@@ -130,7 +152,8 @@ const TOOL_REPLY = {
 
 test('a reply that CALLS the tool reads as reached + tool called, priced from its own usage', () => {
   const p = readProbeResult('claude-opus-5-5', { ok: true, httpStatus: 200, ms: 1500, body: TOOL_REPLY, error: null }, '2026-09-24T21:30:00.000Z');
-  assert.equal(p.reached, true);
+  assert.equal(p.answered, true);
+  assert.equal(p.ok, true);
   assert.equal(p.toolCalled, true);
   assert.deepEqual(p.toolInput, { loads: ['A', 'B'] });
   assert.deepEqual(p.contentTypes, ['thinking', 'tool_use']);
@@ -140,15 +163,23 @@ test('a reply that CALLS the tool reads as reached + tool called, priced from it
 
 test('a reply that ANSWERS IN TEXT instead of calling the tool is reached but NOT tool-called — auto does not guarantee a call', () => {
   const p = readProbeResult('claude-opus-5-5', { ok: true, httpStatus: 200, ms: 900, body: { ...TOOL_REPLY, stop_reason: 'end_turn', content: [{ type: 'text', text: 'A, B' }] }, error: null }, 'x');
-  assert.equal(p.reached, true);
+  assert.equal(p.ok, true);
   assert.equal(p.toolCalled, false);
 });
 
-test('a 404 for the model reads as NOT reached, with the API\'s own message', () => {
+test('a 404 for the model is an ANSWER (refused, with the API\'s own message), not "no answer"', () => {
   const p = readProbeResult('claude-opus-5-5', { ok: false, httpStatus: 404, ms: 200, body: { error: { message: 'model: claude-opus-5-5' } }, error: 'model: claude-opus-5-5' }, 'x');
-  assert.equal(p.reached, false);
+  assert.equal(p.answered, true);
+  assert.equal(p.ok, false);
   assert.equal(p.httpStatus, 404);
   assert.equal(p.cost, null, 'no usage, no cost claimed');
+});
+
+test('a TIMEOUT is "no answer" — the request left and may be billed — never dressed up as a refusal', () => {
+  const p = readProbeResult('claude-opus-5-5', { ok: false, httpStatus: null, ms: 22000, body: null, error: 'timed out after 22000ms' }, 'x');
+  assert.equal(p.answered, false);
+  assert.equal(p.ok, false);
+  assert.match(p.error, /timed out/);
 });
 
 test('callMessages posts to the Messages API with the version header, and a timeout comes back as a reason, not a throw', async () => {
@@ -246,6 +277,7 @@ test('THE TEST CALL: exactly ONE model call, recorded under claude_shadow_* and 
       assert.equal(got.model, 'claude-opus-5-5');
       assert.equal(got.keyConfigured, true);
       assert.equal(got.lastProbe.toolCalled, true);
+      assert.equal(got.probe.ceilingUsd, 0.049, 'the confirm dialog quotes the computed ceiling');
       assert.equal(got.nuvizzCalls, 0);
     } finally { fake.restore(); }
   });
@@ -259,9 +291,10 @@ test('a model the key cannot reach is RECORDED as a failure (502), not reported 
       const j = await res.json();
       assert.equal(res.status, 502);
       assert.equal(j.calls, 1);
-      assert.equal(j.result.reached, false);
+      assert.equal(j.result.ok, false);
+      assert.equal(j.result.answered, true);
       assert.match(j.result.error, /claude-opus-5-5/);
-      assert.equal(fake.store.get('claude_shadow_meta/probe_last').reached, false);
+      assert.equal(fake.store.get('claude_shadow_meta/probe_last').ok, false);
     } finally { fake.restore(); }
   });
 });

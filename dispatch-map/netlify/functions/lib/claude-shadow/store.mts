@@ -21,10 +21,25 @@ export class ShadowPathError extends Error {
   constructor(message: string) { super(message); this.name = 'ShadowPathError'; }
 }
 
+// WHAT A SEGMENT MAY BE MADE OF. firestore.mts's safeSegment refuses '.', '..', '%2e' and
+// / \ ? #, but not a TAB, LF or CR — and the URL parser fetch() uses DELETES those three before
+// it resolves the path, so 'claude_shadow_runs/.\t./att_plan/davis__D' passed every check and
+// then PATCHed att_plan/davis__D (found by the adversarial review, reproduced against Node's own
+// fetch). So a shadow path is refused on any control character, and each segment is held to the
+// characters the shadow's ids are actually made of: letters, digits, space and _ . : @ + - ' & ( ) ,
+// — an ISO timestamp, a stop number, a load name. Anything else is refused, not repaired: a
+// caller with a stranger id encodes it before it gets here.
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
+const SEGMENT_RE = /^[\p{L}\p{N} _.:@+\-'&(),]+$/u;
+
 /** Throws unless `path` is a well-formed document path inside a claude_shadow_* collection. */
 export function assertShadowPath(path: string): string {
   if (typeof path !== 'string' || path === '') throw new ShadowPathError('shadow write refused: empty path');
+  if (CONTROL_RE.test(path)) throw new ShadowPathError(`shadow write refused: control character in ${JSON.stringify(path)}`);
   if (path.startsWith('/')) throw new ShadowPathError(`shadow write refused: absolute path ${JSON.stringify(path)}`);
+  for (const seg of path.split('/')) {
+    if (!SEGMENT_RE.test(seg) || seg !== seg.trim()) throw new ShadowPathError(`shadow write refused: segment ${JSON.stringify(seg)} in ${JSON.stringify(path)}`);
+  }
   let safe: string;
   try { safe = assertSafePath(path); }
   catch (e: any) { throw new ShadowPathError(`shadow write refused: ${e?.message || e}`); }

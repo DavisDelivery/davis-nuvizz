@@ -4,48 +4,52 @@
 // The shadow planner plans tomorrow's loads beside the router, for comparison only. The brief
 // it was built from put one rule above every other: it may not call NuVizz — not a scan, not a
 // read, not a write — and it may not write anything outside its own Firestore prefix. A rule
-// like that is only as good as the attention of whoever reads it, so this walks the real import
-// graph of every shadow entry point and FAILS the build when the rule is broken.
+// like that is only as good as the attention of whoever reads it, so this reads the code and
+// FAILS the build when the rule can be broken.
 //
-// ENTRY POINTS (found by name, so a new shadow function is checked the day it lands):
-//   server   netlify/functions/claude-shadow*.mts
-//   browser  src/shadow/*.{js,jsx}
-// The graph is esbuild's own (the bundler Netlify ships these functions with), so resolution
-// — extensions, index files, dynamic imports with literal specifiers — matches what deploys.
+// IT IS AN ALLOWLIST, NOT A DENYLIST. The first version looked for bad names (nuvizz*, NUVIZZ_,
+// a foreign host literal, setDoc) and an adversarial review found eighteen ways to spell the
+// same thing differently: a same-origin fetch of /.netlify/functions/nuvizz-manual-scan, a
+// host assembled from two strings, raw Firestore credentials, a writer re-exported through a
+// file the guard did not look at, an import alias, a tab inside a path. Chasing spellings loses.
+// So the rules below say what the shadow MAY reach, and everything else fails:
 //
-// SERVER RULES, on EVERY module the graph reaches (not just the shadow's own files):
-//   nuvizz-module   the file is named nuvizz* (nuvizz-request, nuvizz-write, nuvizz.cjs, …)
-//   nuvizz-env      the code names a NUVIZZ_* variable
-//   nuvizz-host     the code names a nuvizz.com host
-//   host            the code names any http(s) host other than api.anthropic.com and the
-//                   three Google hosts lib/firestore.mts talks to (Firestore and its OAuth)
-//   package         an npm package is imported (node: builtins only — a package can fetch
-//                   anything, so each one would have to be added here on purpose)
-//   dynamic         esbuild could not follow an import/require, so the graph is not complete
-// Comments are stripped first: prose that mentions NuVizz is not a call.
+//   1. EVERY MODULE the server graph reaches is shadow code or on REVIEWED_SHARED, a short list
+//      with the reason each one cannot call NuVizz or write for the shadow. A new shared
+//      dependency is an edit to this file, where a reviewer reads that reason.
+//   2. EVERY BINDING a shadow file imports from a shared module is named in SHARED_IMPORTS.
+//      firestore.mts is reachable for its READ helpers; its writers, its token minting and its
+//      service account are not importable at all.
+//   3. ONE DOOR TO THE NETWORK. Only lib/claude-shadow/anthropic.mts may touch fetch, and only
+//      as `f(MESSAGES_URL, …)` with MESSAGES_URL the literal Messages API address. No other
+//      shadow file may name fetch, XMLHttpRequest, WebSocket, an http/https/net builtin,
+//      eval, Function, globalThis, a dynamic import or require, the Firestore/OAuth hosts, the
+//      service-account variable, or the site's own function paths.
+//   4. ONE DOOR TO FIRESTORE WRITES. lib/claude-shadow/store.mts may import only the four
+//      writers (plus assertSafePath) and config.mts, may export only shadow*/assertShadowPath/
+//      ShadowPathError, re-exports nothing, and every use of a writer is literally
+//      `writer(assertShadowPath(…` — so no write leaves the prefix without passing the check.
+//   5. THE SCREEN reaches only src/shadow/**, src/lib/api.js and src/lib/session.js plus react
+//      and lucide-react, never names fetch, and every apiFetch() it makes is to a constant that
+//      is the literal claude-shadow function path.
 //
-// ONE EXEMPTION, and it is narrow on purpose. lib/firestore.mts reads NUVIZZ_BASE_URL in
-// exactly one expression — to REFUSE a UAT NuVizz host against the production database
-// (uatMisconfigured). It makes no NuVizz request. The exemption removes that one expression
-// and nothing else before the rules run; if the expression changes or a second NuVizz
-// reference appears in that file, the build fails and a person looks again.
+// DEFENCE IN DEPTH, on every module either graph reaches: no nuvizz* module; no NUVIZZ_ name
+// and no nuvizz.com host (one reviewed exemption below); no http(s) host outside the allowlist;
+// no dynamic import()/require() with a non-literal argument; no npm package on the server path;
+// no network builtin. Comments are stripped first — prose that mentions NuVizz is not a call.
 //
-// BROWSER RULES: the screen may reach only src/shadow/**, src/lib/api.js (the one place a
-// session token gets onto a request) and src/lib/session.js, plus the react and lucide-react
-// packages — so no Route Workbench, no Build Panel, no Firestore client, no NuVizz writer. It
-// may name no http(s) host, may call no function but claude-shadow*, and may not call bare
-// fetch() (apiFetch carries the session).
+// ONE EXEMPTION, narrow on purpose: lib/firestore.mts reads NUVIZZ_BASE_URL in exactly one
+// expression, to REFUSE a UAT NuVizz host against the production database (uatMisconfigured).
+// It makes no NuVizz request. If that expression changes, or the file names NuVizz anywhere
+// else, the build fails and a person looks again.
 //
-// WRITE GATEWAY: no shadow-owned server file except lib/claude-shadow/store.mts may import a
-// binding named like a writer (set*, update*, create*, delete*, patch*, write*, …) from any
-// module, nor namespace-import or default-import a local module to get around that, nor use
-// a dynamic import — and it may import shared (non-shadow) modules only from SHARED_IMPORTS,
-// a reviewed list that says why each one cannot write. store.mts refuses any path outside
-// claude_shadow_* at run time (test/claude-shadow-store.test.mjs pins that half).
+// ENTRY POINTS: every netlify/functions/claude-shadow* function (any JS/TS extension) and every
+// file under src/shadow/. A function by any OTHER name that imports lib/claude-shadow fails —
+// shadow code runs from shadow entry points, which is what makes the walk above complete.
 //
 // Usage: node scripts/check-shadow-isolation.mjs [root]    (root defaults to dispatch-map/)
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, dirname, resolve, relative, posix, sep } from 'node:path';
+import { join, dirname, resolve, posix, sep } from 'node:path';
 import { builtinModules } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as esbuild from 'esbuild';
@@ -53,18 +57,47 @@ import * as esbuild from 'esbuild';
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_ROOT = resolve(HERE, '..');
 
+const CODE_EXT = /\.(mts|cts|ts|tsx|mjs|cjs|js|jsx|json)$/;
 export const LAYOUT = {
   functionsDir: 'netlify/functions',
-  functionRe: /^claude-shadow[\w-]*\.mts$/,
+  functionRe: /^claude-shadow[\w-]*\.(mts|cts|ts|mjs|cjs|js)$/,
   libDir: 'netlify/functions/lib/claude-shadow',
   store: 'netlify/functions/lib/claude-shadow/store.mts',
+  door: 'netlify/functions/lib/claude-shadow/anthropic.mts',
   screenDir: 'src/shadow',
 };
 
 export const SERVER_HOSTS = ['api.anthropic.com', 'firestore.googleapis.com', 'oauth2.googleapis.com', 'www.googleapis.com'];
-export const SERVER_PACKAGES = [];
+export const MESSAGES_URL_LITERAL = 'https://api.anthropic.com/v1/messages';
+
+// Rule 1. Every non-shadow module the shadow's server graph may reach, and why it is safe there.
+export const REVIEWED_SHARED = {
+  'netlify/functions/lib/firestore.mts': 'the Firestore REST client; fetches only firestore.googleapis.com and oauth2.googleapis.com. Its writers are not importable by shadow files (rule 2); store.mts wraps four of them',
+  'netlify/functions/lib/fetch-deadline.mts': 'the deadline wrapper firestore.mts fetches through; no host of its own',
+  'netlify/functions/lib/address-history.mts': 'pure address-change row builder imported by firestore.mts',
+  'netlify/functions/lib/finished-guard.mts': 'pure finished-row predicate imported by firestore.mts',
+  'netlify/functions/lib/route-identity.mts': 'pure route/load identity helpers imported by firestore.mts',
+  'src/lib/matchKey.js': 'pure match-key normaliser imported by address-history.mts',
+  'netlify/functions/lib/require-user.mts': 'the auth gate; reads the user document, calls no vendor',
+  'netlify/functions/lib/auth-core.mts': 'session-token signing and checking; node:crypto only',
+  'netlify/functions/lib/auth-store.mts': 'the user store, reached only through requireUser, which reads it',
+};
+
+// Rule 2. Exactly which bindings a shadow file may import from each shared module.
+export const SHARED_IMPORTS = {
+  'netlify/functions/lib/firestore.mts': ['getDoc', 'isFirestoreEnabled'],
+  'netlify/functions/lib/require-user.mts': ['requireUser'],
+};
+
+// Rule 4. What the gateway may import from firestore.mts, and the only names it may export.
+export const STORE_WRITERS = ['setDoc', 'updateDocFields', 'createDocIfAbsent', 'deleteDoc'];
+export const STORE_FIRESTORE_IMPORTS = [...STORE_WRITERS, 'assertSafePath'];
+export const STORE_EXPORT_RE = /^(shadow[A-Z]\w*|assertShadowPath|ShadowPathError)$/;
+
+// Rule 5.
 export const BROWSER_FILES = ['src/lib/api.js', 'src/lib/session.js'];
 export const BROWSER_PACKAGES = ['react', 'react/jsx-runtime', 'lucide-react'];
+export const SCREEN_ENDPOINT_PREFIX = '/.netlify/functions/claude-shadow';
 
 export const EXEMPTIONS = [{
   file: 'netlify/functions/lib/firestore.mts',
@@ -73,38 +106,53 @@ export const EXEMPTIONS = [{
   why: 'uatMisconfigured() reads NUVIZZ_BASE_URL only to refuse a UAT NuVizz host against the production database; it makes no NuVizz request',
 }];
 
+// Kept as a second net under rule 2: a writer-shaped name imported by a shadow file fails even
+// if someone adds it to SHARED_IMPORTS by mistake.
 export const WRITE_RE = /^(set|update|create|batch|delete|write|patch|mark|record|merge|increment|apply|move|put|save|commit|remove|upsert|append|clear|reset|seal|store|push|send|post|claim|prune|refile|heal|drop|insert|replace|overwrite|flush|stamp|touch|lock|unlock)(?=[A-Z0-9_]|$)/;
 
-// THE SHARED MODULES A SHADOW FILE MAY IMPORT, each with the reason it cannot write for the
-// shadow. The writer-name rule above catches `setDoc` however it is renamed on import, but it
-// cannot see a shared helper named innocently (`keep()`) that writes inside. So a shadow file
-// may import from other shadow files, from store.mts, and from THIS list only — and adding a
-// shared module is an edit to this file, where a reviewer reads the reason next to it.
-export const SHARED_IMPORTS = {
-  'netlify/functions/lib/firestore.mts': 'read helpers only; its writers are refused by name above',
-  'netlify/functions/lib/require-user.mts': 'the auth gate; reads the user store, writes nothing',
-};
-
+const NETWORK_BUILTINS = ['http', 'https', 'http2', 'net', 'tls', 'dgram', 'dns', 'child_process', 'cluster', 'worker_threads', 'vm', 'inspector']
+  .flatMap((m) => [m, `node:${m}`]);
 const BUILTINS = new Set(builtinModules.flatMap((m) => [m, `node:${m}`]));
+
+// Tokens no shadow-owned file may contain (after comments are stripped). Each is a way to reach
+// the network, the vendor, or Firestore around the two doors.
+const OWNED_FORBIDDEN = [
+  [/\bXMLHttpRequest\b|\bWebSocket\b|\bEventSource\b|\bsendBeacon\b/, 'a network primitive'],
+  [/\beval\s*\(|\bnew\s+Function\b|\bFunction\s*\(/, 'eval / Function — code the guard cannot read'],
+  [/\bglobalThis\b/, 'globalThis — a way to reach fetch or a module without naming it'],
+  [/\bimport\s*\(|\brequire\s*\(/, 'a dynamic import or require — every import must be static so the guard can see it'],
+  [/googleapis\.com|FIREBASE_SA|\bgetAccessToken\b|\bloadServiceAccount\b|\bfirestoreDatabase\b/, 'Firestore credentials or hosts — shadow code reaches Firestore only through firestore.mts read helpers and store.mts'],
+  [/\/\.netlify\/functions\/|["'`]\/api\//, "the site's own function paths — server shadow code may not call another function (that is how a NuVizz scan would be triggered)"],
+  [/\bNUVIZZ_|nuvizz\\?\.com/i, 'NuVizz'],
+];
+
 const toPosix = (p) => p.split(sep).join('/');
 
+// IMPORTS AS WRITTEN. TypeScript's default is to DROP an import whose bindings are never used as
+// values, and esbuild follows it — which made an imported-but-uncalled `setDoc` invisible to the
+// rules below, and made the bundler report the dropped path as an unresolved external. An import
+// that is written is an import that is checked: only `import type` / inline `type` specifiers go.
+const TSCONFIG = { compilerOptions: { verbatimModuleSyntax: true } };
+
 function loaderFor(file) {
-  if (/\.(mts|ts|cts)$/.test(file)) return 'ts';
-  if (/\.(jsx|js|mjs|cjs)$/.test(file)) return 'jsx';
-  return 'js';
+  if (/\.(mts|cts|ts)$/.test(file)) return 'ts';
+  if (/\.tsx$/.test(file)) return 'tsx';
+  if (/\.json$/.test(file)) return 'json';
+  return 'jsx';
 }
 
 async function stripped(root, file) {
   const src = readFileSync(join(root, file), 'utf8');
   try {
-    return (await esbuild.transform(src, { loader: loaderFor(file), legalComments: 'none', format: 'esm', jsx: 'preserve' })).code;
+    return (await esbuild.transform(src, { loader: loaderFor(file), legalComments: 'none', format: 'esm', jsx: 'preserve', tsconfigRaw: TSCONFIG })).code;
   } catch {
-    // .cjs with top-level returns etc. — fall back to the raw text: stricter, never looser.
+    // Unparseable as ESM (e.g. a CommonJS file with top-level return): the raw text, comments
+    // and all — stricter, never looser.
     return src;
   }
 }
 
-function listFiles(root, dir, re) {
+function listTopFiles(root, dir, re) {
   const abs = join(root, dir);
   if (!existsSync(abs)) return [];
   return readdirSync(abs).filter((n) => re.test(n) && statSync(join(abs, n)).isFile()).map((n) => posix.join(dir, n));
@@ -117,7 +165,7 @@ function walkDir(root, dir) {
   for (const n of readdirSync(abs)) {
     const p = posix.join(dir, n);
     if (statSync(join(root, p)).isDirectory()) out.push(...walkDir(root, p));
-    else if (/\.(mts|ts|js|jsx|mjs)$/.test(n)) out.push(p);
+    else if (CODE_EXT.test(n)) out.push(p);
   }
   return out;
 }
@@ -127,16 +175,24 @@ async function graph(root, entries, platform) {
     absWorkingDir: root,
     entryPoints: entries,
     bundle: true, write: false, metafile: true, logLevel: 'silent',
+    // Several entry points need an outdir even with write:false; nothing is written.
+    outdir: join(root, '.shadow-isolation-out'),
     platform, format: 'esm', packages: 'external',
-    loader: { '.js': 'jsx' }, jsx: 'transform',
+    loader: { '.js': 'jsx' }, jsx: 'transform', tsconfigRaw: TSCONFIG,
   });
   const files = new Map();
   for (const [p, info] of Object.entries(res.metafile.inputs)) files.set(toPosix(p), info.imports || []);
-  return { files, warnings: res.warnings || [] };
+  return files;
 }
 
 function hostsIn(code) {
   return [...code.matchAll(/\bhttps?:\/\/([A-Za-z0-9.-]+)/g)].map((m) => m[1].toLowerCase());
+}
+
+/** import(x) / require(x) whose argument is not a plain string literal. */
+function nonLiteralDynamic(code) {
+  return [...code.matchAll(/\b(import|require)\s*\(\s*([^)]*?)\s*\)/g)]
+    .filter((m) => !/^(["'])[^"'$`]*\1$|^`[^`$]*`$/.test(m[2])).map((m) => m[0].slice(0, 80));
 }
 
 function applyExemptions(file, code, violations) {
@@ -154,7 +210,7 @@ function applyExemptions(file, code, violations) {
 
 function packageOf(spec) {
   if (spec.startsWith('@')) return spec.split('/').slice(0, 2).join('/');
-  return spec;
+  return spec.split('/')[0];
 }
 
 /** Parse the import/export-from statements of already comment-free ESM. */
@@ -173,132 +229,225 @@ export function importsOf(code) {
       }
     }
     if (/\*\s+as\s+[\w$]+/.test(clause)) namespace = true;
-    if (kind === 'export' && /^\*$/.test(clause)) star = true;
-    const def = clause.replace(/\{[^}]*\}/, '').replace(/\*\s+as\s+[\w$]+/, '').replace(/,/g, ' ').trim();
+    if (kind === 'export' && /^\*/.test(clause)) star = true;
+    const def = clause.replace(/\{[^}]*\}/, '').replace(/\*\s+as\s+[\w$]+/, '').replace(/^\*$/, '').replace(/,/g, ' ').trim();
     if (kind === 'import' && def) defaultName = def;
     out.push({ kind, source, named, namespace, defaultName, star });
   }
+  // Side-effect imports (`import "./x"`) carry no bindings but still load a module.
+  for (const m of code.matchAll(/(?:^|[;\n}])\s*import\s*["']([^"']+)["']/g)) out.push({ kind: 'import', source: m[1], named: [], namespace: false, defaultName: null, star: false, bare: true });
   return out;
 }
 
-function resolvesTo(fromFile, spec, target) {
-  if (!spec.startsWith('.')) return false;
-  const p = posix.normalize(posix.join(posix.dirname(fromFile), spec));
-  return p === target || p === target.replace(/\.mts$/, '') || `${p}.mts` === target;
+/** The names in esbuild's trailing `export { a, b as c }` list(s), as [local, exported] pairs. */
+function exportListOf(code) {
+  const pairs = [];
+  for (const m of code.matchAll(/(?:^|[;\n}])\s*export\s*\{([^}]*)\}\s*(?!from)/g)) {
+    for (const part of m[1].split(',').map((s) => s.trim()).filter(Boolean)) {
+      const [local, exported] = part.split(/\s+as\s+/).map((s) => s.trim());
+      pairs.push([local, exported || local]);
+    }
+  }
+  return pairs;
+}
+
+function resolveLocal(fromFile, spec) {
+  return posix.normalize(posix.join(posix.dirname(fromFile), spec));
+}
+function sameModule(a, b) {
+  const strip = (p) => p.replace(/\.(mts|cts|ts|tsx|mjs|cjs|js|jsx)$/, '');
+  return a === b || strip(a) === strip(b);
+}
+function sharedKey(target) {
+  return Object.keys(SHARED_IMPORTS).find((k) => sameModule(target, k)) || null;
+}
+
+function isOwnedPath(p) {
+  return p.startsWith(`${LAYOUT.libDir}/`) || /^claude-shadow/.test(posix.basename(p));
 }
 
 export async function checkShadowIsolation(root = DEFAULT_ROOT) {
   const violations = [];
-  const serverEntries = listFiles(root, LAYOUT.functionsDir, LAYOUT.functionRe);
-  const browserEntries = listFiles(root, LAYOUT.screenDir, /\.(js|jsx)$/);
-  if (serverEntries.length === 0) violations.push({ rule: 'empty', file: LAYOUT.functionsDir, detail: 'no claude-shadow*.mts function found — a guard that checks nothing passes, so this is a failure' });
-  if (browserEntries.length === 0) violations.push({ rule: 'empty', file: LAYOUT.screenDir, detail: 'no shadow screen found — a guard that checks nothing passes, so this is a failure' });
+  const v = (rule, file, detail) => violations.push({ rule, file, detail });
+
+  // ── entry points ──
+  const serverEntries = listTopFiles(root, LAYOUT.functionsDir, LAYOUT.functionRe);
+  const browserEntries = walkDir(root, LAYOUT.screenDir).filter((f) => /\.(js|jsx|mjs|ts|tsx)$/.test(f));
+  if (serverEntries.length === 0) v('empty', LAYOUT.functionsDir, 'no claude-shadow* function found — a guard that checks nothing passes, so this is a failure');
+  if (browserEntries.length === 0) v('empty', LAYOUT.screenDir, 'no shadow screen found — a guard that checks nothing passes, so this is a failure');
+
+  // A function by another name that reaches the shadow lib escapes the walk: refuse it.
+  for (const f of walkDir(root, LAYOUT.functionsDir)) {
+    if (f.startsWith('netlify/functions/lib/') || serverEntries.includes(f)) continue;
+    const code = await stripped(root, f);
+    if (/claude-shadow\//.test(code)) v('entry-name', f, 'imports lib/claude-shadow but is not named claude-shadow*, so the guard would not walk it — rename it');
+  }
 
   // ── server graph ──
   const serverFiles = [];
+  const owned = new Set([...serverEntries, ...walkDir(root, LAYOUT.libDir)]);
   if (serverEntries.length) {
-    let g;
-    try { g = await graph(root, serverEntries, 'node'); }
-    catch (e) { violations.push({ rule: 'build', file: serverEntries.join(', '), detail: `esbuild could not walk the server graph: ${e?.message || e}` }); }
-    if (g) {
-      for (const w of g.warnings) {
-        if (/not be bundled|cannot be analyzed|not a string literal/i.test(w.text)) {
-          violations.push({ rule: 'dynamic', file: toPosix(w.location?.file || '?'), detail: w.text });
-        }
+    let files = null;
+    try { files = await graph(root, serverEntries, 'node'); }
+    catch (e) { v('build', serverEntries.join(', '), `esbuild could not walk the server graph: ${e?.message || e}`); }
+    for (const [file, imports] of files || []) {
+      serverFiles.push(file);
+      if (isOwnedPath(file)) owned.add(file);
+      else if (!(file in REVIEWED_SHARED)) v('unreviewed-module', file, 'the shadow server graph reaches a module that is not shadow code and not on REVIEWED_SHARED — add it there with the reason it cannot call NuVizz or write for the shadow, or do not import it');
+      if (/^nuvizz/i.test(posix.basename(file))) v('nuvizz-module', file, 'a NuVizz module is reachable from a shadow entry point');
+      for (const imp of imports) {
+        if (!imp.external) continue;
+        const spec = imp.path;
+        if (spec.startsWith('.') || spec.startsWith('/')) v('unresolved', file, `local import ${spec} could not be resolved, so the graph is not complete`);
+        else if (!BUILTINS.has(spec)) v('package', file, `npm package "${spec}" is reachable; only node: builtins are allowed on the shadow's server path`);
+        else if (NETWORK_BUILTINS.includes(spec)) v('network-builtin', file, `imports ${spec}`);
       }
-      for (const [file, imports] of g.files) {
-        serverFiles.push(file);
-        const base = posix.basename(file);
-        if (/^nuvizz/i.test(base)) violations.push({ rule: 'nuvizz-module', file, detail: 'a NuVizz module is reachable from a shadow entry point' });
-        for (const imp of imports) {
-          if (!imp.external) continue;
-          const spec = imp.path;
-          if (spec.startsWith('.') || spec.startsWith('/')) violations.push({ rule: 'unresolved', file, detail: `local import ${spec} could not be resolved, so the graph is not complete` });
-          else if (!BUILTINS.has(spec) && !SERVER_PACKAGES.includes(packageOf(spec))) violations.push({ rule: 'package', file, detail: `npm package "${spec}" is reachable; only node: builtins are allowed on the shadow's server path` });
-        }
-        const code = applyExemptions(file, await stripped(root, file), violations);
-        const env = code.match(/\bNUVIZZ_[A-Z0-9_]*/g);
-        if (env) violations.push({ rule: 'nuvizz-env', file, detail: `names ${[...new Set(env)].join(', ')}` });
-        if (/nuvizz\\?\.com/i.test(code)) violations.push({ rule: 'nuvizz-host', file, detail: 'names a nuvizz.com host' });
-        const bad = [...new Set(hostsIn(code).filter((h) => !SERVER_HOSTS.includes(h)))];
-        if (bad.length) violations.push({ rule: 'host', file, detail: `names ${bad.join(', ')} — the shadow's server path may reach only ${SERVER_HOSTS.join(', ')}` });
-      }
+      const code = applyExemptions(file, await stripped(root, file), violations);
+      const env = code.match(/\bNUVIZZ_[A-Z0-9_]*/g);
+      if (env) v('nuvizz-env', file, `names ${[...new Set(env)].join(', ')}`);
+      if (/nuvizz\\?\.com/i.test(code)) v('nuvizz-host', file, 'names a nuvizz.com host');
+      const bad = [...new Set(hostsIn(code).filter((h) => !SERVER_HOSTS.includes(h)))];
+      if (bad.length) v('host', file, `names ${bad.join(', ')} — the shadow's server path may reach only ${SERVER_HOSTS.join(', ')}`);
+      const dyn = nonLiteralDynamic(code);
+      if (dyn.length) v('dynamic', file, `import/require with a non-literal argument (${dyn[0]}) — the graph cannot be followed past it`);
     }
   }
 
-  // ── write gateway, on the shadow's own server files ──
-  const owned = [...serverEntries, ...walkDir(root, LAYOUT.libDir)].filter((f) => f !== LAYOUT.store);
-  for (const file of owned) {
+  // ── shadow-owned server files: the door, the gateway, the import allowlist ──
+  for (const file of [...owned].sort()) {
     const code = await stripped(root, file);
-    if (/\bimport\s*\(/.test(code) || /\brequire\s*\(/.test(code)) {
-      violations.push({ rule: 'gateway', file, detail: 'dynamic import/require in a shadow file — every import must be static so the gateway rule can see it' });
+    const isStore = file === LAYOUT.store;
+    const isDoor = file === LAYOUT.door;
+
+    for (const [re, what] of OWNED_FORBIDDEN) {
+      if (re.test(code)) v('owned-forbidden', file, `names ${what}`);
     }
-    for (const imp of importsOf(code)) {
-      if (resolvesTo(file, imp.source, LAYOUT.store)) continue;
-      const local = imp.source.startsWith('.');
-      if (local) {
-        const target = posix.normalize(posix.join(posix.dirname(file), imp.source));
-        const shadowOwned = target.startsWith(`${LAYOUT.libDir}/`) || LAYOUT.functionRe.test(posix.basename(target));
-        if (!shadowOwned && !(target in SHARED_IMPORTS)) {
-          violations.push({ rule: 'shared-import', file, detail: `imports ${target}, which is not on the reviewed list — add it to SHARED_IMPORTS in scripts/check-shadow-isolation.mjs with the reason it cannot write for the shadow` });
-        }
+    // Rule 3: the one door to the network.
+    const fetches = (code.match(/\bfetch\b/g) || []).length;
+    if (isDoor) {
+      const bind = code.match(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*opts\.fetchImpl\s*\|\|\s*fetch\s*;/);
+      const lit = code.match(/\bMESSAGES_URL\s*=\s*"([^"]*)"/);
+      if (fetches !== 1 || !bind) v('door', file, 'the network door must name fetch exactly once, as `const f = opts.fetchImpl || fetch;`');
+      if (!lit || lit[1] !== MESSAGES_URL_LITERAL) v('door', file, `MESSAGES_URL must be the literal ${MESSAGES_URL_LITERAL}`);
+      if (bind) {
+        const calls = [...code.matchAll(new RegExp(`\\b${bind[1].replace('$', '\\$')}\\s*\\(\\s*([^,)]*)`, 'g'))];
+        if (!calls.length || calls.some((c) => c[1].trim() !== 'MESSAGES_URL')) v('door', file, `every call through ${bind[1]}() must be ${bind[1]}(MESSAGES_URL, …)`);
+        const uses = (code.match(new RegExp(`\\b${bind[1].replace('$', '\\$')}\\b`, 'g')) || []).length;
+        if (uses !== calls.length + 1) v('door', file, `${bind[1]} is used other than as ${bind[1]}(MESSAGES_URL, …)`);
       }
-      if (imp.namespace && local) violations.push({ rule: 'gateway', file, detail: `namespace import of ${imp.source} — would reach its writers around the gateway` });
-      if (imp.star && local) violations.push({ rule: 'gateway', file, detail: `export * from ${imp.source} — would re-export its writers around the gateway` });
-      if (imp.defaultName && local) violations.push({ rule: 'gateway', file, detail: `default import from ${imp.source} — name the bindings so the gateway rule can see them` });
-      for (const name of imp.named) {
-        if (WRITE_RE.test(name)) violations.push({ rule: 'gateway', file, detail: `imports writer "${name}" from ${imp.source} — shadow writes go through ${LAYOUT.store}` });
+    } else if (fetches) {
+      v('network', file, `names fetch — only ${LAYOUT.door} may reach the network`);
+    }
+
+    const imps = importsOf(code);
+    for (const imp of imps) {
+      const rel = imp.source.startsWith('.');
+      if (!rel && !BUILTINS.has(imp.source)) { v('import', file, `non-relative import "${imp.source}" — shadow files import local files by relative path and node: builtins only (no aliases, no packages)`); continue; }
+      if (!rel) { if (NETWORK_BUILTINS.includes(imp.source)) v('network-builtin', file, `imports ${imp.source}`); continue; }
+      const target = resolveLocal(file, imp.source);
+      if (imp.star) v('import', file, `export * from ${imp.source} — re-exports nothing it cannot name`);
+      if (imp.namespace) v('import', file, `namespace import of ${imp.source} — name the bindings so the allowlist can see them`);
+      if (imp.defaultName && !isOwnedPath(target)) v('import', file, `default import from ${imp.source} — name the bindings so the allowlist can see them`);
+
+      if (isStore) {
+        const fs = sameModule(target, 'netlify/functions/lib/firestore.mts');
+        const cfg = sameModule(target, `${LAYOUT.libDir}/config.mts`);
+        if (imp.kind === 'export') v('store', file, `store.mts re-exports from ${imp.source}`);
+        else if (!fs && !cfg) v('store', file, `store.mts may import only ../firestore.mts and ./config.mts, not ${imp.source}`);
+        else if (fs) for (const n of imp.named) if (!STORE_FIRESTORE_IMPORTS.includes(n)) v('store', file, `store.mts imports ${n} from firestore.mts — only ${STORE_FIRESTORE_IMPORTS.join(', ')}`);
+        continue;
       }
+      if (sameModule(target, LAYOUT.store)) {
+        for (const n of imp.named) if (!STORE_EXPORT_RE.test(n)) v('gateway', file, `imports ${n} from store.mts — only shadow* writers, assertShadowPath and ShadowPathError`);
+        continue;
+      }
+      if (isOwnedPath(target)) continue; // other shadow files are checked in their own right
+      const key = sharedKey(target);
+      if (!key) { v('shared-import', file, `imports ${target}, which is not in SHARED_IMPORTS — add it with the exact bindings and the reason they cannot write for the shadow`); continue; }
+      if (imp.kind === 'export') v('gateway', file, `re-exports from ${imp.source} — shadow files do not re-export shared modules`);
+      for (const n of imp.named) {
+        if (!SHARED_IMPORTS[key].includes(n)) v('shared-import', file, `imports ${n} from ${key}, which is not one of its allowed bindings (${SHARED_IMPORTS[key].join(', ')})`);
+        else if (WRITE_RE.test(n)) v('gateway', file, `imports writer "${n}" from ${key}`);
+      }
+    }
+
+    if (isStore) {
+      // Rule 4: exports are shadow* / assertShadowPath / ShadowPathError, and never an import.
+      if (/(?:^|[;\n}])\s*export\s+default\b/.test(code)) v('store', file, 'store.mts has a default export');
+      if (/(?:^|[;\n}])\s*export\s+(?:const|let|var)\b/.test(code)) v('store', file, 'store.mts exports a variable — export functions only');
+      const imported = new Set(imps.flatMap((i) => i.named));
+      for (const [local, exported] of exportListOf(code)) {
+        if (!STORE_EXPORT_RE.test(exported)) v('store', file, `store.mts exports "${exported}" — only shadow*, assertShadowPath and ShadowPathError`);
+        if (imported.has(local)) v('store', file, `store.mts re-exports its import "${local}" as "${exported}"`);
+      }
+      // Every use of a writer is `writer(assertShadowPath(`, and nothing else touches it.
+      for (const w of STORE_WRITERS) {
+        const all = (code.match(new RegExp(`\\b${w}\\b`, 'g')) || []).length;
+        const guarded = (code.match(new RegExp(`\\b${w}\\(\\s*assertShadowPath\\(`, 'g')) || []).length;
+        const inImport = imps.some((i) => i.named.includes(w)) ? 1 : 0;
+        if (all !== guarded + inImport) v('store', file, `${w} is used other than as ${w}(assertShadowPath(…)) — every write must pass the prefix check`);
+      }
+      if (!/function\s+assertShadowPath\s*\(/.test(code)) v('store', file, 'store.mts no longer defines assertShadowPath');
     }
   }
 
   // ── browser graph ──
   const browserFiles = [];
   if (browserEntries.length) {
-    let g;
-    try { g = await graph(root, browserEntries, 'browser'); }
-    catch (e) { violations.push({ rule: 'build', file: browserEntries.join(', '), detail: `esbuild could not walk the browser graph: ${e?.message || e}` }); }
-    if (g) {
-      for (const w of g.warnings) {
-        if (/not be bundled|cannot be analyzed|not a string literal/i.test(w.text)) violations.push({ rule: 'dynamic', file: toPosix(w.location?.file || '?'), detail: w.text });
+    let files = null;
+    try { files = await graph(root, browserEntries, 'browser'); }
+    catch (e) { v('build', browserEntries.join(', '), `esbuild could not walk the browser graph: ${e?.message || e}`); }
+    for (const [file, imports] of files || []) {
+      browserFiles.push(file);
+      const inShadow = file.startsWith(`${LAYOUT.screenDir}/`);
+      if (!inShadow && !BROWSER_FILES.includes(file)) v('browser-module', file, `the shadow screen reaches ${file}; it may reach only ${LAYOUT.screenDir}/** and ${BROWSER_FILES.join(', ')}`);
+      for (const imp of imports) {
+        if (!imp.external) continue;
+        if (imp.path.startsWith('.') || imp.path.startsWith('/')) v('unresolved', file, `local import ${imp.path} could not be resolved`);
+        else if (!BROWSER_PACKAGES.includes(imp.path)) v('browser-package', file, `package "${imp.path}" — the shadow screen may use only ${BROWSER_PACKAGES.join(', ')}`);
       }
-      for (const [file, imports] of g.files) {
-        browserFiles.push(file);
-        const inShadow = file.startsWith(`${LAYOUT.screenDir}/`);
-        if (!inShadow && !BROWSER_FILES.includes(file)) {
-          violations.push({ rule: 'browser-module', file, detail: `the shadow screen reaches ${file}; it may reach only ${LAYOUT.screenDir}/** and ${BROWSER_FILES.join(', ')}` });
-        }
-        for (const imp of imports) {
-          if (!imp.external) continue;
-          if (imp.path.startsWith('.') || imp.path.startsWith('/')) violations.push({ rule: 'unresolved', file, detail: `local import ${imp.path} could not be resolved` });
-          else if (!BROWSER_PACKAGES.includes(imp.path)) violations.push({ rule: 'browser-package', file, detail: `package "${imp.path}" — the shadow screen may use only ${BROWSER_PACKAGES.join(', ')}` });
-        }
-        const code = await stripped(root, file);
-        const hosts = [...new Set(hostsIn(code))];
-        if (hosts.length) violations.push({ rule: 'browser-host', file, detail: `names ${hosts.join(', ')} — the shadow screen may call only its own function` });
-        for (const m of code.matchAll(/["'`]\/(?:\.netlify\/functions|api)\/([A-Za-z0-9_-]+)/g)) {
-          if (!m[1].startsWith('claude-shadow')) violations.push({ rule: 'browser-endpoint', file, detail: `calls /${m[1]} — the shadow screen may call only claude-shadow*` });
-        }
-        if (inShadow && /\bfetch\s*\(/.test(code)) violations.push({ rule: 'browser-fetch', file, detail: 'bare fetch() — use apiFetch from src/lib/api.js' });
-        if (/NUVIZZ_|nuvizz\\?\.com/i.test(code) && inShadow) violations.push({ rule: 'nuvizz-host', file, detail: 'names NuVizz' });
+      const code = await stripped(root, file);
+      const dyn = nonLiteralDynamic(code);
+      if (dyn.length) v('dynamic', file, `import/require with a non-literal argument (${dyn[0]})`);
+      if (!inShadow) continue;
+      const hosts = [...new Set(hostsIn(code))];
+      if (hosts.length) v('browser-host', file, `names ${hosts.join(', ')} — the shadow screen may call only its own function`);
+      if (/\bfetch\b|\bXMLHttpRequest\b|\bWebSocket\b|\bEventSource\b|\bsendBeacon\b/.test(code)) v('browser-fetch', file, 'names fetch or another network primitive — the screen calls its function through apiFetch only');
+      if (/\beval\s*\(|\bnew\s+Function\b|\bFunction\s*\(|\bglobalThis\b|\bimport\s*\(|\brequire\s*\(/.test(code)) v('browser-dynamic', file, 'eval / Function / globalThis / dynamic import — code the guard cannot read');
+      if (/NUVIZZ_|nuvizz\\?\.com/i.test(code)) v('nuvizz-host', file, 'names NuVizz');
+      // Every function path named must be the shadow's own, however it is assembled.
+      for (const m of code.matchAll(/\/(?:\.netlify\/functions|api)\/([^"'`\s]*)/g)) {
+        if (!m[1].startsWith('claude-shadow') || m[1].includes('${')) v('browser-endpoint', file, `names /${m[0].slice(1, 60)} — the shadow screen may call only claude-shadow*`);
       }
+      // Every apiFetch() goes to a constant that IS the literal claude-shadow path.
+      const consts = new Map([...code.matchAll(/\bconst\s+([\w$]+)\s*=\s*(["'])([^"'`]*)\2\s*;/g)].map((m) => [m[1], m[3]]));
+      const calls = [...code.matchAll(/\bapiFetch\s*\(\s*([^,)]*)/g)];
+      for (const c of calls) {
+        const arg = c[1].trim();
+        const lit = arg.match(/^(["'])([^"'`]*)\1$/);
+        const url = lit ? lit[2] : consts.get(arg);
+        if (!url || !url.startsWith(SCREEN_ENDPOINT_PREFIX)) v('browser-endpoint', file, `apiFetch(${arg.slice(0, 40)}) is not a literal claude-shadow path`);
+      }
+      const uses = (code.match(/\bapiFetch\b/g) || []).length;
+      const importsApi = importsOf(code).some((i) => i.named.includes('apiFetch')) ? 1 : 0;
+      if (uses !== calls.length + importsApi) v('browser-endpoint', file, 'apiFetch is used other than as a direct call — it cannot be passed around');
     }
   }
 
-  return { ok: violations.length === 0, violations, serverEntries, browserEntries, serverFiles: serverFiles.sort(), browserFiles: browserFiles.sort() };
+  return { ok: violations.length === 0, violations, serverEntries, browserEntries, owned: [...owned].sort(), serverFiles: serverFiles.sort(), browserFiles: browserFiles.sort() };
 }
 
 async function main() {
   const root = resolve(process.argv[2] || DEFAULT_ROOT);
   const r = await checkShadowIsolation(root);
-  const rel = (f) => f;
   console.log(`shadow isolation — ${r.serverEntries.length} server entr${r.serverEntries.length === 1 ? 'y' : 'ies'}, ${r.browserEntries.length} browser entr${r.browserEntries.length === 1 ? 'y' : 'ies'}`);
-  console.log(`  server graph (${r.serverFiles.length} modules): ${r.serverFiles.map(rel).join(', ')}`);
-  console.log(`  browser graph (${r.browserFiles.length} modules): ${r.browserFiles.map(rel).join(', ')}`);
-  if (r.ok) { console.log('OK — no path from the Claude shadow planner reaches NuVizz, a foreign host, or a Firestore writer outside the gateway.'); return; }
+  console.log(`  server graph (${r.serverFiles.length} modules): ${r.serverFiles.join(', ')}`);
+  console.log(`  shadow-owned (${r.owned.length}): ${r.owned.join(', ')}`);
+  console.log(`  browser graph (${r.browserFiles.length} modules): ${r.browserFiles.join(', ')}`);
+  if (r.ok) { console.log('OK — the Claude shadow planner reaches only reviewed modules, one network door (the Messages API) and one write gateway (claude_shadow_*).'); return; }
   console.error(`\nFAIL — ${r.violations.length} violation(s):`);
-  for (const v of r.violations) console.error(`  [${v.rule}] ${v.file}: ${v.detail}`);
-  console.error('\nThe shadow planner must never call NuVizz or write outside claude_shadow_*. Fix the import; do not weaken this guard.');
+  for (const x of r.violations) console.error(`  [${x.rule}] ${x.file}: ${x.detail}`);
+  console.error('\nThe shadow planner must never call NuVizz or write outside claude_shadow_*. Fix the code; do not weaken this guard.');
   process.exit(1);
 }
 
