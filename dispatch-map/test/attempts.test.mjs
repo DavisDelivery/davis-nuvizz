@@ -91,6 +91,52 @@ test('buildPlanRecord: freezes who had the stop, keyed by clean stopNbr', () => 
   assert.equal(r.shipmentNbr, '007137828');          // morning shipment == stopNbr (no ATT yet)
 });
 
+// v1.59.2 — the 8:30 freeze keeps WHERE on the route each stop was, not just which truck.
+// Real shape: PASSION CITY CHURCH (RA56488430) was stop 14 on THEO on 2026-09-23's sealed record.
+test('buildPlanRecord: the 8:30 freeze keeps the stop’s position on its route', () => {
+  const r = buildPlanRecord(
+    { ...PLANNED_STOP, routeSeq: 14, plannedEtaDTTM: '2026-09-23T10:40:00', loadId: '66f0c0ffee' },
+    '2026-09-23', '2026-09-23T12:30:00Z',
+  );
+  assert.equal(r.routeSeq, 14);
+  assert.equal(r.plannedEtaDTTM, '2026-09-23T10:40:00');
+  assert.equal(r.loadId, '66f0c0ffee');
+});
+
+test('buildPlanRecord: a route read back in stop order is the order the dispatcher planned', () => {
+  const route = [
+    { ...PLANNED_STOP, stopNbr: 'C', routeSeq: 3 },
+    { ...PLANNED_STOP, stopNbr: 'A', routeSeq: 1 },
+    { ...PLANNED_STOP, stopNbr: 'B', routeSeq: '2' },   // a string Display Seq still orders as a number
+  ].map((s) => buildPlanRecord(s, '2026-09-23', 'now'));
+  const order = route.slice().sort((x, y) => x.routeSeq - y.routeSeq).map((x) => x.stopNbr);
+  assert.deepEqual(order, ['A', 'B', 'C']);
+});
+
+test('buildPlanRecord: a stop with no position records NULL, never 0 (Number(null) is 0 and 0 is finite)', () => {
+  // 0 would read as "first stop on the route" — a planned position the dispatcher never gave it.
+  for (const routeSeq of [undefined, null, '', '   ', 'n/a']) {
+    const r = buildPlanRecord({ ...PLANNED_STOP, routeSeq }, '2026-09-23', 'now');
+    assert.equal(r.routeSeq, null, `routeSeq ${JSON.stringify(routeSeq)} must freeze as null`);
+  }
+  const bare = buildPlanRecord(PLANNED_STOP, '2026-09-23', 'now');
+  assert.equal(bare.plannedEtaDTTM, null);
+  assert.equal(bare.loadId, null);
+});
+
+test('buildPlanRecord: the new order fields leave every field the attempts join reads unchanged', () => {
+  const before = buildPlanRecord(PLANNED_STOP, '2026-06-23', 'now');
+  const after = buildPlanRecord({ ...PLANNED_STOP, routeSeq: 5, plannedEtaDTTM: 'x', loadId: 'y' }, '2026-06-23', 'now');
+  for (const k of Object.keys(before)) {
+    if (['routeSeq', 'plannedEtaDTTM', 'loadId'].includes(k)) continue;
+    assert.deepEqual(after[k], before[k], `field ${k} changed`);
+  }
+  assert.deepEqual(
+    buildAttemptItem(after, { shipmentNbr: 'ATT007137828' }, '2026-06-23', 'now'),
+    buildAttemptItem(before, { shipmentNbr: 'ATT007137828' }, '2026-06-23', 'now'),
+  );
+});
+
 test('buildAttemptItem: joins the ATT stop back to its morning driver', () => {
   const plan = buildPlanRecord(PLANNED_STOP, '2026-06-23', '2026-06-23T13:00:00Z');
   // Evening re-probe: same stopNbr, shipment now ATT-prefixed, unplanned.
