@@ -53,6 +53,9 @@ const VIEWER_SET = [
   // card shows anyone who opens it. READ-ONLY by construction — the decision is written from
   // the browser to customer_notes exactly as the Routing brush and the stop card write it.
   'uline-advisory',
+  // The Labels screen: one shipper's orders on one day, each with the label it prints — the same
+  // facts the stop card's Label button reads. READ-ONLY; nothing is saved by printing.
+  'labels-by-shipper',
 ];
 const DISPATCHER_SET = [
   'ai-search', 'anthropic-routing', 'debug-capture', 'manifest-email-check', 'manifest-upload',

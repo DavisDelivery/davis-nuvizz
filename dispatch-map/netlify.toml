@@ -66,6 +66,11 @@
   # call, each one masked read of the day's stops and one digest write. Firestore only.
   [functions."history-search-rebuild"]
     timeout = 26
+  # The Labels screen (labels-by-shipper): one day's board read masked, then the chosen shipper's
+  # saved labels (a pointer and a record per order) and customer notes. Firestore only, ZERO
+  # NuVizz calls — but Uline on a heavy day is ~700 orders of reads, past the 10s default.
+  [functions."labels-by-shipper"]
+    timeout = 26
   # The two LIVE-BOARD engine endpoints (driver drafts and end-of-night cleanup).
   # Both are Firestore-only — ZERO NuVizz calls — but a dispatcher is waiting on a
   # real assignment solve over a whole unplanned pool. On the 10s DEFAULT a busy

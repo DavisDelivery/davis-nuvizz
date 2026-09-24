@@ -25,6 +25,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
+import { labelsAnswer } from './lib/labels-fixture.mjs';
 
 const DIST = process.argv[2] || 'dist';
 const PORT = 4183;
@@ -47,6 +48,7 @@ const SCREENS = [
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
   { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
+  { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
   { key: 'claudeshadow', label: 'Claude shadow', nav: /claude shadow/i, inMore: true },
@@ -84,6 +86,11 @@ for (const device of DESKTOPS) {
   // measuring its load-error box would prove nothing about the desktop layout.
   await page.route('**/.netlify/functions/claude-shadow*', (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify(CLAUDE_SHADOW_STATUS),
+  }));
+  // Print labels renders its shipper chips only once the day has loaded; without this it would
+  // measure its load-error box, which proves nothing about the desktop layout.
+  await page.route('**/.netlify/functions/labels-by-shipper*', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(labelsAnswer(route.request().url())),
   }));
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1200);
