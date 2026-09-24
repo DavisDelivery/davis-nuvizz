@@ -49,6 +49,10 @@ const VIEWER_SET = [
   'nuvizz-undelivered-report', 'nuvizz-write-log', 'route-departures', 'routing-engine-data',
   'travel-model', 'customer-comms-config', 'gmail-auth', 'alert-recipients-config',
   'address-queue',
+  // The Uline straight-truck review: a customer's address and restriction, the facts a stop
+  // card shows anyone who opens it. READ-ONLY by construction — the decision is written from
+  // the browser to customer_notes exactly as the Routing brush and the stop card write it.
+  'uline-advisory',
 ];
 const DISPATCHER_SET = [
   'ai-search', 'anthropic-routing', 'debug-capture', 'manifest-email-check', 'manifest-upload',

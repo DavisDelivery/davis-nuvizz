@@ -91,8 +91,9 @@ import {
   resolvePlaceMark, placeNoTractor, placeNoTractorLine, shiplifyPinCandidate, shiplifyPinKind,
   shiplifyRecordFor, buildShiplifyLookup, tractorPlaceKeys, tractorSeenAt, limeAsOf, shiplifyPanelRows,
   limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
-  buildingTypeChanged,
+  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS,
 } from './lib/place-mark.js';
+import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg } from './lib/uline-review.js';
 import {
   glyphCenter, glyphBadge, glyphMuted, glyphClusterBadge, GLYPH_INK_ON_LIME, FORKLIFT_BADGE_LIME,
 } from './lib/place-glyphs.js';
@@ -170,7 +171,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.59.2';
+const APP_VERSION = '1.60.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -224,6 +225,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.60.0', 'ULINE SAYS STRAIGHT TRUCK ONLY AT A CUSTOMER — NOW YOU CAN LOOK AT THE BUILDING AND DECIDE WHETHER IT IS RIGHT. Chad: \u201cin our address history we built i want to add a tab inside it of the uline advisory straight truck only tab where the ui shows close up views of the building for each flag and we can quickly decide if we are going to make it no tractor trailer or not.\u201d Address history has a fourth tab, Uline straight truck. WHY IT MATTERS IN TRUCKS, READ OFF THE CODE RATHER THAN ASSUMED. The flag is written when Uline\u2019s own order instructions say straight truck \u2014 another company\u2019s free text about its own shipment. The map calls it advisory and draws it half-and-half; the 9pm trailer alert ignores it. THE AUTO-BUILDER DOES NOT: routing-build-background lists uline_straight_truck in TRAILER_BLOCKERS beside no_tractor_trailer, so every Uline-flagged customer is held off a 53\u2032 today whether or not one would fit. A wrong flag is a box-truck slot spent every day that customer has freight; a right one nobody has confirmed is a \u201cno\u201d the map still draws as a maybe. WHAT THE TAB SHOWS, one location at a time: the building from above (satellite, zoom 19, with a scale bar, so \u201cis that lot 75 feet deep\u201d is a reading and not an impression) and from the street (Street View, turned to FACE the building \u2014 it opens facing the way the camera car drove, which on a frontage road is a picture of the road); what Uline actually wrote, quoted; whether one of OUR tractors has delivered there before and when; the building type when a dispatcher has set one (a school or church says so); and every stop on the board the answer covers. THE ANSWER IS A FIELD THAT ALREADY EXISTS \u2014 customer_notes.vehicle_eligibility, the same mark the Routing brush paints and the stop card\u2019s vehicle picker sets. No tractor trailer saves Box truck only: red on the map, forced onto a box by the router, and the trailer-conflict alert starts watching it. Tractor OK saves Tractor-trailer OK: the router stops holding it to a box because of Uline\u2019s note. Skip saves nothing. It is saved to the CUSTOMER, so it holds for every future order there, and a location decided in Routing or on a stop card does not come back here asking the same question. A third door into the same room, not a new room \u2014 three readers (the map, the router, the alert) already agree on those two values. THE CASE THAT MUST NOT GET A ONE-TAP ANSWER: Tractor OK drops EVERY trailer restriction on a customer, not only Uline\u2019s. A location where a person has already said no \u2014 a ticked restriction, a locked restriction list, a Davis-typed Address 2 \u201cNO TRACTOR TRL\u201d \u2014 is listed as decided, with no buttons, and the stop card is where that person\u2019s mark is changed. Read with confirmedBlockerKeys, the function the map paints by, so the tab and the pin cannot disagree about whether somebody has spoken. TWO VIEWS. Desktop: the list beside the building, both pictures side by side, keys N / T / S under the hand, and a keystroke inside a field or with a modifier does nothing. Phone: one building per screen, the satellite by default and Street View one tap away (a panorama nobody opened is a billed load), and three thumb-height answers. Undo after every answer, restoring exactly what was there before. A row moves only once Firestore has acknowledged the save. ONE map and ONE panorama for the whole review, re-pointed per location, never one per row. BOARD-SCOPED, AND THAT IS A FACT ABOUT THE DATA: a customer note has no address or pin of its own, only overrides \u2014 the street and the coordinates come from the stop. So the tab covers every Uline-flagged customer on today\u2019s board and the next two business days, the same horizon the problem-address queue works; a flagged customer with no freight on the board has no building to show until it comes up. Zero NuVizz calls, proven by running the endpoint through a Firestore fake that throws on any other network call. Tractor history is read for the flagged locations only, never the whole collection.'],
   ['1.59.2', 'THE 8:30 MORNING PLAN NOW KEEPS THE ORDER OF EVERY ROUTE. Chad: \u201cthe att_plan should be keeping the order the routes are in as well \u2026 it\u2019s hard to grade the learned routing engine against the routes if it\u2019s not learning and looking at the order of the routes.\u201d The 8:30 freeze (att_plan) recorded which driver, load and route every planned stop was on, and dropped WHERE on the route it sat, so the morning plan could say which truck and never in what order. Each frozen stop now also keeps its position on the route (NuVizz\u2019s ShipTo Display Seq, the delivery order the board already shows), its planned arrival, and the load\u2019s own id where the scan has it, which keeps two same-named loads apart. Starts with the next 8:30 freeze; mornings already frozen stay as they were. Nothing is removed or renamed and the attempts list and the driver scorecard read exactly what they read before; the one visible difference is that the Stops lookup can now show a stop\u2019s route position from the morning plan when that plan is the only copy of the stop it finds. A stop with no position records none rather than 0. Zero NuVizz calls: the freeze still reads only the board it already reads.'],
   ['1.59.1', 'THE CLAUDE SHADOW GUARD, REBUILT AFTER THREE ADVERSARIAL REVIEWS \u2014 AND A RUNTIME LOCK UNDER IT. 1.59.0 merged itself the moment CI went green, before the review of it had finished (auto-merge takes every green claude/* branch), so this release is that review landing. Nothing plans yet and nothing a dispatcher sees changes except the Claude shadow tab\u2019s test-call card. THE GUARD IS NOW AN ALLOWLIST. The 1.59.0 guard looked for bad names, and the review found eighteen ways to spell the same thing differently: a same-origin call to nuvizz-manual-scan, raw Firestore credentials, a tab inside a path that the URL parser turns into \u2018..\u2019, an import alias, a re-export through a file it did not read. Now every module the shadow reaches must be shadow code or on a short reviewed list with its reason, every binding imported from a shared module is named, ONE file may touch the network (the Messages API only) and ONE file may write (every write wrapped in the claude_shadow_ prefix check, exactly). A SECOND REVIEW FOUND ELEVEN MORE (fetch reached as global[\u2018fe\u2019+\u2018tch\u2019], an indirect eval, createRequire, a checked path rewritten after the check), and the lesson was that reading code cannot catch every spelling. SO A RUNTIME LOCK SITS UNDER THE GUARD: every shadow function wraps fetch as it loads and again first thing in its handler, and refuses any host but Anthropic\u2019s and Firestore\u2019s and any Firestore write outside claude_shadow_*, judged on the request as it will actually be sent. The lock is pinned by hash, so it changes only with somebody re-reading it. Every bypass from both reviews is a failing test (36 tests in the guard\u2019s file). ALSO: the gateway refuses control characters in a path; the test call\u2019s confirm dialog quotes a ceiling computed from the code (about 4.9\u00a2, usually well under 1\u00a2) instead of promising under 1\u00a2; the card tells an answered refusal from an API error from a timeout that may still be billed; the tab says it WILL plan rather than that it plans; and the tablet layout guard now measures it. The Build Panel and the Route Workbench are not touched.'],
   ['1.59.0', 'THE CLAUDE SHADOW TAB EXISTS, AND IT CANNOT REACH NUVIZZ \u2014 CI PROVES IT. Chad is having Claude plan tomorrow\u2019s loads beside the router, for comparison only, and the brief put one rule above the rest: ZERO NuVizz calls, and nothing written outside its own collections. This release is the plumbing and nothing that plans. THE GUARD: scripts/check-shadow-isolation.mjs walks the real import graph (esbuild\u2019s own) of every claude-shadow* function and the screen, and FAILS the build if any module it reaches is a nuvizz* module, names a NUVIZZ_ variable or a nuvizz.com host, names any host but api.anthropic.com and Firestore\u2019s, or pulls in an npm package. Seen failing on purpose before it was trusted (the count first given here, 16, was wrong; see 1.59.1). ONE REVIEWED EXEMPTION: lib/firestore.mts reads NUVIZZ_BASE_URL in exactly one expression, to REFUSE a UAT host against the production database; it makes no NuVizz call, and if that file ever names NuVizz anywhere else the build fails again. THE GATEWAY: every shadow write goes through lib/claude-shadow/store.mts, which refuses any path outside claude_shadow_* before a byte leaves the function; the guard refuses a shadow file importing any writer directly, however renamed, and any shared module not on a short reviewed list. THE RULES: firestore.rules now refuses browser WRITES to claude_shadow_* \u2014 but nothing in this repo deploys that file, so this is inert until someone runs the deploy, and deploying it also closes the eight collections serverOnlyCollection() already lists. THE TAB: More \u2192 Claude shadow, on the laptop and on the phone. It shows the switch, the model, whether the server holds a key, and ONE TEST CALL (confirm first, well under 1\u00a2) that proves the key reaches claude-opus-5-5 with the request shape the planner will use, recorded with its real token counts and cost. SWITCHES: CLAUDE_SHADOW=off makes zero model calls anywhere; CLAUDE_SHADOW_MODEL (default claude-opus-5-5) is separate from ANTHROPIC_MODEL so the router\u2019s model never moves with it. The Build Panel and the Route Workbench are not touched.'],
@@ -33187,6 +33189,7 @@ const ADDR_SECTIONS = [
   { id: 'problems', label: 'Problem addresses', hint: 'Stops whose address will send a truck to the wrong door — fix them here' },
   { id: 'carrier', label: 'NuVizz changed it', hint: 'Orders the carrier re-addressed after we scanned them' },
   { id: 'log', label: 'Full log', hint: 'Every address change, ours and theirs' },
+  { id: 'uline', label: 'Uline straight truck', hint: 'Uline says straight truck only — look at the building and decide if a 53′ can go' },
 ];
 
 const QUEUE_SIGNALS = {
@@ -33287,6 +33290,463 @@ function classifyPushResult(j) {
     return { kind: 'dirty', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order.'} The write also touched something else — check it in the portal: ${out.error || err || 'see the write log.'}` };
   }
   return { kind: 'refused', text: out.error || err || 'NuVizz refused the write.' };
+}
+
+// ── ULINE: STRAIGHT TRUCK ONLY — look at the building, then decide ──────────
+//
+// Chad: "in our address history we built i want to add a tab inside it of the uline advisory
+// straight truck only tab where the ui shows close up views of the building for each flag and
+// we can quickly decide if we are going to make it no tractor trailer or not."
+//
+// The rules are src/lib/uline-review.js (pure, tested). What matters for this screen, read off
+// the code rather than assumed: the AUTO-BUILDER already treats Uline's flag as a hard block
+// (routing-build-background TRAILER_BLOCKERS), so every stop listed here is held off a 53'
+// today. "Tractor OK" frees a box-truck slot for every future order at that customer; "No
+// tractor trailer" makes the "no" a person's statement instead of another company's text, which
+// the map then draws solid red and the trailer-conflict alert starts watching.
+//
+// ONE LOCATION IN FOCUS, NOT A WALL OF MAPS. A satellite map and a Street View panorama are each
+// a billed Google load. Twelve cards each opening both is twenty-four loads to make twelve
+// decisions one at a time anyway — so the imagery belongs to the ONE location being decided,
+// and the map and panorama are re-pointed rather than rebuilt as the dispatcher moves on.
+
+function useUlineReview(nonce) {
+  const { google, error: mapsErr } = useGoogleMaps();
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState(null);
+  const [busyKey, setBusyKey] = React.useState(null);
+  const [writeErr, setWriteErr] = React.useState(null);
+  // The last decision, for Undo. Its `prev` is the vehicle mark BEFORE this press (null for a
+  // row that was undecided), never a guess at it.
+  const [last, setLast] = React.useState(null);
+  // ONE WRITE AT A TIME, through every door — buttons, keys, Undo, Change. A ref, not state:
+  // N then T pressed faster than a render would otherwise fire two writes for the same row, and
+  // Firestore keeps whichever LANDS last, which need not be the key pressed last.
+  const inFlight = React.useRef(false);
+  const load = React.useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await apiFetch('/.netlify/functions/uline-advisory', { cache: 'no-store' });
+      const j = await r.json();
+      if (!j?.ok) throw new Error(j?.error || 'read failed');
+      setData(j);
+    } catch (e) { setErr(String(e?.message || e)); } finally { setLoading(false); }
+  }, []);
+  React.useEffect(() => { load(); }, [load, nonce]);
+
+  const decide = React.useCallback(async (row, next, { undo = false } = {}) => {
+    if (!db || !row?.key) { setWriteErr('Firestore is not connected on this page — nothing was saved.'); return false; }
+    if (inFlight.current) return false;
+    inFlight.current = true;
+    const prev = row.decision === 'box_only' || row.decision === 'tractor' ? row.decision : null;
+    setBusyKey(row.key); setWriteErr(null);
+    try {
+      // THE SAME THREE FIELDS the Routing brush and the stop card write, with a merge — the
+      // note's restrictions, hours and dock notes are untouched. See eligibilityPayload.
+      await setDoc(doc(db, 'customer_notes', row.key), eligibilityPayload(row.key, next, serverTimestamp()), { merge: true });
+      // Moved only once Firestore has ACKNOWLEDGED the write: a row that left "to decide"
+      // before the save landed would be an intent reported as an outcome.
+      setData((d) => (d ? { ...d, rows: sortUlineRows(d.rows.map((r) => (r.key === row.key ? { ...r, decision: decisionAfter(r, next) } : r))) } : d));
+      setLast(undo ? null : { key: row.key, name: row.businessName, next: next || null, prev });
+      return true;
+    } catch (e) {
+      setWriteErr(`Could not save ${row.businessName}: ${e?.message || e}`);
+      return false;
+    } finally { inFlight.current = false; setBusyKey(null); }
+  }, []);
+
+  const rows = data?.rows || [];
+  const todo = rows.filter((r) => r.decision === 'undecided');
+  const done = rows.filter((r) => r.decision !== 'undecided');
+  return { google, mapsErr, data, loading, err, load, rows, todo, done, decide, busyKey, writeErr, last, setLast };
+}
+
+const ULINE_DECIDED = {
+  box_only: { label: 'Box truck only', color: ELIG_BOX_COLOR, hint: 'No tractor trailer here — the router keeps this location off a 53′.' },
+  tractor: { label: 'Tractor-trailer OK', color: ELIG_TRACTOR_COLOR, hint: 'A 53′ fits — the router ignores Uline’s straight-truck flag here.' },
+  confirmed: { label: 'No tractor trailer — set by a dispatcher', color: ELIG_BOX_COLOR, hint: 'A person already marked a trailer restriction on this customer. Change it on the stop card, not here — Tractor OK would overrule them.' },
+};
+
+/** The top-down close-up. ONE map for the whole review, re-centred per location. */
+function UlineSatellite({ google, mapsErr, pin, height }) {
+  const holder = React.useRef(null);
+  const mapRef = React.useRef(null);
+  const markerRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!google || !holder.current || !pin) return;
+    const at = { lat: pin.lat, lng: pin.lng };
+    if (!mapRef.current) {
+      // Zoom 19 is the loading dock, the truck court and the street the trailer turns off —
+      // the three things this decision is about. The scale bar is there so "is that lot 75
+      // feet deep" is a reading, not an impression.
+      mapRef.current = new google.maps.Map(holder.current, {
+        center: at, zoom: 19, mapTypeId: 'hybrid', tilt: 0,
+        disableDefaultUI: true, zoomControl: true, scaleControl: true, fullscreenControl: true,
+        mapTypeControl: true, gestureHandling: 'greedy', clickableIcons: false,
+      });
+      markerRef.current = new google.maps.Marker({ map: mapRef.current, position: at });
+    } else {
+      mapRef.current.setCenter(at); mapRef.current.setZoom(19);
+      markerRef.current?.setPosition(at);
+    }
+  }, [google, pin?.lat, pin?.lng]);
+  // THE HOLDER NEVER UNMOUNTS. The map object lives in a ref and survives a re-render; an early
+  // return for a no-pin row would unmount the div it was built into, and the next row WITH a pin
+  // would re-centre a map bound to a detached element — a blank grey box, silently. So the notes
+  // are overlays on a holder that stays put.
+  const note = !pin ? 'No pin for this stop — fix it on Problem addresses, then come back.'
+    : !google ? (mapsErr ? `Map unavailable: ${mapsErr}` : 'Loading the satellite view…') : null;
+  return (
+    <div className="relative w-full" style={{ height }}>
+      <div ref={holder} className="absolute inset-0 rounded-lg bg-slate-200" aria-label="Satellite close-up of the building" />
+      {note && <div className="absolute inset-0 rounded-lg bg-slate-100 flex items-center justify-center p-4 text-center text-xs text-slate-500">{note}</div>}
+    </div>
+  );
+}
+
+/** The view from the street, turned to FACE the building. */
+function UlineStreetView({ google, mapsErr, pin, height }) {
+  const holder = React.useRef(null);
+  const panoRef = React.useRef(null);
+  const [state, setState] = React.useState('loading');
+  React.useEffect(() => {
+    if (!google || !holder.current || !pin) { setState('loading'); return undefined; }
+    let dead = false;
+    setState('loading');
+    const at = { lat: pin.lat, lng: pin.lng };
+    const req = { location: at, radius: 80 };
+    if (google.maps.StreetViewSource?.OUTDOOR) req.source = google.maps.StreetViewSource.OUTDOOR;
+    if (google.maps.StreetViewPreference?.NEAREST) req.preference = google.maps.StreetViewPreference.NEAREST;
+    // The callback form, because it is the one every version of the API accepts.
+    new google.maps.StreetViewService().getPanorama(req, (data, status) => {
+      if (dead) return;
+      if (status !== 'OK' || !data?.location?.pano) { setState('none'); return; }
+      const ll = data.location.latLng;
+      // Street View opens facing the way the camera car drove — on a frontage road that is a
+      // picture of the road. Turn it to the pin so it is a picture of the BUILDING.
+      const pov = { heading: bearingDeg(ll ? { lat: ll.lat(), lng: ll.lng() } : at, at), pitch: 6 };
+      if (!panoRef.current) {
+        panoRef.current = new google.maps.StreetViewPanorama(holder.current, {
+          pano: data.location.pano, pov, zoom: 0, addressControl: false, fullscreenControl: true,
+          motionTracking: false, motionTrackingControl: false, enableCloseButton: false, panControl: false,
+        });
+      } else {
+        panoRef.current.setPano(data.location.pano); panoRef.current.setPov(pov); panoRef.current.setZoom(0);
+      }
+      setState('ok');
+    });
+    return () => { dead = true; };
+  }, [google, pin?.lat, pin?.lng]);
+  // The holder stays MOUNTED through EVERY state, no-pin and no-key included: the panorama is
+  // built into it once and re-pointed per location, so unmounting it for one row would leave the
+  // next row re-pointing a panorama bound to a detached element — and a panorama created in a
+  // hidden box renders black. Every message is an overlay.
+  const note = !pin ? 'No pin, so no street view.'
+    : !google ? (mapsErr ? `Street view unavailable: ${mapsErr}` : 'Loading the street view…')
+      : state === 'none' ? 'Google has no street view within 80 m of this pin — judge it from the satellite.'
+        : state !== 'ok' ? 'Finding the nearest street view…' : null;
+  return (
+    <div className="relative w-full" style={{ height }}>
+      <div ref={holder} className="absolute inset-0 rounded-lg bg-slate-200" aria-label="Street view facing the building" />
+      {note && <div className="absolute inset-0 rounded-lg bg-slate-100 flex items-center justify-center p-4 text-center text-xs text-slate-500">{note}</div>}
+    </div>
+  );
+}
+
+const ulineDay = (d) => { const t = Date.parse(`${d}T12:00:00Z`); return Number.isFinite(t) ? new Date(t).toLocaleDateString([], { weekday: 'short', month: 'numeric', day: 'numeric', timeZone: 'UTC' }) : d; };
+
+/** What the decision rests on besides the pictures. Shared text; each view places it. */
+function UlineEvidence({ row }) {
+  const place = row.buildingType && row.buildingType !== 'none' ? row.buildingType : null;
+  return (
+    <div className="space-y-2">
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+        <div className="text-[10px] font-bold uppercase tracking-wide text-amber-800">What Uline wrote</div>
+        {row.uline?.length
+          ? row.uline.map((t) => <div key={t} className="font-mono text-xs text-amber-900 break-words mt-0.5">“{t}”</div>)
+          : <div className="text-xs text-amber-900 mt-0.5">The flag is on this customer but Uline’s exact words were not kept — it was set before the scanner stored its matches.</div>}
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        {row.tractor
+          ? <span className="rounded px-1.5 py-0.5 bg-green-100 text-green-800 font-semibold" title="From tractor_locations — our own delivery history, not a guess">One of our tractors has delivered here{row.tractor.count > 1 ? ` ${row.tractor.count}×` : ''}{row.tractor.last ? ` — last ${shortDay(String(row.tractor.last).slice(0, 10), todayInET()) || row.tractor.last}` : ''}</span>
+          : <span className="rounded px-1.5 py-0.5 bg-slate-100 text-slate-600">No tractor delivery on record here</span>}
+        {place && (
+          <span className={`rounded px-1.5 py-0.5 font-semibold ${NO_TRACTOR_PLACE_MARKS.has(place) ? 'bg-red-100 text-red-800' : 'bg-slate-100 text-slate-700'}`}>
+            {BUILDING_TYPE_LABEL[place] || place}{NO_TRACTOR_PLACE_MARKS.has(place) ? ' — a no-tractor place type' : ''}
+          </span>
+        )}
+      </div>
+      <div className="text-[11px] text-slate-500 break-words">
+        On the board: {row.stops.map((st) => `${ulineDay(st.date)} ${st.routeName ? `· ${st.routeName} ` : '· unrouted '}(${st.pro || st.stopNbr})`).join('  ·  ')}
+      </div>
+    </div>
+  );
+}
+
+/** The two answers and the pass. `stacked` is the phone: full-width, thumb-height. */
+function UlineDecisionButtons({ row, u, onDone, onSkip, stacked = false }) {
+  const busy = u.busyKey === row.key;
+  const go = async (next) => { if (await u.decide(row, next)) onDone?.(); };
+  const base = `rounded-lg border font-semibold text-sm disabled:opacity-50 ${stacked ? 'w-full' : ''}`;
+  const tall = { minHeight: stacked ? 52 : 44 };
+  return (
+    <div className={stacked ? 'space-y-2' : 'flex flex-wrap items-center gap-2'}>
+      <button type="button" disabled={busy} onClick={() => go('box_only')} style={tall}
+        className={`${base} px-4 bg-red-600 border-red-700 text-white hover:bg-red-700`}
+        title="Box truck only at this location, for every future order. Saves the same mark as the stop card and Routing.">
+        No tractor trailer{stacked ? '' : <span className="ml-1.5 text-[10px] font-normal opacity-80">N</span>}
+      </button>
+      <button type="button" disabled={busy} onClick={() => go('tractor')} style={tall}
+        className={`${base} px-4 bg-green-600 border-green-700 text-white hover:bg-green-700`}
+        title="A 53′ fits. The router stops holding this location to a box truck because of Uline’s note.">
+        Tractor OK{stacked ? '' : <span className="ml-1.5 text-[10px] font-normal opacity-80">T</span>}
+      </button>
+      <button type="button" disabled={busy} onClick={onSkip} style={tall}
+        className={`${base} px-4 bg-white border-slate-300 text-slate-700 hover:bg-slate-50`}
+        title="Decide later — nothing is saved, and Uline’s flag keeps holding this location to a box truck.">
+        Skip{stacked ? '' : <span className="ml-1.5 text-[10px] font-normal text-slate-400">S</span>}
+      </button>
+    </div>
+  );
+}
+
+/** "Saved — undo?" The only way a decision made at speed is safe to make at speed. */
+function UlineLastLine({ u }) {
+  if (u.writeErr) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-2">{u.writeErr}</div>;
+  if (!u.last) return null;
+  const row = u.rows.find((r) => r.key === u.last.key);
+  const what = u.last.next === 'box_only' ? 'No tractor trailer (Box truck only)' : u.last.next === 'tractor' ? 'Tractor-trailer OK' : 'not set';
+  return (
+    <div className="rounded-lg border bg-white text-xs text-slate-700 px-3 py-2 flex items-center justify-between gap-3 flex-wrap">
+      <span><span className="font-semibold">{u.last.name}</span> → {what}. Saved to the customer — every future order there.</span>
+      {row && (
+        <button type="button" onClick={() => u.decide(row, u.last.prev, { undo: true })} disabled={u.busyKey === row.key}
+          className="rounded-lg border px-3 text-xs font-semibold bg-white hover:bg-slate-50" style={{ minHeight: 40 }}>Undo</button>
+      )}
+    </div>
+  );
+}
+
+/** Everything already answered on this board, collapsed — the receipt, not the work. */
+function UlineDecidedList({ u, stacked = false }) {
+  const [open, setOpen] = React.useState(false);
+  if (!u.done.length) return null;
+  return (
+    <div className="rounded-xl border bg-white">
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
+        className="w-full flex items-center justify-between px-3 text-xs font-semibold text-slate-700" style={{ minHeight: 44 }}>
+        <span>{u.done.length} already decided on this board</span>
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+      {open && (
+        <div className="border-t divide-y">
+          {u.done.map((r) => {
+            const d = ULINE_DECIDED[r.decision];
+            const other = r.decision === 'box_only' ? 'tractor' : r.decision === 'tractor' ? 'box_only' : null;
+            return (
+              <div key={r.key} className={`px-3 py-2 ${stacked ? 'space-y-1.5' : 'flex items-center justify-between gap-3 flex-wrap'}`}>
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-slate-800 break-words">{r.businessName}</div>
+                  <div className="text-[11px] text-slate-500 break-words">{oneLineAddr(r.address)}</div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span title={d?.hint} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white" style={{ background: d?.color }}>{d?.label}</span>
+                  {other && (
+                    <>
+                      <button type="button" onClick={() => u.decide(r, other)} disabled={u.busyKey === r.key}
+                        className="rounded-lg border px-2.5 text-[11px] font-semibold bg-white hover:bg-slate-50" style={{ minHeight: 40 }}>
+                        Change to {other === 'tractor' ? 'Tractor OK' : 'No tractor trailer'}
+                      </button>
+                      <button type="button" onClick={() => u.decide(r, null)} disabled={u.busyKey === r.key}
+                        className="rounded-lg border px-2.5 text-[11px] font-semibold bg-white hover:bg-slate-50 text-slate-500" style={{ minHeight: 40 }}
+                        title="Back to undecided — Uline’s flag holds the location to a box truck again">Clear</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The header: what is on the list and why it matters in trucks, not flags. The PHONE gets one
+ *  line — five lines of explanation at 390px push the building below the fold on the one screen
+ *  whose whole job is "look, then tap". The reason is on the desktop and in the button titles. */
+function UlineSummary({ u, stacked = false }) {
+  const sm = u.data?.summary || {};
+  if (stacked) {
+    return (
+      <div className="rounded-xl border bg-white px-3 py-2 text-xs flex items-center gap-2 flex-wrap">
+        <span className="rounded px-1.5 py-0.5 bg-amber-100 text-amber-800 font-semibold">{u.todo.length} to decide</span>
+        <span className="text-slate-500">{u.done.length} decided · each is held off a 53′ until answered</span>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border bg-white p-3 space-y-1">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="rounded px-1.5 py-0.5 bg-amber-100 text-amber-800 font-semibold">{u.todo.length} to decide</span>
+        <span className="text-slate-500">{u.done.length} decided · {sm.stops || 0} stop{sm.stops === 1 ? '' : 's'} across {(u.data?.dates || []).length} board days</span>
+        {u.data?.backlog && (
+          <span className="text-slate-400" title="Every customer carrying Uline's flag, whether or not it has freight on the board. Those without freight have no building to show until they come up.">
+            · {u.data.backlog.undecided} undecided across all {u.data.backlog.flagged} flagged customers
+          </span>
+        )}
+      </div>
+      <div className="text-[11px] text-slate-500">
+        Uline’s order text says straight truck at these customers. The auto-builder already keeps every one off a 53′ until somebody decides —
+        so a wrong flag is a box-truck slot, every day that customer has freight. Look at the building, then answer once: it saves to the customer, for every future order.
+      </div>
+    </div>
+  );
+}
+
+function UlineEmpty({ u }) {
+  if (u.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
+  if (u.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{u.err}</div>;
+  if (u.data && Number(u.data.notesLoaded) === 0) {
+    // THE FREE DIAGNOSTIC: no notes loaded means no flags CAN be seen — not that there are none.
+    return <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 text-xs p-3">No customer notes loaded, so no Uline flag could be read. This is a read failure, not a clean board.</div>;
+  }
+  return null;
+}
+
+// ── DESKTOP: the list beside the building, and the keys under the hand. ─────
+function UlineReviewDesktop({ nonce }) {
+  const u = useUlineReview(nonce);
+  const [focusKey, setFocusKey] = React.useState(null);
+  const row = u.todo.find((r) => r.key === focusKey) || u.todo[0] || null;
+  // Next UNDECIDED after this one, wrapping — so a run of decisions walks the list in order.
+  const advance = React.useCallback(() => {
+    if (!row) return;
+    const i = u.todo.findIndex((r) => r.key === row.key);
+    const next = u.todo[(i + 1) % u.todo.length];
+    setFocusKey(next && next.key !== row.key ? next.key : null);
+  }, [row, u.todo]);
+  // N / T / S. Only while this tab is mounted, never with a modifier, never inside a field —
+  // a keystroke that lands in the wrong place must not re-route a customer.
+  React.useEffect(() => {
+    const onKey = async (e) => {
+      if (!row || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+      const tag = String(e.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) return;
+      const k = String(e.key || '').toLowerCase();
+      if (k === 'n' || k === 't') { e.preventDefault(); if (await u.decide(row, k === 'n' ? 'box_only' : 'tractor')) advance(); }
+      else if (k === 's') { e.preventDefault(); advance(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [row, u.decide, advance]);
+
+  const early = <UlineEmpty u={u} />;
+  if (u.loading || u.err || (u.data && Number(u.data.notesLoaded) === 0)) return early;
+  return (
+    <div className="space-y-3">
+      <UlineSummary u={u} />
+      <UlineLastLine u={u} />
+      {!u.todo.length ? (
+        <div className="rounded-xl border bg-white p-6 text-center text-xs text-slate-500">
+          {u.rows.length ? 'Every Uline straight-truck flag on the board has been decided.' : 'No Uline straight-truck flags on the board — today and the next two business days.'}
+        </div>
+      ) : (
+        <div className="flex gap-4 items-start">
+          <div className="w-80 shrink-0 rounded-xl border bg-white overflow-hidden">
+            <div className="px-3 py-2 bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-500 border-b">To decide</div>
+            <div className="max-h-[70vh] overflow-y-auto divide-y">
+              {u.todo.map((r) => (
+                <button key={r.key} type="button" onClick={() => setFocusKey(r.key)} aria-current={row?.key === r.key}
+                  className={`w-full text-left px-3 py-2 ${row?.key === r.key ? 'bg-blue-50' : 'hover:bg-slate-50'}`} style={{ minHeight: 44 }}>
+                  <div className="text-xs font-semibold text-slate-800 break-words">{r.businessName}</div>
+                  <div className="text-[11px] text-slate-500 break-words">{oneLineAddr(r.address)}</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">{ulineDay(r.firstDate)}{r.tractor ? ' · tractor has delivered here' : ''}{!r.pin ? ' · no pin' : ''}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          {row && (
+            <div className="flex-1 min-w-0 rounded-xl border bg-white p-4 space-y-3">
+              <div>
+                <div className="text-base font-bold text-slate-900 break-words">{row.businessName}</div>
+                <div className="text-xs text-slate-600 break-words">{oneLineAddr(row.address)}</div>
+              </div>
+              <UlineEvidence row={row} />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">From above — dock, truck court, the turn in</div>
+                  <UlineSatellite google={u.google} mapsErr={u.mapsErr} pin={row.pin} height={380} />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">From the street — drag to look down the side</div>
+                  <UlineStreetView google={u.google} mapsErr={u.mapsErr} pin={row.pin} height={380} />
+                </div>
+              </div>
+              <UlineDecisionButtons row={row} u={u} onDone={advance} onSkip={advance} />
+              <div className="text-[10px] text-slate-400">Keys: N no tractor trailer · T tractor OK · S skip. Saved to the customer, not the order — nothing is sent to NuVizz.</div>
+            </div>
+          )}
+        </div>
+      )}
+      <UlineDecidedList u={u} />
+      <div className="text-[11px] text-slate-400">Read from the board and our own notes — zero NuVizz calls. The pictures are Google’s, loaded one location at a time.</div>
+    </div>
+  );
+}
+
+// ── PHONE: one building at a time, answered with a thumb. ────────────────────
+// Not the desktop split squeezed: at 360px the list and the building cannot share a row, and a
+// dispatcher on a phone is doing exactly one thing — deciding the building in front of them.
+function UlineReviewMobile({ nonce }) {
+  const u = useUlineReview(nonce);
+  const [idx, setIdx] = React.useState(0);
+  // Street View on demand, not beside the satellite: a phone shows one picture at a readable
+  // size, and a panorama nobody asked for is a billed load for a screen nobody scrolled to.
+  const [view, setView] = React.useState('above');
+  const n = u.todo.length;
+  const i = n ? Math.min(idx, n - 1) : 0;
+  const row = n ? u.todo[i] : null;
+  const skip = React.useCallback(() => setIdx((x) => (n ? (Math.min(x, n - 1) + 1) % n : 0)), [n]);
+  // After a decision the row leaves `todo`, so the SAME index is already the next location.
+  const done = React.useCallback(() => setIdx((x) => x), []);
+  const early = <UlineEmpty u={u} />;
+  if (u.loading || u.err || (u.data && Number(u.data.notesLoaded) === 0)) return early;
+  return (
+    <div className="space-y-3">
+      <UlineSummary u={u} stacked />
+      <UlineLastLine u={u} />
+      {!row ? (
+        <div className="rounded-xl border bg-white p-4 text-xs text-slate-500">
+          {u.rows.length ? 'Every Uline straight-truck flag on the board has been decided.' : 'No Uline straight-truck flags on the board — today and the next two business days.'}
+        </div>
+      ) : (
+        <div className="rounded-xl border bg-white p-3 space-y-3">
+          <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{i + 1} of {n} to decide</div>
+          <div>
+            <div className="text-sm font-bold text-slate-900 break-words">{row.businessName}</div>
+            <div className="text-xs text-slate-600 break-words">{oneLineAddr(row.address)}</div>
+          </div>
+          <div role="tablist" aria-label="Building view" className="grid grid-cols-2 gap-1.5">
+            {[['above', 'From above'], ['street', 'Street view']].map(([id, label]) => (
+              <button key={id} type="button" role="tab" aria-selected={view === id} onClick={() => setView(id)}
+                className={`rounded-lg border text-xs font-semibold ${view === id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600'}`} style={{ minHeight: 44 }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {view === 'above'
+            ? <UlineSatellite google={u.google} mapsErr={u.mapsErr} pin={row.pin} height={300} />
+            : <UlineStreetView google={u.google} mapsErr={u.mapsErr} pin={row.pin} height={300} />}
+          <UlineEvidence row={row} />
+          <UlineDecisionButtons row={row} u={u} onDone={done} onSkip={skip} stacked />
+        </div>
+      )}
+      <UlineDecidedList u={u} stacked />
+      <div className="text-[11px] text-slate-400">Zero NuVizz calls. Saved to the customer, not the order.</div>
+    </div>
+  );
 }
 
 function AddressHistoryScreen() {
@@ -33396,12 +33856,14 @@ function AddressHistoryScreen() {
             <p className="text-xs text-slate-500 mt-0.5">
               {section === 'problems'
                 ? 'Stops on the board whose address will send a truck to the wrong door — corrected here, and pushed to the order in NuVizz.'
+                : section === 'uline'
+                  ? 'Customers Uline says take a straight truck only. Look at the building from above and from the street, then decide once whether a 53′ can go.'
                 : section === 'carrier'
                   ? 'Orders NuVizz re-addressed after we had already scanned them. Nobody here did this.'
                   : 'Every address that changed after we first scanned it — what it was, what it became, and whether it was NuVizz or us.'}
             </p>
           </div>
-          <button onClick={() => (section === 'problems' ? setQueueNonce((n) => n + 1) : load())} className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[40px]">Refresh</button>
+          <button onClick={() => (section === 'problems' || section === 'uline' ? setQueueNonce((n) => n + 1) : load())} className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[40px]">Refresh</button>
         </div>
 
         {/* TWO CHOOSERS, NOT ONE RESPONSIVE ONE. A scrollable chip row is right under a thumb
@@ -33414,6 +33876,14 @@ function AddressHistoryScreen() {
           isMobile
             ? <ProblemQueueMobile nonce={queueNonce} today={today} />
             : <ProblemQueueDesktop nonce={queueNonce} today={today} />
+        )}
+
+        {/* TWO VIEWS, NOT ONE REFLOWED: the desktop puts the list beside the building and the
+            keys under the hand; the phone is one building at a time with thumb-height answers. */}
+        {section === 'uline' && (
+          isMobile
+            ? <UlineReviewMobile nonce={queueNonce} />
+            : <UlineReviewDesktop nonce={queueNonce} />
         )}
 
         {logSection && (<>

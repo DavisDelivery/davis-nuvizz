@@ -145,6 +145,16 @@ const PROBES = {
     // it as one. This probe asked for a button by that name, got nothing, and was silently
     // skipped on every tablet from the day it was written; the loud-failure rule above is what
     // finally said so. Opened the way the phone opens it, and PROVEN open before measuring.
+    // The Uline review renders the DESKTOP branch here: a 320px list beside the building, two
+    // picture panes side by side, and the answer buttons — the layout most likely to crowd at
+    // tablet width. Proven open (tab selected, answer on screen) before it is measured.
+    { name: 'Uline straight truck tab', open: async (page) => {
+      const tab = page.getByRole('tab', { name: /uline straight truck/i }).first();
+      if (!(await tab.isVisible().catch(() => false))) return false;
+      await tab.click().catch(() => {});
+      await page.waitForTimeout(400);
+      return page.getByRole('button', { name: /no tractor trailer/i }).first().isVisible().catch(() => false);
+    } },
     { name: 'Carrier-changed section', open: async (page) => {
       const tab = page.getByRole('tab', { name: /nuvizz changed it/i }).first();
       if (!(await tab.isVisible().catch(() => false))) return false;
@@ -265,6 +275,45 @@ for (const dev of TABLETS) {
       u.includes('detail=') ? ORDER_DETAIL : u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW
         // THE MISS, keyed on the one number the probe asks for (same rule as the phone guard).
         : u.includes('stop=000000000') ? STOP_LOOKUP_NOTFOUND : STOP_LOOKUP_DOSSIER);
+    // THE ULINE STRAIGHT-TRUCK REVIEW, at its worst case for layout: a 44-character name over
+    // a wrapping street, a long Uline quote and a second one, a tractor-history chip beside a
+    // no-tractor building type, three stops across three board days; a row with NO pin (both
+    // picture panes swap for a note); and one of each decided kind in the collapsed list.
+    if (u.includes('uline-advisory')) return J({
+      ok: true, tenant: 'davis', nuvizzCalls: 0, notesLoaded: 412,
+      dates: ['2026-09-24', '2026-09-25', '2026-09-28'],
+      summary: { undecided: 2, confirmed: 1, box_only: 1, tractor: 1, locations: 5, stops: 7 },
+      // The whole backlog, so the desktop summary's widest line is on screen when measured.
+      backlog: { flagged: 38, undecided: 31 },
+      rows: [
+        { key: 'titan|3190|norcross', businessName: 'TITAN ELECTRIC COMPANIES QTS DATA CENTER', decision: 'undecided', baseDecision: 'undecided',
+          address: { addr1: '3190 REPS MILLER RD BUILDING 400 SUITE 200', addr2: 'DOCK 7 REAR', city: 'PEACHTREE CORNERS', state: 'GA', zip: '30092' },
+          pin: { lat: 33.9701, lng: -84.2208, source: 'feed' }, firstDate: '2026-09-24', buildingType: 'school',
+          uline: ['STRAIGHT TRUCK ONLY - NO 53FT TRAILERS - LIMITED ACCESS AT REAR DOCK, CALL AHEAD 30 MIN', 'NO TRACTOR TRAILERS'],
+          tractor: { count: 3, last: '2026-08-17' },
+          stops: [
+            { date: '2026-09-24', stopNbr: '007176403', pro: '007176403', routeName: 'NOR 2', planned: true },
+            { date: '2026-09-25', stopNbr: '007176415', pro: '007176415', routeName: null, planned: false },
+            { date: '2026-09-28', stopNbr: '007176594', pro: '007176594', routeName: 'NOR 11', planned: true },
+          ] },
+        { key: 'kickr|440|atlanta', businessName: 'KICKR DESIGN', decision: 'undecided', baseDecision: 'undecided',
+          address: { addr1: '440 INTERSTATE NORTH PKWY SE', addr2: 'STE 100', city: 'ATLANTA', state: 'GA', zip: '30339' },
+          pin: null, firstDate: '2026-09-25', buildingType: null, uline: [], tractor: null,
+          stops: [{ date: '2026-09-25', stopNbr: '007176396', pro: '007176396', routeName: null, planned: false }] },
+        { key: 'conley|4080|conley', businessName: 'CONLEY ARCH WOOD PROTECTION', decision: 'confirmed', baseDecision: 'confirmed',
+          address: { addr1: '4080 BONSAL RD', addr2: 'CONLEY PLANT', city: 'CONLEY', state: 'GA', zip: '30288' },
+          pin: { lat: 33.6604, lng: -84.3262, source: 'feed' }, firstDate: '2026-09-24', buildingType: null, uline: ['STRAIGHT TRUCK'], tractor: null,
+          stops: [{ date: '2026-09-24', stopNbr: '007176063', pro: '007176063', routeName: 'SOU 4', planned: true }] },
+        { key: 'fec|200|marietta', businessName: 'FEC BC2', decision: 'box_only', baseDecision: 'undecided',
+          address: { addr1: '200 COBB PKWY N STE 212', addr2: 'BLDG 200', city: 'MARIETTA', state: 'GA', zip: '30062' },
+          pin: { lat: 33.9546, lng: -84.5212, source: 'feed' }, firstDate: '2026-09-24', buildingType: null, uline: ['BOX TRUCK ONLY'], tractor: null,
+          stops: [{ date: '2026-09-24', stopNbr: '007176117', pro: '007176117', routeName: 'MAR 3', planned: true }] },
+        { key: 'heyden|3312|berkeley', businessName: 'HEYDEN SUPPLIES', decision: 'tractor', baseDecision: 'undecided',
+          address: { addr1: '3312 N BERKELEY LAKE RD NW', addr2: 'STE D', city: 'BERKELEY LAKE', state: 'GA', zip: '30096' },
+          pin: { lat: 33.984, lng: -84.1672, source: 'feed' }, firstDate: '2026-09-25', buildingType: null, uline: ['STRAIGHT TRUCK ONLY'], tractor: { count: 1, last: '2026-07-02' },
+          stops: [{ date: '2026-09-25', stopNbr: '007176107', pro: '007176107', routeName: 'NOR 5', planned: true }] },
+      ],
+    });
     if (u.includes('address-queue')) return J({
       ok: true, tenant: 'davis', nuvizzCalls: 0, notesLoaded: 412,
       dates: ['2026-09-14', '2026-09-15', '2026-09-16'],

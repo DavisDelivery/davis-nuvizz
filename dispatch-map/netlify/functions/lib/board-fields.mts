@@ -70,6 +70,29 @@ export const QUEUE_NOTE_FIELDS = [
 ];
 
 /**
+ * The customer_notes fields the Uline straight-truck review joins against. Everything the card
+ * shows and everything the decision is judged by, and nothing else — the collection is read
+ * whole on every open (the same listDocs the queue does), so an unmasked read would ship every
+ * dock note and receiving-hours map on the board to answer a question about five of them.
+ *
+ * `manual_overrides` and `auto_sources` are here because `ulineDecision` reads provenance through
+ * confirmedBlockerKeys, and the two fail in OPPOSITE directions:
+ *   • drop `manual_overrides` and a location whose restriction list a dispatcher LOCKED — keeping
+ *     Uline's flag in it — reads as undecided, and the tab offers a one-tap "Tractor OK" that
+ *     overrules the person who locked it. The dangerous direction.
+ *   • drop `auto_sources` and every scanner-found blocker reads as a person's (unknown provenance
+ *     counts as confirmed). Cautious, but it files the legacy "Uline's text wearing our key" case
+ *     under "a dispatcher already said no", where nobody can clear it from this tab.
+ * The test fake returns whole documents whatever the mask says, so ONLY the explicit mask
+ * assertion in test/uline-review-endpoint.test.mjs can catch either one being dropped.
+ */
+export const ULINE_NOTE_FIELDS = [
+  'match_key', 'raw_name', 'equipment_restrictions', 'manual_overrides', 'auto_sources', 'auto_matches',
+  'vehicle_eligibility', 'vehicle_eligibility_at', 'vehicle_eligibility_by',
+  'location_override', 'location_override_at', 'address_override', 'address_override_at', 'building_type',
+];
+
+/**
  * THE CUSTOMER VIEW'S PROJECTION — what "how many deliveries for this customer today, and
  * who delivered them" actually needs off a board day.
  *
