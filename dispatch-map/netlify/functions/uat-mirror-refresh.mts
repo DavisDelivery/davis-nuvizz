@@ -24,7 +24,7 @@ export default async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   // MIRROR ONLY, first.
   if (!isMirrorDeploy()) return J({ ok: false, refused: 'not a mirror deploy', database: firestoreDatabaseName() }, 403);
-  if (req.method !== 'GET') return J({ ok: false, error: 'GET only — the copy runs through uat-mirror-refresh-background' }, 405);
+  if (req.method !== 'GET') return J({ ok: false, error: 'GET only — the copy runs on the 06:45 schedule, or by hand: POST uat-mirror-resume-background' }, 405);
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 200);
   // Gate at viewer: status and counts. Inert until AUTH_REQUIRED=true (lib/require-user.mts).
   const gate = await requireUser(req, { role: 'viewer' });
