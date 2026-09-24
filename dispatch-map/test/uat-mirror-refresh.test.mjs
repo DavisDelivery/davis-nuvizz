@@ -25,13 +25,16 @@ import { prodMirrorReadEnabled, listProdDocs, getProdDoc } from '../netlify/func
 import {
   planRefresh, onOff, addDays, stripId, leanStop, planLabel, freshProgress, progressPath,
   prodHistoryDates, copyStatic, copyHistoryDay, copyBoardDay, copyRosterDay, copyLedgerDay,
-  runRefresh, explainRefresh,
+  runRefresh, explainRefresh, manifestFingerprint, mirroredDayIsCurrent,
   STATIC_COLLECTIONS, BOARD_COLLECTION, ROSTER_COLLECTION, LEDGER_COLLECTION, PROGRESS_COLLECTION,
   DEFAULT_HISTORY_DAYS, DEFAULT_HORIZON_DAYS, TIME_BUDGET_MS,
 } from '../netlify/functions/lib/uat-mirror-refresh.mts';
 import { HISTORY_COLLECTION, dayPath } from '../netlify/functions/lib/history-store.mts';
 import refreshBackground, { OVERRIDE_PARAMS, config as backgroundConfig } from '../netlify/functions/uat-mirror-refresh-background.mts';
+import * as resumeModule from '../netlify/functions/uat-mirror-resume-background.mts';
 import refreshRead from '../netlify/functions/uat-mirror-refresh.mts';
+
+const resumeBackground = resumeModule.default;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FN = (...p) => path.join(HERE, '..', 'netlify', 'functions', ...p);
@@ -40,7 +43,9 @@ const read = (...p) => fs.readFileSync(FN(...p), 'utf8');
 const NEW_FILES = [
   ['lib', 'prod-mirror-read.mts'],
   ['lib', 'uat-mirror-refresh.mts'],
+  ['lib', 'uat-mirror-endpoint.mts'],
   ['uat-mirror-refresh-background.mts'],
+  ['uat-mirror-resume-background.mts'],
   ['uat-mirror-refresh.mts'],
 ];
 
@@ -128,18 +133,47 @@ test('NOTHING IN THE REFRESH IMPORTS A NUVIZZ MODULE OR NAMES THE NUVIZZ BASE UR
   }
 });
 
-test('the background endpoint REFUSES PRODUCTION BEFORE PARSING — a malformed override gets 403, never 400', async () => {
-  const src = read('uat-mirror-refresh-background.mts');
-  assert.ok(src.indexOf('isMirrorDeploy()') < src.indexOf('new URL('), 'the mirror gate precedes the URL parse in the source');
-  assert.ok(src.indexOf('isMirrorDeploy()') < src.indexOf('gateScheduledOverride('), 'and precedes the override gate');
-  await withEnv(PRODUCTION, async () => {
-    const res = await refreshBackground(new Request('https://x.test/.netlify/functions/uat-mirror-refresh-background?from=garbage', { method: 'POST' }));
+test('both doors REFUSE PRODUCTION BEFORE PARSING — a malformed override gets 403, never 400', async () => {
+  const src = read('lib', 'uat-mirror-endpoint.mts');
+  const at = (s) => { const i = src.indexOf(s); assert.ok(i > 0, `${s} is in the handler`); return i; };
+  assert.ok(at('isMirrorDeploy()') < at('new URL('), 'the mirror gate precedes the URL parse in the source');
+  assert.ok(at('isMirrorDeploy()') < at('opts.manualGate(req)'), 'and precedes the manual door');
+  assert.ok(at('isFirestoreEnabled()') < at('opts.manualGate(req)'), 'the manual door comes after the cheap refusals');
+  assert.ok(at('opts.manualGate(req)') < at('gateScheduledOverride('), 'and before the override gate');
+  assert.ok(at('gateScheduledOverride(') < at('new URL('), 'every gate precedes the parse');
+  for (const [name, fn] of [['uat-mirror-refresh-background', refreshBackground], ['uat-mirror-resume-background', resumeBackground]]) {
+    await withEnv(PRODUCTION, async () => {
+      const res = await fn(new Request(`https://x.test/.netlify/functions/${name}?from=garbage`, { method: 'POST' }));
+      assert.equal(res.status, 403, name);
+      const body = await res.json();
+      assert.equal(body.ok, false);
+      assert.match(body.refused, /not a mirror deploy/);
+      assert.equal(body.database, '(default)');
+    });
+  }
+});
+
+test('the manual door refuses production BEFORE its sign-in gate — production never records a refusal', async () => {
+  // With AUTH_REQUIRED on and no token, a reached gate would answer 401 and write a refusal
+  // row. Production must answer the mirror 403 instead: the gate is never reached.
+  await withEnv({ ...PRODUCTION, AUTH_REQUIRED: 'true' }, async () => {
+    const res = await resumeBackground(new Request('https://x.test/.netlify/functions/uat-mirror-resume-background', { method: 'POST' }));
     assert.equal(res.status, 403);
-    const body = await res.json();
-    assert.equal(body.ok, false);
-    assert.match(body.refused, /not a mirror deploy/);
-    assert.equal(body.database, '(default)');
+    assert.match((await res.json()).refused, /not a mirror deploy/);
   });
+});
+
+test('THE SCHEDULED ONE CANNOT BE POSTED, SO THE MANUAL ONE HAS NO SCHEDULE — same handler behind both', () => {
+  // Netlify: "You can't invoke scheduled functions directly with a URL." The UAT site answered
+  // 403 to a POST on the scheduled refresh on 2026-09-24, before the handler ran.
+  assert.equal(resumeModule.config, undefined, 'a schedule would make the manual door unreachable too');
+  const resume = read('uat-mirror-resume-background.mts');
+  assert.doesNotMatch(resume, /config\s*=\s*\{[^}]*schedule/s);
+  assert.match(resume, /requireUserForBackground\(r, RESUME_JOB, \{ role: 'dispatcher' \}\)/, 'the door is gated where it is');
+  for (const f of ['uat-mirror-refresh-background.mts', 'uat-mirror-resume-background.mts']) {
+    assert.match(read(f), /mirrorRefreshHandler\(req, \{/, `${f} runs the shared handler`);
+    assert.doesNotMatch(read(f), /runRefresh\(|planRefresh\(/, `${f} carries no copy logic of its own`);
+  }
 });
 
 test('the background endpoint is SCHEDULED, and on production the cron fires into that first-line 403', async () => {
@@ -161,8 +195,8 @@ test('UAT_PROD_MIRROR=off puts a mirror back to its own database — the endpoin
   });
 });
 
-test('every override the background endpoint reads is in OVERRIDE_PARAMS — an unlisted one would slip past the admin gate', () => {
-  const src = read('uat-mirror-refresh-background.mts');
+test('every override the handler reads is in OVERRIDE_PARAMS — an unlisted one would slip past the admin gate', () => {
+  const src = read('lib', 'uat-mirror-endpoint.mts');
   const reads = new Set([...src.matchAll(/\b(?:q|num)\('([a-z]+)'\)/g)].map((m) => m[1]));
   for (const k of reads) assert.ok(OVERRIDE_PARAMS.includes(k), `'${k}' is read but not gated`);
   for (const k of OVERRIDE_PARAMS) assert.ok(reads.has(k), `'${k}' is gated but never read — dead gate`);
@@ -193,6 +227,8 @@ test('planRefresh defaults: yesterday is the newest sealed day, 90 days back, th
   assert.deepEqual(p.boardDates, ['2026-09-20', '2026-09-21', '2026-09-22', '2026-09-23'], `today + ${DEFAULT_HORIZON_DAYS}`);
   assert.equal(p.board, true); assert.equal(p.history, true); assert.equal(p.static, true);
   assert.equal(p.remine, true); assert.equal(p.lean, true);
+  assert.equal(p.recopy, false, 'recopy is opt-in: the default skips days already mirrored');
+  assert.equal(planRefresh({ today: '2026-09-20', recopy: true }).recopy, true);
 });
 
 test('planRefresh honours an explicit window, clamps the horizon, and never widens on a bad date', () => {
@@ -227,6 +263,11 @@ test('planLabel: the same window gets the same label; any changed knob is a diff
   assert.notEqual(planLabel(a), planLabel(planRefresh({ today: '2026-09-21' })), 'the nightly gets a new label every day');
   assert.notEqual(planLabel(a), planLabel(planRefresh({ today: '2026-09-20', lean: false })));
   assert.notEqual(planLabel(a), planLabel(planRefresh({ today: '2026-09-20', remine: false })));
+  assert.notEqual(planLabel(a), planLabel(planRefresh({ today: '2026-09-20', recopy: true })));
+  // The label the UAT site stored on 2026-09-23 (read off uat_mirror_refresh/davis). A plain
+  // run's label must still read exactly this way, or that open run could not be resumed.
+  assert.equal(planLabel(planRefresh({ today: '2026-09-23' })), 'h:2026-06-25..2026-09-22|b:2026-09-23..2026-09-26|s|r|l');
+  assert.equal(planLabel(planRefresh({ today: '2026-09-23', recopy: true })), 'h:2026-06-25..2026-09-22|b:2026-09-23..2026-09-26|s|r|l|R');
   assert.equal(progressPath('Davis'), `${PROGRESS_COLLECTION}/davis`);
   assert.equal(freshProgress(a, '2026-09-20T06:45:00Z').nuvizz_calls, 0);
 });
@@ -322,6 +363,7 @@ test('copyHistoryDay LEAN: stops land without _id and without raw, and THE MANIF
   assert.equal(m.mirrored_from, '(default)');
   assert.equal(m.mirrored_at, '2026-09-20T06:45:00.000Z');
   assert.equal(m.mirrored_lean, true);
+  assert.equal(m.mirrored_stops, 3, 'what was written, so a later run knows whether the day had anything to mine');
   assert.equal(res.stopRecords.length, 3);
   assert.equal('raw' in res.stopRecords[0], false, 'the miners get exactly what was written');
   assert.ok(mirror.get(`${base}/routes/TRAILER 6`)); assert.ok(mirror.get(`${base}/drivers/Steven`));
@@ -453,11 +495,137 @@ test('runRefresh under a budget STOPS at the next pending date and a resume with
   assert.equal(writes.slice(writesAfterFirst).includes(dayPath(T, '2026-09-17')), false, 'the finished day was not re-copied');
   assert.equal(second.started_at, first.started_at, 'same run');
 
-  // a DIFFERENT window ignores the prior and starts fresh
+  // a DIFFERENT window starts a fresh cursor (the progress belongs to a window)
   const other = planRefresh({ today: '2026-09-20', from: '2026-09-19', to: '2026-09-19', horizonDays: 0, static: false });
   const third = await runRefresh(deps, other, second, { budgetMs: TIME_BUDGET_MS });
   assert.deepEqual(third.done.history, ['2026-09-19']);
   assert.notEqual(third.label, second.label);
+  assert.notEqual(third.started_at, undefined);
+});
+
+// ── 5b. A DAY ALREADY MIRRORED IS NOT COPIED AGAIN ───────────────────────────
+//
+// The live failure, 2026-09-23: the first nightly run copied 47 of 63 sealed days and stopped at
+// its budget. The next night's window has a new label, so v1.50.0 started over at day 1 — every
+// night, for ever. The skip must be decided by the DAY, not by the window.
+
+/** The endpoint's real remine records post_seal_at on the copied manifest (recordPostSealOutcome). */
+function realisticRemine(deps, mirror, sink = []) {
+  deps.remine = async (tenant, date) => {
+    sink.push(date);
+    const base = dayPath(tenant, date);
+    mirror.set(base, { ...mirror.get(base), post_seal_ok: true, post_seal_failed: [], post_seal_at: deps.nowIso() });
+    return { ok: true, hooks: {} };
+  };
+  return sink;
+}
+
+const SEALED = (date, over = {}) => ({ tenant: T, date, captured_at: `${date}T06:00:10Z`, capture_version: 3, checksum: `sum-${date}`, counts: { stops: 1, routes: 1, drivers: 1 }, verified: true, complete: true, ...over });
+
+test('THE NEXT NIGHT PICKS UP WHERE THE LAST ONE STOPPED — a new window skips every day already mirrored and unchanged', async () => {
+  let seed = {};
+  const days = ['2026-09-14', '2026-09-15', '2026-09-16', '2026-09-17', '2026-09-18'];
+  for (const d of days) { seed = seedSealedDay(seed, d, [`${d}-1`]); seed[dayPath(T, d)] = SEALED(d); }
+  const { deps, mirror, prod, writes } = fakes(seed);
+  const mined = realisticRemine(deps, mirror);
+  // night 1 (window ends 09-17) runs out of budget after two days
+  let t = 0;
+  deps.now = () => { t += 10 * 60 * 1000; return t; };
+  const night1 = await runRefresh(deps, planRefresh({ today: '2026-09-18', historyDays: 4, horizonDays: 0, static: false }), null, { budgetMs: 25 * 60 * 1000 });
+  assert.equal(night1.finished, false);
+  assert.deepEqual(night1.done.history, ['2026-09-14', '2026-09-15']);
+
+  // night 2: production sealed 09-18, the window moved, so the label is new
+  deps.now = () => 0;
+  const before = writes.length;
+  const plan2 = planRefresh({ today: '2026-09-19', historyDays: 5, horizonDays: 0, static: false });
+  assert.notEqual(planLabel(plan2), night1.label, 'the moving window — the case v1.50.0 restarted on');
+  const night2 = await runRefresh(deps, plan2, night1);
+  assert.equal(night2.finished, true);
+  assert.deepEqual(night2.done.history, days, 'every day accounted for');
+  const copiedStops = writes.slice(before).filter((w) => w.includes('/stops/')).map((w) => w.split('/')[1].slice(`${T}__`.length));
+  assert.deepEqual([...new Set(copiedStops)], ['2026-09-16', '2026-09-17', '2026-09-18'], 'only the days night 1 never reached');
+  assert.deepEqual(mined, ['2026-09-14', '2026-09-15', '2026-09-16', '2026-09-17', '2026-09-18'], 'each day mined exactly once across both nights');
+  assert.equal(night2.counts.history['2026-09-14'].skipped, true);
+  assert.equal(night2.counts.history['2026-09-14'].stops, 1);
+  assert.equal(night2.counts.history['2026-09-16'].skipped, undefined);
+  void prod;
+});
+
+test('a day production RE-SEALED after it was copied is copied again — and so is one copied but never mined', async () => {
+  let seed = {};
+  for (const d of ['2026-09-16', '2026-09-17']) { seed = seedSealedDay(seed, d, [`${d}-1`]); seed[dayPath(T, d)] = SEALED(d); }
+  const { deps, mirror, prod } = fakes(seed);
+  const mined = realisticRemine(deps, mirror);
+  const plan = planRefresh({ today: '2026-09-18', historyDays: 2, horizonDays: 0, static: false });
+  await runRefresh(deps, plan, null);
+  assert.deepEqual(mined, ['2026-09-16', '2026-09-17']);
+
+  // production heals 09-16 (a new checksum); 09-17's mining stamp is lost on the mirror
+  prod.set(dayPath(T, '2026-09-16'), SEALED('2026-09-16', { checksum: 'sum-healed', healed_at: '2026-09-18T01:00:00Z' }));
+  const m17 = { ...mirror.get(dayPath(T, '2026-09-17')) }; delete m17.post_seal_at; mirror.set(dayPath(T, '2026-09-17'), m17);
+  mined.length = 0;
+  const again = await runRefresh(deps, planRefresh({ today: '2026-09-19', historyDays: 3, horizonDays: 0, static: false }), null);
+  assert.deepEqual(mined, ['2026-09-16', '2026-09-17'], 're-sealed → re-copied; unmined → re-copied and mined');
+  assert.equal(mirror.get(dayPath(T, '2026-09-16')).checksum, 'sum-healed', 'the mirror now carries the healed day');
+  assert.equal(again.counts.history['2026-09-16'].skipped, undefined);
+});
+
+test('?recopy=1 copies every day even when the mirror holds it unchanged', async () => {
+  let seed = seedSealedDay({}, '2026-09-17', ['A1']); seed[dayPath(T, '2026-09-17')] = SEALED('2026-09-17');
+  const { deps, mirror } = fakes(seed);
+  const mined = realisticRemine(deps, mirror);
+  await runRefresh(deps, planRefresh({ today: '2026-09-18', historyDays: 1, horizonDays: 0, static: false }), null);
+  await runRefresh(deps, planRefresh({ today: '2026-09-18', historyDays: 1, horizonDays: 0, static: false }), null);
+  assert.deepEqual(mined, ['2026-09-17'], 'a plain second run skips it');
+  await runRefresh(deps, planRefresh({ today: '2026-09-18', historyDays: 1, horizonDays: 0, static: false, recopy: true }), null);
+  assert.deepEqual(mined, ['2026-09-17', '2026-09-17'], 'recopy does not');
+});
+
+test('a skipped day still picks up its MISS LEDGER — production writes it at 08:00 UTC, after the 06:45 copy', async () => {
+  let seed = seedSealedDay({}, '2026-09-17', ['A1']); seed[dayPath(T, '2026-09-17')] = SEALED('2026-09-17');
+  const ledgerPath = `${LEDGER_COLLECTION}/${T}__2026-09-17`;
+  const ledgerDoc = seed[ledgerPath]; delete seed[ledgerPath];   // not written yet at 06:45
+  const { deps, mirror, prod } = fakes(seed);
+  realisticRemine(deps, mirror);
+  const first = await runRefresh(deps, planRefresh({ today: '2026-09-18', historyDays: 1, horizonDays: 0, static: false }), null);
+  assert.equal(first.counts.history['2026-09-17'].ledger, false);
+  prod.set(ledgerPath, ledgerDoc);                                  // 08:00 UTC
+  const next = await runRefresh(deps, planRefresh({ today: '2026-09-19', historyDays: 2, horizonDays: 0, static: false }), null);
+  assert.equal(next.counts.history['2026-09-17'].skipped, true);
+  assert.equal(next.counts.history['2026-09-17'].ledger, true);
+  assert.deepEqual(mirror.get(ledgerPath), ledgerDoc);
+});
+
+test('mirroredDayIsCurrent: every doubt answers NO', () => {
+  const pm = SEALED('2026-09-17');
+  const mm = { ...pm, mirrored_from: '(default)', mirrored_at: '2026-09-18T06:50:00Z', mirrored_lean: true, mirrored_stops: 1, post_seal_at: '2026-09-18T06:51:00Z' };
+  const o = { lean: true, remine: true };
+  assert.equal(mirroredDayIsCurrent(pm, mm, o).current, true);
+  assert.equal(mirroredDayIsCurrent(null, mm, o).current, false, 'production has no such day');
+  assert.equal(mirroredDayIsCurrent(pm, null, o).current, false, 'not on the mirror');
+  assert.equal(mirroredDayIsCurrent(pm, { ...mm, mirrored_from: undefined }, o).current, false, 'a bench seed or a hand edit is not a mirror copy');
+  assert.equal(mirroredDayIsCurrent(pm, { ...mm, checksum: 'other' }, o).current, false, 're-sealed');
+  assert.equal(mirroredDayIsCurrent(pm, { ...mm, capture_version: 4 }, o).current, false, 're-captured');
+  assert.equal(mirroredDayIsCurrent(pm, { ...mm, mirrored_lean: false }, o).current, false, 'leanness changed');
+  assert.equal(mirroredDayIsCurrent(pm, { ...mm, post_seal_at: undefined }, o).current, false, 'never mined');
+  assert.equal(mirroredDayIsCurrent(pm, { ...mm, post_seal_at: '2026-09-18T06:00:00Z' }, o).current, false, 'mined BEFORE this copy');
+  assert.equal(mirroredDayIsCurrent(pm, { ...mm, post_seal_at: undefined }, { lean: true, remine: false }).current, true, 'remine off: mining is not asked for');
+  assert.equal(mirroredDayIsCurrent(pm, { ...mm, post_seal_at: undefined, mirrored_stops: 0 }, o).current, true, 'nothing to mine on an empty day');
+  const tomb = { tenant: T, date: '2026-07-04', no_board: true };
+  assert.equal(mirroredDayIsCurrent(tomb, { ...tomb, mirrored_from: '(default)', mirrored_at: 'x', mirrored_lean: true }, o).current, true, 'a tombstone has nothing to mine');
+  // copies made by v1.50.0 carry no mirrored_stops — they are judged by their mining stamp
+  const { mirrored_stops, ...old } = mm; void mirrored_stops;
+  assert.equal(mirroredDayIsCurrent(pm, old, o).current, true);
+  assert.equal(mirroredDayIsCurrent(pm, { ...old, post_seal_at: undefined }, o).current, false);
+});
+
+test('manifestFingerprint: key order does not matter, the mirror stamps and mining fields do not count', () => {
+  const a = { captured_at: 'x', checksum: 'c', counts: { stops: 1, routes: 2 } };
+  const b = { counts: { routes: 2, stops: 1 }, checksum: 'c', captured_at: 'x', mirrored_at: 'y', post_seal_at: 'z', post_seal_ok: true };
+  assert.equal(manifestFingerprint(a), manifestFingerprint(b));
+  assert.notEqual(manifestFingerprint(a), manifestFingerprint({ ...a, healed_at: 'h' }));
+  assert.notEqual(manifestFingerprint(a), manifestFingerprint({ ...a, counts: { stops: 2, routes: 2 } }));
 });
 
 test('runRefresh with remine off, or a day with no stops, records remined:false and never calls the miners', async () => {
