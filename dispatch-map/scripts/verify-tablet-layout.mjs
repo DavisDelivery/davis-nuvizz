@@ -24,6 +24,7 @@ import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
+import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -53,6 +54,7 @@ const SCREENS = [
   { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
+  { key: 'claudeshadow', label: 'Claude shadow', nav: /claude shadow/i, inMore: true },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i, inMore: true },
 ];
 
@@ -255,6 +257,8 @@ for (const dev of TABLETS) {
     // STOP LOOKUP serves TWO modes off one URL and the stub picks the same way the
     // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
     // them would leave the guard measuring a screen the app never renders.
+    // THE CLAUDE SHADOW TAB — the same worst-rows fixture the phone and desktop guards use.
+    if (u.includes('claude-shadow')) return J(CLAUDE_SHADOW_STATUS);
     if (u.includes('stop-lookup')) return J(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.

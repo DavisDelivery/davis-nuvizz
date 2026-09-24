@@ -1,7 +1,7 @@
 // ClaudeShadowScreen.jsx — THE CLAUDE SHADOW TAB.
 //
-// Claude plans tomorrow's loads beside the router, for comparison only. This first cut is the
-// plumbing: it shows whether the planner is switched on, which model it would use, whether the
+// Claude will plan tomorrow's loads beside the router, for comparison only. Nothing plans yet —
+// this first cut is the plumbing: it shows whether the planner is switched on, which model it would use, whether the
 // server holds an API key, and the one test call that proves the key reaches that model.
 //
 // WHAT THIS SCREEN MAY TOUCH IS A CI RULE, NOT A HABIT. scripts/check-shadow-isolation.mjs
@@ -36,6 +36,10 @@ function useShadowStatus() {
   const [loading, setLoading] = useState(true);
   const [probing, setProbing] = useState(false);
   const [probeMsg, setProbeMsg] = useState(null);
+  // THE CALL THIS TAB JUST PAID FOR, straight from the POST. If writing its record fails, the
+  // GET below still returns the PREVIOUS test call — so the card shows this one, marked "not
+  // saved", instead of quietly showing an older verdict next to a fresh charge.
+  const [fresh, setFresh] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -53,28 +57,32 @@ function useShadowStatus() {
 
   useEffect(() => { load(); }, [load]);
 
-  const runProbe = useCallback(async () => {
-    const ok = window.confirm('This makes ONE call to the model (well under 1¢ at list price). Run the test call?');
+  const runProbe = useCallback(async (ceilingUsd) => {
+    const cost = typeof ceilingUsd === 'number' ? `at most about ${(ceilingUsd * 100).toFixed(1)}¢, usually well under 1¢` : 'cost not known for this model';
+    const ok = window.confirm(`This makes ONE call to the model (${cost}). Run the test call?`);
     if (!ok) return;
-    setProbing(true); setProbeMsg(null);
+    setProbing(true); setProbeMsg(null); setFresh(null);
     try {
       const r = await apiFetch(ENDPOINT, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'probe', confirm: true }),
       });
       const j = await r.json().catch(() => null);
-      if (!j) setProbeMsg(`HTTP ${r.status} — no readable answer`);
-      else if (j.calls === 0) setProbeMsg(j.error || 'No call was made.');
-      else if (j.recorded && !j.recorded.last) setProbeMsg(`The call was made but its record was not written: ${j.recorded.error || 'unknown'}`);
+      if (!j) setProbeMsg(`HTTP ${r.status} — no readable answer, so whether a call was made is unknown`);
+      else if (j.calls === 1 && j.result) {
+        const unsaved = !j.recorded?.last || !j.recorded?.log || j.recorded?.error;
+        setFresh({ ...j.result, unsaved: !j.recorded?.last });
+        if (unsaved) setProbeMsg(`The call was made, but its record was not fully written (${j.recorded?.error || [!j.recorded?.last && 'last-call record', !j.recorded?.log && 'call log'].filter(Boolean).join(' and ')}).`);
+      } else setProbeMsg(j.error ? `No call was made: ${j.error}` : `No call was made (HTTP ${r.status}).`);
       await load();
     } catch (e) {
-      setProbeMsg(String(e?.message || e));
+      setProbeMsg(`Whether a call was made is unknown: ${String(e?.message || e)}`);
     } finally {
       setProbing(false);
     }
   }, [load]);
 
-  return { status, err, loading, load, probing, probeMsg, runProbe };
+  return { status, err, loading, load, probing, probeMsg, runProbe, fresh };
 }
 
 function Row({ label, children }) {
@@ -112,8 +120,23 @@ function SwitchCard({ s }) {
   );
 }
 
-function ProbeCard({ s, probing, probeMsg, onProbe }) {
-  const p = s.lastProbe;
+// What the API did with the request, in the three ways it can go. A timeout is not a "no": the
+// request left and may be billed, and the card says exactly that.
+function answerLine(p) {
+  const why = p.error ? ` — ${p.error}` : '';
+  if (p.ok) return <Verdict good>yes (HTTP {p.httpStatus})</Verdict>;
+  if (p.answered && p.httpStatus >= 200 && p.httpStatus < 300) return <Verdict good={false}>answered HTTP {p.httpStatus}, but the body could not be read{why} — it was likely billed; cost unknown</Verdict>;
+  if (p.answered && p.httpStatus >= 500) return <Verdict good={false}>API error, HTTP {p.httpStatus}{why}</Verdict>;
+  if (p.answered) return <Verdict good={false}>refused, HTTP {p.httpStatus}{why}</Verdict>;
+  if (p.timedOut) return <Verdict good={false}>no answer in time{why} — the request was sent and may still be billed</Verdict>;
+  return <Verdict good={false}>no answer{why} — whether it reached the API is not known</Verdict>;
+}
+
+function ProbeCard({ s, fresh, probing, probeMsg, onProbe }) {
+  // This tab's own call until the server holds one at least as new — then the stored one, so a
+  // Refresh never keeps showing an older verdict than the record.
+  const stored = s.lastProbe;
+  const p = fresh && !(stored && String(stored.at) >= String(fresh.at)) ? fresh : (stored || fresh);
   return (
     <section className="rounded-xl border bg-white p-4">
       <h2 className="text-sm font-semibold text-slate-800 inline-flex items-center gap-2"><FlaskConical size={14} /> Test call</h2>
@@ -121,8 +144,8 @@ function ProbeCard({ s, probing, probeMsg, onProbe }) {
       {!p && <p className="text-xs text-slate-600 mt-3">{s.lastProbeNote || 'No test call has been recorded yet.'}</p>}
       {p && (
         <div className="mt-2">
-          <Row label="When">{fmtWhen(p.at)}{p.by ? ` · ${p.by}` : ''}</Row>
-          <Row label="Reached the API"><Verdict good={p.reached}>{p.reached ? `yes (HTTP ${p.httpStatus})` : `no — ${p.error || `HTTP ${p.httpStatus ?? '—'}`}`}</Verdict></Row>
+          <Row label="When">{fmtWhen(p.at)}{p.by ? ` · ${p.by}` : ''}{p.unsaved ? ' · not saved' : ''}</Row>
+          <Row label="API answered">{answerLine(p)}</Row>
           <Row label="Model asked / served">{p.requestedModel} / {p.servedModel || '—'}</Row>
           <Row label="Called the tool"><Verdict good={p.toolCalled}>{p.toolCalled ? 'yes' : 'no'}</Verdict></Row>
           <Row label="Stop reason">{p.stopReason || '—'}</Row>
@@ -133,7 +156,7 @@ function ProbeCard({ s, probing, probeMsg, onProbe }) {
       )}
       {probeMsg && <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{probeMsg}</p>}
       <button
-        onClick={onProbe}
+        onClick={() => onProbe(s.probe?.ceilingUsd)}
         disabled={probing || !s.enabled || !s.keyConfigured}
         className="mt-3 w-full sm:w-auto rounded-lg border px-3 py-2 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50 disabled:opacity-50 inline-flex items-center justify-center gap-2"
       >
@@ -162,7 +185,7 @@ function Header({ onRefresh, loading }) {
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
         <h1 className="text-xl font-bold text-slate-900 inline-flex items-center gap-2"><Sparkles size={18} /> Claude shadow</h1>
-        <p className="text-xs text-slate-500 mt-0.5">Claude plans tomorrow’s loads beside the router, for comparison only. It cannot send, save or stage anything.</p>
+        <p className="text-xs text-slate-500 mt-0.5">Claude will plan tomorrow’s loads beside the router, for comparison only — nothing plans yet; this is the plumbing and one test call. It can never send, save or stage anything.</p>
       </div>
       <button onClick={onRefresh} disabled={loading}
         className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[44px] shrink-0">Refresh</button>
@@ -180,7 +203,7 @@ function DesktopView(h) {
         {h.status && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
             <SwitchCard s={h.status} />
-            <ProbeCard s={h.status} probing={h.probing} probeMsg={h.probeMsg} onProbe={h.runProbe} />
+            <ProbeCard s={h.status} fresh={h.fresh} probing={h.probing} probeMsg={h.probeMsg} onProbe={h.runProbe} />
             <PlanCard s={h.status} />
           </div>
         )}
@@ -198,7 +221,7 @@ function PhoneView(h) {
         {h.loading && !h.status && <div className="text-xs text-slate-500">Loading…</div>}
         {h.status && (
           <div className="flex flex-col gap-3">
-            <ProbeCard s={h.status} probing={h.probing} probeMsg={h.probeMsg} onProbe={h.runProbe} />
+            <ProbeCard s={h.status} fresh={h.fresh} probing={h.probing} probeMsg={h.probeMsg} onProbe={h.runProbe} />
             <SwitchCard s={h.status} />
             <PlanCard s={h.status} />
           </div>

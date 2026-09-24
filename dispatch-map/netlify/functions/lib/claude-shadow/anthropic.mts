@@ -62,6 +62,8 @@ export function usageCost(model: string, usage: any): UsageCost {
 export interface CallResult {
   ok: boolean;
   httpStatus: number | null;
+  // true only when OUR deadline aborted it: the request had left, so it may still be billed.
+  timedOut: boolean;
   ms: number;
   body: any | null;
   error: string | null;
@@ -92,13 +94,13 @@ export async function callMessages(
     try { body = JSON.parse(text); } catch { /* reported below */ }
     if (!resp.ok) {
       const msg = body?.error?.message || text.slice(0, 300) || `HTTP ${resp.status}`;
-      return { ok: false, httpStatus: resp.status, ms: now() - t0, body, error: String(msg) };
+      return { ok: false, httpStatus: resp.status, timedOut: false, ms: now() - t0, body, error: String(msg) };
     }
-    if (!body) return { ok: false, httpStatus: resp.status, ms: now() - t0, body: null, error: 'response was not JSON' };
-    return { ok: true, httpStatus: resp.status, ms: now() - t0, body, error: null };
+    if (!body) return { ok: false, httpStatus: resp.status, timedOut: false, ms: now() - t0, body: null, error: 'response was not JSON' };
+    return { ok: true, httpStatus: resp.status, timedOut: false, ms: now() - t0, body, error: null };
   } catch (e: any) {
     const aborted = e?.name === 'AbortError';
-    return { ok: false, httpStatus: null, ms: now() - t0, body: null, error: aborted ? `timed out after ${opts.timeoutMs}ms` : String(e?.message || e) };
+    return { ok: false, httpStatus: null, timedOut: aborted, ms: now() - t0, body: null, error: aborted ? `timed out after ${opts.timeoutMs}ms` : String(e?.message || e) };
   } finally {
     clearTimeout(timer);
   }

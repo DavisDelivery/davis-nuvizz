@@ -15,7 +15,7 @@
 // Each verdict is reported separately rather than collapsed into one "ok", because they fail
 // for different reasons and point at different fixes: no access is an account question, a
 // 400 is a request-shape question, and a text answer instead of a tool call is a prompt one.
-import { usageCost, type UsageCost, type CallResult } from './anthropic.mts';
+import { usageCost, PRICES_PER_MTOK, type UsageCost, type CallResult } from './anthropic.mts';
 
 export const PROBE_TOOL = {
   name: 'submit_plan',
@@ -31,6 +31,18 @@ export const PROBE_TOOL = {
 
 export const PROBE_EFFORT = 'low';
 export const PROBE_MAX_TOKENS = 2048;
+// THE MOST ONE TEST CALL CAN COST, from the code's own numbers rather than a hope. Output is
+// capped by max_tokens (thinking counts toward it). Input is the ~40-word prompt and one small
+// tool, plus whatever the API adds for tool use; 2,000 tokens is a generous BOUND on that, not a
+// measurement — the recorded `usage` is the measurement. At claude-opus-5-5 list price the
+// ceiling is (2,000 × $4 + 2,048 × $20) / 1M ≈ 4.9¢; a short answer costs a fraction of a cent.
+export const PROBE_INPUT_TOKEN_BOUND = 2000;
+
+export function probeCeilingUsd(model: string): number | null {
+  const r = PRICES_PER_MTOK[model];
+  if (!r) return null;
+  return Math.round(((PROBE_INPUT_TOKEN_BOUND * r.input + PROBE_MAX_TOKENS * r.output) / 1e6) * 1e4) / 1e4;
+}
 export const PROBE_PROMPT = 'This is a connectivity test. Use the submit_plan tool exactly once with loads ["A", "B"].';
 
 export function buildProbeRequest(model: string): Record<string, any> {
@@ -47,7 +59,13 @@ export function buildProbeRequest(model: string): Record<string, any> {
 export interface ProbeResult {
   at: string;
   requestedModel: string;
-  reached: boolean;              // HTTP 2xx with a JSON body
+  // THREE OUTCOMES, NOT TWO. "Answered" = an HTTP response came back at all; "ok" = it was a
+  // 2xx with a JSON body. A 400/404 is an answer (the API read the request and refused it, and
+  // says why); a timeout or network error is NOT — the request left, nothing came back, and it
+  // may still have been billed, which is exactly what the tab must not dress up as "no".
+  answered: boolean;
+  ok: boolean;
+  timedOut: boolean;
   httpStatus: number | null;
   error: string | null;
   servedModel: string | null;    // what the response says ran
@@ -70,7 +88,9 @@ export function readProbeResult(requestedModel: string, call: CallResult, at: st
   return {
     at,
     requestedModel,
-    reached: call.ok,
+    answered: call.httpStatus !== null,
+    ok: call.ok,
+    timedOut: call.timedOut === true,
     httpStatus: call.httpStatus,
     error: call.error,
     servedModel,
