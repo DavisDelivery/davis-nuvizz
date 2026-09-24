@@ -13,7 +13,18 @@ import assert from 'node:assert/strict';
 import {
   ULINE_KEY, hasUlineAdvisory, ulineDecision, ulineWords, bearingDeg, buildUlineRows, sortUlineRows,
   eligibilityPayload, decisionAfter, buildingTypePayload, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES,
+  NO_TRACTOR_KEY, noTractorWrite, noTractorTickFields, noTractorUntickFields, restrictionLockOf, restrictionSnapshot,
+  TICKED, canMoveTowardTractor,
 } from '../src/lib/uline-review.js';
+import { confirmedBlockerKeys } from '../src/lib/trailer-block.js';
+
+// Firestore's sentinels, as inspectable stand-ins: the pure module is handed these by the screen
+// (arrayUnion / arrayRemove / deleteField from firebase/firestore) and must never build its own.
+const FV = {
+  arrayUnion: (...v) => ({ op: 'arrayUnion', v }),
+  arrayRemove: (...v) => ({ op: 'arrayRemove', v }),
+  deleteField: () => ({ op: 'deleteField' }),
+};
 
 const uline = (over = {}) => ({
   match_key: 'acme|100|norcross',
@@ -211,12 +222,16 @@ test('RESIDENTIAL SAVES THE TYPE AND BOX TRUCK ONLY, IN ONE WRITE', () => {
   // On its own a Residential type changes no truck — so the press that means "we don't send
   // tractors to houses" has to write the mark the router actually enforces.
   const STAMP = { __stamp: true };
-  const w = buildingTypeWrite('acme|1|x', 'residential', STAMP);
+  const w = buildingTypeWrite('acme|1|x', 'residential', STAMP, FV);
   assert.equal(w.eligibility, 'box_only', 'the press decided the vehicle question');
   assert.equal(w.fields.building_type, 'residential');
   assert.equal(w.fields.vehicle_eligibility, 'box_only');
   assert.equal(w.fields.vehicle_eligibility_by, 'dispatcher');
   assert.equal(w.fields.building_type_by, 'dispatcher');
+  // v1.62.2: Residential's "no tractor" is the WHOLE answer — the profile chip too.
+  assert.equal(w.ticks, true);
+  assert.deepEqual(w.fields.equipment_restrictions, { op: 'arrayUnion', v: [NO_TRACTOR_KEY] });
+  assert.deepEqual(w.fields.manual_overrides, { equipment_restrictions: true });
 });
 
 test('the other types LABEL ONLY — no truck rule is invented for them here', () => {
@@ -224,9 +239,11 @@ test('the other types LABEL ONLY — no truck rule is invented for them here', (
   // residential; widening "double duty" to the rest is his call, not a side effect.
   const STAMP = {};
   for (const t of ['school', 'church', 'government', 'none', null]) {
-    const w = buildingTypeWrite('k', t, STAMP);
+    const w = buildingTypeWrite('k', t, STAMP, FV);
     assert.equal(w.eligibility, undefined, String(t));
+    assert.equal(w.ticks, false, String(t));
     assert.ok(!('vehicle_eligibility' in w.fields), `${t} must not touch the vehicle mark`);
+    assert.ok(!('equipment_restrictions' in w.fields) && !('manual_overrides' in w.fields), `${t} must not touch the restriction list`);
   }
   assert.deepEqual([...BOX_ONLY_BUILDING_TYPES], ['residential']);
 });
@@ -244,4 +261,89 @@ test('UNDO PUTS BACK EXACTLY WHAT THE PRESS CHANGED — both fields after a Resi
   const eligOnly = undoWrite('k', { eligibility: 'tractor' }, STAMP);
   assert.equal(eligOnly.vehicle_eligibility, 'tractor');
   assert.ok(!('building_type' in eligOnly));
+});
+
+// ── v1.62.2: "No tractor trailer" ticks the customer profile ─────────────────────────────
+// Chad: "if i select no tractor trailer it should then select the no tractor trailer icon on the
+// customer profile and it didn't."
+
+test('NO TRACTOR TRAILER TICKS THE PROFILE EXACTLY AS THE STOP CARD DOES — the key AND the lock', () => {
+  // The stop card's toggle (App.jsx toggleRestriction) writes the key into equipment_restrictions
+  // and manual_overrides.equipment_restrictions = true. Without the lock the tick is not a
+  // person's, and the scanner's legacy migration can swap it back to the Uline advisory.
+  const STAMP = { __stamp: true };
+  const f = noTractorWrite('acme|1|x', STAMP, FV);
+  assert.equal(f.vehicle_eligibility, 'box_only', 'still Box truck only — the mark the router enforces');
+  assert.equal(f.vehicle_eligibility_by, 'dispatcher');
+  assert.equal(f.match_key, 'acme|1|x');
+  assert.deepEqual(f.equipment_restrictions, { op: 'arrayUnion', v: ['no_tractor_trailer'] });
+  assert.deepEqual(f.manual_overrides, { equipment_restrictions: true });
+  assert.ok(!('auto_scan_dismissed' in f), 'never the scanner\'s dismiss list');
+});
+
+test('THE TICK IS A UNION, NEVER A REWRITE — nothing added between the read and the press is lost', () => {
+  // A whole-list write from the row would drop a restriction a scan or a dispatcher added after
+  // the tab loaded. And Uline's own flag is never removed: the scanner re-adds it every order.
+  const f = noTractorTickFields(FV);
+  assert.ok(!Array.isArray(f.equipment_restrictions), 'a sentinel, not a list');
+  assert.equal(f.equipment_restrictions.op, 'arrayUnion');
+  assert.ok(!JSON.stringify(f).includes(ULINE_KEY), 'Uline\'s flag is not touched');
+});
+
+test('UNDO OF A TICK PUTS BACK EXACTLY WHAT WAS THERE — key and lock, each only if the press moved it', () => {
+  // Nothing there before: the key comes off and the lock is DELETED (not set false — a false the
+  // note never had is a new fact).
+  assert.deepEqual(noTractorUntickFields({ ntt: false, restrictionLock: null }, FV),
+    { equipment_restrictions: { op: 'arrayRemove', v: ['no_tractor_trailer'] }, manual_overrides: { equipment_restrictions: { op: 'deleteField' } } });
+  // Both already there (a person ticked it on the stop card): the press moved nothing, so Undo
+  // must not take a person's tick off.
+  assert.deepEqual(noTractorUntickFields({ ntt: true, restrictionLock: true }, FV), {});
+  // Ticked by the scanner (Address 2), list not locked: only the lock goes back.
+  assert.deepEqual(noTractorUntickFields({ ntt: true, restrictionLock: null }, FV),
+    { manual_overrides: { equipment_restrictions: { op: 'deleteField' } } });
+  // A stored false is put back as false.
+  assert.deepEqual(noTractorUntickFields({ ntt: false, restrictionLock: false }, FV),
+    { equipment_restrictions: { op: 'arrayRemove', v: ['no_tractor_trailer'] }, manual_overrides: { equipment_restrictions: false } });
+  // Through undoWrite, beside the vehicle mark, from the snapshot the screen takes.
+  const w = undoWrite('k', { eligibility: null, restriction: restrictionSnapshot({ ntt: false, restrictionLock: null }) }, {}, FV);
+  assert.equal(w.vehicle_eligibility, null);
+  assert.equal(w.equipment_restrictions.op, 'arrayRemove');
+  assert.equal(w.manual_overrides.equipment_restrictions.op, 'deleteField');
+  // An undo that never touched the restriction does not write it.
+  assert.ok(!('equipment_restrictions' in undoWrite('k', { eligibility: 'tractor' }, {}, FV)));
+});
+
+test('rows carry the profile chip and the lock — what a tick changes and Undo restores', () => {
+  const day = { date: '2026-09-24', stops: [
+    { matchKey: 'a', businessName: 'A' }, { matchKey: 'b', businessName: 'B' }, { matchKey: 'c', businessName: 'C' },
+  ] };
+  const notes = new Map([
+    ['a', { equipment_restrictions: [ULINE_KEY] }],
+    ['b', { equipment_restrictions: [ULINE_KEY, 'no_tractor_trailer'], manual_overrides: { equipment_restrictions: true } }],
+    ['c', { equipment_restrictions: [ULINE_KEY], manual_overrides: { equipment_restrictions: false } }],
+  ]);
+  const byKey = Object.fromEntries(buildUlineRows([day], notes).map((r) => [r.key, r]));
+  assert.equal(byKey.a.ntt, false); assert.equal(byKey.a.restrictionLock, null);
+  assert.equal(byKey.b.ntt, true); assert.equal(byKey.b.restrictionLock, true);
+  assert.equal(byKey.c.restrictionLock, false);
+  assert.equal(restrictionLockOf({}), null);
+  assert.equal(restrictionLockOf({ manual_overrides: { equipment_restrictions: 'yes' } }), null, 'malformed is not a lock');
+});
+
+test('A TICKED ROW READS AS A PERSON\'S NO — the same answer the next load gives the note', () => {
+  // The screen moves the row with TICKED; the server reads the written note with ulineDecision.
+  // They must agree, or the row jumps on the next refresh.
+  const note = { equipment_restrictions: [ULINE_KEY, 'no_tractor_trailer'], manual_overrides: { equipment_restrictions: true } };
+  assert.equal(ulineDecision(note), TICKED.baseDecision, 'with the vehicle mark cleared, a person\'s no stands');
+  assert.equal(ulineDecision({ ...note, vehicle_eligibility: 'box_only' }), 'box_only');
+  // And the locked list makes Uline's flag a confirmed blocker too — the pin draws a solid "no".
+  const keys = confirmedBlockerKeys(note, note.equipment_restrictions);
+  assert.ok(keys.includes('no_tractor_trailer') && keys.includes(ULINE_KEY), keys.join(','));
+});
+
+test('NO ONE-TAP TRACTOR OK OVER A PERSON\'S NO — once the profile is ticked, the stop card changes it', () => {
+  assert.equal(canMoveTowardTractor({ baseDecision: 'undecided' }), true);
+  assert.equal(canMoveTowardTractor({}), true, 'a row with no base is undecided');
+  assert.equal(canMoveTowardTractor({ baseDecision: 'confirmed' }), false);
+  assert.equal(canMoveTowardTractor({ ...{ baseDecision: 'undecided' }, ...TICKED }), false, 'the tick itself moves the row there');
 });
