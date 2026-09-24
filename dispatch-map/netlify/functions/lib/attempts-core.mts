@@ -97,7 +97,25 @@ export function attemptFireDecision(opts: {
 
 // ── PURE record builders (unit-tested without the network) ────────────────────
 
+// A stored number, or null. `Number(null)` is 0 and 0 is finite, so a bare Number() would turn
+// "no position" into "first stop" — the exact shape of the midnight-deadline bug CLAUDE.md names.
+function numOrNull(x: any): number | null {
+  if (x == null || String(x).trim() === '') return null;
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
+
 // One plan-snapshot doc: who had this delivery while it was routed this morning.
+//
+// v1.59.2 — AND WHERE ON THE ROUTE. Chad, 2026-09-24: "the att_plan should be keeping the order
+// the routes are in as well … it's hard to grade the learned routing engine against the routes if
+// it's not learning and looking at the order of the routes." The freeze kept driver, load and
+// route but dropped the stop's position, so the 8:30 plan could say which truck a stop was on and
+// never in what order. The board row already carries it — `routeSeq` is NuVizz's ShipTo Display
+// Seq, the delivery order within the load (lib/nuvizz-list.mts:147) — along with the planned
+// arrival NuVizz orders the route by (:299) and, where the scan enriched it, the load's own id,
+// which is the one field that keeps two same-named loads apart. All three are ADDED; every field
+// the attempts join reads is unchanged, and each is null when the row does not carry it.
 export function buildPlanRecord(s: any, date: string, capturedAt: string): any {
   return {
     tenant: TENANT,
@@ -109,7 +127,10 @@ export function buildPlanRecord(s: any, date: string, capturedAt: string): any {
     driverName: s.driverName ?? null,
     driverKey: driverKeyFor(s),
     loadNbr: s.loadNbr ?? null,
+    loadId: s.loadId ?? null,
     routeName: s.routeName ?? null,
+    routeSeq: numOrNull(s.routeSeq),
+    plannedEtaDTTM: s.plannedEtaDTTM ?? null,
     businessName: s.businessName ?? null,
     customerMatchKey: stopMatchKey(s),
     addr1: s.addr1 ?? null,
