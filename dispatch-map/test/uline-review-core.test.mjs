@@ -12,7 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ULINE_KEY, hasUlineAdvisory, ulineDecision, ulineWords, bearingDeg, buildUlineRows, sortUlineRows,
-  eligibilityPayload, decisionAfter,
+  eligibilityPayload, decisionAfter, buildingTypePayload, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES,
 } from '../src/lib/uline-review.js';
 
 const uline = (over = {}) => ({
@@ -187,4 +187,61 @@ test('the row remembers its base decision, computed with the vehicle mark remove
   const rows = buildUlineRows([{ date: 'd', stops: [stop()] }], notes(['acme|100|norcross', addr2]));
   assert.equal(rows[0].decision, 'tractor');
   assert.equal(rows[0].baseDecision, 'confirmed');
+});
+
+// ── BUILDING TYPE FROM THE CARD — Residential does double duty ─────────────────
+//
+// Chad: "give me options to label building type like this is residential ... double duty as
+// residentials we don't allow to be planned on tractors as we flag it as well as it would be
+// marked residential." Before this, a Residential type kept NOTHING off a tractor: the place rule
+// covers school/church/government only, and the auto-builder never reads building_type.
+
+test('a building type writes the SAME three fields the stop card writes, and nothing else', () => {
+  const STAMP = { __stamp: true };
+  const p = buildingTypePayload('acme|1|x', 'school', STAMP);
+  assert.deepEqual(Object.keys(p).sort(), ['building_type', 'building_type_at', 'building_type_by', 'last_updated', 'match_key']);
+  assert.equal(p.building_type, 'school');
+  assert.equal(p.building_type_by, 'dispatcher');
+  // A malformed type is stored as Auto, never as an invisible sixth value.
+  assert.equal(buildingTypePayload('k', 'WAREHOUSE', STAMP).building_type, null);
+  assert.equal(buildingTypePayload('k', null, STAMP).building_type, null);
+});
+
+test('RESIDENTIAL SAVES THE TYPE AND BOX TRUCK ONLY, IN ONE WRITE', () => {
+  // On its own a Residential type changes no truck — so the press that means "we don't send
+  // tractors to houses" has to write the mark the router actually enforces.
+  const STAMP = { __stamp: true };
+  const w = buildingTypeWrite('acme|1|x', 'residential', STAMP);
+  assert.equal(w.eligibility, 'box_only', 'the press decided the vehicle question');
+  assert.equal(w.fields.building_type, 'residential');
+  assert.equal(w.fields.vehicle_eligibility, 'box_only');
+  assert.equal(w.fields.vehicle_eligibility_by, 'dispatcher');
+  assert.equal(w.fields.building_type_by, 'dispatcher');
+});
+
+test('the other types LABEL ONLY — no truck rule is invented for them here', () => {
+  // School, church and government already carry the place rule's no-tractor FLAG. Chad named
+  // residential; widening "double duty" to the rest is his call, not a side effect.
+  const STAMP = {};
+  for (const t of ['school', 'church', 'government', 'none', null]) {
+    const w = buildingTypeWrite('k', t, STAMP);
+    assert.equal(w.eligibility, undefined, String(t));
+    assert.ok(!('vehicle_eligibility' in w.fields), `${t} must not touch the vehicle mark`);
+  }
+  assert.deepEqual([...BOX_ONLY_BUILDING_TYPES], ['residential']);
+});
+
+test('UNDO PUTS BACK EXACTLY WHAT THE PRESS CHANGED — both fields after a Residential press', () => {
+  const STAMP = {};
+  const both = undoWrite('k', { buildingType: null, eligibility: null }, STAMP);
+  assert.equal(both.building_type, null);
+  assert.equal(both.vehicle_eligibility, null);
+  // A plain type press moved only the type, so only the type goes back.
+  const typeOnly = undoWrite('k', { buildingType: 'school' }, STAMP);
+  assert.equal(typeOnly.building_type, 'school');
+  assert.ok(!('vehicle_eligibility' in typeOnly), 'the vehicle mark is not rewritten by an undo that never moved it');
+  // And a vehicle-only press.
+  const eligOnly = undoWrite('k', { eligibility: 'tractor' }, STAMP);
+  assert.equal(eligOnly.vehicle_eligibility, 'tractor');
+  assert.ok(!('building_type' in eligOnly));
 });

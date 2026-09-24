@@ -162,6 +162,22 @@ const PROBES = {
       await page.waitForTimeout(400);
       return page.getByRole('tab', { name: /nuvizz changed it/i, selected: true }).first().isVisible().catch(() => false);
     } },
+    // Full screen inside the browser: the bar carries the name, the answers, Close and the
+    // building-type chips — the row most likely to crowd at tablet width. Proven open first.
+    // LAST in this list on purpose: it leaves a full-screen view over the page, and the states
+    // of one screen run WITHOUT a reload between them — any probe after it would be clicking
+    // through the dialog.
+    { name: 'Uline — full screen in the browser', open: async (page) => {
+      const tab = page.getByRole('tab', { name: /uline straight truck/i }).first();
+      if (!(await tab.isVisible().catch(() => false))) return false;
+      await tab.click().catch(() => {});
+      await page.waitForTimeout(400);
+      const full = page.getByRole('button', { name: /^full screen$/i }).first();
+      if (!(await full.isVisible().catch(() => false))) return false;
+      await full.click().catch(() => {});
+      await page.waitForTimeout(400);
+      return page.getByRole('dialog').first().isVisible().catch(() => false);
+    } },
   ],
 };
 

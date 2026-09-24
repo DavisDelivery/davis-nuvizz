@@ -29,7 +29,7 @@ test('TWO VIEWS, not one reflowed', () => {
   const screen = fnSource('AddressHistoryScreen');
   assert.match(screen, /section === 'uline' && \(\s*isMobile\s*\? <UlineReviewMobile nonce=\{queueNonce\} \/>\s*: <UlineReviewDesktop nonce=\{queueNonce\} \/>/);
   // The desktop is a list BESIDE the building; the phone is one building at a time.
-  assert.match(fnSource('UlineReviewDesktop'), /w-80 shrink-0/);
+  assert.match(fnSource('UlineReviewDesktop'), /w-72 shrink-0/);
   assert.match(fnSource('UlineReviewMobile'), /\{i \+ 1\} of \{n\} to decide/);
 });
 
@@ -39,7 +39,12 @@ test('Refresh re-reads THIS tab, not the log behind it', () => {
 
 test('THE WRITE IS THE BRUSH\'S WRITE — a merge of the shared payload into customer_notes', () => {
   const hook = fnSource('useUlineReview');
-  assert.match(hook, /setDoc\(doc\(db, 'customer_notes', row\.key\), eligibilityPayload\(row\.key, next, serverTimestamp\(\)\), \{ merge: true \}\)/);
+  // ONE write path (v1.61.0) — the vehicle answer, a building-type chip and Undo all go through
+  // the same merged setDoc, and every payload comes from a tested builder in uline-review.js.
+  assert.match(hook, /await setDoc\(doc\(db, 'customer_notes', row\.key\), fields, \{ merge: true \}\);/);
+  assert.match(hook, /fields = eligibilityPayload\(row\.key, change\.eligibility, stamp\);/);
+  assert.match(hook, /const w = buildingTypeWrite\(row\.key, change\.buildingType, stamp\);/);
+  assert.match(hook, /fields = undoWrite\(row\.key, change, stamp\);/);
   // CLAUDE.md: setDoc REPLACES unless merged. A decision that took the customer's receiving
   // hours and dock notes with it would be the worst possible outcome of a one-tap button.
   // EVERY setDoc statement in the hook ends in a merge — counted, so a second, unmerged write
@@ -63,14 +68,18 @@ test('A ROW LEAVES "TO DECIDE" ONLY ONCE FIRESTORE HAS ACKNOWLEDGED THE WRITE', 
   const write = hook.indexOf("await setDoc(doc(db, 'customer_notes'");
   const move = hook.indexOf('setData((d) =>');
   assert.ok(write > 0 && move > write, 'the list moves after the await, not before');
-  assert.match(hook, /decision: decisionAfter\(r, next\)/, 'and moves to where the pure rule says');
+  assert.match(hook, /decision: decisionAfter\(r, nextElig\)/, 'and moves to where the pure rule says');
   assert.match(hook, /catch \(e\) \{\s*setWriteErr\(/, 'a failed save is said out loud');
 });
 
 test('UNDO restores what was there before the press — never a guess at it', () => {
   const hook = fnSource('useUlineReview');
-  assert.match(hook, /const prev = row\.decision === 'box_only' \|\| row\.decision === 'tractor' \? row\.decision : null;/);
-  assert.match(fnSource('UlineLastLine'), /u\.decide\(row, u\.last\.prev, \{ undo: true \}\)/);
+  // The snapshot is taken from the row BEFORE the write: the vehicle mark (currentElig) and,
+  // for a chip, the building type — both when Residential did double duty.
+  assert.match(APP, /const currentElig = \(row\) => \(row\?\.decision === 'box_only' \|\| row\?\.decision === 'tractor' \? row\.decision : null\);/);
+  assert.match(hook, /prev\.eligibility = currentElig\(row\);/);
+  assert.match(hook, /prev\.buildingType = row\.buildingType \?\? null;/);
+  assert.match(fnSource('UlineLastLine'), /u\.apply\(row, u\.last\.prev, \{ undo: true \}\)/);
 });
 
 test('A LOCATION A PERSON ALREADY MARKED "NO" IS NEVER GIVEN A ONE-TAP TRACTOR OK', () => {
@@ -110,8 +119,9 @@ test('THE STREET VIEW FACES THE BUILDING — the camera is turned to the pin', (
 test('the phone loads the street view only when asked for it', () => {
   // A phone shows one picture at a readable size; a panorama nobody opened is a billed load.
   const mob = fnSource('UlineReviewMobile');
-  assert.match(mob, /view === 'above'\s*\? <UlineSatellite/);
-  assert.match(mob, /: <UlineStreetView/);
+  assert.match(mob, /const \[seen, setSeen\] = React\.useState\(\(\) => new Set\(\['above'\]\)\);/, 'only the first view is built on arrival');
+  assert.match(mob, /\{seen\.has\('street'\) && <UlineStreetView /, 'the street view waits for its tap');
+  assert.match(mob, /\{seen\.has\('3d'\) && <UlineThreeD /, 'so does 3D, on its own meter');
 });
 
 test('the phone summary is ONE line — the building is the point, not the paragraph', () => {
@@ -137,8 +147,10 @@ test('zero notes is announced as a READ FAILURE, not rendered as a clean board',
 });
 
 test('every answer button meets the 40px tablet floor — a tablet renders the DESKTOP branch', () => {
+  // Desktop 44, the phone card 52, the phone's full-screen row 48 — none under the 44px phone
+  // floor, all over the 40px tablet one.
   const b = fnSource('UlineDecisionButtons');
-  assert.match(b, /const tall = \{ minHeight: stacked \? 52 : 44 \};/);
+  assert.match(b, /const tall = \{ minHeight: compact \? 48 : stacked \? 52 : 44 \};/);
 });
 
 // ── found by reading the diff back with "how does this fail silently?" ─────────
@@ -152,7 +164,7 @@ test('A NO-PIN ROW CANNOT BLANK THE NEXT ROW\'S PICTURES — the holders never u
     assert.doesNotMatch(src, /if \(!pin\) return </, `${name} must not unmount its holder for a no-pin row`);
     assert.doesNotMatch(src, /if \(!google\) return </, `${name} must not unmount its holder while Maps loads`);
     assert.match(src, /<div ref=\{holder\} className="absolute inset-0/, `${name} holder is always rendered`);
-    assert.match(src, /\{note && <div className="absolute inset-0/, `${name} messages are overlays`);
+    assert.match(src, /\{note && <div className=\{ULINE_NOTE_CLS\}>/, `${name} messages are overlays`);
   }
 });
 
@@ -160,7 +172,7 @@ test('the street view does not keep showing the LAST building under a new row', 
   // A stale 'ok' from the previous location would hide the overlay over a panorama still
   // pointed at the old building — the most misleading picture this tab could show.
   // (Since v1.60.3 the same branch also stops the stale panorama drawing — see the guards below.)
-  assert.match(fnSource('UlineStreetView'), /if \(!google \|\| !holder\.current \|\| !pin\) \{[\s\S]{0,160}?setState\('loading'\);\s*return undefined;\s*\}/);
+  assert.match(fnSource('UlineStreetView'), /if \(!active \|\| !google \|\| !holder\.current \|\| !pin\) \{[\s\S]{0,260}?setState\('loading'\);\s*return undefined;\s*\}/);
 });
 
 test('ONE WRITE AT A TIME — N then T pressed faster than a render cannot race', () => {
@@ -197,11 +209,13 @@ test('THE STREET PANE IS VISIBLE ONLY WHEN IT IS PROVEN TO BE THIS BUILDING', ()
 });
 
 test('Google\'s layers are CONTAINED, so no note can be painted over again', () => {
-  for (const name of ['UlineSatellite', 'UlineStreetView']) {
+  for (const name of ['UlineSatellite', 'UlineStreetView', 'UlineThreeD']) {
     const src = fnSource(name);
     assert.match(src, /<div ref=\{holder\} className="absolute inset-0 isolate /, `${name}: the holder is its own stacking context`);
-    assert.match(src, /\{note && <div className="absolute inset-0 z-10 /, `${name}: the note sits above it regardless`);
+    assert.match(src, /\{note && <div className=\{ULINE_NOTE_CLS\}>/, `${name}: the note is the shared overlay`);
   }
+  // …and the shared overlay sits above the holder regardless.
+  assert.match(APP, /const ULINE_NOTE_CLS = 'absolute inset-0 z-10 /);
 });
 
 test('"NO PANORAMA HERE" IS CAUGHT — it arrives as a rejection on the current API', () => {
@@ -218,9 +232,183 @@ test('a no-pin row hides the previous building in BOTH panes', () => {
   // The map stays centred where the last row put it; the pane must not be trusted to sit under
   // a note — it is hidden outright.
   assert.match(fnSource('UlineSatellite'), /style=\{\{ visibility: note \? 'hidden' : 'visible' \}\}/);
-  assert.match(fnSource('UlineStreetView'), /if \(!google \|\| !holder\.current \|\| !pin\) \{\s*try \{ panoRef\.current\?\.setVisible\(false\); \}/);
+  assert.match(fnSource('UlineStreetView'), /if \(!active \|\| !google \|\| !holder\.current \|\| !pin\) \{[\s\S]{0,160}?try \{ panoRef\.current\?\.setVisible\(false\); \}/);
 });
 
 test('the note Chad asked for is the sentence on screen when there is no street view', () => {
-  assert.match(fnSource('UlineStreetView'), /Google has no street view within 80 m of this pin — judge it from the satellite\./);
+  assert.match(fnSource('UlineStreetView'), /Google has no street view within 80 m of this pin — judge it from the satellite or 3D\./);
+});
+
+// ── v1.61.0 — THE 3D VIEW, FULL SCREEN INSIDE THE BROWSER, BIGGER PICTURES, BUILDING TYPE ─────
+//
+// Chad, on the live tab: "I want my 3d view here as well also when you click full screen i want
+// it to stay within the browser we have a lot of gray space on this page we could be using to
+// make this maps bigger initially" — and: "also give me options to label building type like this
+// is residential ... double duty as residentials we don't allow to be planned on tractors."
+
+test('THE 3D VIEW IS ON BOTH VIEWS, and it keeps every rule the Map\'s 3D learned the hard way', () => {
+  assert.match(fnSource('UlineReviewDesktop'), /<UlineThreeD /);
+  assert.match(fnSource('UlineReviewMobile'), /<UlineThreeD /);
+  const d3 = fnSource('UlineThreeD');
+  assert.match(d3, /if \(!MAP_3D_ON \|\| /, 'VITE_MAP_3D=off turns it off here exactly as on the Map — one switch');
+  assert.match(d3, /if \(!webglUsable\(\)\) \{ setErr\(MAP3D_NO_WEBGL\); return; \}/, 'WebGL checked before anything is built or billed');
+  assert.match(d3, /addEventListener\('gmp-error'/, 'Google\'s own "could not start" is caught');
+  assert.match(d3, /groundedCamera\(cam, mode\)/, 'the camera aims at the ground, not at sea level inside the hill');
+  assert.match(d3, /RELATIVE_TO_MESH/, 'the pin sits on the roof where it can be seen');
+});
+
+test('ONE 3D ELEMENT, RE-POINTED — Google bills 3D per element created, on its own meter', () => {
+  const d3 = fnSource('UlineThreeD');
+  assert.match(d3, /if \(!elRef\.current\) \{/);
+  assert.match(d3, /if \(building\.current\) return;/, 'two fast rows cannot both construct');
+  assert.match(d3, /elRef\.current\.flyCameraTo\(\{ endCamera: end, durationMillis: 0 \}\)/, 'every later row only moves the camera');
+});
+
+test('THE 3D VIEW STAYS COVERED UNTIL THE NEW BUILDING HAS LANDED — the v1.60.3 rule, for 3D', () => {
+  // Google applies a teleported camera a moment AFTER flyCameraTo returns (measured in
+  // map-3d.js), so for that moment the element still shows the PREVIOUS customer's roof.
+  const d3 = fnSource('UlineThreeD');
+  assert.match(d3, /React\.useEffect\(\(\) => \{\s*setReady\(false\);/, 'hidden the instant the pin changes');
+  assert.match(d3, /setTimeout\(\(\) => \{ if \(!dead\) setReady\(true\); \}, ULINE_3D_SETTLE_MS\)/);
+  assert.match(d3, /style=\{\{ visibility: note \? 'hidden' : 'visible' \}\}/);
+  assert.match(d3, /: !ready \? 'Loading the 3D view…' : null;/);
+});
+
+test('FULL SCREEN STAYS IN THE BROWSER — Google\'s monitor-wide button is off, ours fills the window', () => {
+  // Google's fullscreenControl calls the browser Fullscreen API and takes the whole monitor.
+  assert.match(fnSource('UlineSatellite'), /fullscreenControl: false/);
+  assert.match(fnSource('UlineStreetView'), /fullscreenControl: false/);
+  assert.doesNotMatch(fnSource('UlineSatellite') + fnSource('UlineStreetView'), /fullscreenControl: true/);
+  const frame = fnSource('UlineViewFrame');
+  assert.match(frame, /expanded \? 'fixed inset-0 z-\[80\] bg-white p-3 flex flex-col'/, 'fills the browser window');
+  assert.match(frame, /data-overlay-layer=\{expanded \? '' : undefined\}/, 'and declares itself to the overlap guard');
+});
+
+test('GOING FULL SCREEN REBUILDS NOTHING — the pane is restyled, never re-parented', () => {
+  // A portal would unmount the pane and remount it elsewhere: a new Google map, panorama or 3D
+  // element — a new billed load — every time somebody pressed Full screen.
+  const block = APP.slice(APP.indexOf('// ── ULINE: STRAIGHT TRUCK ONLY'), APP.indexOf('function AddressHistoryScreen() {'));
+  assert.doesNotMatch(block, /createPortal/);
+});
+
+test('THE ANSWERS STAY ON SCREEN IN FULL SCREEN — and Esc gets you out', () => {
+  const bar = fnSource('UlineExpandedBar');
+  assert.match(bar, /<UlineDecisionButtons row=\{row\} u=\{u\}/, 'N / T / Skip across the top of the full-screen view');
+  assert.match(bar, /onClick=\{onClose\}/);
+  assert.match(fnSource('useEscToClose'), /if \(e\.key === 'Escape'\)/);
+  assert.match(fnSource('UlineReviewDesktop'), /useEscToClose\(!!expanded, close\);/);
+  assert.match(fnSource('UlineReviewMobile'), /useEscToClose\(expanded, close\);/);
+});
+
+test('FULL SCREEN STARTS AT THE TOP OF THE WINDOW — the card\'s spacing cannot push it down', () => {
+  // On the phone the frame is a child of a space-y-3 card. That margin-top moved a fixed
+  // inset-0 view 12px down the screen and 12px off the bottom (measured: top 0px, rect top 12).
+  assert.match(fnSource('UlineViewFrame'), /style=\{expanded \? \{ margin: 0 \} : style\}/);
+});
+
+test('ON A PHONE THE FULL-SCREEN BAR IS COMPACT — the building keeps the screen', () => {
+  // The card's thumb buttons stack three deep; over a full-screen picture that is most of it.
+  const bar = fnSource('UlineExpandedBar');
+  const phone = bar.slice(bar.indexOf('if (stacked) {'), bar.indexOf('\n  return (', bar.indexOf('if (stacked) {')));
+  assert.match(phone, /<UlineDecisionButtons row=\{row\} u=\{u\} onDone=\{onDone\} onSkip=\{onSkip\} compact \/>/);
+  assert.match(phone, /onClick=\{onClose\}/, 'Close shares the name row');
+  assert.match(fnSource('UlineDecisionButtons'), /compact \? 'grid grid-cols-3 gap-1\.5'/, 'three answers, one row');
+});
+
+test('THE VIEW SWITCH FOLLOWS THE PICTURE INTO FULL SCREEN — and there is only ever one', () => {
+  // Above / 3D / Street a tap away without closing — and never two tab lists answering to the
+  // same name, which is also what a guard or a screen reader would trip over.
+  const mob = fnSource('UlineReviewMobile');
+  assert.match(mob, /\{!expanded && tabs\}/);
+  assert.match(mob, /<UlineExpandedBar row=\{row\} u=\{u\} onDone=\{done\} onSkip=\{skip\} onClose=\{close\} stacked tabs=\{tabs\} \/>/);
+  assert.equal((mob.match(/role="tablist"/g) || []).length, 1, 'one tab list, placed in one spot at a time');
+});
+
+test('RESIDENTIAL CAN BE PRESSED IN FULL SCREEN on the desktop — where a house is seen as a house', () => {
+  const bar = fnSource('UlineExpandedBar');
+  const desk = bar.slice(bar.lastIndexOf('\n  return ('));
+  assert.match(desk, /<UlineBuildingType row=\{row\} u=\{u\} onDecided=\{onDone\} hint=\{false\} \/>/);
+  // The sentence stays on the CARD, where there is room for it.
+  assert.match(fnSource('UlineReviewDesktop'), /<UlineBuildingType row=\{row\} u=\{u\} onDecided=\{advance\} \/>/);
+  assert.match(fnSource('UlineBuildingType'), /\{hint && \(/);
+});
+
+test('A PICTURE THAT CHANGES SIZE IS TOLD — full screen is a resize, and Google draws at the old size otherwise', () => {
+  // The Map and the Engine both learned this: a Google map whose box changes size leaves a gap
+  // or stays blank until someone touches it. Full screen changes the box both ways.
+  const kick = fnSource('useGoogleResizeKick');
+  assert.match(kick, /new ResizeObserver\(/);
+  assert.match(kick, /google\.maps\.event\.trigger\(objRef\.current, 'resize'\)/);
+  assert.match(fnSource('UlineSatellite'), /useGoogleResizeKick\(holder, mapRef, google, \(\) => \{ if \(pin\) mapRef\.current\?\.setCenter\(/, 're-centred on the building');
+  assert.match(fnSource('UlineStreetView'), /useGoogleResizeKick\(holder, panoRef, google\);/);
+});
+
+test('the expand button is IN FLOW in the label row, never pinned over the imagery', () => {
+  // Pinned over the map it would land on Google's own controls — the collision the phone guard
+  // exists to catch, patched four times on the Map before the rule was written.
+  const frame = fnSource('UlineViewFrame');
+  assert.match(frame, /<div className="flex items-center justify-between gap-2 mb-1">[\s\S]{0,900}?Full screen/);
+  assert.doesNotMatch(frame, /absolute[^"]*top-/, 'no absolutely-pinned button');
+});
+
+test('THE PICTURES USE THE WINDOW — no dashboard cap on this tab, and sized to the screen height', () => {
+  assert.match(fnSource('AddressHistoryScreen'), /section === 'uline' \? 'w-full' : SCREEN_DASH/);
+  assert.match(APP, /const ULINE_PANE = \{ flex: '1 1 max\(40%, 460px\)', height: 'max\(460px, calc\(100vh - 560px\)\)' \};/);
+});
+
+test('TWO PICTURES ACROSS AT MOST — three across a 1080p screen were no bigger than v1.60.0\'s two', () => {
+  // Measured, not assumed: three across at 1920 gave each ~500px; 3D beside a stacked pair
+  // left satellite and street at 608×300 against v1.60.0's 676×380. A 40% basis fits two per
+  // row and never three; the 460px floor puts one per row on a narrower desktop.
+  const d = fnSource('UlineReviewDesktop');
+  assert.match(d, /<div className="flex flex-wrap gap-3">\{above\}\{threeD\}\{street\}<\/div>/, 'from above and 3D first, the street view wraps under them');
+  assert.match(d, /bar=\{bar\} style=\{ULINE_PANE\}>/, 'every pane takes the same sizing rule');
+  assert.doesNotMatch(d, /ULINE_WIDE_PX|flex-\[3\]/, 'no second layout keyed to a breakpoint');
+});
+
+test('THE ANSWERS SIT BESIDE THE NAME — with pictures this big they would be below the fold', () => {
+  const d = fnSource('UlineReviewDesktop');
+  const name = d.indexOf('{row.businessName}</div>');
+  const buttons = d.indexOf('<UlineDecisionButtons row={row} u={u} onDone={advance} onSkip={advance} />');
+  const pictures = d.indexOf('{above}{threeD}{street}');
+  assert.ok(name > 0 && buttons > name && buttons < pictures, 'answers come before the pictures, not after');
+  // Evidence left, answers and building type right: the header is one band, not five rows.
+  assert.match(d, /style=\{\{ flex: '1 1 420px' \}\}>[\s\S]{0,400}?<UlineEvidence row=\{row\} \/>/);
+  assert.match(d, /style=\{\{ flex: '0 1 600px' \}\}>\s*<UlineDecisionButtons[\s\S]{0,200}?<UlineBuildingType row=\{row\} u=\{u\} onDecided=\{advance\} \/>/);
+});
+
+test('BUILDING TYPE IS ON THE CARD, on both views, through the one write path', () => {
+  assert.match(fnSource('UlineReviewDesktop'), /<UlineBuildingType row=\{row\} u=\{u\} onDecided=\{advance\} \/>/);
+  assert.match(fnSource('UlineReviewMobile'), /<UlineBuildingType row=\{row\} u=\{u\} onDecided=\{done\} stacked \/>/);
+  const hook = fnSource('useUlineReview');
+  assert.match(hook, /const setType = React\.useCallback\(\(row, type\) => apply\(row, \{ buildingType: type \}\), \[apply\]\);/);
+});
+
+test('RESIDENTIAL SAYS IT DOES TWO THINGS — on the chip and in words under the row', () => {
+  // A button that quietly does two things is how a dispatcher gets surprised by the second one.
+  const bt = fnSource('UlineBuildingType');
+  assert.match(bt, /Residential — also saves Box truck only/);
+  assert.match(bt, /\+ box only/);
+  assert.match(bt, /Residential also saves Box truck only — we don’t send tractors to houses\./);
+  // A Residential press DECIDED the row, so the card moves on; a plain label does not.
+  assert.match(bt, /if \(await u\.setType\(row, next\) && BOX_ONLY_BUILDING_TYPES\.has\(next\)\) onDecided\?\.\(\);/);
+  // Pressing the lit chip clears it back to Auto — the only way off, and it is the obvious one.
+  assert.match(bt, /const next = current === t \? null : t;/);
+});
+
+test('the Undo line names both halves of a Residential press', () => {
+  assert.match(fnSource('useUlineReview'), /`\$\{label\} — and No tractor trailer \(Box truck only\)`/);
+});
+
+test('EACH PHONE VIEW IS BUILT ON ITS FIRST TAP AND THEN ONLY HIDDEN', () => {
+  // Torn down and rebuilt on every switch would be a new billed Google load per tap.
+  const mob = fnSource('UlineReviewMobile');
+  assert.match(mob, /const layer = \(id\) => \(\{ zIndex: view === id \? 2 : 1, pointerEvents: view === id \? 'auto' : 'none' \}\);/);
+  assert.match(mob, /active=\{view === 'street'\}/, 'and a hidden view does no work until it is looked at');
+});
+
+test('NOTHING NEW TOUCHES NUVIZZ', () => {
+  for (const name of ['UlineThreeD', 'UlineBuildingType', 'UlineViewFrame', 'UlineExpandedBar']) {
+    assert.doesNotMatch(fnSource(name), /callWrite|setStopAddress|addStopNote|nuvizz-write/, name);
+  }
 });

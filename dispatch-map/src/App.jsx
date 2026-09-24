@@ -93,7 +93,7 @@ import {
   limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
   buildingTypeChanged, NO_TRACTOR_PLACE_MARKS,
 } from './lib/place-mark.js';
-import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg } from './lib/uline-review.js';
+import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES } from './lib/uline-review.js';
 import {
   glyphCenter, glyphBadge, glyphMuted, glyphClusterBadge, GLYPH_INK_ON_LIME, FORKLIFT_BADGE_LIME,
 } from './lib/place-glyphs.js';
@@ -171,7 +171,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.60.3';
+const APP_VERSION = '1.61.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -225,6 +225,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.61.0', 'THE ULINE TAB GETS THE 3D VIEW, BIGGER PICTURES, A FULL SCREEN THAT STAYS IN THE BROWSER, AND BUILDING-TYPE BUTTONS. Chad: \u201cI want my 3d view here as well also when you click full screen i want it to stay within the browser we have a lot of gray space on this page we could be using to make this maps bigger\u201d \u2014 and: \u201cgive me options to label building type like this is residential \u2026 double duty as residentials we don\u2019t allow to be planned on tractors.\u201d 3D: the Map\u2019s photorealistic 3D, aimed at the building at a 67.5\u00b0 tilt with Google\u2019s compass and tilt controls to turn it and look down the side for doors. ONE 3D view for the whole review, re-pointed per location, because Google bills 3D per view created; it stays covered until the new building has landed (the v1.60.3 rule). BIGGER: the tab drops the dashboard width cap. From above and 3D sit side by side, sized so that row ends at the bottom of the window, with the street view the full width under them \u2014 measured on a 1920\u00d71080 screen each picture is 761\u00d7476 (1.60.0\u2019s were 380 tall), on a 2560\u00d71440 screen 1081\u00d7836. Two across at most, on purpose: three across a 1080p screen were no bigger than 1.60.0\u2019s two. The name and Uline\u2019s words sit on the left and the answers and building type on the right, so the pictures start higher up the page; a narrower desktop gets one picture per row rather than slivers. FULL SCREEN FILLS THE BROWSER WINDOW, NOT THE MONITOR: Google\u2019s own full-screen buttons are off; ours keeps the name, the three answers and (on a desktop) the building type across the top, and Esc closes it. The picture is restyled, not rebuilt, so going full screen is no new Google load, and Google is told the new size so the map fills it and stays on the building. On a phone the Above / 3D / Street switch comes along into full screen and the answers sit three across, so the building keeps the screen. BUILDING TYPE on the card: Residential, School, Church, Government, None \u2014 the same field the stop card sets. READ OFF THE CODE: a Residential type on its own keeps nothing off a tractor today \u2014 the router never reads building type, and the board\u2019s no-tractor place flag covers School, Church and Government only. So the Residential chip here does the double duty in ONE write: it labels the place Residential AND saves Box truck only, which the router does obey. The chip and the line under it say so, and Undo puts both back. School, Church and Government save the label only; they already raise the red place flag when one is on a tractor route. Nothing is sent to NuVizz.'],
   ['1.60.3', 'THE ULINE TAB SHOWED ONE CUSTOMER\u2019S BUILDING UNDER ANOTHER CUSTOMER\u2019S NAME. Chad, on F13 at 475 Wilbanks Rd, Alto, the row after BURMAN PRINTING: \u201cThis stop is showing the street view from previous stop because i\u2019m assuming there isn\u2019t one for this stop so if that is case just make it say so.\u201d It was Burman\u2019s front door \u2014 7980 and their sign \u2014 on the one screen whose whole job is judging a building by its picture, with the answer buttons right under it. A dispatcher could have marked F13 box-truck-only off another company\u2019s photo. THE NOTE WAS THERE AND COULD NOT BE SEEN. When Google has no panorama near a pin the pane already set \u201cGoogle has no street view within 80 m of this pin\u201d \u2014 but Google paints the panorama with its own z-indexes, nothing contained them, and the LAST building\u2019s panorama rose above the note meant to cover it. The satellite pane had the same flaw on a row with no pin. THREE GUARDS NOW, because each one alone has already been enough to fail: the picture is HIDDEN unless it is proven to be this building (only the lookup for the current pin can mark it good, and a late answer for the previous one is dropped); Google\u2019s layers are contained so a note can never be painted over again; and \u201cno panorama here\u201d is caught as the rejection it now arrives as, with the stale panorama told to stop drawing as well. Hidden, not unmounted \u2014 the map and the panorama keep their size and come back drawn, and nothing is rebuilt or re-billed. Shipped on its own, ahead of the 3D view and the bigger maps, because it was live.'],
   ['1.60.2', 'THE 8:30 PLAN\u2019S ROUTE ORDER, CORRECTED BEFORE IT WAS EVER USED. A review of 1.59.2 found three things wrong with it. 1.59.2 merged before the 8:30 freeze of Sep 24, so that one morning\u2019s stored plan may carry them; from the first freeze after this ships, none do. (1) A stop with no position was frozen as routeSeq: null. The Stops lookup reads a day\u2019s stop number with Number(), and Number(null) is 0, so on a day where the morning plan is the only copy of a stop the screen would have said \u201cstop 0\u201d, the exact thing 1.59.2 promised it would not. Now a stop with no position carries no position field at all, which reads back as nothing, as it always did. A test builds that plan-only day and fails on 1.59.2. (2) 1.59.2 said it kept the load\u2019s own id. It could not: no scan puts that id on the row the freeze reads, so it would have been blank on every stop. Removed. (3) The planned arrival it kept is not refreshed by the list scan, so on some stops it would have been a stale copy from the day the order was first looked up, presented as the 8:30 plan. Removed. What stays is the one field Chad asked for: each stop\u2019s position on its route. Zero NuVizz calls; the attempts list and driver scorecard are unchanged.'],
   ['1.60.1', 'THE ENGINE SCREEN\u2019S ROUTE MAP IS BACK AFTER A TAB SWITCH. Chad, 2026-09-24, on Engine \u2192 Sequencing with BEN 2 selected: \u201cMap is missing on bottom right hand corner.\u201d The panel showed its own light-grey background and no map, and no \u2018map failed to load\u2019 line \u2014 because nothing had failed. REPRODUCED BEFORE IT WAS FIXED, in a real browser, not reasoned about: on first entry the route map is in the panel; after Sequencing \u2192 Assignment \u2192 Sequencing the panel is empty and BEN 2\u2019s two lines and four pins are drawn into a map nobody can see. THE CAUSE: the Sequencing view is mounted only while its tab is showing, so that round-trip throws the map\u2019s <div> away and mounts a new one. The map was created once per Engine screen (it watched only `google`, and refused to run while a map already existed), so it stayed bound to the <div> that had left the page and every route after that was drawn into it. It has been this way since the Engine tab was built (v0.47.0) \u2014 no recent merge caused it. THE FIX: the map now follows its <div> \u2014 a new <div> gets a map of its own, and a <div> leaving takes its map, pins and lines with it, whatever made it leave. THE PRICE, SAID OUT LOUD: coming back to Sequencing now costs one more Google map load (billed per map created); a round-trip goes from one load to two, because the Assignment view already costs one each time it opens. A NEW BROWSER GUARD in CI (verify:engine-map) answers Google\u2019s script with a stand-in that records which element every map is created in and which map every pin and line is drawn on, then does the round-trip. It FAILS on the code before this change and passes on this one. Engine screen only: the Map, the Build Panel and the Route Workbench are not touched. One commit, so git revert is the whole way back.'],
@@ -33328,10 +33329,20 @@ function classifyPushResult(j) {
 // tractor trailer" makes the "no" a person's statement instead of another company's text, which
 // the map then draws solid red and the trailer-conflict alert starts watching.
 //
-// ONE LOCATION IN FOCUS, NOT A WALL OF MAPS. A satellite map and a Street View panorama are each
-// a billed Google load. Twelve cards each opening both is twenty-four loads to make twelve
-// decisions one at a time anyway — so the imagery belongs to the ONE location being decided,
-// and the map and panorama are re-pointed rather than rebuilt as the dispatcher moves on.
+// ONE LOCATION IN FOCUS, NOT A WALL OF MAPS. Satellite, Street View and 3D are each a billed
+// Google load, and 3D bills its OWN meter per element created (see useMap3dPeek). So the imagery
+// belongs to the ONE location being decided, and each view is built once and re-pointed as the
+// dispatcher moves on — never rebuilt per row, never rebuilt to go full screen.
+//
+// v1.61.0, Chad on the live tab: "I want my 3d view here as well also when you click full screen
+// i want it to stay within the browser we have a lot of gray space on this page we could be
+// using to make this maps bigger initially." The 3D view is the one that answers the question —
+// it shows the doors down the side of the building, which neither the roof from above nor the
+// front from the street can. Google's own full-screen button takes the whole MONITOR (the
+// browser Fullscreen API); the expand here fills the browser window and keeps the answer
+// buttons in reach. And the tab is no longer held to the dashboard width.
+
+const currentElig = (row) => (row?.decision === 'box_only' || row?.decision === 'tractor' ? row.decision : null);
 
 function useUlineReview(nonce) {
   const { google, error: mapsErr } = useGoogleMaps();
@@ -33340,12 +33351,12 @@ function useUlineReview(nonce) {
   const [err, setErr] = React.useState(null);
   const [busyKey, setBusyKey] = React.useState(null);
   const [writeErr, setWriteErr] = React.useState(null);
-  // The last decision, for Undo. Its `prev` is the vehicle mark BEFORE this press (null for a
-  // row that was undecided), never a guess at it.
+  // The last press, for Undo: `prev` is exactly what the row held BEFORE it — the vehicle mark,
+  // the building type, or both when Residential did double duty — never a guess at it.
   const [last, setLast] = React.useState(null);
-  // ONE WRITE AT A TIME, through every door — buttons, keys, Undo, Change. A ref, not state:
-  // N then T pressed faster than a render would otherwise fire two writes for the same row, and
-  // Firestore keeps whichever LANDS last, which need not be the key pressed last.
+  // ONE WRITE AT A TIME, through every door — buttons, keys, chips, Undo, Change. A ref, not
+  // state: N then T pressed faster than a render would otherwise fire two writes for the same
+  // row, and Firestore keeps whichever LANDS last, which need not be the key pressed last.
   const inFlight = React.useRef(false);
   const load = React.useCallback(async () => {
     setLoading(true); setErr(null);
@@ -33358,31 +33369,59 @@ function useUlineReview(nonce) {
   }, []);
   React.useEffect(() => { load(); }, [load, nonce]);
 
-  const decide = React.useCallback(async (row, next, { undo = false } = {}) => {
+  /**
+   * THE ONE WRITE PATH. `change` is { eligibility } (a vehicle answer) or { buildingType } (a
+   * chip); with { undo: true } it is the `prev` snapshot being put back. Every press is one
+   * merged setDoc into customer_notes — the note's restrictions, hours and dock notes are never
+   * touched — and the row moves only once Firestore has ACKNOWLEDGED it.
+   */
+  const apply = React.useCallback(async (row, change, { undo = false } = {}) => {
     if (!db || !row?.key) { setWriteErr('Firestore is not connected on this page — nothing was saved.'); return false; }
     if (inFlight.current) return false;
     inFlight.current = true;
-    const prev = row.decision === 'box_only' || row.decision === 'tractor' ? row.decision : null;
+    const stamp = serverTimestamp();
+    const prev = {};
+    let fields; let nextElig; let nextType; let what;
+    if (undo) {
+      fields = undoWrite(row.key, change, stamp);
+      if ('eligibility' in change) nextElig = change.eligibility;
+      if ('buildingType' in change) nextType = change.buildingType;
+    } else if ('buildingType' in change) {
+      const w = buildingTypeWrite(row.key, change.buildingType, stamp);
+      fields = w.fields;
+      nextType = normalizeBuildingType(change.buildingType);
+      prev.buildingType = row.buildingType ?? null;
+      if (w.eligibility) { prev.eligibility = currentElig(row); nextElig = w.eligibility; }
+      const label = nextType ? (BUILDING_TYPE_LABEL[nextType] || nextType) : 'Auto (building type cleared)';
+      what = w.eligibility ? `${label} — and No tractor trailer (Box truck only)` : `${label} (building type)`;
+    } else {
+      fields = eligibilityPayload(row.key, change.eligibility, stamp);
+      prev.eligibility = currentElig(row);
+      nextElig = change.eligibility ?? null;
+      what = nextElig === 'box_only' ? 'No tractor trailer (Box truck only)' : nextElig === 'tractor' ? 'Tractor-trailer OK' : 'not set';
+    }
     setBusyKey(row.key); setWriteErr(null);
     try {
-      // THE SAME THREE FIELDS the Routing brush and the stop card write, with a merge — the
-      // note's restrictions, hours and dock notes are untouched. See eligibilityPayload.
-      await setDoc(doc(db, 'customer_notes', row.key), eligibilityPayload(row.key, next, serverTimestamp()), { merge: true });
-      // Moved only once Firestore has ACKNOWLEDGED the write: a row that left "to decide"
-      // before the save landed would be an intent reported as an outcome.
-      setData((d) => (d ? { ...d, rows: sortUlineRows(d.rows.map((r) => (r.key === row.key ? { ...r, decision: decisionAfter(r, next) } : r))) } : d));
-      setLast(undo ? null : { key: row.key, name: row.businessName, next: next || null, prev });
+      await setDoc(doc(db, 'customer_notes', row.key), fields, { merge: true });
+      setData((d) => (d ? { ...d, rows: sortUlineRows(d.rows.map((r) => (r.key !== row.key ? r : {
+        ...r,
+        ...(nextElig !== undefined ? { decision: decisionAfter(r, nextElig) } : {}),
+        ...(nextType !== undefined ? { buildingType: nextType } : {}),
+      }))) } : d));
+      setLast(undo ? null : { key: row.key, name: row.businessName, prev, what, decided: nextElig !== undefined });
       return true;
     } catch (e) {
       setWriteErr(`Could not save ${row.businessName}: ${e?.message || e}`);
       return false;
     } finally { inFlight.current = false; setBusyKey(null); }
   }, []);
+  const decide = React.useCallback((row, next) => apply(row, { eligibility: next }), [apply]);
+  const setType = React.useCallback((row, type) => apply(row, { buildingType: type }), [apply]);
 
   const rows = data?.rows || [];
   const todo = rows.filter((r) => r.decision === 'undecided');
   const done = rows.filter((r) => r.decision !== 'undecided');
-  return { google, mapsErr, data, loading, err, load, rows, todo, done, decide, busyKey, writeErr, last, setLast };
+  return { google, mapsErr, data, loading, err, load, rows, todo, done, apply, decide, setType, busyKey, writeErr, last, setLast };
 }
 
 const ULINE_DECIDED = {
@@ -33391,21 +33430,51 @@ const ULINE_DECIDED = {
   confirmed: { label: 'No tractor trailer — set by a dispatcher', color: ELIG_BOX_COLOR, hint: 'A person already marked a trailer restriction on this customer. Change it on the stop card, not here — Tractor OK would overrule them.' },
 };
 
-/** The top-down close-up. ONE map for the whole review, re-centred per location. */
-function UlineSatellite({ google, mapsErr, pin, height }) {
+const ULINE_NOTE_CLS = 'absolute inset-0 z-10 rounded-lg bg-slate-100 flex items-center justify-center p-4 text-center text-xs text-slate-500';
+
+/**
+ * A GOOGLE PICTURE WHOSE BOX CHANGES SIZE MUST BE TOLD. This repo learned it twice: on the Map
+ * ("otherwise the map tiles leave a gap until the next interaction") and on the Engine ("this is
+ * what keeps the tiles from staying blank"). Full screen takes these panes from a card to the
+ * whole window and back, so every size change kicks the Google object with 'resize', and `after`
+ * re-aims it — a map resized around its corner is no longer centred on the building.
+ */
+function useGoogleResizeKick(holder, objRef, google, after) {
+  const afterRef = React.useRef(after);
+  afterRef.current = after;
+  React.useEffect(() => {
+    const el = holder.current;
+    if (!google || !el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(() => {
+      if (!objRef.current || !el.offsetWidth || !el.offsetHeight) return;
+      try { google.maps.event.trigger(objRef.current, 'resize'); } catch { /* the next interaction redraws it */ }
+      try { afterRef.current?.(); } catch { /* the view stays where it was */ }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [google, holder, objRef]);
+}
+
+/**
+ * The top-down close-up. ONE map for the whole review, re-centred per location.
+ * `active` is false on a phone while another view is showing: nothing is built or re-pointed
+ * for a picture nobody is looking at, and the next look re-points it before it can be seen.
+ */
+function UlineSatellite({ google, mapsErr, pin, active = true }) {
   const holder = React.useRef(null);
   const mapRef = React.useRef(null);
   const markerRef = React.useRef(null);
   React.useEffect(() => {
-    if (!google || !holder.current || !pin) return;
+    if (!active || !google || !holder.current || !pin) return;
     const at = { lat: pin.lat, lng: pin.lng };
     if (!mapRef.current) {
       // Zoom 19 is the loading dock, the truck court and the street the trailer turns off —
       // the three things this decision is about. The scale bar is there so "is that lot 75
-      // feet deep" is a reading, not an impression.
+      // feet deep" is a reading, not an impression. NO fullscreenControl: Google's takes the
+      // whole monitor; the frame's own expand fills the browser (UlineViewFrame).
       mapRef.current = new google.maps.Map(holder.current, {
         center: at, zoom: 19, mapTypeId: 'hybrid', tilt: 0,
-        disableDefaultUI: true, zoomControl: true, scaleControl: true, fullscreenControl: true,
+        disableDefaultUI: true, zoomControl: true, scaleControl: true, fullscreenControl: false,
         mapTypeControl: true, gestureHandling: 'greedy', clickableIcons: false,
       });
       markerRef.current = new google.maps.Marker({ map: mapRef.current, position: at });
@@ -33413,32 +33482,30 @@ function UlineSatellite({ google, mapsErr, pin, height }) {
       mapRef.current.setCenter(at); mapRef.current.setZoom(19);
       markerRef.current?.setPosition(at);
     }
-  }, [google, pin?.lat, pin?.lng]);
-  // THE HOLDER NEVER UNMOUNTS. The map object lives in a ref and survives a re-render; an early
-  // return for a no-pin row would unmount the div it was built into, and the next row WITH a pin
-  // would re-centre a map bound to a detached element — a blank grey box, silently. So the notes
-  // are overlays on a holder that stays put.
+  }, [active, google, pin?.lat, pin?.lng]);
+  // THE HOLDER NEVER UNMOUNTS, and the picture is HIDDEN unless it is this building — a no-pin
+  // row leaves the map centred where the LAST row put it (v1.60.3: the note alone could be
+  // painted over by Google's own layers). `visibility`, not `display`: the map keeps its size.
+  useGoogleResizeKick(holder, mapRef, google, () => { if (pin) mapRef.current?.setCenter({ lat: pin.lat, lng: pin.lng }); });
   const note = !pin ? 'No pin for this stop — fix it on Problem addresses, then come back.'
     : !google ? (mapsErr ? `Map unavailable: ${mapsErr}` : 'Loading the satellite view…') : null;
-  // NEVER THE PREVIOUS BUILDING. A no-pin row leaves the map centred where the LAST row put it,
-  // so the picture is hidden outright rather than trusted to sit under the note — see
-  // UlineStreetView for the day that trust failed. `visibility`, not `display`: the map keeps
-  // its size while hidden, so it comes back drawn rather than blank.
   return (
-    <div className="relative w-full" style={{ height }}>
+    <div className="relative w-full h-full">
       <div ref={holder} className="absolute inset-0 isolate rounded-lg bg-slate-200" style={{ visibility: note ? 'hidden' : 'visible' }} aria-label="Satellite close-up of the building" />
-      {note && <div className="absolute inset-0 z-10 rounded-lg bg-slate-100 flex items-center justify-center p-4 text-center text-xs text-slate-500">{note}</div>}
+      {note && <div className={ULINE_NOTE_CLS}>{note}</div>}
     </div>
   );
 }
 
 /** The view from the street, turned to FACE the building. */
-function UlineStreetView({ google, mapsErr, pin, height }) {
+function UlineStreetView({ google, mapsErr, pin, active = true }) {
   const holder = React.useRef(null);
   const panoRef = React.useRef(null);
   const [state, setState] = React.useState('loading');
   React.useEffect(() => {
-    if (!google || !holder.current || !pin) {
+    if (!active || !google || !holder.current || !pin) {
+      // Inactive or unanswerable: hidden AND reset, so the next look starts from "finding",
+      // never from the last building's 'ok'.
       try { panoRef.current?.setVisible(false); } catch { /* hidden by the holder regardless */ }
       setState('loading');
       return undefined;
@@ -33450,13 +33517,11 @@ function UlineStreetView({ google, mapsErr, pin, height }) {
     if (google.maps.StreetViewSource?.OUTDOOR) req.source = google.maps.StreetViewSource.OUTDOOR;
     if (google.maps.StreetViewPreference?.NEAREST) req.preference = google.maps.StreetViewPreference.NEAREST;
     // THE PROMISE FORM, WITH A CATCH, because that is how "there is no panorama here" arrives.
-    // On the current API a lookup with no result REJECTS (ZERO_RESULTS) — the callback this used
-    // to rely on is not a dependable carrier of that answer — and a rejection nobody handled
-    // left the pane showing whatever it showed last. Chad, 2026-09-24, on F13 at 475 Wilbanks Rd:
-    // "This stop is showing the street view from previous stop because i'm assuming there isn't
-    // one for this stop so if that is case just make it say so." The picture was BURMAN
-    // PRINTING's front door, one row earlier — on the screen whose whole job is judging a
-    // building by its picture.
+    // On the current API a lookup with no result REJECTS (ZERO_RESULTS), and a rejection nobody
+    // handled left the pane showing whatever it showed last. Chad, 2026-09-24, on F13 at 475
+    // Wilbanks Rd: "This stop is showing the street view from previous stop because i'm assuming
+    // there isn't one for this stop so if that is case just make it say so." It was BURMAN
+    // PRINTING's front door, one row earlier.
     const none = () => {
       if (dead) return;
       // Stop drawing the stale panorama as well as covering it: a hidden pane that is still
@@ -33473,7 +33538,7 @@ function UlineStreetView({ google, mapsErr, pin, height }) {
       const pov = { heading: bearingDeg(ll ? { lat: ll.lat(), lng: ll.lng() } : at, at), pitch: 6 };
       if (!panoRef.current) {
         panoRef.current = new google.maps.StreetViewPanorama(holder.current, {
-          pano: data.location.pano, pov, zoom: 0, addressControl: false, fullscreenControl: true,
+          pano: data.location.pano, pov, zoom: 0, addressControl: false, fullscreenControl: false,
           motionTracking: false, motionTrackingControl: false, enableCloseButton: false, panControl: false,
         });
       } else {
@@ -33483,27 +33548,205 @@ function UlineStreetView({ google, mapsErr, pin, height }) {
       setState('ok');
     }).catch(none);
     return () => { dead = true; };
-  }, [google, pin?.lat, pin?.lng]);
-  // The holder stays MOUNTED through EVERY state, no-pin and no-key included: the panorama is
-  // built into it once and re-pointed per location, so unmounting it for one row would leave the
-  // next row re-pointing a panorama bound to a detached element — and a panorama created in a
-  // hidden box renders black. Every message is an overlay.
+  }, [active, google, pin?.lat, pin?.lng]);
+  useGoogleResizeKick(holder, panoRef, google);
+  // THREE GUARDS, because each one alone has already been enough to fail: the holder is visible
+  // only when the picture is PROVEN to be this building ('ok' is set only by the lookup for the
+  // current pin; `dead` drops a late answer for the previous one); `isolate` contains Google's
+  // z-indexes so the note cannot be painted over; the note sits at z-10 regardless.
   const note = !pin ? 'No pin, so no street view.'
     : !google ? (mapsErr ? `Street view unavailable: ${mapsErr}` : 'Loading the street view…')
-      : state === 'none' ? 'Google has no street view within 80 m of this pin — judge it from the satellite.'
+      : state === 'none' ? 'Google has no street view within 80 m of this pin — judge it from the satellite or 3D.'
         : state !== 'ok' ? 'Finding the nearest street view…' : null;
-  // THREE GUARDS, because each one alone has already been enough to fail:
-  //   • the holder is VISIBLE ONLY WHEN THE PICTURE IS PROVEN TO BE THIS BUILDING (state 'ok'
-  //     is set only by the lookup for the current pin — the `dead` flag drops a late answer for
-  //     the previous one). Loading, none, no pin, no key: hidden, so there is nothing stale to see.
-  //   • `isolate` gives the holder its own stacking context. Google paints the panorama with
-  //     its own z-indexes, and without containment they rose above the note that was meant to
-  //     cover them — which is exactly how F13 came to wear Burman Printing's door.
-  //   • the note carries z-10 regardless.
   return (
-    <div className="relative w-full" style={{ height }}>
+    <div className="relative w-full h-full">
       <div ref={holder} className="absolute inset-0 isolate rounded-lg bg-slate-200" style={{ visibility: state === 'ok' && !note ? 'visible' : 'hidden' }} aria-label="Street view facing the building" />
-      {note && <div className="absolute inset-0 z-10 rounded-lg bg-slate-100 flex items-center justify-center p-4 text-center text-xs text-slate-500">{note}</div>}
+      {note && <div className={ULINE_NOTE_CLS}>{note}</div>}
+    </div>
+  );
+}
+
+/**
+ * THE 3D VIEW — Chad: "I want my 3d view here as well." The same Photorealistic 3D the Map's
+ * Ctrl-peek draws (useMap3dPeek), and the one of the three that answers the question: tilted, it
+ * shows the doors down the side and the back of the building, which the roof from above and the
+ * front from the street cannot.
+ *
+ * Every hard-won rule of the Map's 3D, kept rather than re-learned:
+ *   • ONE element per open tab, re-pointed per location. Google bills 3D per ELEMENT CREATED on
+ *     its own Immersive Maps meter; panning an existing one is free.
+ *   • WebGL is checked BEFORE anything is built or billed, and a browser that cannot draw it is
+ *     told so in a sentence (MAP3D_NO_WEBGL) instead of Google's blank "Oops" card.
+ *   • gmp-error is caught — Google's own "could not start" arrives inside a successful
+ *     construction, where no try/catch can see it.
+ *   • The camera is aimed at the GROUND under the pin (groundedCamera), not at sea level — the
+ *     Buford Terminal is ~368m up, and a sea-level camera lands inside the hill.
+ *   • The pin sits ON the mesh (RELATIVE_TO_MESH), on the roof, where it can be seen.
+ *   • VITE_MAP_3D=off (MAP_3D_ON) turns it off here exactly as it does on the Map.
+ * And the rule v1.60.3 was written for: hidden while it is being re-pointed. Google applies a
+ * teleported camera a moment AFTER flyCameraTo returns (measured, map-3d.js), so for that moment
+ * the element still shows the PREVIOUS building — it stays covered until the new one has landed.
+ */
+const ULINE_3D_SETTLE_MS = 450;
+function UlineThreeD({ google, mapsErr, pin, active = true }) {
+  const holder = React.useRef(null);
+  const elRef = React.useRef(null);
+  const markerRef = React.useRef(null);
+  const libRef = React.useRef(null);
+  const building = React.useRef(false);
+  const [err, setErr] = React.useState(null);
+  const [ready, setReady] = React.useState(false);
+  React.useEffect(() => {
+    setReady(false);
+    if (!MAP_3D_ON || !active || !google || !holder.current || !pin) return undefined;
+    let dead = false;
+    let settle = null;
+    (async () => {
+      const heightPx = holder.current?.clientHeight || 600;
+      const cam = cameraFor2dView({ center: { lat: pin.lat, lng: pin.lng }, zoom: 19, heading: 0, heightPx });
+      if (!cam) return;   // a made-up camera is worse than none: the dispatcher would believe it
+      if (!elRef.current) {
+        if (building.current) return;
+        if (!webglUsable()) { setErr(MAP3D_NO_WEBGL); return; }
+        building.current = true;
+        try {
+          const lib = await google.maps.importLibrary('maps3d');
+          libRef.current = lib;
+          if (!elRef.current && holder.current) {
+            const el = new lib.Map3DElement({
+              center: cam.center, range: cam.range, tilt: cam.tilt, heading: cam.heading, mode: cam.mode,
+              defaultUIHidden: false,   // Google's compass, tilt and turn ARE how you look down the side
+            });
+            el.style.width = '100%';
+            el.style.height = '100%';
+            el.addEventListener('gmp-error', (ev) => {
+              setErr(String(ev?.detail?.message || ev?.message || 'Google could not start the 3D map'));
+            });
+            holder.current.appendChild(el);
+            elRef.current = el;
+            try {
+              if (lib.Marker3DElement) {
+                const onMesh = lib.AltitudeMode?.RELATIVE_TO_MESH ?? 'RELATIVE_TO_MESH';
+                const m = new lib.Marker3DElement({ position: { lat: pin.lat, lng: pin.lng, altitude: 0 }, altitudeMode: onMesh });
+                el.appendChild(m);
+                markerRef.current = m;
+              }
+            } catch { /* imagery without a pin still answers most of the question */ }
+          }
+        } catch (e) {
+          if (!dead) setErr(String(e?.message || 'Google refused the 3D view'));
+          return;
+        } finally { building.current = false; }
+      }
+      if (dead || !elRef.current) return;
+      const mode = libRef.current?.AltitudeMode?.RELATIVE_TO_GROUND ?? 'RELATIVE_TO_GROUND';
+      const end = groundedCamera(cam, mode);
+      try {
+        if (end && typeof elRef.current.flyCameraTo === 'function') elRef.current.flyCameraTo({ endCamera: end, durationMillis: 0 });
+      } catch { /* the camera stays where it was; the pane stays covered below until it settles */ }
+      try { if (markerRef.current) markerRef.current.position = { lat: pin.lat, lng: pin.lng, altitude: 0 }; } catch { /* keep the last */ }
+      settle = setTimeout(() => { if (!dead) setReady(true); }, ULINE_3D_SETTLE_MS);
+    })();
+    return () => { dead = true; if (settle) clearTimeout(settle); };
+  }, [active, google, pin?.lat, pin?.lng]);
+  const note = !MAP_3D_ON ? '3D is switched off on this build (VITE_MAP_3D=off).'
+    : !pin ? 'No pin, so no 3D view.'
+      : !google ? (mapsErr ? `3D unavailable: ${mapsErr}` : 'Loading the 3D view…')
+        : err ? err
+          : !ready ? 'Loading the 3D view…' : null;
+  return (
+    <div className="relative w-full h-full">
+      <div ref={holder} className="absolute inset-0 isolate overflow-hidden rounded-lg bg-slate-200" style={{ visibility: note ? 'hidden' : 'visible' }} aria-label="3D view of the building" />
+      {note && <div className={ULINE_NOTE_CLS}>{note}</div>}
+    </div>
+  );
+}
+
+/**
+ * A labelled picture pane with its own FULL SCREEN — inside the browser.
+ *
+ * Chad: "when you click full screen i want it to stay within the browser." Google's button
+ * calls the browser Fullscreen API and takes the whole monitor, and the answer buttons go with
+ * the page. This one fills the browser WINDOW, keeps a bar with the name and the three answers
+ * across the top, and closes with Esc. The pane is RESTYLED, never re-parented: the Google
+ * object inside stays bound to the same element, so going full screen rebuilds nothing and bills
+ * nothing — a portal would have unmounted it and paid for a new one.
+ *
+ * The expand button sits in the LABEL ROW, in flow, never pinned over the imagery — where it
+ * could land on Google's own controls, which is the collision the phone guard exists to catch.
+ *
+ * `margin: 0` while expanded, inline: on the phone the frame is a child of a `space-y-3` card,
+ * whose margin-top pushed a `fixed inset-0` view 12px down the screen and its bottom edge 12px
+ * off it (measured: top 0px, rect top 12). An inline style outranks the class selector.
+ */
+function UlineViewFrame({ title, expanded = false, onExpand, bar = null, className = '', style, children }) {
+  return (
+    <div
+      className={expanded ? 'fixed inset-0 z-[80] bg-white p-3 flex flex-col' : `flex flex-col min-h-0 min-w-0 ${className}`}
+      style={expanded ? { margin: 0 } : style}
+      role={expanded ? 'dialog' : undefined}
+      data-overlay-layer={expanded ? '' : undefined}
+      aria-label={expanded ? title : undefined}
+    >
+      {expanded ? bar : (
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500 truncate">{title}</span>
+          {onExpand && (
+            <button type="button" onClick={onExpand} className="shrink-0 rounded-lg border px-2.5 text-[11px] font-semibold bg-white hover:bg-slate-50 text-slate-600" style={{ minHeight: 40 }}
+              title="Fill the browser window with this view — the answers stay on screen, Esc closes">
+              Full screen
+            </button>
+          )}
+        </div>
+      )}
+      <div className="relative flex-1 min-h-0">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * The bar across the top of a full-screen view: whose building, the answers, the way out.
+ *
+ * DESKTOP: one row, and the building-type chips under it — full screen is where a house is
+ * recognised as a house, so Residential is pressed there, not after closing it.
+ * PHONE (`stacked`): every pixel of bar is a pixel of building the dispatcher cannot see. Name
+ * and Close share a row, the view switch (`tabs`) follows, and the three answers share one row
+ * — the card's full-width thumb buttons would stack three deep over the picture.
+ */
+function UlineExpandedBar({ row, u, onDone, onSkip, onClose, stacked = false, tabs = null }) {
+  if (!row) return null;
+  if (stacked) {
+    return (
+      <div className="mb-2 space-y-2">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-sm font-bold leading-tight text-slate-900 break-words">{row.businessName}</div>
+            <div className="text-xs text-slate-600 truncate">{oneLineAddr(row.address)}</div>
+          </div>
+          <button type="button" onClick={onClose} className="shrink-0 rounded-lg border px-4 text-sm font-semibold bg-white hover:bg-slate-50 text-slate-700" style={{ minHeight: 44 }}>
+            Close
+          </button>
+        </div>
+        {tabs}
+        <UlineDecisionButtons row={row} u={u} onDone={onDone} onSkip={onSkip} compact />
+      </div>
+    );
+  }
+  return (
+    <div className="mb-2 space-y-2">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-slate-900 break-words">{row.businessName}</div>
+          <div className="text-xs text-slate-600 break-words">{oneLineAddr(row.address)}</div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <UlineDecisionButtons row={row} u={u} onDone={onDone} onSkip={onSkip} />
+          <button type="button" onClick={onClose} className="rounded-lg border px-4 text-sm font-semibold bg-white hover:bg-slate-50 text-slate-700" style={{ minHeight: 44 }}>
+            Close<span className="ml-1.5 text-[10px] font-normal text-slate-400">Esc</span>
+          </button>
+        </div>
+      </div>
+      <UlineBuildingType row={row} u={u} onDecided={onDone} hint={false} />
     </div>
   );
 }
@@ -33538,28 +33781,79 @@ function UlineEvidence({ row }) {
   );
 }
 
-/** The two answers and the pass. `stacked` is the phone: full-width, thumb-height. */
-function UlineDecisionButtons({ row, u, onDone, onSkip, stacked = false }) {
+/**
+ * BUILDING TYPE, set from the card — the same control the stop card has, the same field.
+ *
+ * Chad: "give me options to label building type like this is residential ... double duty as
+ * residentials we don't allow to be planned on tractors." Residential saves the building type
+ * AND Box truck only in one write (buildingTypeWrite), because on its own a Residential type
+ * keeps nothing off a tractor — see BOX_ONLY_BUILDING_TYPES for what the code did before. The
+ * chip says so in its title and the hint under the row says so in words: a button that quietly
+ * does two things is how a dispatcher ends up surprised by the second one.
+ */
+const ULINE_TYPES = ['residential', 'school', 'church', 'government', 'none'];
+function UlineBuildingType({ row, u, onDecided, stacked = false, hint = true }) {
+  const busy = u.busyKey === row.key;
+  const current = normalizeBuildingType(row.buildingType);
+  const press = async (t) => {
+    const next = current === t ? null : t;   // pressing the lit chip clears it back to Auto
+    if (await u.setType(row, next) && BOX_ONLY_BUILDING_TYPES.has(next)) onDecided?.();
+  };
+  return (
+    <div className="space-y-1">
+      <div className={stacked ? 'grid grid-cols-3 gap-1.5' : 'flex flex-wrap items-center gap-1.5'}>
+        {!stacked && <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mr-1">Building type</span>}
+        {ULINE_TYPES.map((t) => {
+          const on = current === t;
+          const box = BOX_ONLY_BUILDING_TYPES.has(t);
+          return (
+            <button key={t} type="button" disabled={busy} onClick={() => press(t)} aria-pressed={on}
+              style={{ minHeight: stacked ? 44 : 40 }}
+              className={`rounded-lg border px-2.5 text-xs font-semibold disabled:opacity-50 ${on ? 'bg-slate-900 border-slate-900 text-white' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}
+              title={box
+                ? 'Residential — also saves Box truck only, so the router keeps this location off a 53′. Press again to clear the type.'
+                : on ? 'Press again to clear it back to Auto' : `Mark this location as ${BUILDING_TYPE_LABEL[t] || t}`}>
+              {BUILDING_TYPE_LABEL[t] || t}{box && !stacked ? <span className="ml-1 font-normal opacity-70">+ box only</span> : ''}
+            </button>
+          );
+        })}
+      </div>
+      {hint && (
+        <div className="text-[10px] text-slate-400">
+          Residential also saves Box truck only — we don’t send tractors to houses. The others label the place; School, Church and Government already flag no tractor trailer on the board.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The two answers and the pass. `stacked` is the phone card: full-width, thumb-height.
+ * `compact` is the phone's full-screen bar: the same three, side by side in one row.
+ */
+function UlineDecisionButtons({ row, u, onDone, onSkip, stacked = false, compact = false }) {
   const busy = u.busyKey === row.key;
   const go = async (next) => { if (await u.decide(row, next)) onDone?.(); };
-  const base = `rounded-lg border font-semibold text-sm disabled:opacity-50 ${stacked ? 'w-full' : ''}`;
-  const tall = { minHeight: stacked ? 52 : 44 };
+  const keys = !stacked && !compact;
+  const size = compact ? 'w-full px-1.5 text-xs leading-tight' : stacked ? 'w-full px-4 text-sm' : 'px-4 text-sm';
+  const base = `rounded-lg border font-semibold disabled:opacity-50 ${size}`;
+  const tall = { minHeight: compact ? 48 : stacked ? 52 : 44 };
   return (
-    <div className={stacked ? 'space-y-2' : 'flex flex-wrap items-center gap-2'}>
+    <div className={compact ? 'grid grid-cols-3 gap-1.5' : stacked ? 'space-y-2' : 'flex flex-wrap items-center gap-2'}>
       <button type="button" disabled={busy} onClick={() => go('box_only')} style={tall}
-        className={`${base} px-4 bg-red-600 border-red-700 text-white hover:bg-red-700`}
+        className={`${base} bg-red-600 border-red-700 text-white hover:bg-red-700`}
         title="Box truck only at this location, for every future order. Saves the same mark as the stop card and Routing.">
-        No tractor trailer{stacked ? '' : <span className="ml-1.5 text-[10px] font-normal opacity-80">N</span>}
+        No tractor trailer{keys ? <span className="ml-1.5 text-[10px] font-normal opacity-80">N</span> : ''}
       </button>
       <button type="button" disabled={busy} onClick={() => go('tractor')} style={tall}
-        className={`${base} px-4 bg-green-600 border-green-700 text-white hover:bg-green-700`}
+        className={`${base} bg-green-600 border-green-700 text-white hover:bg-green-700`}
         title="A 53′ fits. The router stops holding this location to a box truck because of Uline’s note.">
-        Tractor OK{stacked ? '' : <span className="ml-1.5 text-[10px] font-normal opacity-80">T</span>}
+        Tractor OK{keys ? <span className="ml-1.5 text-[10px] font-normal opacity-80">T</span> : ''}
       </button>
       <button type="button" disabled={busy} onClick={onSkip} style={tall}
-        className={`${base} px-4 bg-white border-slate-300 text-slate-700 hover:bg-slate-50`}
+        className={`${base} bg-white border-slate-300 text-slate-700 hover:bg-slate-50`}
         title="Decide later — nothing is saved, and Uline’s flag keeps holding this location to a box truck.">
-        Skip{stacked ? '' : <span className="ml-1.5 text-[10px] font-normal text-slate-400">S</span>}
+        Skip{keys ? <span className="ml-1.5 text-[10px] font-normal text-slate-400">S</span> : ''}
       </button>
     </div>
   );
@@ -33570,12 +33864,11 @@ function UlineLastLine({ u }) {
   if (u.writeErr) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-2">{u.writeErr}</div>;
   if (!u.last) return null;
   const row = u.rows.find((r) => r.key === u.last.key);
-  const what = u.last.next === 'box_only' ? 'No tractor trailer (Box truck only)' : u.last.next === 'tractor' ? 'Tractor-trailer OK' : 'not set';
   return (
     <div className="rounded-lg border bg-white text-xs text-slate-700 px-3 py-2 flex items-center justify-between gap-3 flex-wrap">
-      <span><span className="font-semibold">{u.last.name}</span> → {what}. Saved to the customer — every future order there.</span>
+      <span><span className="font-semibold">{u.last.name}</span> → {u.last.what}. Saved to the customer — every future order there.</span>
       {row && (
-        <button type="button" onClick={() => u.decide(row, u.last.prev, { undo: true })} disabled={u.busyKey === row.key}
+        <button type="button" onClick={() => u.apply(row, u.last.prev, { undo: true })} disabled={u.busyKey === row.key}
           className="rounded-lg border px-3 text-xs font-semibold bg-white hover:bg-slate-50" style={{ minHeight: 40 }}>Undo</button>
       )}
     </div>
@@ -33601,7 +33894,7 @@ function UlineDecidedList({ u, stacked = false }) {
             return (
               <div key={r.key} className={`px-3 py-2 ${stacked ? 'space-y-1.5' : 'flex items-center justify-between gap-3 flex-wrap'}`}>
                 <div className="min-w-0">
-                  <div className="text-xs font-semibold text-slate-800 break-words">{r.businessName}</div>
+                  <div className="text-xs font-semibold text-slate-800 break-words">{r.businessName}{r.buildingType && r.buildingType !== 'none' ? <span className="font-normal text-slate-500"> · {BUILDING_TYPE_LABEL[r.buildingType] || r.buildingType}</span> : null}</div>
                   <div className="text-[11px] text-slate-500 break-words">{oneLineAddr(r.address)}</div>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -33669,10 +33962,30 @@ function UlineEmpty({ u }) {
   return null;
 }
 
+/** Esc closes a full-screen view — the one key every full-screen thing in a browser answers to. */
+function useEscToClose(open, close) {
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, close]);
+}
+
 // ── DESKTOP: the list beside the building, and the keys under the hand. ─────
+// Chad: "we have a lot of gray space on this page we could be using to make this maps bigger
+// initially." TWO PICTURES ACROSS AT MOST: from above and 3D side by side, the street view the
+// full width under them. Three across a 1080p monitor measured no bigger than v1.60.0's two
+// (676×380), and 3D beside a stacked pair left the pair SMALLER than before (608×300) — the
+// opposite of the ask. Each pane is at least 460px wide, so a narrower desktop gets one per row
+// rather than slivers. The first row is sized to end at the bottom of the window.
+const ULINE_PANE = { flex: '1 1 max(40%, 460px)', height: 'max(460px, calc(100vh - 560px))' };
 function UlineReviewDesktop({ nonce }) {
   const u = useUlineReview(nonce);
   const [focusKey, setFocusKey] = React.useState(null);
+  const [expanded, setExpanded] = React.useState(null);   // '3d' | 'above' | 'street' | null
+  const close = React.useCallback(() => setExpanded(null), []);
+  useEscToClose(!!expanded, close);
   const row = u.todo.find((r) => r.key === focusKey) || u.todo[0] || null;
   // Next UNDECIDED after this one, wrapping — so a run of decisions walks the list in order.
   const advance = React.useCallback(() => {
@@ -33682,7 +33995,8 @@ function UlineReviewDesktop({ nonce }) {
     setFocusKey(next && next.key !== row.key ? next.key : null);
   }, [row, u.todo]);
   // N / T / S. Only while this tab is mounted, never with a modifier, never inside a field —
-  // a keystroke that lands in the wrong place must not re-route a customer.
+  // a keystroke that lands in the wrong place must not re-route a customer. They work in a
+  // full-screen view too: that is where the building is being looked at.
   React.useEffect(() => {
     const onKey = async (e) => {
       if (!row || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
@@ -33695,9 +34009,20 @@ function UlineReviewDesktop({ nonce }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [row, u.decide, advance]);
+  // Nothing left to decide: a full-screen view over an empty list would be a picture of nothing.
+  React.useEffect(() => { if (!row && expanded) setExpanded(null); }, [row, expanded]);
 
   const early = <UlineEmpty u={u} />;
   if (u.loading || u.err || (u.data && Number(u.data.notesLoaded) === 0)) return early;
+  const bar = <UlineExpandedBar row={row} u={u} onDone={advance} onSkip={advance} onClose={close} />;
+  const frame = (id, title, view) => (
+    <UlineViewFrame title={title} expanded={expanded === id} onExpand={() => setExpanded(id)} bar={bar} style={ULINE_PANE}>
+      {view}
+    </UlineViewFrame>
+  );
+  const threeD = frame('3d', '3D — tilt and turn to see the doors down the side', <UlineThreeD google={u.google} mapsErr={u.mapsErr} pin={row?.pin} />);
+  const above = frame('above', 'From above — dock, truck court, the turn in', <UlineSatellite google={u.google} mapsErr={u.mapsErr} pin={row?.pin} />);
+  const street = frame('street', 'From the street — drag to look down the side', <UlineStreetView google={u.google} mapsErr={u.mapsErr} pin={row?.pin} />);
   return (
     <div className="space-y-3">
       <UlineSummary u={u} />
@@ -33708,38 +34033,43 @@ function UlineReviewDesktop({ nonce }) {
         </div>
       ) : (
         <div className="flex gap-4 items-start">
-          <div className="w-80 shrink-0 rounded-xl border bg-white overflow-hidden">
+          <div className="w-72 shrink-0 rounded-xl border bg-white overflow-hidden">
             <div className="px-3 py-2 bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-500 border-b">To decide</div>
-            <div className="max-h-[70vh] overflow-y-auto divide-y">
+            <div className="overflow-y-auto divide-y" style={{ maxHeight: 'max(520px, calc(100vh - 300px))' }}>
               {u.todo.map((r) => (
                 <button key={r.key} type="button" onClick={() => setFocusKey(r.key)} aria-current={row?.key === r.key}
                   className={`w-full text-left px-3 py-2 ${row?.key === r.key ? 'bg-blue-50' : 'hover:bg-slate-50'}`} style={{ minHeight: 44 }}>
                   <div className="text-xs font-semibold text-slate-800 break-words">{r.businessName}</div>
                   <div className="text-[11px] text-slate-500 break-words">{oneLineAddr(r.address)}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">{ulineDay(r.firstDate)}{r.tractor ? ' · tractor has delivered here' : ''}{!r.pin ? ' · no pin' : ''}</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">{ulineDay(r.firstDate)}{r.tractor ? ' · tractor has delivered here' : ''}{!r.pin ? ' · no pin' : ''}{r.buildingType && r.buildingType !== 'none' ? ` · ${BUILDING_TYPE_LABEL[r.buildingType] || r.buildingType}` : ''}</div>
                 </button>
               ))}
             </div>
           </div>
           {row && (
             <div className="flex-1 min-w-0 rounded-xl border bg-white p-4 space-y-3">
-              <div>
-                <div className="text-base font-bold text-slate-900 break-words">{row.businessName}</div>
-                <div className="text-xs text-slate-600 break-words">{oneLineAddr(row.address)}</div>
-              </div>
-              <UlineEvidence row={row} />
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">From above — dock, truck court, the turn in</div>
-                  <UlineSatellite google={u.google} mapsErr={u.mapsErr} pin={row.pin} height={380} />
+              {/* TWO COLUMNS: whose building and what Uline wrote on the left, the answers and the
+                  building type on the right. Stacked, those rows pushed the pictures ~600px down a
+                  1080p screen, half of them under the fold. Where there is no room for both the
+                  right column wraps under the left — still above the pictures. */}
+              <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+                <div className="min-w-0 space-y-2" style={{ flex: '1 1 420px' }}>
+                  <div>
+                    <div className="text-base font-bold text-slate-900 break-words">{row.businessName}</div>
+                    <div className="text-xs text-slate-600 break-words">{oneLineAddr(row.address)}</div>
+                  </div>
+                  <UlineEvidence row={row} />
                 </div>
-                <div className="space-y-1">
-                  <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">From the street — drag to look down the side</div>
-                  <UlineStreetView google={u.google} mapsErr={u.mapsErr} pin={row.pin} height={380} />
+                {/* THE ANSWERS AT THE TOP, beside the name. With the pictures sized to the window
+                    they would otherwise sit below the fold — the one control this screen exists
+                    for, reachable only by scrolling past the thing it is about. */}
+                <div className="min-w-0 space-y-3" style={{ flex: '0 1 600px' }}>
+                  <UlineDecisionButtons row={row} u={u} onDone={advance} onSkip={advance} />
+                  <UlineBuildingType row={row} u={u} onDecided={advance} />
                 </div>
               </div>
-              <UlineDecisionButtons row={row} u={u} onDone={advance} onSkip={advance} />
-              <div className="text-[10px] text-slate-400">Keys: N no tractor trailer · T tractor OK · S skip. Saved to the customer, not the order — nothing is sent to NuVizz.</div>
+              <div className="flex flex-wrap gap-3">{above}{threeD}{street}</div>
+              <div className="text-[10px] text-slate-400">Keys: N no tractor trailer · T tractor OK · S skip · Esc closes full screen. Saved to the customer, not the order — nothing is sent to NuVizz.</div>
             </div>
           )}
         </div>
@@ -33753,20 +34083,44 @@ function UlineReviewDesktop({ nonce }) {
 // ── PHONE: one building at a time, answered with a thumb. ────────────────────
 // Not the desktop split squeezed: at 360px the list and the building cannot share a row, and a
 // dispatcher on a phone is doing exactly one thing — deciding the building in front of them.
+const ULINE_PHONE_VIEWS = [['above', 'Above'], ['3d', '3D'], ['street', 'Street']];
 function UlineReviewMobile({ nonce }) {
   const u = useUlineReview(nonce);
   const [idx, setIdx] = React.useState(0);
-  // Street View on demand, not beside the satellite: a phone shows one picture at a readable
-  // size, and a panorama nobody asked for is a billed load for a screen nobody scrolled to.
+  // ONE picture at a readable size, the others a tap away. Each view is BUILT on its first tap
+  // and then only hidden — never torn down and rebuilt on every switch, because each build is a
+  // billed Google load, 3D on its own meter. Stacked in one box, so a hidden view keeps its
+  // size and comes back drawn rather than black.
   const [view, setView] = React.useState('above');
+  const [seen, setSeen] = React.useState(() => new Set(['above']));
+  const pick = React.useCallback((id) => { setView(id); setSeen((s) => (s.has(id) ? s : new Set([...s, id]))); }, []);
+  const [expanded, setExpanded] = React.useState(false);
+  const close = React.useCallback(() => setExpanded(false), []);
+  useEscToClose(expanded, close);
   const n = u.todo.length;
   const i = n ? Math.min(idx, n - 1) : 0;
   const row = n ? u.todo[i] : null;
   const skip = React.useCallback(() => setIdx((x) => (n ? (Math.min(x, n - 1) + 1) % n : 0)), [n]);
   // After a decision the row leaves `todo`, so the SAME index is already the next location.
   const done = React.useCallback(() => setIdx((x) => x), []);
+  React.useEffect(() => { if (!row && expanded) setExpanded(false); }, [row, expanded]);
   const early = <UlineEmpty u={u} />;
   if (u.loading || u.err || (u.data && Number(u.data.notesLoaded) === 0)) return early;
+  const title = view === '3d' ? '3D — tilt and turn to see the doors' : view === 'street' ? 'From the street' : 'From above';
+  const layer = (id) => ({ zIndex: view === id ? 2 : 1, pointerEvents: view === id ? 'auto' : 'none' });
+  // ONE switch, in ONE place at a time: in the card, or in the full-screen bar while the view
+  // fills the screen — so the other two views are a tap away without closing it, and the page
+  // never holds two tab lists answering to the same name.
+  const tabs = (
+    <div role="tablist" aria-label="Building view" className="grid grid-cols-3 gap-1.5">
+      {ULINE_PHONE_VIEWS.map(([id, label]) => (
+        <button key={id} type="button" role="tab" aria-selected={view === id} onClick={() => pick(id)}
+          className={`rounded-lg border text-xs font-semibold ${view === id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600'}`} style={{ minHeight: 44 }}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
   return (
     <div className="space-y-3">
       <UlineSummary u={u} stacked />
@@ -33782,18 +34136,15 @@ function UlineReviewMobile({ nonce }) {
             <div className="text-sm font-bold text-slate-900 break-words">{row.businessName}</div>
             <div className="text-xs text-slate-600 break-words">{oneLineAddr(row.address)}</div>
           </div>
-          <div role="tablist" aria-label="Building view" className="grid grid-cols-2 gap-1.5">
-            {[['above', 'From above'], ['street', 'Street view']].map(([id, label]) => (
-              <button key={id} type="button" role="tab" aria-selected={view === id} onClick={() => setView(id)}
-                className={`rounded-lg border text-xs font-semibold ${view === id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600'}`} style={{ minHeight: 44 }}>
-                {label}
-              </button>
-            ))}
-          </div>
-          {view === 'above'
-            ? <UlineSatellite google={u.google} mapsErr={u.mapsErr} pin={row.pin} height={300} />
-            : <UlineStreetView google={u.google} mapsErr={u.mapsErr} pin={row.pin} height={300} />}
+          {!expanded && tabs}
+          <UlineViewFrame title={title} expanded={expanded} onExpand={() => setExpanded(true)} style={{ height: 360 }}
+            bar={<UlineExpandedBar row={row} u={u} onDone={done} onSkip={skip} onClose={close} stacked tabs={tabs} />}>
+            <div className="absolute inset-0 rounded-lg bg-slate-100" style={layer('above')}>{seen.has('above') && <UlineSatellite google={u.google} mapsErr={u.mapsErr} pin={row.pin} active={view === 'above'} />}</div>
+            <div className="absolute inset-0 rounded-lg bg-slate-100" style={layer('3d')}>{seen.has('3d') && <UlineThreeD google={u.google} mapsErr={u.mapsErr} pin={row.pin} active={view === '3d'} />}</div>
+            <div className="absolute inset-0 rounded-lg bg-slate-100" style={layer('street')}>{seen.has('street') && <UlineStreetView google={u.google} mapsErr={u.mapsErr} pin={row.pin} active={view === 'street'} />}</div>
+          </UlineViewFrame>
           <UlineEvidence row={row} />
+          <UlineBuildingType row={row} u={u} onDecided={done} stacked />
           <UlineDecisionButtons row={row} u={u} onDone={done} onSkip={skip} stacked />
         </div>
       )}
@@ -33900,7 +34251,10 @@ function AddressHistoryScreen() {
 
   return (
     <div className="flex-1 overflow-y-auto bg-slate-50">
-      <div className={`${SCREEN_DASH} p-4 sm:p-6 space-y-4`}>
+      {/* THE ULINE TAB USES THE WHOLE WINDOW. Chad: "we have a lot of gray space on this page we
+          could be using to make this maps bigger" — the dashboard cap exists for stacked cards,
+          and this tab is pictures, where every pixel is more building. */}
+      <div className={`${section === 'uline' ? 'w-full' : SCREEN_DASH} p-4 sm:p-6 space-y-4`}>
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div className="min-w-0">
             {/* THE LITERAL "Address history" STAYS IN THE BODY. verify-desktop-layout.mjs proves
