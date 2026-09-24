@@ -112,7 +112,9 @@ export const REVIEWED_BUILTINS = {
 
 // Rule 2. Exactly which bindings a shadow file may import from each shared module.
 export const SHARED_IMPORTS = {
-  'netlify/functions/lib/firestore.mts': ['getDoc', 'isFirestoreEnabled'],
+  // listDocs (v1.63.0, learning): a paged GET of one collection, optionally field-masked — a read,
+  // and the egress lock judges it as one. The shadow learns from history_days with it.
+  'netlify/functions/lib/firestore.mts': ['getDoc', 'isFirestoreEnabled', 'listDocs'],
   'netlify/functions/lib/require-user.mts': ['requireUser'],
 };
 
