@@ -34,6 +34,7 @@ import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
+import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
 
@@ -156,6 +157,9 @@ const SCREENS = [
   { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
+  // Seeded with a recorded test call AND a rejected model value, so the longest rows on the
+  // screen (the cost basis line, the ignored-value note) are the ones measured at 360.
+  { key: 'claudeshadow', label: 'Claude shadow', nav: /claude shadow/i, inMore: true },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i },
   // Both open as overlays rather than swapping `tab`, which is why they were missed.
   { key: 'messages', label: 'Messages', nav: /^messages/i },
@@ -696,6 +700,8 @@ function stubRoutes(page, emailHtml) {
     // STOP LOOKUP serves TWO modes off one URL and the stub picks the same way the
     // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
     // them would leave the guard measuring a screen the app never renders.
+    // THE CLAUDE SHADOW TAB — its worst rows (see scripts/lib/claude-shadow-fixture.mjs).
+    if (u.includes('claude-shadow')) return R(CLAUDE_SHADOW_STATUS);
     if (u.includes('stop-lookup')) return R(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.

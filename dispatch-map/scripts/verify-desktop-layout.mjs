@@ -24,6 +24,7 @@ import { chromium } from 'playwright-core';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
+import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
 
 const DIST = process.argv[2] || 'dist';
 const PORT = 4183;
@@ -48,6 +49,7 @@ const SCREENS = [
   { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
+  { key: 'claudeshadow', label: 'Claude shadow', nav: /claude shadow/i, inMore: true },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i, inMore: true },
 ];
 
@@ -77,6 +79,12 @@ for (const device of DESKTOPS) {
   console.log(`\x1b[1m${device.name} (${device.width}x${device.height})\x1b[0m`);
   const ctx = await browser.newContext({ viewport: { width: device.width, height: device.height } });
   const page = await ctx.newPage();
+  // The ONE endpoint stubbed here. Every other screen this guard measures renders its layout
+  // with no data; the Claude shadow tab renders its cards only once its status has loaded, and
+  // measuring its load-error box would prove nothing about the desktop layout.
+  await page.route('**/.netlify/functions/claude-shadow*', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(CLAUDE_SHADOW_STATUS),
+  }));
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1200);
 

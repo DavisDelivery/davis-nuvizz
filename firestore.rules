@@ -270,11 +270,28 @@ service cloud.firestore {
       ];
     }
 
+    // ── THE CLAUDE SHADOW PLANNER'S COLLECTIONS — read-only to the browser ──
+    //
+    // Every collection named claude_shadow_* is written ONLY by the shadow planner's Netlify
+    // Functions, through one gateway (dispatch-map/netlify/functions/lib/claude-shadow/
+    // store.mts) that refuses any other path, using the service account — which bypasses
+    // these rules. The browser has no write call site for any of them: the Claude shadow
+    // tab reads through its own function and imports no Firestore client at all, and
+    // scripts/check-shadow-isolation.mjs fails CI if that ever changes. So denying browser
+    // WRITES here costs nothing, and it means a stranger with the public web config cannot
+    // forge a comparison Chad reads as evidence about the router. Same shape and same reason
+    // as step one above: it has to live in the catch-all's own condition while the
+    // catch-all is open, because Firestore OR's every matching rule.
+    function shadowCollection(document) {
+      return document[0].matches('claude_shadow_.+');
+    }
+
     // ── THE LIVE BLOCK — open for everything else, matching the console ──
     // Do not tighten this on its own. The cutover is one atomic swap: this block
     // out, the block below in, once the browser is actually signing in.
     match /{document=**} {
-      allow read, write: if !serverOnlyCollection(document);
+      allow read: if !serverOnlyCollection(document);
+      allow write: if !serverOnlyCollection(document) && !shadowCollection(document);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -502,6 +519,11 @@ service cloud.firestore {
     // here would be the bypass around that endpoint's own gate, which is finding 5
     // of the audit exactly.
     // match /nuvizz_ops/manifest_check_latest { allow read: if canRead(); allow write: if false; }
+    //
+    // ── claude_shadow_*: no grant, on purpose ─────────────────────────────
+    // The Claude shadow tab reads through its own function, never through the
+    // Firestore client, so the browser has no call site on these collections
+    // and the default deny below is the whole rule for them.
     //
     // ── Everything else: closed ────────────────────────────────────────────
     // DEFAULT DENY IS THE POINT. A collection added next month is CLOSED until

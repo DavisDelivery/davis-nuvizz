@@ -55,6 +55,28 @@ jobs:
           node-version: '22'
       - run: node dispatch-map/scripts/check-rwb-untouched.mjs "origin/${{ github.base_ref }}"
 
+  # ── the Claude shadow planner cannot reach NuVizz: a TEST, not a promise ──────
+  # Walks the real import graph (esbuild's own) of every netlify/functions/claude-shadow*
+  # function and the src/shadow screen, and fails if anything it reaches calls NuVizz, names a
+  # host other than Anthropic's and Firestore's, pulls in an npm package, or writes Firestore
+  # around lib/claude-shadow/store.mts. Every push, not just PRs: it is not a diff check, and a
+  # shadow file that reaches the vendor is wrong on any branch. npm ci because the walk IS
+  # esbuild. See dispatch-map/scripts/check-shadow-isolation.mjs.
+  shadow-isolation:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dispatch-map
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dispatch-map/package-lock.json
+      - run: npm ci
+      - run: node scripts/check-shadow-isolation.mjs
+
   unit:
     runs-on: ubuntu-latest
     defaults:

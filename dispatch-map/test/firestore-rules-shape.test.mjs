@@ -375,7 +375,30 @@ test('THE CUTOVER IS INERT: uncommenting it before the browser signs in denies e
   const e = RULES_LINES.findIndex((l) => l.includes(END));
   const live = RULES_LINES.slice(b + 1, e).filter((l) => l.trim() && !l.trim().startsWith('//'));
   assert.deepEqual(live, [], `the cutover block has been uncommented (${live.length} live lines). If that is deliberate, delete THIS test in the same commit and say in the PR that VITE_LOGIN_ENABLED is live on the site, that every account exists and has signed in once, and that it was rehearsed on uat-mirror first.`);
-  assert.match(RULES_TEXT, /match \/\{document=\*\*\} \{\s*\n\s*allow read, write: if !serverOnlyCollection\(document\);/, 'the LIVE open block is gone while the cutover block is still commented — that leaves the file with no active ruleset for the browser at all');
+  // The live catch-all is split into read and write since the Claude shadow planner landed:
+  // reads are open to everything but the server-only list, writes additionally refuse
+  // claude_shadow_*. Both lines have to be there — either one missing is a browser with no
+  // active rule for that operation at all.
+  assert.match(RULES_TEXT, /match \/\{document=\*\*\} \{\s*\n\s*allow read: if !serverOnlyCollection\(document\);\s*\n\s*allow write: if !serverOnlyCollection\(document\) && !shadowCollection\(document\);/, 'the LIVE open block is gone while the cutover block is still commented — that leaves the file with no active ruleset for the browser at all');
+});
+
+// ── the Claude shadow planner ────────────────────────────────────────────────
+
+test('THE LIVE BLOCK refuses browser WRITES to claude_shadow_* — a stranger with the public web config cannot forge the comparison Chad reads as evidence about the router', () => {
+  const fn = RULES_TEXT.match(/function\s+shadowCollection\s*\([^)]*\)\s*\{([\s\S]*?)\n\s*\}/);
+  assert.ok(fn, 'shadowCollection() is gone from firestore.rules — claude_shadow_* is browser-writable again');
+  assert.match(fn[1], /document\[0\]\.matches\('claude_shadow_\.\+'\)/, 'shadowCollection() must match the whole claude_shadow_ prefix, and nothing shorter');
+  const live = RULES_TEXT.match(/match \/\{document=\*\*\} \{([\s\S]*?)\n\s*\}/);
+  assert.ok(live && /allow write:[^;]*!shadowCollection\(document\)/.test(live[1]), 'the live catch-all no longer refuses writes to claude_shadow_*');
+  assert.ok(!/allow read:[^;]*shadowCollection/.test(live[1]), 'reads stay open in the live block: the refusal is for WRITES only, like the file says');
+});
+
+test('the browser has no Firestore call site on claude_shadow_* — the tab reads through its function, so the cutover needs no grant for it', () => {
+  // CALL SITES, not mentions: the changelog row and comments name the prefix in prose, and
+  // prose is not a Firestore read. The same derived sets every other test here uses.
+  const touched = [...BROWSER_READS, ...BROWSER_WRITES].filter((c) => c.startsWith('claude_shadow_'));
+  assert.deepEqual(touched, [], 'the browser reads or writes a claude_shadow_ collection through the Firestore client; the shadow screen must read through /.netlify/functions/claude-shadow');
+  assert.ok(!/match\s+\/claude_shadow/.test(CUTOVER_CODE), 'the cutover grants something on claude_shadow_*; the browser has no call site that needs it');
 });
 
 test('firestore.rules still says, in the file, that nothing here deploys it and that rules are per-database', () => {
