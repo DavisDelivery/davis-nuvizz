@@ -35,6 +35,16 @@
 // it, the way the nightly does), then the board days. Chunked to the background budget with a
 // progress document as the cursor, so a run that runs out of time resumes where it stopped.
 //
+// A DAY ALREADY MIRRORED IS NOT COPIED AGAIN (v1.58.1). The nightly window moves a day every
+// night, so its label — and with it the progress cursor — is new every night. v1.50.0 keyed the
+// resume on that label alone, so every night restarted all 90 days and the 09-23 run got through
+// 47 of them before the budget; the mirror would never have reached September or the board. The
+// unit that does not move is the sealed day: production stamps it once (history-seal.mts:
+// captured_at, capture_version, a content checksum) and only a heal or a re-capture changes
+// that. So a date whose mirror manifest carries production's current stamps, at the same
+// leanness, mined after it was copied, is skipped — whatever window or run it was copied in.
+// ?recopy=1 copies every day anyway.
+//
 // HISTORY IS COPIED LEAN BY DEFAULT: the per-stop `raw` payload (the vendor's whole record)
 // is most of the bytes and nothing the engine or its miners read (they consume the normalized
 // fields and the `executed` stamps the capture already lifted out). The board days keep
@@ -77,6 +87,7 @@ export interface RefreshPlan {
   static: boolean;
   remine: boolean;
   lean: boolean;
+  recopy: boolean;           // copy every sealed day even when the mirror already holds it unchanged
   boardDates: string[];      // ascending, today first
   historyFrom: string;       // inclusive
   historyTo: string;         // inclusive
@@ -94,6 +105,7 @@ export interface PlanOptions {
   static?: boolean;
   remine?: boolean;
   lean?: boolean;
+  recopy?: boolean;
 }
 
 /**
@@ -122,6 +134,7 @@ export function planRefresh(opts: PlanOptions): RefreshPlan {
     static: opts.static !== false,
     remine: opts.remine !== false,
     lean: opts.lean !== false,
+    recopy: opts.recopy === true,
     boardDates,
     historyFrom,
     historyTo,
@@ -230,9 +243,54 @@ export async function copyHistoryDay(deps: RefreshDeps, tenant: string, date: st
   const nStops = await writeAll(deps, stopItems);
   const nRoutes = await writeAll(deps, routeItems);
   const nDrivers = await writeAll(deps, driverItems);
-  await deps.setDoc(base, { ...manifest, mirrored_from: '(default)', mirrored_at: nowIso, mirrored_lean: lean });
+  await deps.setDoc(base, { ...manifest, mirrored_from: '(default)', mirrored_at: nowIso, mirrored_lean: lean, mirrored_stops: nStops });
   deps.log?.(`[mirror-refresh] history ${date}: ${nStops} stop(s), ${nRoutes} route(s), ${nDrivers} driver(s)${lean ? ' (lean)' : ''}`);
   return { date, manifest: true, stops: nStops, routes: nRoutes, drivers: nDrivers, stopRecords };
+}
+
+/** The manifest fields production changes when it re-seals a day (history-seal.mts). */
+export const MANIFEST_FINGERPRINT_FIELDS = ['captured_at', 'capture_version', 'checksum', 'healed_at', 'no_board', 'counts'] as const;
+
+function stableJson(v: any): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson(v[k])}`).join(',')}}`;
+  return JSON.stringify(v ?? null);
+}
+
+/** PURE: a manifest's seal stamps as one string, independent of key order. */
+export function manifestFingerprint(m: any): string {
+  const picked: Record<string, any> = {};
+  for (const f of MANIFEST_FINGERPRINT_FIELDS) if (m && m[f] !== undefined) picked[f] = m[f];
+  return stableJson(picked);
+}
+
+/**
+ * PURE: does the mirror already hold production's CURRENT copy of this sealed day, fully
+ * mined? Any doubt answers no — a needless re-copy costs minutes, a wrong skip leaves a stale
+ * or unmined day on the mirror that nothing would ever revisit.
+ */
+export function mirroredDayIsCurrent(
+  prodManifest: any, mirrorManifest: any, opts: { lean: boolean; remine: boolean },
+): { current: boolean; why: string } {
+  if (!prodManifest) return { current: false, why: 'production holds no manifest for it' };
+  if (!mirrorManifest) return { current: false, why: 'not on the mirror' };
+  if (mirrorManifest.mirrored_from !== '(default)' || !mirrorManifest.mirrored_at) {
+    return { current: false, why: 'the mirror copy was not made by this refresh' };
+  }
+  if (manifestFingerprint(prodManifest) !== manifestFingerprint(mirrorManifest)) {
+    return { current: false, why: 'production re-sealed it after it was copied' };
+  }
+  if (Boolean(mirrorManifest.mirrored_lean) !== Boolean(opts.lean)) {
+    return { current: false, why: 'copied at a different leanness' };
+  }
+  // The miners never run on a day with no stops (runRefresh), so there is nothing to wait for.
+  // A copy made before mirrored_stops existed must show its mining stamp either way.
+  const empty = mirrorManifest.mirrored_stops === 0 || !!prodManifest.no_board;
+  if (opts.remine && !empty) {
+    const mined = mirrorManifest.post_seal_at && String(mirrorManifest.post_seal_at) >= String(mirrorManifest.mirrored_at);
+    if (!mined) return { current: false, why: 'copied but not mined afterwards' };
+  }
+  return { current: true, why: 'unchanged in production since it was copied' };
 }
 
 export interface BoardDayCopy { date: string; parent: boolean; stops: number }
@@ -277,7 +335,7 @@ export interface RefreshProgress {
   done: { static: boolean; history: string[]; board: string[] };
   counts: {
     static: StaticCounts | null;
-    history: Record<string, { stops: number; routes: number; drivers: number; roster: boolean; ledger: boolean; remined: boolean }>;
+    history: Record<string, { stops: number; routes: number; drivers: number; roster: boolean; ledger: boolean; remined: boolean; skipped?: boolean }>;
     board: Record<string, { stops: number; parent: boolean; roster: boolean }>;
   };
   history_dates_in_prod: string[];   // the dates the window resolved to, so a resume plans the same set
@@ -295,6 +353,8 @@ export function planLabel(plan: RefreshPlan): string {
     plan.history ? `h:${plan.historyFrom}..${plan.historyTo}` : 'h:-',
     plan.board ? `b:${plan.boardDates[0]}..${plan.boardDates[plan.boardDates.length - 1]}` : 'b:-',
     plan.static ? 's' : '-', plan.remine ? 'r' : '-', plan.lean ? 'l' : '-',
+    // appended only when set, so a plain run's label reads exactly as it did before v1.58.1
+    ...(plan.recopy ? ['R'] : []),
   ].join('|');
 }
 
@@ -350,6 +410,27 @@ export async function runRefresh(
     for (const date of p.history_dates_in_prod) {
       if (p.done.history.includes(date)) continue;
       if (over()) { p.stopped_at = date; p.finished = false; await persist(); return trimLog(p, maxLog); }
+      if (!plan.recopy) {
+        const base = dayPath(plan.tenant, date);
+        const [pm, mm] = await Promise.all([deps.getProd(base), deps.getMirror(base)]);
+        if (mirroredDayIsCurrent(pm, mm, { lean: plan.lean, remine: plan.remine }).current) {
+          // Stops, routes and drivers are already there and mined. The roster and the miss
+          // ledger are re-copied anyway: eta-miss-ledger-background writes yesterday's ledger at
+          // 08:00 UTC, after this job's 06:45 run, so a day copied the morning after it sealed
+          // only picks its ledger up on a later pass — this one.
+          const roster = await copyRosterDay(deps, plan.tenant, date);
+          const ledger = await copyLedgerDay(deps, plan.tenant, date);
+          p.counts.history[date] = {
+            stops: Number(mm?.mirrored_stops ?? mm?.counts?.stops ?? 0),
+            routes: Number(mm?.counts?.routes ?? 0), drivers: Number(mm?.counts?.drivers ?? 0),
+            roster, ledger, remined: false, skipped: true,
+          };
+          p.done.history.push(date);
+          say(`history ${date}: already mirrored, unchanged in production${ledger ? ', ledger' : ''}`);
+          await persist();
+          continue;
+        }
+      }
       const copy = await copyHistoryDay(deps, plan.tenant, date, { lean: plan.lean, nowIso: nowIso() });
       const roster = await copyRosterDay(deps, plan.tenant, date);
       const ledger = await copyLedgerDay(deps, plan.tenant, date);

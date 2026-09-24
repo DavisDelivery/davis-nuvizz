@@ -60,6 +60,9 @@ const DISPATCHER_SET = [
   // caller-chosen batch id (mirrors manifest-upload), and the background job derives and
   // overwrites every shiplify_locations doc plus the map's index (mirrors routing-build).
   'shiplify-import', 'shiplify-import-background',
+  // The UAT mirror's manual run: writes only the mirror's named database, refuses production
+  // before parsing — gated like the Scan-now button, its nearest sibling.
+  'uat-mirror-resume-background',
 ];
 const ADMIN_SET = ['routing-engine-tuning'];
 
@@ -125,14 +128,14 @@ test('a *-background function without a cron must use the observable gate, never
   }
 });
 
-test('the twelve plain background jobs (no cron) are all gated — none was missed', () => {
+test('the thirteen plain background jobs (no cron) are all gated — none was missed', () => {
   const PLAIN = [
     'nuvizz-manual-scan-background', 'routing-build-background', 'manifest-ocr-background',
     'history-manifest-heal-background', 'nuvizz-rebuild-customer-history-background',
     'routing-engine-experiment-background', 'routing-engine-replay-background',
     'routing-engine-plan-replay-background', 'routing-observations-backfill-background',
     'routing-reference-backfill-background', 'tractor-flags-rebuild-background',
-    'shiplify-import-background',
+    'shiplify-import-background', 'uat-mirror-resume-background',
   ];
   for (const name of PLAIN) {
     const body = src(name);
