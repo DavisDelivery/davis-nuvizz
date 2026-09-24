@@ -78,6 +78,12 @@
   # the copy itself runs in uat-mirror-refresh-background under the 15-minute cap.
   [functions."uat-mirror-refresh"]
     timeout = 26
+  # The Claude shadow tab's test call: ONE Messages API call to claude-opus-5-5 at low effort.
+  # Thinking cannot be turned off on that model, so even a tiny prompt can pass the 10s
+  # DEFAULT, and a platform kill would leave no record of a call that was paid for. The
+  # handler aborts at 22s and writes the timeout down itself.
+  [functions."claude-shadow"]
+    timeout = 26
   [functions."motive-driver-positions"]
     timeout = 10
   # "Check email now" on the Manifest check tab: one poll of every configured
