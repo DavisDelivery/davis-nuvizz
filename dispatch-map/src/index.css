@@ -111,3 +111,6 @@ body { position: fixed; inset: 0; font-family: system-ui, -apple-system, sans-se
 @media (pointer: fine) {
   .stopcard-links > * { min-height: 0 !important; padding-top: 2px; padding-bottom: 2px; margin-top: 0; }
 }
+.stopcard-links { grid-template-columns: repeat(3, auto); justify-content: space-between; column-gap: 8px; }
+.stopcard-links > * { white-space: nowrap; margin-top: 0; font-size: 11px; }
+.stopcard-links svg { flex-shrink: 0; }
