@@ -75,7 +75,7 @@ import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driv
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
-import { labelOrderFromCreate, labelOrderFromPushLog, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
+import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
 import { buildLabelsHtml } from './lib/label-html.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
@@ -176,7 +176,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.65.1';
+const APP_VERSION = '1.66.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -230,6 +230,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.66.0', 'PRINT A DAVIS LABEL FROM ANY ORDER\u2019S CARD, AND SEE A TRUCK\u2019S PLATE ON HOVER WHEN THE LABELS ARE OFF. Chad: add a Print label action to the order panel, and hover-to-show labels for when driver labels are toggled off. LABEL ON THE ORDER PANEL: the stop card\u2019s action row (Text \u00b7 Call \u00b7 Navigate \u00b7 Ticket) gains Label, on the Map and in Routing, desktop and phone \u2014 any order on the board, whenever. The page is built from the board\u2019s CURRENT numbers, so a label printed today carries today\u2019s skids and loose (the count the load-out app caps at) and the ship-to as the card shows it, a dispatcher\u2019s address fix included; the label saved when the order was created in New Order or Bulk add, if there is one, fills in only the reference, the delivery notes and the ship-from. One Firestore read, ZERO NuVizz calls, and the same viewer and Print button as the Delivery Ticket. The Delivery Ticket itself is not changed. HOVER PLATES: with \u201cHide driver labels\u201d on (v1.65.1), resting the mouse on a truck shows that truck\u2019s plate \u2014 the same two lines the labels draw \u2014 and moving off takes it away. Mouse and trackpad only: on a phone a tap never sends the \u201cmouse left\u201d that would hide it, and a tap already opens the driver\u2019s card. Map tab only; the Route Workbench is not touched.'],
   ['1.65.1', 'HIDE THE DRIVER LABELS, KEEP THE TRUCKS. Chad: “I want a live drivers toggle like there is but one that just turns the labels off so trucks show but not truck number or drivers name.” A NEW ROW, “Hide driver labels”, DIRECTLY UNDER “Show drivers (live)” in Filters — on all three surfaces that carry the drivers switch: the desktop Map’s Filters dropdown, the wall display’s Filters card, and the phone’s filter tab. Ticked, every truck stays exactly where it is and the white name plates (“7792 · Brent D.”) come off. THE SETTING ALREADY EXISTED; ITS SWITCH WAS IN THE WRONG PLACE. Read off the code: showDriverLabels has lived in MapScreen for months, but its only control was a “Hide labels” button in the DESKTOP LEFT SIDEBAR under the legend — and the wall display has no sidebar, so on the television there was no way to turn the plates off at all. The phone was worse: plates default OFF below the mobile breakpoint and the phone never renders that sidebar, so a phone could not turn them ON. Both are fixed by the same row. The sidebar button is left where it is — it drives the same setting, so the two always agree, and removing it would be a change nobody asked for. BOTH OF THE WALL’S MAP MODES ALREADY HONOURED THE SETTING (the picture’s truck overlay and the live map’s driver-label overlay); only the control was missing. VERIFIED IN THE BUILT BUNDLE, not from the diff: on /tv, 3 trucks and 3 plates → tick → 3 trucks and 0 plates, and still 0 after a reload because it is remembered per device, so ticking it on the television changes only the television. PHRASED “HIDE” SO TICKED MEANS OFF, matching its neighbours (Hide terminal markers, Hide stem out, Hide place labels) — a panel where half the switches mean on and half mean off is a panel that gets read wrong. AND IT GREYS OUT WHEN THERE ARE NO TRUCKS TO LABEL. With live drivers off, or on a past date where the Motive feed does not apply, the switch would move and change nothing — which teaches whoever is holding the remote that the panel is broken. It stays visible, greyed, keeps the choice already made, and its hover text says why (“Turn on Show drivers (live) first”, or “only available for today’s date” — never pointing at a switch that is itself greyed). One rule in lib/driver-label.js (driverLabelsToggle) shared by all three surfaces, because the same fact drifting apart across screens is how this app has got things wrong before. 6 new tests. AN ADD, NOT A CHANGE: nothing that worked before behaves differently, so it is one commit and `git revert` is the whole way back. The dispatch Map only — the Route Workbench is not touched.'],
   ['1.65.0', 'DAVIS DELIVERY LABELS \u2014 ITS OWN LABEL, PRINTED BY THE ORDER, SAVED WITH IT. Chad: \u201cThis is supposed to be its own label, separate entity \u2026 just something we can print by the order, but it is not a delivery ticket. It is not a manifest \u2026 just like we can print a delivery ticket.\u201d ONE LETTER PAGE PER PIECE (skids first, then loose): the service date, SHIP TO in big type, SKID 1 of 2 beside the order\u2019s skid / loose / total / weight, one barcode across the page (DD/<NuVizz stop #>/<piece>), the stop # and reference, items and delivery notes, the website QR and \u201cWE CAN DELIVER FOR YOU TOO!\u201d. It opens in the SAME viewer and Print button as the Delivery Ticket, so it prints the way a ticket prints and never opens a new window (which strands the iPad home-screen app). SAVED WITH THE ORDER: every order created from New Order, Bulk add and the Estes manifest push saves its label to its own Firestore collection (order-labels) \u2014 nothing else reads or writes it \u2014 so a label can be printed again any time; ZERO NuVizz calls. WHERE: NEW ORDER is always LIVE now (Chad: \u201ctake the beta out of here and just make it live all the time\u201d); after Create it offers Print label and Delivery ticket, and a Labels & tickets list shows every order created on a day with Label and Ticket beside each. BULK ADD: the SERVICE DATE is on the main page, out of the Pickup drop-down (Chad: \u201cit should be on main page for that upload\u201d), shown as a weekday date and locked while a batch sends; Create and the Estes push offer Print labels for the batch; Pushed to NuVizz has Select all, a tick per row, Print labels for the selected, and a Label button on every row \u2014 a clean run lands there with its batch already ticked. The \u201cA NEW load (one import)\u201d mode is not touched (Chad: \u201cthe labels shouldn\u2019t touch the new load\u201d). One order that cannot be printed (a character a barcode cannot carry, or over 99 pieces) is left out and NAMED; the rest still print. LOAD-SCAN v0.51.0 READS IT: camera and gun, matched on the EXACT stop number, one page = one piece, capped at the manifest count; two pages of one order side by side each book once; a Davis read never changes how a Uline label books; LOADSCAN_DAVIS_LABELS=off turns reading it off with no deploy. Also fixed there: a hand-added or over-the-count piece on a stop whose number has fewer than 7 digits (SHP29379) was silently refused by the server while the phone marked it synced. THE WMS reads it too (its own PR). The Delivery Ticket, the manifest print and the Route Workbench are not changed. ALSO, FOUND BY THIS PR\u2019S CI: the Claude shadow tab\u2019s settings change-log named each row by the save\u2019s millisecond, so two saves in the same millisecond collided and the second change went unlogged; each row now carries a random tail.'],
   ['1.64.0', 'YOUR OWN TRUCK CAPS ON THE CLAUDE SHADOW TAB, OVER THE LEARNED ONES. Chad: “truck capacity should be learned from all the data we have and we should have a ui where we can customize it.” The learned capacity card now has Edit caps. Type a cap in skid spots beside any driver or route and it replaces the learned one for that driver or route; clear the box and the learned cap is back. A driver or route with no history yet (a new hire, a new route) can be given a cap too. The loose-pieces-per-skid-spot setting (10 by default, one number for every truck) is editable, and changing it rebuilds every learned number on the spot: at 5 loose to a spot, 17 skids and 30 bags is 23 spots, not 20. Each row says whether its cap is yours or learned, and who set yours and when; every change, a cleared cap included, is kept in a log. THINGS THAT WILL NOT HAPPEN: a cleared box is never saved as a cap of 0 (a truck that holds nothing) — blank means use the learned cap, and anything that is not a number from 1 to 60 is refused with the reason; two dispatchers saving different drivers at the same moment cannot erase each other, because every cap is its own record; a save that times out is read back before it is called failed, and one that cannot be confirmed says so; only the boxes you actually change are sent, so a Refresh mid-edit cannot overwrite somebody else’s save; turning a phone sideways does not lose what was typed; and if the settings cannot be read, every row says unknown instead of pretending there are no caps. NOT DECIDED YET, and the card says so: when a load’s driver and its route both have a cap, which one it is held to — that is Chad’s call, and nothing plans with these numbers yet. Nothing here touches the board, the Build Panel, the learned engine or any dispatcher setting; it writes only the shadow’s own records, and CLAUDE_SHADOW=off stops it with everything else.'],
@@ -9575,7 +9576,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
         {/* Enhancement 6 — the four actions that account for nearly every tap, as
             thumb-size buttons (text links are the hardest targets on a phone). The long
             tail folds into More; every existing action stays reachable. */}
-        <div className="grid grid-cols-4 gap-1.5 mt-2.5">
+        <div className="grid grid-cols-5 gap-1.5 mt-2.5">
           {onText && (
             <button onClick={() => onText(live)} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title={textPhone ? 'Text customer' : 'Text customer — no number on file yet; add one in the compose box'}>
             <MessageSquare size={16} className="text-slate-500" /> Text{textPhone ? '' : ' (add #)'}
@@ -9592,6 +9593,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
           <button onClick={() => setShowTicket(true)} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title="Print-ready Delivery Ticket">
             <FileText size={16} className="text-slate-500" /> Ticket
           </button>
+          <StopLabelButton stop={live} note={note} phone={textPhone} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5 disabled:opacity-60" />
         </div>
         <button onClick={() => setMoreOpen((o) => !o)} className="mt-1.5 text-[11px] text-slate-500 hover:text-slate-800" aria-expanded={moreOpen}>
           More: Street View · Edit address · Correct pin · History {moreOpen ? '▴' : '▾'}
@@ -13445,6 +13447,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const markersRef = useRef([]);
   const driverMarkersRef = useRef([]);
   const driverLabelsRef = useRef([]);
+  // The one truck plate shown on HOVER while the labels are switched off (see the driver effect).
+  const driverHoverRef = useRef(null);
   const labelOverlayClassRef = useRef(null);
   const hoverTipRef = useRef(null); // {marker, tip} — the receiving-hours hover tooltip currently shown
   const routePolylinesRef = useRef([]);
@@ -14868,7 +14872,15 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     driverMarkersRef.current = [];
     driverLabelsRef.current.forEach((l) => l.setMap(null));
     driverLabelsRef.current = [];
+    if (driverHoverRef.current) { driverHoverRef.current.overlay.setMap(null); driverHoverRef.current = null; }
     if (!showDrivers) return;
+    // LABELS OFF, PLATE ON HOVER. Chad: hover-to-show labels for when driver labels are toggled
+    // off. The same plate the labels draw (driverLabelLines), for the one truck under the mouse
+    // and only while it is there. Only on a device that can hover: a tap on a phone fires the
+    // mouseover but never the mouseout, which would leave a plate stuck on the map — and a tap
+    // already opens the driver's card.
+    const hoverPlates = !showDriverLabels && !!labelOverlayClassRef.current
+      && (() => { try { return window.matchMedia('(hover: hover)').matches; } catch { return false; } })();
 
     const positioned = drivers.filter((d) => d.lat != null && d.lng != null);
 
@@ -14890,6 +14902,22 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         setSelectedStop(null);
         setSelectedDriver(d);
       });
+      if (hoverPlates) {
+        marker.addListener('mouseover', () => {
+          if (driverHoverRef.current) driverHoverRef.current.overlay.setMap(null);
+          const { line1, line2, stale: plateStale } = driverLabelLines(d, Date.now());
+          const overlay = new labelOverlayClassRef.current(new google.maps.LatLng(d.lat, d.lng), line1, line2, { stale: plateStale });
+          overlay.setMap(mapRef.current);
+          driverHoverRef.current = { marker, overlay };
+        });
+        marker.addListener('mouseout', () => {
+          // Only this truck's plate: a neighbouring truck's mouseover can land before this mouseout.
+          if (driverHoverRef.current && driverHoverRef.current.marker === marker) {
+            driverHoverRef.current.overlay.setMap(null);
+            driverHoverRef.current = null;
+          }
+        });
+      }
       return marker;
     });
 
@@ -31761,6 +31789,40 @@ function LabelTicketButton({ labelRec, size = 'md' }) {
 }
 
 const LABEL_SOURCE_NAME = { single: 'New Order', bulk: 'Bulk add', manifest: 'Estes manifest' };
+
+/**
+ * "Label" on an order's stop card, beside "Ticket" — any order on the board, whenever. The page
+ * is built from the board's CURRENT numbers (labelOrderFromStop); the label saved when the order
+ * was created, if there is one, fills in the reference, notes and ship-from. One Firestore read,
+ * zero NuVizz calls, and the same viewer and Print button as the Delivery Ticket.
+ */
+function StopLabelButton({ stop, note, phone, className }) {
+  const [doc, setDoc] = useState(null);
+  const [state, setState] = useState(null);   // null | 'busy' | { error }
+  const open = async () => {
+    if (state === 'busy') return;
+    setState('busy');
+    let saved = null;
+    try {
+      const r = await apiFetch(`/.netlify/functions/order-labels?stop=${encodeURIComponent(stop.stopNbr)}`);
+      const d = await r.json();
+      saved = d?.label || null;
+    } catch { /* no saved label is fine — the board carries the order */ }
+    const label = labelOrderFromStop(stop, { saved, addressOverride: note?.address_override || null, phone });
+    const r = buildLabelsHtml(label ? [label] : [], { logoUrl: labelLogoUrl(), maxPages: MAX_LABEL_PAGES });
+    if (!r.pages) { setState({ error: r.skipped[0]?.reason || 'no order number to print' }); return; }
+    setState(null);
+    setDoc({ html: r.html, title: `Davis label · ${stop.stopNbr} · ${r.pages} page${r.pages === 1 ? '' : 's'}` });
+  };
+  return (
+    <>
+      <button onClick={open} disabled={state === 'busy'} className={className} title={state?.error ? `Label not printed: ${state.error}` : 'Davis delivery label — one page per piece'}>
+        <Tag size={16} className={state?.error ? 'text-amber-600' : 'text-slate-500'} /> {state === 'busy' ? '…' : state?.error ? 'Label ⚠' : 'Label'}
+      </button>
+      {doc && <PrintDocModal title={doc.title} html={doc.html} pageW={816} onClose={() => setDoc(null)} />}
+    </>
+  );
+}
 
 // New Order opens on a Single / Bulk toggle so both ways to create an order live under one
 // tab (per the "put the bulk add tab under new order" debug request — it previously had its
