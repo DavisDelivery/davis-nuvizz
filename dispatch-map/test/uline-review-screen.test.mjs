@@ -333,6 +333,16 @@ test('RESIDENTIAL CAN BE PRESSED IN FULL SCREEN on the desktop — where a house
   assert.match(fnSource('UlineBuildingType'), /\{hint && \(/);
 });
 
+test('A PICTURE THAT CHANGES SIZE IS TOLD — full screen is a resize, and Google draws at the old size otherwise', () => {
+  // The Map and the Engine both learned this: a Google map whose box changes size leaves a gap
+  // or stays blank until someone touches it. Full screen changes the box both ways.
+  const kick = fnSource('useGoogleResizeKick');
+  assert.match(kick, /new ResizeObserver\(/);
+  assert.match(kick, /google\.maps\.event\.trigger\(objRef\.current, 'resize'\)/);
+  assert.match(fnSource('UlineSatellite'), /useGoogleResizeKick\(holder, mapRef, google, \(\) => \{ if \(pin\) mapRef\.current\?\.setCenter\(/, 're-centred on the building');
+  assert.match(fnSource('UlineStreetView'), /useGoogleResizeKick\(holder, panoRef, google\);/);
+});
+
 test('the expand button is IN FLOW in the label row, never pinned over the imagery', () => {
   // Pinned over the map it would land on Google's own controls — the collision the phone guard
   // exists to catch, patched four times on the Map before the rule was written.
