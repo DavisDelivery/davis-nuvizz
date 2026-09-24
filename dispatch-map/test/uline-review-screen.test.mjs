@@ -159,7 +159,8 @@ test('A NO-PIN ROW CANNOT BLANK THE NEXT ROW\'S PICTURES — the holders never u
 test('the street view does not keep showing the LAST building under a new row', () => {
   // A stale 'ok' from the previous location would hide the overlay over a panorama still
   // pointed at the old building — the most misleading picture this tab could show.
-  assert.match(fnSource('UlineStreetView'), /if \(!google \|\| !holder\.current \|\| !pin\) \{ setState\('loading'\); return undefined; \}/);
+  // (Since v1.60.3 the same branch also stops the stale panorama drawing — see the guards below.)
+  assert.match(fnSource('UlineStreetView'), /if \(!google \|\| !holder\.current \|\| !pin\) \{[\s\S]{0,160}?setState\('loading'\);\s*return undefined;\s*\}/);
 });
 
 test('ONE WRITE AT A TIME — N then T pressed faster than a render cannot race', () => {
@@ -174,4 +175,52 @@ test('ONE WRITE AT A TIME — N then T pressed faster than a render cannot race'
 
 test('the desktop says how big the whole backlog is — and so exposes a broken join', () => {
   assert.match(fnSource('UlineSummary'), /u\.data\.backlog\.undecided\} undecided across all \{u\.data\.backlog\.flagged\} flagged customers/);
+});
+
+// ── NEVER ANOTHER CUSTOMER'S BUILDING ───────────────────────────────────────────
+//
+// Chad, 2026-09-24, on F13 at 475 Wilbanks Rd, Alto — the row after BURMAN PRINTING: "This stop
+// is showing the street view from previous stop because i'm assuming there isn't one for this
+// stop so if that is case just make it say so." The street pane showed Burman's front door.
+// On the one screen whose whole job is judging a building by its picture, the picture was of the
+// wrong building, and the decision buttons sat right under it.
+//
+// The note saying "no street view here" WAS set. It did not show, because Google paints the
+// panorama with its own z-indexes and nothing contained them — so the stale panorama rose above
+// the note meant to cover it. Each guard below would have prevented it on its own.
+
+test('THE STREET PANE IS VISIBLE ONLY WHEN IT IS PROVEN TO BE THIS BUILDING', () => {
+  const sv = fnSource('UlineStreetView');
+  // Loading, none, no pin, no key — all hidden. Only a lookup for THIS pin can set 'ok'.
+  assert.match(sv, /style=\{\{ visibility: state === 'ok' && !note \? 'visible' : 'hidden' \}\}/);
+  assert.match(sv, /if \(dead\) return;/, 'a late answer for the previous pin is dropped');
+});
+
+test('Google\'s layers are CONTAINED, so no note can be painted over again', () => {
+  for (const name of ['UlineSatellite', 'UlineStreetView']) {
+    const src = fnSource(name);
+    assert.match(src, /<div ref=\{holder\} className="absolute inset-0 isolate /, `${name}: the holder is its own stacking context`);
+    assert.match(src, /\{note && <div className="absolute inset-0 z-10 /, `${name}: the note sits above it regardless`);
+  }
+});
+
+test('"NO PANORAMA HERE" IS CAUGHT — it arrives as a rejection on the current API', () => {
+  const sv = fnSource('UlineStreetView');
+  assert.match(sv, /getPanorama\(req\)\.then\(/, 'the promise form');
+  assert.match(sv, /\}\)\.catch\(none\);/, 'and its rejection handled — an unhandled one left the pane on the last building');
+  assert.doesNotMatch(sv, /getPanorama\(req, \(/, 'not the callback form that failed to carry the answer');
+  // Hidden from drawing as well as from view: one CSS change must not bring the old door back.
+  assert.match(sv, /const none = \(\) => \{[\s\S]{0,400}?panoRef\.current\?\.setVisible\(false\)/);
+  assert.match(sv, /panoRef\.current\.setVisible\(true\);/, 'and shown again only on a real match');
+});
+
+test('a no-pin row hides the previous building in BOTH panes', () => {
+  // The map stays centred where the last row put it; the pane must not be trusted to sit under
+  // a note — it is hidden outright.
+  assert.match(fnSource('UlineSatellite'), /style=\{\{ visibility: note \? 'hidden' : 'visible' \}\}/);
+  assert.match(fnSource('UlineStreetView'), /if \(!google \|\| !holder\.current \|\| !pin\) \{\s*try \{ panoRef\.current\?\.setVisible\(false\); \}/);
+});
+
+test('the note Chad asked for is the sentence on screen when there is no street view', () => {
+  assert.match(fnSource('UlineStreetView'), /Google has no street view within 80 m of this pin — judge it from the satellite\./);
 });
