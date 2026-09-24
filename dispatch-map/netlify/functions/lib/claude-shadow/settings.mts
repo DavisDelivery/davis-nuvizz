@@ -5,7 +5,7 @@
 // Writes only through store.mts, so only claude_shadow_*:
 //        claude_shadow_caps/{driver|route}__{id}   set or deleted, one per cap a change names
 //        claude_shadow_settings/davis              loosePerSkid + when + who, field-masked
-//        claude_shadow_settings_log/{at}__{n}      one create-only row per accepted change
+//        claude_shadow_settings_log/{at}__{n}__{r}  one create-only row per accepted change
 //        claude_shadow_learned/davis__capacity     rebuilt when the numbers are not at the saved ratio
 //
 // NEVER REPORT AN INTENT AS AN OUTCOME. Each cap in a save is reported separately — saved, failed,
@@ -100,9 +100,13 @@ export async function saveSettings(change: any, by: string | null, deps: Setting
 
   // The record of who changed what. Create-only, one row per change; a failure here is reported,
   // and does not undo a save that landed.
+  // The id carries a random tail: two saves in the same millisecond (two dispatchers, or two
+  // quick taps) shared `${at}__0`, and create-only refused the second, so its change went
+  // unlogged. Still sorts by time.
   let logError: string | null = null;
+  const tail = Math.random().toString(36).slice(2, 8);
   for (let i = 0; i < log.length; i++) {
-    try { await deps.shadowCreate(`${SETTINGS_LOG_COLLECTION}/${at}__${i}`, log[i]); }
+    try { await deps.shadowCreate(`${SETTINGS_LOG_COLLECTION}/${at}__${i}__${tail}`, log[i]); }
     catch (e: any) { logError = `the change log was not fully written: ${String(e?.message || e)}`; }
   }
 
