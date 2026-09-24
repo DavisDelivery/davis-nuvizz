@@ -122,6 +122,7 @@ import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
 import { boardStatusPanel } from './lib/board-status-card.js';
 import { buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner, rosterDriverOf } from './lib/route-status.js';
+import { wbOwnDayRosterEnabled, routeOwnDay, ownDayIdentity } from './lib/wb-own-day.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { shouldAutoStageBuild } from './lib/build-autostage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
@@ -174,7 +175,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.62.1';
+const APP_VERSION = '1.63.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -228,6 +229,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.63.0', 'A ROUTE IN THE ROUTES PANEL OPENS IN COMPARE, EVEN WHEN NUVIZZ DATED IT THE DAY BEFORE. Chad, 2026-09-24, with ESTES APPT listed in the Routes panel and the Compare card refusing it: \u201cif its panel for routes it should load.\u201d WHY IT REFUSED, read off the stored board and rosters, not guessed: a card must know its NuVizz load or a Save is refused and strands the stops moved onto it, so it looks the route up on the SELECTED day\u2019s load roster. ESTES APPT\u2019s load (DAVIS000204757, Draft) is on 9/23\u2019s roster, because NuVizz still dates its stops 9/23; the scan carries open route stops forward onto today, so the route showed on 9/24 while its load lived on 9/23. THE FIX: when the day\u2019s roster cannot name the load and no stop carries a load id, the card looks on the roster of the day NuVizz files those stops under and takes the load that owns the name THERE \u2014 and says so: \u201cOpened ESTES APPT on NuVizz load DAVIS000204757 \u2014 NuVizz still dates this load and its stops 2026-09-23.\u201d NARROW ON PURPOSE, because route names repeat every day and the wrong same-named load is the one thing a card must never save to: every open stop must share one earlier NuVizz day; that day must have exactly one load owning the name (the screen\u2019s own rule \u2014 a cancelled twin loses, two live loads means nobody speaks); a cancelled load never speaks for live freight. Anything short of that keeps the old refusal word for word, with a clearer reason when the earlier day was checked and could not answer. IT CAN NEVER SPEND A NUVIZZ CALL: the earlier day is read with a new cacheOnly=1 on the roster endpoint, which answers from the stored copy or answers \u2018none\u2019, and wins over live=1. PROVEN IN A REAL BROWSER, both ways: a new CI guard (verify:wb-own-day) builds that exact board, clicks ESTES APPT and an ordinary route in the Routes panel, and records every roster request. On this build ESTES APPT opens on its own load, the ordinary route opens unchanged and reads no other day, and the earlier day is read once, cache-only. On main, and on this build with the switch off, ESTES APPT does not open. 11 unit tests, two mutation-checked. THE ROUTE WORKBENCH IS FROZEN AND THIS IS A WORKBENCH CHANGE, made because Chad named it; the commit carries his sentence. VITE_WB_OWN_DAY_ROSTER=off puts back the old refusal (build-time, so it is a redeploy). NOT CHANGED: the Routes panel\u2019s own Assign and Dispatch buttons still resolve the load from today\u2019s roster only, so on a route like ESTES APPT they still say its load id has not loaded \u2014 the Compare card\u2019s own driver box works, because it saves with the card.'],
   ['1.62.1', 'THE SHIPLIFY TEST BOX IS THE LAST THING ON AN ORDER NOW. Chad, 2026-09-24, pointing at the box: \u201cmove this to the very bottom of an order profile.\u201d It sat up with the address, between the tractor line and the order\u2019s own details, where a trial result was the first thing read on every order. It is reference material, so it now comes after Recent deliveries on the desktop sidebar and on the phone drawer, and last on the stop lookup (which has no Recent deliveries section). ONLY THE BOX MOVED. The building type (the school/church/government mark and who set it) and the red no-tractor line stay up with the address, because they are about which truck can go there \u2014 the same thing the tractor line beside them says. With a tab\u2019s Shiplify switch off the box is absent entirely, and its new section draws no empty strip. 4 new tests, one mutation-checked (put the box back above Recent deliveries and it goes red). One commit, so git revert is the whole way back.'],
   ['1.62.0', 'STOPS BY ADDRESS AND BY CITY, OVER ALL DATES UNLESS A DAY OR A RANGE IS SET. Chad: “need to be able to look up stops by address & city as there are times i may want to see every delivery done in that city so will need some date ranges as well as specific dates date ranges should default to all unless set.” WHAT THE SCREEN DID WITH AN ADDRESS BEFORE THIS: the one box sent anything with a space in it to the customer-NAME search, so “1100 Northside Dr”, “Atlanta” and “30318” all searched business names and found nothing. Stop lookup now has two tabs — Order or customer, and Address or city — and the second takes a street address, a city, a state and a ZIP, with All dates / One day / Range under them. ALL IS THE DEFAULT AND IT IS NOT REMEMBERED: every visit starts on it, because a day picked last Tuesday and silently kept would narrow this morning’s search without anybody choosing to. WHY IT NEEDED A NIGHTLY INDEX, measured off the code rather than guessed: the warehouse is stored one day per folder with nothing keyed by place, the endpoint has 26 seconds, and “all dates” as a sweep is every stop ever captured — 57,227 at the last backfill, the thing the year view already refused to do for the same reason. So when a day seals, one SEARCH DIGEST is written for it (history_search, a new post-seal hook): every stop that day reduced to the columns a search needs and a row shows. All dates is then one read per day we hold, about 110 today, instead of one per stop. ONE DOCUMENT PER DAY, NOT PER CITY, ON PURPOSE: a city-keyed index would silently miss every stop whose stored city is not spelled the way the rep typed it, and the postal city and the town a customer names are routinely different. Scanning the day means an ADDRESS search never depends on the city field, and a city search can say “this address also has stops filed under SANDY SPRINGS” instead of a bare zero. THE MATCHING RULES, and which way each errs: the house number is exact and is the house number (110 never finds 1100, and “100 Main” never finds 5100 Main St Ste 100 through its suite — a false match hands a rep the wrong building’s proof of delivery); Drive/Dr, Suite/Ste, Northwest/NW, Building/Bldg and case never decide a match; the city is exact, never a prefix, because Peachtree City and Peachtree Corners are forty miles apart and the totals for one must not absorb the other — the cities that start with what was typed are OFFERED, with counts, never added. A WHOLE ADDRESS PASTED INTO THE FIRST BOX IS TAKEN APART — “1100 Northside Dr, Atlanta, GA 30318” is a street, a city, a state and a ZIP, not a six-word street name that no stop could ever match — conservatively: without commas only a trailing ZIP and a state code that is not also a street word move (NE is north-east and CT is Court, so they never do), and a box the rep filled in by hand always wins over a pasted part. EVERY DAY WE HOLD BUT COULD NOT SEARCH IS NAMED on screen, amber, above the counts, so an index gap can never read as “we never delivered there”. Today and the board ahead come from the live board; a sealed day is never also read from the board, so nothing counts twice. The answer is the counts over EVERY match (stops, delivered, came back, not closed out), month by month, the busiest addresses (tap one to narrow), the cities and the drivers, then the newest 500 stops listed in the customer view’s own day tables with the order opening under its row. BACKFILL: history-search-rebuild builds the digest for days sealed before this shipped — ten a call, oldest first, with a dry run that says what it would build — Firestore only. STOP_SEARCH=off puts every side back at once: the nightly write, the rebuild and the search, which then says it is switched off rather than showing zero. AND A BUG IN THE CUSTOMER VIEW, found building this because the same rows render here: the shared row builder read null as zero (Number(null) is 0), and the scanner writes explicit nulls for an unplanned stop’s sequence, cartons and weight — so every such stop read “stop 0 · 0 pc · 0 plt · 0 lb”, sorted to the TOP of its day, and never reached its volume for a piece count. Null is null now, in both views; a real zero is still a zero. 45 new tests (13 end to end against the Firestore fake, every key rule mutation-checked — broken on purpose and seen to fail), two probes on each layout guard, zero NuVizz calls anywhere in it.'],
   ['1.61.0', 'THE ULINE TAB GETS THE 3D VIEW, BIGGER PICTURES, A FULL SCREEN THAT STAYS IN THE BROWSER, AND BUILDING-TYPE BUTTONS. Chad: \u201cI want my 3d view here as well also when you click full screen i want it to stay within the browser we have a lot of gray space on this page we could be using to make this maps bigger\u201d \u2014 and: \u201cgive me options to label building type like this is residential \u2026 double duty as residentials we don\u2019t allow to be planned on tractors.\u201d 3D: the Map\u2019s photorealistic 3D, aimed at the building at a 67.5\u00b0 tilt with Google\u2019s compass and tilt controls to turn it and look down the side for doors. ONE 3D view for the whole review, re-pointed per location, because Google bills 3D per view created; it stays covered until the new building has landed (the v1.60.3 rule). BIGGER: the tab drops the dashboard width cap. From above and 3D sit side by side, sized so that row ends at the bottom of the window, with the street view the full width under them \u2014 measured on a 1920\u00d71080 screen each picture is 761\u00d7476 (1.60.0\u2019s were 380 tall), on a 2560\u00d71440 screen 1081\u00d7836. Two across at most, on purpose: three across a 1080p screen were no bigger than 1.60.0\u2019s two. The name and Uline\u2019s words sit on the left and the answers and building type on the right, so the pictures start higher up the page; a narrower desktop gets one picture per row rather than slivers. FULL SCREEN FILLS THE BROWSER WINDOW, NOT THE MONITOR: Google\u2019s own full-screen buttons are off; ours keeps the name, the three answers and (on a desktop) the building type across the top, and Esc closes it. The picture is restyled, not rebuilt, so going full screen is no new Google load, and Google is told the new size so the map fills it and stays on the building. On a phone the Above / 3D / Street switch comes along into full screen and the answers sit three across, so the building keeps the screen. BUILDING TYPE on the card: Residential, School, Church, Government, None \u2014 the same field the stop card sets. READ OFF THE CODE: a Residential type on its own keeps nothing off a tractor today \u2014 the router never reads building type, and the board\u2019s no-tractor place flag covers School, Church and Government only. So the Residential chip here does the double duty in ONE write: it labels the place Residential AND saves Box truck only, which the router does obey. The chip and the line under it say so, and Undo puts both back. School, Church and Government save the label only; they already raise the red place flag when one is on a tractor route. Nothing is sent to NuVizz.'],
@@ -1247,6 +1249,9 @@ const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 const MOCK_MODE = import.meta.env.VITE_USE_MOCK_NUVIZZ === 'true';
 const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+// A Routes-panel route opens in Compare even when NuVizz dates its stops earlier (lib/wb-own-day.js).
+// VITE_WB_OWN_DAY_ROSTER=off puts back the old refusal. Build-time, so flipping it is a redeploy.
+const WB_OWN_DAY_ROSTER_ON = wbOwnDayRosterEnabled(import.meta.env);
 // THE WALL DISPLAY DRAWS ITS MAP AS A PICTURE — see lib/tv-static-map.js for why, and for the
 // house-shape switch. Read once at module load, like every other build-time flag here.
 // VITE_TV_STATIC_MAP=off puts the TV back on the live JS map; anything malformed leaves it ON.
@@ -23480,6 +23485,9 @@ function EngineResultPanel({ result, kind, onDismiss }) {
 
 function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
+  // Read by the Compare card's open path, which runs off refs (deps []).
+  const selectedDateRef = useRef(selectedDate);
+  selectedDateRef.current = selectedDate;
   const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, lastCompletedScanAt, ops, scanUnplannedCount } = useStops(selectedDate);
   // Stops status card (same pill as the dispatch Map, top-right of the routing map):
   // stops count + total pallets + feed freshness + NuVizz call meter. Shares the Map's
@@ -24254,6 +24262,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // SOURCE load of a planned stop, in the same press (see lib/send-selection.js) — so the rules
   // (already open, the cap, two same-day loads sharing a name, no NuVizz identity) live here once
   // and come back as a card or a sentence. Pure over `prev` plus the board/roster refs.
+  // Rosters of EARLIER days, fetched only for a route the selected day's roster cannot name, and
+  // only from the stored copy (cacheOnly=1: an unstored day answers 'none' — a click never spends a
+  // NuVizz call). day → { at, loads }. Re-asked after five minutes, so a load captured since shows.
+  const ownDayRosterRef = useRef(new Map());
   const buildWbCard = useCallback((key, prev) => {
     if (!key) return { refusal: 'No load to open.' };
     if (prev.some((r) => r.key === key)) return { already: true };   // already open
@@ -24309,27 +24321,66 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     // STEVEN and NOR, and NOR refused too rather than unplan a stop bound for the dead card.
     // Assign and Dispatch already refuse this exact state with a message; opening a Compare
     // card was the one path that let you do the work first and find out afterwards.
-    if (!loadId && !loadNbr) {
+    // A ROUTE IN THE ROUTES PANEL OPENS (Chad, 2026-09-24: "if its panel for routes it should
+    // load"). The selected day's roster has no load for it — but NuVizz may simply still date its
+    // stops earlier (ESTES APPT: stops dated 9/23, load DAVIS000204757 on 9/23's roster, route
+    // clamped onto 9/24's board). Then the load that owns the name on THAT day's roster is this
+    // route's load. openRouteInWorkbench fetched that roster (stored copy only, never a NuVizz
+    // call) before calling here. Every narrowing rule is in lib/wb-own-day.js.
+    let ownDay = null;
+    let ownDayLoad = null;
+    if (!loadId && !loadNbr && WB_OWN_DAY_ROSTER_ON && !rosterEntry0?.ambiguous) {
+      ownDay = routeOwnDay(routeStops, selectedDateRef.current);
+      const held = ownDay ? ownDayRosterRef.current.get(ownDay) : null;
+      ownDayLoad = held ? ownDayIdentity(held.loads, name || key) : null;
+    }
+    if (!loadId && !loadNbr && !ownDayLoad) {
       const shown = loadDisplayName(name, key) || String(key);
       return { refusal: rosterEntry0?.ambiguous
         ? `Two loads are named "${shown}" today, so a card can't tell which one it would save to. Rename one in the portal (or cancel the one you're not using), then refresh.`
-        : `"${shown}" has no NuVizz load number or id yet, so a Save would be refused. Open it from the Loads grid, or refresh once the day's loads have loaded.` };
+        : ownDay
+          ? `"${shown}" has no NuVizz load on today's roster, and ${ownDay} (the day NuVizz dates its stops) has no single load by that name either, so a Save would be refused. Check the load's date in the portal.`
+          : `"${shown}" has no NuVizz load number or id yet, so a Save would be refused. Open it from the Loads grid, or refresh once the day's loads have loaded.` };
     }
     // Ids already staged onto ANOTHER open card stay there (the staged move wins) — otherwise a
     // freshly-opened card re-seeds them from the board and the stop sits in BOTH cards' orders.
     const stagedElsewhere = new Set(prev.flatMap((r) => r.order));
     const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr)).filter((id) => !stagedElsewhere.has(id));
-    return { card: { key, name, loadNbr, loadId, order, collapsed: false } };
+    return {
+      card: { key, name, loadNbr: loadNbr || ownDayLoad?.loadNbr || null, loadId: loadId || ownDayLoad?.loadId || null, order, collapsed: false },
+      ...(ownDayLoad ? { ownDay, ownDayLoad } : {}),
+    };
   }, []);
+  const ownDayRosterToFetch = useCallback((key) => {
+    if (!WB_OWN_DAY_ROSTER_ON) return null;
+    const routeStops = boardStopsAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === key);
+    if (!routeStops.length || routeStops.some((s) => s.raw?.load?.loadId ?? s.loadId)) return null;
+    const e = loadRosterRef.current.get(String(key)) || loadRosterRef.current.get(String(key).toLowerCase()) || null;
+    if (e && (e.ambiguous || e.loadId || e.loadNbr)) return null;   // today's roster already answers
+    const day = routeOwnDay(routeStops, selectedDateRef.current);
+    if (!day) return null;
+    const held = ownDayRosterRef.current.get(day);
+    return held && Date.now() - held.at < 5 * 60 * 1000 ? null : day;
+  }, []);
+  const fetchOwnDayRoster = useCallback((day) => apiFetch(`/.netlify/functions/nuvizz-loads-roster?date=${encodeURIComponent(day)}&cacheOnly=1`, { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null)
+    .then((j) => { ownDayRosterRef.current.set(day, { at: Date.now(), loads: j && j.ok ? (j.loads || []) : [] }); }), []);
   const openRouteInWorkbench = useCallback((key) => {
     if (!key) return;
-    setWbRoutes((prev) => {
+    const openNow = () => setWbRoutes((prev) => {
       const r = buildWbCard(key, prev);
       if (r.already) return prev;
       if (r.refusal) { setLastAction(r.refusal); return prev; }
+      // Say which load it opened on, and why that is not today's — a card saving to a load dated
+      // yesterday must never look like an ordinary one.
+      if (r.ownDayLoad) setLastAction(`Opened "${loadDisplayName(r.card.name, key) || key}" on NuVizz load ${r.ownDayLoad.loadNbr || r.ownDayLoad.loadId} — NuVizz still dates this load and its stops ${r.ownDay}.`);
       return [...prev, r.card];
     });
-  }, [buildWbCard]);
+    const day = ownDayRosterToFetch(key);
+    if (day) { fetchOwnDayRoster(day).finally(openNow); return; }
+    openNow();
+  }, [buildWbCard, ownDayRosterToFetch, fetchOwnDayRoster]);
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
   const closeAllWb = useCallback(() => setWbRoutes([]), []);
   const toggleWbCollapse = useCallback((key) => setWbRoutes((prev) => prev.map((r) => (r.key === key ? { ...r, collapsed: !r.collapsed } : r))), []);
