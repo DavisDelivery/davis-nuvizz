@@ -62,6 +62,10 @@
   # "NuVizz has nothing" — the one answer this endpoint must never give by accident.
   [functions."stop-lookup-prompted"]
     timeout = 26
+  # The address/city search index backfill (history-search-rebuild): up to ten sealed days a
+  # call, each one masked read of the day's stops and one digest write. Firestore only.
+  [functions."history-search-rebuild"]
+    timeout = 26
   # The two LIVE-BOARD engine endpoints (driver drafts and end-of-night cleanup).
   # Both are Firestore-only — ZERO NuVizz calls — but a dispatcher is waiting on a
   # real assignment solve over a whole unplanned pool. On the 10s DEFAULT a busy

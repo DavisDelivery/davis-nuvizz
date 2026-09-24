@@ -78,7 +78,10 @@ import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRow
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
 import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
-import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUEUE_DAYS_AHEAD } from './lib/history-range.js';
+import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUEUE_DAYS_AHEAD, addDays as rangeAddDays } from './lib/history-range.js';
+// ADDRESS / CITY SEARCH (v1.62.0) — the same module the endpoint and the nightly digest writer use,
+// so the screen can never build a query the server reads differently.
+import { placeParams, placeQuery, placeQueryUsable } from './lib/stop-search.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -171,7 +174,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.61.0';
+const APP_VERSION = '1.62.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -225,6 +228,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.62.0', 'STOPS BY ADDRESS AND BY CITY, OVER ALL DATES UNLESS A DAY OR A RANGE IS SET. Chad: “need to be able to look up stops by address & city as there are times i may want to see every delivery done in that city so will need some date ranges as well as specific dates date ranges should default to all unless set.” WHAT THE SCREEN DID WITH AN ADDRESS BEFORE THIS: the one box sent anything with a space in it to the customer-NAME search, so “1100 Northside Dr”, “Atlanta” and “30318” all searched business names and found nothing. Stop lookup now has two tabs — Order or customer, and Address or city — and the second takes a street address, a city, a state and a ZIP, with All dates / One day / Range under them. ALL IS THE DEFAULT AND IT IS NOT REMEMBERED: every visit starts on it, because a day picked last Tuesday and silently kept would narrow this morning’s search without anybody choosing to. WHY IT NEEDED A NIGHTLY INDEX, measured off the code rather than guessed: the warehouse is stored one day per folder with nothing keyed by place, the endpoint has 26 seconds, and “all dates” as a sweep is every stop ever captured — 57,227 at the last backfill, the thing the year view already refused to do for the same reason. So when a day seals, one SEARCH DIGEST is written for it (history_search, a new post-seal hook): every stop that day reduced to the columns a search needs and a row shows. All dates is then one read per day we hold, about 110 today, instead of one per stop. ONE DOCUMENT PER DAY, NOT PER CITY, ON PURPOSE: a city-keyed index would silently miss every stop whose stored city is not spelled the way the rep typed it, and the postal city and the town a customer names are routinely different. Scanning the day means an ADDRESS search never depends on the city field, and a city search can say “this address also has stops filed under SANDY SPRINGS” instead of a bare zero. THE MATCHING RULES, and which way each errs: the house number is exact and is the house number (110 never finds 1100, and “100 Main” never finds 5100 Main St Ste 100 through its suite — a false match hands a rep the wrong building’s proof of delivery); Drive/Dr, Suite/Ste, Northwest/NW, Building/Bldg and case never decide a match; the city is exact, never a prefix, because Peachtree City and Peachtree Corners are forty miles apart and the totals for one must not absorb the other — the cities that start with what was typed are OFFERED, with counts, never added. A WHOLE ADDRESS PASTED INTO THE FIRST BOX IS TAKEN APART — “1100 Northside Dr, Atlanta, GA 30318” is a street, a city, a state and a ZIP, not a six-word street name that no stop could ever match — conservatively: without commas only a trailing ZIP and a state code that is not also a street word move (NE is north-east and CT is Court, so they never do), and a box the rep filled in by hand always wins over a pasted part. EVERY DAY WE HOLD BUT COULD NOT SEARCH IS NAMED on screen, amber, above the counts, so an index gap can never read as “we never delivered there”. Today and the board ahead come from the live board; a sealed day is never also read from the board, so nothing counts twice. The answer is the counts over EVERY match (stops, delivered, came back, not closed out), month by month, the busiest addresses (tap one to narrow), the cities and the drivers, then the newest 500 stops listed in the customer view’s own day tables with the order opening under its row. BACKFILL: history-search-rebuild builds the digest for days sealed before this shipped — ten a call, oldest first, with a dry run that says what it would build — Firestore only. STOP_SEARCH=off puts every side back at once: the nightly write, the rebuild and the search, which then says it is switched off rather than showing zero. AND A BUG IN THE CUSTOMER VIEW, found building this because the same rows render here: the shared row builder read null as zero (Number(null) is 0), and the scanner writes explicit nulls for an unplanned stop’s sequence, cartons and weight — so every such stop read “stop 0 · 0 pc · 0 plt · 0 lb”, sorted to the TOP of its day, and never reached its volume for a piece count. Null is null now, in both views; a real zero is still a zero. 45 new tests (13 end to end against the Firestore fake, every key rule mutation-checked — broken on purpose and seen to fail), two probes on each layout guard, zero NuVizz calls anywhere in it.'],
   ['1.61.0', 'THE ULINE TAB GETS THE 3D VIEW, BIGGER PICTURES, A FULL SCREEN THAT STAYS IN THE BROWSER, AND BUILDING-TYPE BUTTONS. Chad: \u201cI want my 3d view here as well also when you click full screen i want it to stay within the browser we have a lot of gray space on this page we could be using to make this maps bigger\u201d \u2014 and: \u201cgive me options to label building type like this is residential \u2026 double duty as residentials we don\u2019t allow to be planned on tractors.\u201d 3D: the Map\u2019s photorealistic 3D, aimed at the building at a 67.5\u00b0 tilt with Google\u2019s compass and tilt controls to turn it and look down the side for doors. ONE 3D view for the whole review, re-pointed per location, because Google bills 3D per view created; it stays covered until the new building has landed (the v1.60.3 rule). BIGGER: the tab drops the dashboard width cap. From above and 3D sit side by side, sized so that row ends at the bottom of the window, with the street view the full width under them \u2014 measured on a 1920\u00d71080 screen each picture is 761\u00d7476 (1.60.0\u2019s were 380 tall), on a 2560\u00d71440 screen 1081\u00d7836. Two across at most, on purpose: three across a 1080p screen were no bigger than 1.60.0\u2019s two. The name and Uline\u2019s words sit on the left and the answers and building type on the right, so the pictures start higher up the page; a narrower desktop gets one picture per row rather than slivers. FULL SCREEN FILLS THE BROWSER WINDOW, NOT THE MONITOR: Google\u2019s own full-screen buttons are off; ours keeps the name, the three answers and (on a desktop) the building type across the top, and Esc closes it. The picture is restyled, not rebuilt, so going full screen is no new Google load, and Google is told the new size so the map fills it and stays on the building. On a phone the Above / 3D / Street switch comes along into full screen and the answers sit three across, so the building keeps the screen. BUILDING TYPE on the card: Residential, School, Church, Government, None \u2014 the same field the stop card sets. READ OFF THE CODE: a Residential type on its own keeps nothing off a tractor today \u2014 the router never reads building type, and the board\u2019s no-tractor place flag covers School, Church and Government only. So the Residential chip here does the double duty in ONE write: it labels the place Residential AND saves Box truck only, which the router does obey. The chip and the line under it say so, and Undo puts both back. School, Church and Government save the label only; they already raise the red place flag when one is on a tractor route. Nothing is sent to NuVizz.'],
   ['1.60.3', 'THE ULINE TAB SHOWED ONE CUSTOMER\u2019S BUILDING UNDER ANOTHER CUSTOMER\u2019S NAME. Chad, on F13 at 475 Wilbanks Rd, Alto, the row after BURMAN PRINTING: \u201cThis stop is showing the street view from previous stop because i\u2019m assuming there isn\u2019t one for this stop so if that is case just make it say so.\u201d It was Burman\u2019s front door \u2014 7980 and their sign \u2014 on the one screen whose whole job is judging a building by its picture, with the answer buttons right under it. A dispatcher could have marked F13 box-truck-only off another company\u2019s photo. THE NOTE WAS THERE AND COULD NOT BE SEEN. When Google has no panorama near a pin the pane already set \u201cGoogle has no street view within 80 m of this pin\u201d \u2014 but Google paints the panorama with its own z-indexes, nothing contained them, and the LAST building\u2019s panorama rose above the note meant to cover it. The satellite pane had the same flaw on a row with no pin. THREE GUARDS NOW, because each one alone has already been enough to fail: the picture is HIDDEN unless it is proven to be this building (only the lookup for the current pin can mark it good, and a late answer for the previous one is dropped); Google\u2019s layers are contained so a note can never be painted over again; and \u201cno panorama here\u201d is caught as the rejection it now arrives as, with the stale panorama told to stop drawing as well. Hidden, not unmounted \u2014 the map and the panorama keep their size and come back drawn, and nothing is rebuilt or re-billed. Shipped on its own, ahead of the 3D view and the bigger maps, because it was live.'],
   ['1.60.2', 'THE 8:30 PLAN\u2019S ROUTE ORDER, CORRECTED BEFORE IT WAS EVER USED. A review of 1.59.2 found three things wrong with it. 1.59.2 merged before the 8:30 freeze of Sep 24, so that one morning\u2019s stored plan may carry them; from the first freeze after this ships, none do. (1) A stop with no position was frozen as routeSeq: null. The Stops lookup reads a day\u2019s stop number with Number(), and Number(null) is 0, so on a day where the morning plan is the only copy of a stop the screen would have said \u201cstop 0\u201d, the exact thing 1.59.2 promised it would not. Now a stop with no position carries no position field at all, which reads back as nothing, as it always did. A test builds that plan-only day and fails on 1.59.2. (2) 1.59.2 said it kept the load\u2019s own id. It could not: no scan puts that id on the row the freeze reads, so it would have been blank on every stop. Removed. (3) The planned arrival it kept is not refreshed by the list scan, so on some stops it would have been a stale copy from the day the order was first looked up, presented as the 8:30 plan. Removed. What stays is the one field Chad asked for: each stop\u2019s position on its route. Zero NuVizz calls; the attempts list and driver scorecard are unchanged.'],
@@ -36035,8 +36039,10 @@ function StopWritesCard({ writes }) {
  *  "the read failed" render as the same blank screen otherwise, and only one of them is a
  *  reason to go and spend a NuVizz call. It is the same argument as the dry run in CLAUDE.md:
  *  a job that acts on its own needs a way to say what it just did. */
-const STOP_LEDGER_DOT = { found: 'bg-green-500', empty: 'bg-slate-300', skipped: 'bg-slate-200', unread: 'bg-red-500' };
-const STOP_LEDGER_TEXT = { found: 'text-green-700', empty: 'text-slate-400', skipped: 'text-slate-300', unread: 'text-red-700' };
+// `partial` (v1.62.0): read fine, but it names days the search could NOT cover — amber, because
+// it is neither a failure nor a clean answer, and grey would read as the second.
+const STOP_LEDGER_DOT = { found: 'bg-green-500', empty: 'bg-slate-300', skipped: 'bg-slate-200', unread: 'bg-red-500', partial: 'bg-amber-500' };
+const STOP_LEDGER_TEXT = { found: 'text-green-700', empty: 'text-slate-400', skipped: 'text-slate-300', unread: 'text-red-700', partial: 'text-amber-700' };
 
 function StopSourceLedger({ sources, errors, open, onToggle }) {
   const unread = (sources || []).filter((s) => s.state === 'unread').length;
@@ -36944,6 +36950,271 @@ function CustomerHeader({ v, today, stacked }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// EVERY STOP AT AN ADDRESS, OR IN A CITY (v1.62.0)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Chad, 2026-09-24: "need to be able to look up stops by address & city as there are times i
+// may want to see every delivery done in that city so will need some date ranges as well as
+// specific dates date ranges should default to all unless set"
+//
+// What decides a match, and why the answer reads one nightly document per day rather than every
+// stop: src/lib/stop-search.js. What this half decides is how a person on the phone reads it.
+
+/** THE DATES FOR AN ADDRESS OR CITY SEARCH — every date we hold unless a day or a range is set.
+ *
+ *  ALL is the first pill and where every visit STARTS. Unlike the customer window, this choice
+ *  is deliberately not remembered between visits: a day picked last Tuesday and silently kept
+ *  would narrow this morning's search without anybody choosing to, which is the opposite of
+ *  "default to all unless set". Within a visit it holds while the rep refines the address. */
+function PlaceDateBar({ sel, setSel, today, stacked }) {
+  // The board reaches three days ahead (the scan's write horizon), so a day on it is searchable.
+  const horizon = rangeAddDays(today, 3);
+  const pill = (on) => `${RANGE_PILL(on)}${stacked ? ' flex-1' : ''}`;
+  const field = `${RANGE_FIELD} min-w-0${stacked ? ' flex-1' : ''}`;
+  return (
+    <div className={stacked ? 'space-y-2' : 'flex flex-wrap items-center gap-1.5'}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {!stacked && <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mr-0.5">Dates</span>}
+        <button type="button" onClick={() => setSel({ kind: 'all' })} className={pill(sel.kind === 'all')}>All dates</button>
+        <button type="button" onClick={() => setSel({ kind: 'day', date: sel.date || today })} className={pill(sel.kind === 'day')}>One day</button>
+        <button type="button" onClick={() => setSel({ kind: 'range', from: sel.from || rangeAddDays(today, -29), to: sel.to || today })}
+          className={pill(sel.kind === 'range')}>Range</button>
+      </div>
+      {sel.kind === 'day' && (
+        <div className="flex items-center gap-1.5 min-w-0">
+          <input type="date" aria-label="The day to search" value={sel.date || ''} max={horizon}
+            onChange={(e) => e.target.value && setSel({ kind: 'day', date: e.target.value })} className={field} />
+        </div>
+      )}
+      {sel.kind === 'range' && (
+        <div className="flex items-center gap-1.5 min-w-0">
+          <input type="date" aria-label="First day to search" value={sel.from || ''} max={horizon}
+            onChange={(e) => e.target.value && setSel({ kind: 'range', from: e.target.value, to: sel.to || e.target.value })} className={field} />
+          <span className="text-[11px] text-slate-400 shrink-0">to</span>
+          <input type="date" aria-label="Last day to search" value={sel.to || ''} max={horizon}
+            onChange={(e) => e.target.value && setSel({ kind: 'range', from: sel.from || e.target.value, to: e.target.value })} className={field} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Month by month — the shape of "every delivery in that city" that a person can actually read. */
+function PlaceMonths({ months }) {
+  const peak = Math.max(1, ...months.map((m) => m.stops));
+  return (
+    <div className="rounded-xl border bg-white p-3 space-y-2 min-w-0">
+      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Month by month</div>
+      <div className="space-y-1">
+        {months.map((m) => (
+          <div key={m.month} className="flex items-center gap-2 min-w-0">
+            <span className="w-16 shrink-0 text-[11px] font-semibold text-slate-600">{m.label}</span>
+            <span className="flex-1 h-5 rounded bg-slate-100 relative min-w-0 overflow-hidden">
+              <span className="absolute inset-y-0 left-0 bg-green-500/70 rounded" style={{ width: `${Math.round((m.delivered / peak) * 100)}%` }} />
+              <span className="absolute inset-y-0 bg-amber-400/70"
+                style={{ left: `${Math.round((m.delivered / peak) * 100)}%`, width: `${Math.round(((m.stops - m.delivered) / peak) * 100)}%` }} />
+            </span>
+            <span className="shrink-0 text-[11px] w-24 text-right tabular-nums">
+              <span className="font-bold text-slate-800">{m.stops}</span>
+              {m.delivered !== m.stops && <span className="text-green-700"> · {m.delivered} del</span>}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="text-[11px] text-slate-400">Green is delivered; amber is everything that did not close out.</div>
+    </div>
+  );
+}
+
+/** The addresses inside the answer, busiest first. Tapping one narrows the search to it — the
+ *  natural next question after "every stop in Lawrenceville" is "which of those was this dock". */
+function PlaceAddresses({ addresses, count, onPick }) {
+  return (
+    <div className="rounded-xl border bg-white p-3 space-y-1.5 min-w-0">
+      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">
+        {count} address{count === 1 ? '' : 'es'}{count > addresses.length ? ` — the busiest ${addresses.length}` : ''}
+      </div>
+      <div className="divide-y">
+        {addresses.map((a) => (
+          <button key={a.key} type="button" onClick={() => onPick(a)} title="Search just this address"
+            className="w-full text-left py-1.5 min-h-[40px] flex items-start gap-2 hover:bg-slate-50 rounded">
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs font-semibold text-slate-800 break-words">{custAddr(a.address) || '—'}</span>
+              <span className="block text-[11px] text-slate-500 break-words">{[a.name, custCity(a.address)].filter(Boolean).join(' · ')}</span>
+            </span>
+            <span className="shrink-0 text-right text-[11px] tabular-nums">
+              <span className="font-bold text-slate-800">{a.stops}</span>
+              <span className="block text-slate-400">last {formatDateForDisplay(a.lastDate)}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const PLACE_PAGE = 100;
+
+/** Which dates the answer covers, in words — read off the COVERAGE, never off the request. */
+function placeDatesLine(data) {
+  const r = data.range || {};
+  const c = data.coverage || {};
+  const days = `${c.searchedDays || 0} day${c.searchedDays === 1 ? '' : 's'} searched`;
+  if (r.kind === 'day') return formatDateLong(r.from);
+  if (r.kind === 'range') return `${formatDateForDisplay(r.from)} – ${formatDateForDisplay(r.to)} · ${days}`;
+  return c.from ? `All dates we hold · ${formatDateForDisplay(c.from)} – ${formatDateForDisplay(c.to)} · ${days}` : 'All dates we hold';
+}
+
+function PlaceResults({ data, stacked, onOrder, renderDetail, rowsShown, onMore, onNarrow, ledgerOpen, onToggleLedger }) {
+  if (data.switchedOff) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 text-sm p-3">
+        Address and city search is switched off on this site (STOP_SEARCH=off). Nothing was searched — this is not a &ldquo;no stops&rdquo;.
+      </div>
+    );
+  }
+  const v = data.view;
+  const q = data.query || {};
+  const cov = data.coverage || {};
+  const c = v.totals;
+  const hasPlace = (q.addrTokens || []).length > 0 || !!q.zip;
+  const title = q.addr ? `Every stop at ${v.label}` : q.city ? `Every stop in ${v.label}` : `Every stop in ZIP ${q.zip}${q.state ? `, ${q.state}` : ''}`;
+
+  // Whole days, until the page size — the same boundary the endpoint cut on, so a day heading
+  // never counts rows the page is not showing.
+  const days = [];
+  let listed = 0;
+  for (const day of v.days) {
+    if (days.length && listed + day.rows.length > rowsShown) break;
+    days.push(day);
+    listed += day.rows.length;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border bg-white p-3 sm:p-4 space-y-3">
+        <div className={`flex ${stacked ? 'flex-col gap-1' : 'items-start justify-between gap-4'}`}>
+          <div className="min-w-0">
+            <h2 className="text-lg sm:text-xl font-bold text-slate-900 break-words">{title}</h2>
+            {v.span && (
+              <div className="text-xs text-slate-500">
+                {v.span.from === v.span.to ? `On ${formatDateForDisplay(v.span.from)}` : `First ${formatDateForDisplay(v.span.from)} · most recent ${formatDateForDisplay(v.span.to)}`}
+              </div>
+            )}
+          </div>
+          <div className={`text-[11px] text-slate-500 ${stacked ? '' : 'text-right shrink-0'}`}>
+            {placeDatesLine(data)}
+            {data.range?.clamped === 'future' && <div className="text-amber-700">the board only reaches three days ahead</div>}
+            {q.reading === 'zip-in-address' && <div>read as a ZIP</div>}
+            {/* The form still shows what was pasted; this says how the search read it. */}
+            {q.reading === 'split' && <div>read the pasted address as street, city, state and ZIP</div>}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <CustStat n={c.stops} label="Stops" sub={c.orders !== c.stops ? `${c.orders} orders` : null} tone={c.stops ? 'blue' : 'slate'} dim={!c.stops} />
+          <CustStat n={c.delivered} label="Delivered" tone={c.delivered ? 'green' : 'slate'} dim={!c.delivered} />
+          <CustStat n={c.attempted + c.exceptions} label="Came back" sub={c.exceptions ? `${c.exceptions} could not deliver` : null}
+            tone={c.attempted + c.exceptions ? 'amber' : 'slate'} dim={!(c.attempted + c.exceptions)} />
+          <CustStat n={c.open + c.unfinished} label="Not closed out" sub={c.open ? `${c.open} still out or scheduled` : null}
+            tone="slate" dim={!(c.open + c.unfinished)} />
+        </div>
+
+        {/* THE DAYS WE HOLD BUT COULD NOT SEARCH, named. Without this an address search over a
+            gap in the index answers "we never delivered there" about exactly that gap. */}
+        {cov.complete === false && (
+          <div className="text-[11px] text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 break-words">
+            {cov.missingCount > 0
+              ? <>{cov.missingCount} day{cov.missingCount === 1 ? '' : 's'} we hold {cov.missingCount === 1 ? 'was' : 'were'} not searched — the search index has not been built for {cov.missingCount === 1 ? 'it' : 'them'} yet
+                  {' '}({(cov.missing || []).slice(-6).map((d) => formatDateForDisplay(d)).join(', ')}{cov.missingCount > 6 ? ', …' : ''}). The counts above do not include {cov.missingCount === 1 ? 'it' : 'them'}.</>
+              : <>Part of this search could not be read — see where we looked, below. The counts above may be short.</>}
+          </div>
+        )}
+
+        {/* THE SAME PLACE, FILED UNDER ANOTHER TOWN. Postal city and the town a customer names are
+            routinely different; this is what turns a false "no stops" into the right answer. */}
+        {v.otherCities.length > 0 && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 space-y-1.5">
+            <div className="text-[11px] text-blue-900">
+              {hasPlace
+                ? <>This address also has stops filed under {v.otherCities.length === 1 ? 'another city' : 'other cities'} — not counted above:</>
+                : <>Cities that start with &ldquo;{q.city}&rdquo; — not counted above:</>}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {v.otherCities.map((oc) => (
+                <button key={oc.city} type="button" onClick={() => onNarrow({ city: oc.city, state: oc.state || '' })}
+                  className="rounded-lg border bg-white px-2 min-h-[40px] text-[11px] font-semibold text-blue-800 hover:bg-blue-100">
+                  {oc.city}{oc.state ? `, ${oc.state}` : ''} <span className="tabular-nums text-slate-500">· {oc.stops}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {v.matched === 0 && (
+          <div className="text-sm text-slate-600">
+            No stops {q.addr ? 'at that address' : 'there'} in the {cov.complete === false ? 'days we could search' : 'dates searched'}.
+          </div>
+        )}
+      </div>
+
+      {v.matched > 0 && (v.months.length > 1 || v.addressCount > 1 || v.drivers.length > 0) && (
+        <div className={stacked ? 'space-y-3' : 'grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 items-start'}>
+          {v.months.length > 1 && <PlaceMonths months={v.months} />}
+          {v.addressCount > 1 && (
+            <PlaceAddresses addresses={v.addresses} count={v.addressCount}
+              onPick={(a) => onNarrow({ addr: a.address?.addr1 || '', city: a.address?.city || '', state: a.address?.state || '', zip: a.address?.zip || '' }, true)} />
+          )}
+          {(v.drivers.length > 0 || v.cityCount > 1) && (
+            <div className="rounded-xl border bg-white p-3 space-y-3 min-w-0">
+              <CustomerDriverChips drivers={v.drivers} label={v.driverCount > v.drivers.length ? `Drivers — busiest ${v.drivers.length} of ${v.driverCount}` : 'Drivers'} />
+              {v.cityCount > 1 && (
+                <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                  <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500 shrink-0">Cities</span>
+                  {v.cities.map((ct) => (
+                    <button key={ct.city} type="button" onClick={() => onNarrow({ city: ct.city, state: ct.state || '' })}
+                      className="rounded-lg border bg-white px-2 min-h-[40px] text-[11px] font-semibold text-slate-800 hover:bg-slate-50">
+                      {ct.city} <span className="tabular-nums text-slate-500">· {ct.stops}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {days.length > 0 && (
+        <div className="space-y-4">
+          {days.map((day) => (stacked
+            ? <CustomerDayCards key={day.date} day={day} onPro={onOrder} renderDetail={renderDetail} />
+            : <CustomerDayTable key={day.date} day={day} onPro={onOrder} renderDetail={renderDetail} />))}
+        </div>
+      )}
+      {listed < v.shown && (
+        <button type="button" onClick={onMore}
+          className="w-full rounded-xl border bg-white min-h-[44px] text-xs font-semibold text-slate-700 hover:bg-slate-50">
+          Show more — {v.shown - listed} more stop{v.shown - listed === 1 ? '' : 's'} on older days
+        </button>
+      )}
+      {listed >= v.shown && v.hiddenDays > 0 && (
+        <div className="text-[11px] text-slate-500 px-1">
+          The newest {v.shown} of {v.matched} stops are listed. The other {v.matched - v.shown}, on {v.hiddenDays} older day{v.hiddenDays === 1 ? '' : 's'}, are
+          in the counts above — pick a range to list them.
+        </div>
+      )}
+
+      <StopSourceLedger sources={data.sources} errors={data.errors} open={ledgerOpen} onToggle={onToggleLedger} />
+    </div>
+  );
+}
+
+const STOP_LOOKUP_MODE = 'dd_stop_lookup_mode';
+const STOP_LOOKUP_PLACE = 'dd_stop_lookup_place';
+const EMPTY_PLACE = { addr: '', city: '', state: '', zip: '' };
+const PLACE_FIELD = 'rounded-lg border border-slate-300 px-2 min-h-[40px] text-sm bg-white min-w-0 focus:outline-none focus:border-slate-500';
+
 const STOP_LOOKUP_LAST = 'dd_stop_lookup_last';
 const STOP_LOOKUP_RANGE = 'dd_stop_lookup_range';
 
@@ -37006,6 +37277,24 @@ function StopLookupScreen() {
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editErr, setEditErr] = useState(null);
+  // ── ADDRESS / CITY SEARCH (v1.62.0) ─────────────────────────────────────────
+  // WHICH SEARCH, remembered per device: a rep who works addresses all day should not re-pick it
+  // on every visit. Default 'order', the screen's original job — and what the layout guards open.
+  const [searchMode, setSearchMode] = useState(() => {
+    try { return localStorage.getItem(STOP_LOOKUP_MODE) === 'place' ? 'place' : 'order'; } catch { return 'order'; }
+  });
+  // The typed place is remembered too, for the same reason the order box is.
+  const [place, setPlace] = useState(() => {
+    try {
+      const p = JSON.parse(localStorage.getItem(STOP_LOOKUP_PLACE) || 'null');
+      if (p && typeof p === 'object') return { addr: String(p.addr || ''), city: String(p.city || ''), state: String(p.state || ''), zip: String(p.zip || '') };
+    } catch { /* private mode */ }
+    return EMPTY_PLACE;
+  });
+  // THE DATES ARE NOT REMEMBERED — Chad: "date ranges should default to all unless set". Every
+  // visit starts on ALL; see PlaceDateBar for why keeping last week's pick would break that.
+  const [placeSel, setPlaceSel] = useState({ kind: 'all' });
+  const [placeRowsShown, setPlaceRowsShown] = useState(PLACE_PAGE);
 
   const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
@@ -37288,6 +37577,51 @@ function StopLookupScreen() {
     if (data?.mode?.startsWith('customer')) run(data.query, { range: resolveRange(nextSel, today, 0), nameKey, year: null });
   }, [run, data, nameKey, today]);
 
+  /**
+   * SEARCH AN ADDRESS, A CITY OR A ZIP. Its own function rather than a branch of `run`: the order
+   * box classifies ONE string, and an address search is four fields and a date choice — folding
+   * them into the box would put "Atlanta" back on the customer-name path it just escaped.
+   */
+  const runPlace = useCallback(async (fields, selNow) => {
+    const f = { ...EMPTY_PLACE, ...(fields || {}) };
+    if (!placeQueryUsable(placeQuery(f))) { setErr('Type a street address, a city or a ZIP to search by.'); return; }
+    setLoading(true); setErr(null); setPromptMsg(null); closeOrder();
+    setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
+    try { localStorage.setItem(STOP_LOOKUP_PLACE, JSON.stringify(f)); } catch { /* a remembered box is a convenience */ }
+    try {
+      const r = await apiFetch(`/.netlify/functions/stop-lookup?${placeParams(f, selNow)}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'search failed');
+      setData(j);
+      setPlaceRowsShown(PLACE_PAGE);
+      // The ledger opens itself when it IS the answer: nothing matched, or days went unsearched.
+      setLedgerOpen(j.mode === 'place' && !j.switchedOff && (j.coverage?.complete === false || !j.view?.matched));
+    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); }
+  }, [closeOrder]);
+
+  /** New dates on a place already on screen: search again, same place. */
+  const changePlaceSel = useCallback((next) => {
+    setPlaceSel(next);
+    if (data?.mode === 'place') runPlace(place, next);
+  }, [data, place, runPlace]);
+
+  /** Tap an address, a city or a near-miss city inside the answer → search just that.
+   *  `replace` swaps the whole place (an address row carries its own city and ZIP); otherwise the
+   *  tap only changes what it names and keeps the rest of what was typed. */
+  const narrowPlace = useCallback((patch, replace = false) => {
+    const next = replace ? { ...EMPTY_PLACE, ...patch } : { ...place, ...patch };
+    setPlace(next);
+    runPlace(next, placeSel);
+  }, [place, placeSel, runPlace]);
+
+  const switchMode = useCallback((m) => {
+    setSearchMode(m);
+    try { localStorage.setItem(STOP_LOOKUP_MODE, m); } catch { /* per-device convenience */ }
+    // The answer on screen belongs to the other search; leaving it up under the new form would
+    // present a customer's deliveries as if they answered an address.
+    setData(null); setErr(null); closeOrder();
+  }, [closeOrder]);
+
   const d = data?.mode === 'stop' ? data.dossier : null;
 
   return (
@@ -37300,8 +37634,9 @@ function StopLookupScreen() {
           <div className="min-w-0">
             <h1 className="text-xl font-bold text-slate-900">Stop lookup</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              A <span className="font-semibold text-slate-600">customer name</span> for their deliveries and who ran them, or a
-              {' '}<span className="font-semibold text-slate-600">PRO</span> for one order&rsquo;s whole history.
+              A <span className="font-semibold text-slate-600">customer name</span> for their deliveries and who ran them, a
+              {' '}<span className="font-semibold text-slate-600">PRO</span> for one order&rsquo;s whole history, or an
+              {' '}<span className="font-semibold text-slate-600">address or city</span> for every stop there.
             </p>
           </div>
           {/* THE PRICE OF WHAT IS ON SCREEN, read off the answer — not a slogan. Every Firestore
@@ -37311,6 +37646,61 @@ function StopLookupScreen() {
             : <span className="text-[11px] font-semibold text-green-800 bg-green-50 border border-green-200 rounded-lg px-2 py-1 whitespace-nowrap">0 NuVizz calls</span>}
         </div>
 
+        {/* WHICH SEARCH. Two searches, two forms — an address is four fields and a date choice, and
+            one box that guessed between "Atlanta" the city and "Atlanta" a customer name would be
+            wrong about one of them every time. */}
+        <div role="tablist" aria-label="Search by" className={`inline-flex rounded-xl border bg-white p-1 gap-1 ${isMobile ? 'w-full' : ''}`}>
+          {[['order', 'Order or customer'], ['place', 'Address or city']].map(([k, label]) => (
+            <button key={k} type="button" role="tab" aria-selected={searchMode === k} onClick={() => switchMode(k)}
+              className={`rounded-lg px-3 min-h-[40px] text-xs font-semibold whitespace-nowrap ${isMobile ? 'flex-1' : ''} ${searchMode === k ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {searchMode === 'place' && (
+          <form onSubmit={(e) => { e.preventDefault(); runPlace(place, placeSel); }} className="rounded-xl border bg-white p-2 space-y-2">
+            <div className={isMobile ? 'space-y-2' : 'flex items-center gap-2'}>
+              {/* FOUR BOXES THAT LOOK LIKE FOUR BOXES. The first cut left the street line bare, like
+                  the order box, beside three bordered fields — and read as two different controls. */}
+              <div className={`flex items-center gap-2 min-w-0 rounded-lg border border-slate-300 bg-white px-2 focus-within:border-slate-500 ${isMobile ? '' : 'flex-[3]'}`}>
+                <MapPin size={14} className="text-slate-400 shrink-0" />
+                <input value={place.addr} onChange={(e) => setPlace((p) => ({ ...p, addr: e.target.value }))}
+                  placeholder="Street address — 1100 Northside Dr" aria-label="Street address"
+                  autoFocus={!isMobile} className="flex-1 min-w-0 text-sm min-h-[38px] focus:outline-none bg-transparent" />
+              </div>
+              <div className={`flex items-center gap-2 min-w-0 ${isMobile ? '' : 'flex-[2]'}`}>
+                <input value={place.city} onChange={(e) => setPlace((p) => ({ ...p, city: e.target.value }))}
+                  placeholder="City" aria-label="City" className={`${PLACE_FIELD} flex-1`} />
+                <input value={place.state} onChange={(e) => setPlace((p) => ({ ...p, state: e.target.value }))}
+                  placeholder="ST" aria-label="State" maxLength={2} className={`${PLACE_FIELD} w-14 uppercase`} />
+                <input value={place.zip} onChange={(e) => setPlace((p) => ({ ...p, zip: e.target.value }))}
+                  placeholder="ZIP" aria-label="ZIP" inputMode="numeric" maxLength={10} className={`${PLACE_FIELD} w-20`} />
+              </div>
+              {!isMobile && (
+                <button type="submit" disabled={loading || !placeQueryUsable(placeQuery(place))}
+                  className="rounded-lg border px-3 min-h-[40px] text-xs font-semibold bg-slate-900 text-white disabled:opacity-40 whitespace-nowrap">
+                  {loading ? 'Looking…' : 'Look up'}
+                </button>
+              )}
+            </div>
+            <div className={isMobile ? 'space-y-2' : 'flex items-center justify-between gap-2 flex-wrap'}>
+              <PlaceDateBar sel={placeSel} setSel={changePlaceSel} today={today} stacked={isMobile} />
+              {(place.addr || place.city || place.state || place.zip) && (
+                <button type="button" onClick={() => { setPlace(EMPTY_PLACE); setData(null); setErr(null); }}
+                  className={`text-xs text-slate-500 hover:text-slate-800 px-2 min-h-[40px] ${isMobile ? 'hidden' : ''}`}>Clear</button>
+              )}
+              {isMobile && (
+                <button type="submit" disabled={loading || !placeQueryUsable(placeQuery(place))}
+                  className="w-full rounded-lg border px-3 min-h-[44px] text-sm font-semibold bg-slate-900 text-white disabled:opacity-40">
+                  {loading ? 'Looking…' : 'Look up'}
+                </button>
+              )}
+            </div>
+          </form>
+        )}
+
+        {searchMode === 'order' && (
         <form
           onSubmit={(e) => { e.preventDefault(); setNameKey(null); setYearOn(false); submit(q, { nameKey: null, year: null }); }}
           className="rounded-xl border bg-white p-2 flex items-center gap-2"
@@ -37335,10 +37725,26 @@ function StopLookupScreen() {
             {loading ? 'Looking…' : 'Look up'}
           </button>
         </form>
+        )}
 
         {err && <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3 break-words">{err}</div>}
 
-        {!data && !loading && !err && (
+        {searchMode === 'place' && !data && !loading && !err && (
+          <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="rounded-lg bg-blue-100 text-blue-800 p-1.5"><MapPin size={14} /></span>
+              <div className="text-sm font-semibold text-slate-800">Every stop at an address, or in a city</div>
+            </div>
+            <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
+              <li>A <span className="font-semibold">street address</span> finds every stop we have made there — the caller does not need a PRO or a company name.</li>
+              <li>A <span className="font-semibold">city</span> or a <span className="font-semibold">ZIP</span> finds every stop in it, with the months, the busiest addresses and the drivers who ran them.</li>
+              <li><span className="font-semibold">All dates</span> unless you pick one day or a range — every day we hold, plus the live board.</li>
+              <li>The house number has to match: 110 will not find 1100. Suite, Drive/Dr and Northwest/NW spellings do not matter.</li>
+            </ul>
+          </div>
+        )}
+
+        {searchMode === 'order' && !data && !loading && !err && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
               <div className="flex items-center gap-2">
@@ -37368,6 +37774,12 @@ function StopLookupScreen() {
               </div>
             </div>
           </div>
+        )}
+
+        {data?.mode === 'place' && (
+          <PlaceResults data={data} stacked={isMobile} onOrder={openOrder} renderDetail={renderOrderPanel}
+            rowsShown={placeRowsShown} onMore={() => setPlaceRowsShown((n) => n + PLACE_PAGE)} onNarrow={narrowPlace}
+            ledgerOpen={ledgerOpen} onToggleLedger={() => setLedgerOpen((x) => !x)} />
         )}
 
         {data?.mode === 'customer-choose' && (
