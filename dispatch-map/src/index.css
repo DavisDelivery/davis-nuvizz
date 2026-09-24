@@ -105,3 +105,9 @@ body { position: fixed; inset: 0; font-family: system-ui, -apple-system, sans-se
 /* Google Maps InfoWindow restyling — match the brand */
 .gm-style .gm-style-iw-c { padding: 0 !important; }
 .gm-style .gm-style-iw-d { overflow: hidden !important; padding: 0 !important; }
+
+/* Stop card link row (Street View · Find business · …): tight rows for a mouse. The links carry
+   an inline 44px min-height for fingertips; a fine pointer does not need it. Touch keeps it. */
+@media (pointer: fine) {
+  .stopcard-links > * { min-height: 0 !important; padding-top: 2px; padding-bottom: 2px; margin-top: 0; }
+}

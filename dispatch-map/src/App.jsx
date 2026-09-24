@@ -9598,8 +9598,10 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
             … just make all the buttons beside more live hyperlinks just add find business and a
             google maps button." Text driver is not on this card any more ("shouldn't even be
             there"); the Route block below still carries the driver's own number. In flow and
-            wrapping, so on a phone the row moves rather than overlapping anything. */}
-        <div className="mt-1 flex items-center gap-x-4 flex-wrap">
+            wrapping, so on a phone the row moves rather than overlapping anything. Rows are
+            tight with a mouse ("they dont need that much space between them"); a touch screen
+            keeps the 44px fingertip floor (index.css .stopcard-links). */}
+        <div className="mt-1 flex items-center gap-x-4 gap-y-0 flex-wrap stopcard-links">
           <StreetViewLink stop={live} />
           <WebSearchLink stop={live} />
           <GoogleMapsLink stop={live} />
