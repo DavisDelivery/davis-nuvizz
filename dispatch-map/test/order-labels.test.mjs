@@ -166,3 +166,30 @@ test('the page carries each barcode, the service date the house way, and escapes
 test('the QR carries the 4-module quiet zone the spec asks for', () => {
   assert.match(H.qrSvg(), /viewBox="0 0 33 33"/, '25 modules + 4 on each side');
 });
+
+// ── printed from the order's stop card ───────────────────────────────────────
+
+test("a board stop's label carries TODAY's board count and the card's address — the saved label only fills gaps", () => {
+  const stop = { stopNbr: 'SO-88213', pro: 'SO-88213', businessName: 'Acme', addr1: '1 Main', city: 'Buford', state: 'GA', zip: '30518', cartons: 3, volume: 0, weight: 900, scheduledFrom: '2026-09-25T12:00:00', stopDetails: [{ product: 'Tile' }, { product: 'Grout' }] };
+  const saved = { stopNbr: 'SO-88213', ref: 'PO-1', pallets: '2', loose: '1', dispatchNotes: 'Dock 4', origin: { name: 'Davis' }, addr2: 'Ste 9' };
+  const l = L.labelOrderFromStop(stop, { saved, addressOverride: { addr1: '1 Main St' }, phone: '770-555-0100' });
+  assert.equal(l.pallets, '3', 'the board count, not the count at creation');
+  assert.equal(l.loose, '0');
+  assert.equal(L.labelPieces(l).length, 3);
+  assert.equal(l.addr1, '1 Main St', "a dispatcher's address fix wins");
+  assert.equal(l.addr2, 'Ste 9', 'the saved label fills what the board lacks');
+  assert.equal(l.ref, 'PO-1');
+  assert.equal(l.itemDesc, 'Tile, Grout');
+  assert.equal(l.serviceDate, '2026-09-25');
+  assert.equal(l.dispatchNotes, 'Dock 4');
+  assert.equal(l.phone, '770-555-0100');
+});
+
+test('a board stop with no counts falls back to the saved ones, then to the flagged single page — never an invented count', () => {
+  const stop = { stopNbr: 'X1', businessName: 'A', cartons: null, volume: null };
+  assert.equal(L.labelOrderFromStop(stop, { saved: { pallets: '2', loose: '' } }).pallets, '2');
+  const bare = L.labelOrderFromStop(stop);
+  assert.equal(L.labelPieces(bare)[0].countMissing, true);
+  assert.equal(L.labelOrderFromStop({ businessName: 'no number' }), null);
+  assert.equal(L.labelOrderFromStop({ stopNbr: '0288000001', pro: '0288000001' }).ref, '', 'the same number is not printed twice');
+});

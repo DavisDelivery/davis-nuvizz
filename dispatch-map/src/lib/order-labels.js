@@ -214,3 +214,42 @@ export function ticketStopFromLabel(rec) {
     allComments: rec.dispatchNotes ? [{ text: rec.dispatchNotes, addedBy: 'Dispatcher', addedOn: rec.createdAt || '' }] : [],
   };
 }
+
+/**
+ * The label for an order on the BOARD, printed from its stop card — any order, whenever.
+ *
+ * The board's own numbers win: skids (NuVizz "cartons"), loose ("volume"), weight and the
+ * ship-to as the card shows it (a dispatcher's address fix included) — so a label printed today
+ * carries today's count, the one the load-out app caps at. A label saved when the order was
+ * created in New Order / Bulk add fills in only what the board does not carry: the reference
+ * printed beside the number, the delivery notes, the ship-from. The service date is the day of
+ * the order's delivery window.
+ */
+export function labelOrderFromStop(stop, { saved = null, addressOverride = null, phone = '' } = {}) {
+  const stopNbr = String(stop?.stopNbr ?? '').trim();
+  if (!stopNbr) return null;
+  const s = (v) => (v == null ? '' : String(v).trim());
+  const ov = addressOverride && typeof addressOverride === 'object' ? addressOverride : {};
+  const pick = (k) => s(ov[k] ?? stop[k] ?? saved?.[k]);
+  const items = (Array.isArray(stop.stopDetails) ? stop.stopDetails : [])
+    .map((it) => s(it?.product)).filter(Boolean);
+  const day = s(stop.scheduledFrom).slice(0, 10);
+  const pro = s(stop.pro);
+  return {
+    stopNbr,
+    ref: s(saved?.ref) || (pro && pro !== stopNbr ? pro : ''),
+    name: s(stop.businessName) || s(saved?.name),
+    addr1: pick('addr1'), addr2: pick('addr2'),
+    city: pick('city'), state: pick('state'), zip: pick('zip'),
+    phone: s(phone) || s(saved?.phone),
+    itemDesc: items.join(', ') || s(saved?.itemDesc),
+    // No count on the board → the saved one, never an invented one.
+    pallets: stop.cartons != null ? s(stop.cartons) : s(saved?.pallets),
+    loose: stop.volume != null ? s(stop.volume) : s(saved?.loose),
+    weight: stop.weight != null ? s(stop.weight) : s(saved?.weight),
+    dispatchNotes: s(saved?.dispatchNotes),
+    serviceDate: /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : s(saved?.serviceDate),
+    origin: saved?.origin || null,
+    source: s(saved?.source),
+  };
+}
