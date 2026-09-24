@@ -294,3 +294,13 @@ jobs:
       - run: npm run verify:tv-map
         env:
           SMOKE_PORT: '8811'
+      # THE ENGINE SCREEN'S ROUTE MAP. Chad, 2026-09-24: "Map is missing on bottom right hand
+      # corner." Sequencing -> Assignment -> Sequencing mounts a NEW map <div>, and the map had
+      # stayed bound to the old one, so every route after that was drawn where nobody could see
+      # it. A unit test cannot see which element a Google map lives in, so this asks the page:
+      # Google's script is answered by a stand-in that tags the element every map is created in
+      # and records which map every pin and line is drawn on. Fails on the code before the fix.
+      # Rides the keyed build above.
+      - run: npm run verify:engine-map
+        env:
+          SMOKE_PORT: '8813'
