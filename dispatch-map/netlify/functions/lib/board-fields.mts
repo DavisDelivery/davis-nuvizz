@@ -112,6 +112,22 @@ export const ULINE_NOTE_FIELDS = [
  * (routing-cleanup-core.mts says so), so name + addr1 + city + zip is how a stop is joined to
  * its customer_notes document at all.
  */
+/**
+ * THE LABELS SCREEN'S PROJECTION (labels-by-shipper.mts) — narrower than lean, on purpose.
+ *
+ * What labelOrderFromStop prints (ship-to, items, skid/loose/weight, the delivery window's day),
+ * the phone the stop card would dial (`contact`), what the shipper and pickup rules read
+ * (`stopNbr`, `stopType`), what the list shows beside each order (status, route, driver), and the
+ * cancellation record dropCancelledStops reads (`raw.stopExecutionInfo`). A whole day's board is
+ * read every time a shipper is picked, so nothing rides along that a label does not print.
+ * test/labels-by-shipper.test.mjs pins that every field the label reads is here.
+ */
+export const LABEL_STOP_FIELDS = [
+  'addr1', 'addr2', 'businessName', 'cartons', 'city', 'contact', 'driverName', 'loadNbr',
+  'normalizedStatus', 'pro', 'routeName', 'scheduledFrom', 'state', 'status', 'stopDetails',
+  'stopNbr', 'stopType', 'volume', 'weight', 'zip', 'raw.stopExecutionInfo',
+];
+
 export const CUSTOMER_STOP_FIELDS = [
   'addr1', 'addr2', 'arrivalDTTM', 'bol', 'boardDate', 'businessName', 'cartons', 'city',
   'custRef', 'deliveredDTTM', 'driverName', 'driverUserName', 'isAttempt', 'isPlanned',

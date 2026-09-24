@@ -24,6 +24,7 @@ import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
+import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
@@ -53,6 +54,7 @@ const SCREENS = [
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
   { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
+  { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
   { key: 'claudeshadow', label: 'Claude shadow', nav: /claude shadow/i, inMore: true },
@@ -154,6 +156,33 @@ const PROBES = {
       await page.waitForTimeout(500);
       const dates = await page.getByLabel(/first day to search/i).first().isVisible().catch(() => false);
       return dates && page.getByText(/every stop at/i).first().isVisible().catch(() => false);
+    } },
+  ],
+  // PRINT LABELS (v1.67.0): the order cards two across at iPad width, ticked, and the big-batch
+  // question — none of which exists until a shipper is picked. No reload between probes here, so
+  // each picks its own shipper rather than trusting the last one's.
+  labels: [
+    { name: 'a shipper picked', open: async (page) => {
+      if (!(await openByName(page, /^estes/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByRole('button', { name: /^print labels for estes-/i }).first().isVisible().catch(() => false);
+    } },
+    { name: 'orders ticked', open: async (page) => {
+      if (!(await openByName(page, /^estes/i))) return false;
+      await page.waitForTimeout(500);
+      const boxes = page.getByRole('checkbox', { name: /^select estes-/i });
+      if ((await boxes.count()) < 2) return false;
+      await boxes.nth(0).check();
+      await boxes.nth(1).check();
+      await page.waitForTimeout(300);
+      return page.getByRole('button', { name: /^print selected \(2/i }).first().isVisible().catch(() => false);
+    } },
+    { name: 'a big batch asks first', open: async (page) => {
+      if (!(await openByName(page, /^uline/i))) return false;
+      await page.waitForTimeout(500);
+      if (!(await openByName(page, /^print all/i))) return false;
+      await page.waitForTimeout(300);
+      return page.getByText(/this prints \d+ pages/i).first().isVisible().catch(() => false);
     } },
   ],
   addrhistory: [
@@ -306,6 +335,8 @@ for (const dev of TABLETS) {
     // them would leave the guard measuring a screen the app never renders.
     // THE CLAUDE SHADOW TAB — the same worst-rows fixture the phone and desktop guards use.
     if (u.includes('claude-shadow')) return J(CLAUDE_SHADOW_STATUS);
+    // PRINT LABELS (v1.67.0) — the same built fixture the phone guard drives.
+    if (u.includes('labels-by-shipper')) return J(labelsAnswer(u));
     if (u.includes('stop-lookup')) return J(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.

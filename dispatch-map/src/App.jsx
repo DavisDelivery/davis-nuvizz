@@ -77,6 +77,7 @@ import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, set
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
 import { buildLabelsHtml } from './lib/label-html.js';
+import { filterLabelRows } from './lib/label-shippers.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
 import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
@@ -176,7 +177,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.66.0';
+const APP_VERSION = '1.67.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -230,6 +231,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.67.0', 'PRINT LABELS BY SHIPPER AND DAY. Chad: “i want for me to be able to pick a shipper and a day like averitts or estes or shp and when all those orders come up for that day be able to print labels one by one for their orders or bulk print them.” A NEW SCREEN, Print labels, under More on a desktop and in the phone menu: pick the delivery day (Today, Tomorrow or any date), pick a shipper, and every one of that shipper’s deliveries on that day’s board is listed with its own Print button, a tick box for Print selected, and Print all. HOW IT KNOWS THE SHIPPER, read off the code and then off production’s own board for Sep 24 (Firestore only, zero NuVizz calls): no field on an order says whose freight it is, so the order NUMBER is the shipper. That day’s 837 orders were 710 plain Uline numbers, 80 ESTES-…, 29 AVRT-… (Averitt), 5 SHP…, 7 RA… pickups and a handful of MILLER, PRIMARY and TRENZ. So the chips are built from the day itself, with counts: AVRT is named Averitt, ESTES Estes, plain numbers Uline, and every other prefix shows as itself rather than under a name nobody checked. The shippers whose freight has no barcode we can scan come first, busiest first; Uline, whose freight already carries Uline’s own labels, comes after. PICKUPS ARE NOT LISTED (their freight is not on our dock), and the screen says how many were left out. THE LABEL IS THE STOP CARD’S LABEL: the same builder and viewer as the v1.66.0 Label button, so the board’s current skid, loose and weight (what the load-out app caps at), a dispatcher’s address fix laid over the ship-to, the phone the card would dial, and for orders created in New Order or Bulk add the saved reference, notes and ship-from. A saved label or customer note that could not be READ is said above the list, never printed around silently, because a missed address fix would put the old address on the freight. ONE BY ONE: each order says what it will print (2 skids · 1 loose, 3 pages; No count, one page prints, for an order that sent none), and once Print is pressed in the viewer the row says Print pressed 2:27 PM on that device, never printed, because the app cannot see the printer. A find box takes the number off the pallet (0538243875 finds ESTES-0538243875), a name or a city. BULK: Print all carries its page count on the button, and a batch over 200 pages asks once before it builds (Uline on a heavy day is well over a thousand sheets). The day is not remembered, so yesterday’s list never opens under this morning’s freight; the shipper is. New endpoint labels-by-shipper: the day’s board read to 21 fields, then the chosen shipper’s saved labels and customer notes; Firestore only, zero NuVizz calls, a 26-second budget. NOT CHANGED: the Delivery Ticket, the stop card’s Label button, New Order, Bulk add and the Route Workbench; the shared print viewer only gained a way to say Print was pressed. 19 new tests, every rule broken on purpose and seen to fail; three probes each on the phone and tablet guards, and the screen on the desktop guard.'],
   ['1.66.0', 'PRINT A DAVIS LABEL FROM ANY ORDER\u2019S CARD, AND SEE A TRUCK\u2019S PLATE ON HOVER WHEN THE LABELS ARE OFF. Chad: add a Print label action to the order panel, and hover-to-show labels for when driver labels are toggled off. LABEL ON THE ORDER PANEL: the stop card\u2019s action row (Text \u00b7 Call \u00b7 Navigate \u00b7 Ticket) gains Label, on the Map and in Routing, desktop and phone \u2014 any order on the board, whenever. The page is built from the board\u2019s CURRENT numbers, so a label printed today carries today\u2019s skids and loose (the count the load-out app caps at) and the ship-to as the card shows it, a dispatcher\u2019s address fix included; the label saved when the order was created in New Order or Bulk add, if there is one, fills in only the reference, the delivery notes and the ship-from. One Firestore read, ZERO NuVizz calls, and the same viewer and Print button as the Delivery Ticket. The Delivery Ticket itself is not changed. HOVER PLATES: with \u201cHide driver labels\u201d on (v1.65.1), resting the mouse on a truck shows that truck\u2019s plate \u2014 the same two lines the labels draw \u2014 and moving off takes it away. Mouse and trackpad only: on a phone a tap never sends the \u201cmouse left\u201d that would hide it, and a tap already opens the driver\u2019s card. Map tab only; the Route Workbench is not touched.'],
   ['1.65.1', 'HIDE THE DRIVER LABELS, KEEP THE TRUCKS. Chad: “I want a live drivers toggle like there is but one that just turns the labels off so trucks show but not truck number or drivers name.” A NEW ROW, “Hide driver labels”, DIRECTLY UNDER “Show drivers (live)” in Filters — on all three surfaces that carry the drivers switch: the desktop Map’s Filters dropdown, the wall display’s Filters card, and the phone’s filter tab. Ticked, every truck stays exactly where it is and the white name plates (“7792 · Brent D.”) come off. THE SETTING ALREADY EXISTED; ITS SWITCH WAS IN THE WRONG PLACE. Read off the code: showDriverLabels has lived in MapScreen for months, but its only control was a “Hide labels” button in the DESKTOP LEFT SIDEBAR under the legend — and the wall display has no sidebar, so on the television there was no way to turn the plates off at all. The phone was worse: plates default OFF below the mobile breakpoint and the phone never renders that sidebar, so a phone could not turn them ON. Both are fixed by the same row. The sidebar button is left where it is — it drives the same setting, so the two always agree, and removing it would be a change nobody asked for. BOTH OF THE WALL’S MAP MODES ALREADY HONOURED THE SETTING (the picture’s truck overlay and the live map’s driver-label overlay); only the control was missing. VERIFIED IN THE BUILT BUNDLE, not from the diff: on /tv, 3 trucks and 3 plates → tick → 3 trucks and 0 plates, and still 0 after a reload because it is remembered per device, so ticking it on the television changes only the television. PHRASED “HIDE” SO TICKED MEANS OFF, matching its neighbours (Hide terminal markers, Hide stem out, Hide place labels) — a panel where half the switches mean on and half mean off is a panel that gets read wrong. AND IT GREYS OUT WHEN THERE ARE NO TRUCKS TO LABEL. With live drivers off, or on a past date where the Motive feed does not apply, the switch would move and change nothing — which teaches whoever is holding the remote that the panel is broken. It stays visible, greyed, keeps the choice already made, and its hover text says why (“Turn on Show drivers (live) first”, or “only available for today’s date” — never pointing at a switch that is itself greyed). One rule in lib/driver-label.js (driverLabelsToggle) shared by all three surfaces, because the same fact drifting apart across screens is how this app has got things wrong before. 6 new tests. AN ADD, NOT A CHANGE: nothing that worked before behaves differently, so it is one commit and `git revert` is the whole way back. The dispatch Map only — the Route Workbench is not touched.'],
   ['1.65.0', 'DAVIS DELIVERY LABELS \u2014 ITS OWN LABEL, PRINTED BY THE ORDER, SAVED WITH IT. Chad: \u201cThis is supposed to be its own label, separate entity \u2026 just something we can print by the order, but it is not a delivery ticket. It is not a manifest \u2026 just like we can print a delivery ticket.\u201d ONE LETTER PAGE PER PIECE (skids first, then loose): the service date, SHIP TO in big type, SKID 1 of 2 beside the order\u2019s skid / loose / total / weight, one barcode across the page (DD/<NuVizz stop #>/<piece>), the stop # and reference, items and delivery notes, the website QR and \u201cWE CAN DELIVER FOR YOU TOO!\u201d. It opens in the SAME viewer and Print button as the Delivery Ticket, so it prints the way a ticket prints and never opens a new window (which strands the iPad home-screen app). SAVED WITH THE ORDER: every order created from New Order, Bulk add and the Estes manifest push saves its label to its own Firestore collection (order-labels) \u2014 nothing else reads or writes it \u2014 so a label can be printed again any time; ZERO NuVizz calls. WHERE: NEW ORDER is always LIVE now (Chad: \u201ctake the beta out of here and just make it live all the time\u201d); after Create it offers Print label and Delivery ticket, and a Labels & tickets list shows every order created on a day with Label and Ticket beside each. BULK ADD: the SERVICE DATE is on the main page, out of the Pickup drop-down (Chad: \u201cit should be on main page for that upload\u201d), shown as a weekday date and locked while a batch sends; Create and the Estes push offer Print labels for the batch; Pushed to NuVizz has Select all, a tick per row, Print labels for the selected, and a Label button on every row \u2014 a clean run lands there with its batch already ticked. The \u201cA NEW load (one import)\u201d mode is not touched (Chad: \u201cthe labels shouldn\u2019t touch the new load\u201d). One order that cannot be printed (a character a barcode cannot carry, or over 99 pieces) is left out and NAMED; the rest still print. LOAD-SCAN v0.51.0 READS IT: camera and gun, matched on the EXACT stop number, one page = one piece, capped at the manifest count; two pages of one order side by side each book once; a Davis read never changes how a Uline label books; LOADSCAN_DAVIS_LABELS=off turns reading it off with no deploy. Also fixed there: a hand-added or over-the-count piece on a stop whose number has fewer than 7 digits (SHP29379) was silently refused by the server while the phone marked it synced. THE WMS reads it too (its own PR). The Delivery Ticket, the manifest print and the Route Workbench are not changed. ALSO, FOUND BY THIS PR\u2019S CI: the Claude shadow tab\u2019s settings change-log named each row by the save\u2019s millisecond, so two saves in the same millisecond collided and the second change went unlogged; each row now carries a random tail.'],
@@ -8459,7 +8461,7 @@ function buildBolHtml(stop, logoUrl) {
 // the supplied HTML in an iframe (so Print outputs just the document) and scales the page
 // to fit the screen. `pageW` is the doc's CSS layout width (816 portrait / 1056 landscape
 // Letter @ 96dpi). No API call.
-function PrintDocModal({ title, html, pageW = 816, onClose }) {
+function PrintDocModal({ title, html, pageW = 816, onClose, onPrint }) {
   const iframeRef = useRef(null);
   const wrapRef = useRef(null);
   const PAGE_W = pageW;
@@ -8499,7 +8501,9 @@ function PrintDocModal({ title, html, pageW = 816, onClose }) {
       .replace(/(^|\})(\s*)body\s*\{/g, '$1$2.printdoc-bridge {');
     return { scoped, body };
   }, [html]);
-  const doPrint = () => { try { window.print(); } catch { /* print blocked */ } };
+  // onPrint (optional) is told the Print button was PRESSED — the one thing this viewer can observe.
+  // Whether paper came out is the browser's dialog's business, so no caller may call that "printed".
+  const doPrint = () => { try { onPrint?.(); } catch { /* a caller's bookkeeping never blocks the print */ } try { window.print(); } catch { /* print blocked */ } };
   return (
     <div className="fixed inset-0 z-[1400] bg-slate-900/80" role="dialog" aria-modal="true" aria-label={title || 'Document'}
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
@@ -11182,6 +11186,15 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                   role="menuitem"
                 >
                   <Search size={12} /> Stop lookup
+                </button>
+                {/* Print labels — the dock prints Estes, Averitt and SHP freight from a phone as
+                    often as from a desk. Same order as the desktop menu. */}
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('labels')}
+                  role="menuitem"
+                >
+                  <Tag size={12} /> Print labels
                 </button>
                 <button
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
@@ -30259,7 +30272,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'claudeshadow', 'uatbench'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'claudeshadow', 'uatbench'];
     setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -30403,6 +30416,9 @@ function Shell() {
                 // about ONE order. No badge, ever — nothing here is a problem waiting to be
                 // noticed, it is a question waiting to be asked.
                 { id: 'stoplookup', label: 'Stop lookup', hint: 'Everything we hold about one order — 0 NuVizz calls', icon: <Search size={14} /> },
+                // Davis labels for one shipper's orders on one day, one at a time or all at once.
+                // Beside Stop lookup because both answer about orders; phone menu below too.
+                { id: 'labels', label: 'Print labels', hint: 'Davis labels by shipper and day — 0 NuVizz calls', icon: <Tag size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
                 // Claude will plan tomorrow beside the router, for comparison only. Phone menu below too.
@@ -30437,7 +30453,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'claudeshadow' ? <ClaudeShadowScreen isMobile={isMobile} /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'claudeshadow' ? <ClaudeShadowScreen isMobile={isMobile} /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
@@ -31821,6 +31837,396 @@ function StopLabelButton({ stop, note, phone, className }) {
       </button>
       {doc && <PrintDocModal title={doc.title} html={doc.html} pageW={816} onClose={() => setDoc(null)} />}
     </>
+  );
+}
+
+// ── PRINT LABELS BY SHIPPER AND DAY (v1.67.0) ────────────────────────────────
+// Chad, Sep 24 2026: "i want for me to be able to pick a shipper and a day like averitts or estes
+// or shp and when all those orders come up for that day be able to print labels one by one for
+// their orders or bulk print them". Which orders belong to which shipper, and why the order
+// number is the only thing that says: src/lib/label-shippers.js. Where they come from:
+// labels-by-shipper (the day's board, Firestore only, zero NuVizz calls). The pages: the SAME
+// label-html.js, labelOrderFromStop and viewer the stop card's Label button opens — a label
+// printed here and one printed from the card for the same order are the same label.
+const LABELS_SHIPPER = 'dd_labels_shipper';
+const labelsPrintedKey = (date) => `dd_labels_printed_${date}`;
+// A batch this big asks once before it builds: at two pages an order, Uline on a heavy day is
+// well over a thousand sheets, and a mis-tap there empties the dock printer's tray.
+const LABELS_CONFIRM_PAGES = 200;
+
+const LBL_PRIMARY = 'inline-flex items-center justify-center gap-1.5 h-10 shrink-0 rounded-lg px-4 text-sm font-semibold text-white shadow-sm bg-[#1e5b92] hover:bg-[#174b79] disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap';
+const LBL_SECONDARY = 'inline-flex items-center justify-center gap-1.5 h-10 shrink-0 rounded-lg px-3 text-sm font-medium text-slate-700 bg-white ring-1 ring-inset ring-slate-300 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap';
+const LBL_CHIP = (on) => `inline-flex items-center gap-2 h-10 rounded-lg px-3 text-sm font-medium ring-1 ring-inset transition-colors ${
+  on ? 'bg-[#1e5b92] text-white ring-[#1e5b92]' : 'bg-white text-slate-700 ring-slate-300 hover:bg-slate-50'}`;
+const LBL_FIELD = 'h-10 min-w-0 rounded-lg bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400 ring-1 ring-inset ring-slate-300 focus:outline-none focus:ring-2 focus:ring-[#1e5b92]';
+
+const labelsClock = (iso) => { try { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(iso)); } catch { return ''; } };
+
+/** This device's record of which orders had Print pressed on a day. A convenience: damaged or blocked storage reads as none. */
+function readLabelsPrinted(date) {
+  try {
+    const o = JSON.parse(localStorage.getItem(labelsPrintedKey(date)) || '{}');
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch { return {}; }
+}
+
+function LabelStateChip({ state }) {
+  const [text, cls] = {
+    delivered: ['Delivered', 'bg-emerald-50 text-emerald-700 ring-emerald-200'],
+    exception: ['Exception', 'bg-amber-50 text-amber-800 ring-amber-200'],
+    open: ['Not delivered', 'bg-slate-100 text-slate-600 ring-slate-200'],
+  }[state] || ['Not delivered', 'bg-slate-100 text-slate-600 ring-slate-200'];
+  return <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${cls}`}>{text}</span>;
+}
+
+/** "2 skids · 1 loose", counted off the pages — or the fact that there is no count to print. */
+function labelPiecesText(r) {
+  if (r.countMissing) return 'No count';
+  return [r.skids ? `${r.skids} skid${r.skids === 1 ? '' : 's'}` : '', r.loose ? `${r.loose} loose` : ''].filter(Boolean).join(' · ');
+}
+
+/** "Print pressed 10:42" — said as what was seen. The app cannot see the printer. */
+function LabelPrintedNote({ at }) {
+  if (!at) return null;
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700" title="Print was pressed for this order's labels on this device. The app cannot see whether the printer finished.">
+      <Printer size={12} /> Print pressed {labelsClock(at)}
+    </span>
+  );
+}
+
+function LabelsScreen() {
+  const viewportWidth = useViewportWidth();
+  const isMobile = viewportWidth < MOBILE_BREAKPOINT;
+  // THE TABLE NEEDS A DESKTOP. Eight columns do not fit a landscape iPad (1080–1194px): the
+  // tablet guard measured the Print buttons cut off by 33px. Below 1280px every order is a card —
+  // one column on a phone, two on a tablet — and the table starts where it fits.
+  const wide = viewportWidth >= 1280;
+  const today = todayInET();
+  // THE DAY IS NOT REMEMBERED: a day picked yesterday and silently kept would list yesterday's
+  // orders under this morning's freight. The SHIPPER is — a dock that labels Estes all week should
+  // not pick Estes every morning.
+  const [date, setDate] = useState(today);
+  const [shipper, setShipper] = useState(() => { try { return localStorage.getItem(LABELS_SHIPPER) || ''; } catch { return ''; } });
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [filter, setFilter] = useState('');
+  const [selected, setSelected] = useState(() => new Set());
+  const [printed, setPrinted] = useState(() => readLabelsPrinted(today));
+  const [doc, setDoc] = useState(null);           // { html, title, nbrs } while the viewer is open
+  const [skipped, setSkipped] = useState([]);
+  const [confirm, setConfirm] = useState(null);   // { list, what, pages } — a big batch asking first
+  const reqRef = useRef(0);
+
+  // ONE READ PER (day, shipper): the day's shippers always, the chosen shipper's orders when one
+  // is picked. A slower answer to an older pick is dropped rather than painted over a newer one.
+  useEffect(() => {
+    const id = ++reqRef.current;
+    setLoading(true); setErr(null);
+    const qs = new URLSearchParams({ date });
+    if (shipper) qs.set('shipper', shipper);
+    apiFetch(`/.netlify/functions/labels-by-shipper?${qs.toString()}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (id !== reqRef.current) return;
+        if (!j.ok) throw new Error(j.error || 'could not read the board');
+        setData(j);
+      })
+      .catch((e) => { if (id === reqRef.current) { setErr(String(e.message || e)); setData(null); } })
+      .finally(() => { if (id === reqRef.current) setLoading(false); });
+  }, [date, shipper]);
+
+  // A new day or shipper is a new list: nothing carried across is still true about it.
+  useEffect(() => {
+    setSelected(new Set()); setFilter(''); setSkipped([]); setConfirm(null);
+    setPrinted(readLabelsPrinted(date));
+  }, [date, shipper]);
+
+  const pickShipper = useCallback((key) => {
+    setShipper(key);
+    try { localStorage.setItem(LABELS_SHIPPER, key); } catch { /* a remembered shipper is a convenience */ }
+  }, []);
+
+  const rows = useMemo(() => (data?.shipper?.key === shipper ? data.rows || [] : []), [data, shipper]);
+  const shown = useMemo(() => filterLabelRows(rows, filter), [rows, filter]);
+  const chosen = useMemo(() => rows.filter((r) => selected.has(r.stopNbr)), [rows, selected]);
+  const pagesOf = (list) => list.reduce((n, r) => n + (r.pages || 0), 0);
+  const shipperName = data?.shipper?.name || (data?.shippers || []).find((x) => x.key === shipper)?.name || shipper;
+
+  const openPrint = useCallback((list, what) => {
+    const r = buildLabelsHtml(list.map((x) => x.label), { logoUrl: labelLogoUrl(), maxPages: MAX_LABEL_PAGES });
+    setSkipped(r.skipped);
+    setConfirm(null);
+    if (!r.pages) return;
+    setDoc({
+      html: r.html,
+      nbrs: r.printed.map((o) => String(o.stopNbr)),
+      title: `Davis labels · ${what} · ${r.printed.length} order${r.printed.length === 1 ? '' : 's'} · ${r.pages} page${r.pages === 1 ? '' : 's'}`,
+    });
+  }, []);
+  const askPrint = useCallback((list, what) => {
+    if (!list.length) return;
+    const pages = pagesOf(list);
+    if (pages > LABELS_CONFIRM_PAGES) { setConfirm({ list, what, pages }); return; }
+    openPrint(list, what);
+  }, [openPrint]);
+  const markPrinted = useCallback((nbrs) => {
+    const at = new Date().toISOString();
+    const next = { ...printed };
+    for (const n of nbrs || []) next[n] = at;
+    setPrinted(next);
+    try { localStorage.setItem(labelsPrintedKey(date), JSON.stringify(next)); } catch { /* this device's note only */ }
+  }, [printed, date]);
+
+  const toggle = (nbr) => setSelected((cur) => { const next = new Set(cur); if (next.has(nbr)) next.delete(nbr); else next.add(nbr); return next; });
+  const allShownOn = shown.length > 0 && shown.every((r) => selected.has(r.stopNbr));
+  const toggleAllShown = () => setSelected((cur) => {
+    const next = new Set(cur);
+    if (allShownOn) shown.forEach((r) => next.delete(r.stopNbr)); else shown.forEach((r) => next.add(r.stopNbr));
+    return next;
+  });
+  const printedCount = rows.filter((r) => printed[r.stopNbr]).length;
+
+  const dayWord = date === today ? 'today' : date === rangeAddDays(today, 1) ? 'tomorrow' : formatDateLong(date);
+  const shippers = data?.shippers || [];
+
+  const rowActions = (r) => (
+    <div className="flex flex-col items-end gap-1">
+      <button type="button" onClick={() => askPrint([r], r.stopNbr)} className={LBL_SECONDARY} aria-label={`Print labels for ${r.stopNbr}`}>
+        <Tag size={14} /> Print {r.pages} page{r.pages === 1 ? '' : 's'}
+      </button>
+      <LabelPrintedNote at={printed[r.stopNbr]} />
+    </div>
+  );
+  const shipTo = (r) => (
+    <div className="min-w-0">
+      <div className="text-sm font-semibold text-slate-900 break-words">{r.label.name || '—'}</div>
+      <div className="text-xs text-slate-500 break-words">
+        {[r.label.addr1, r.label.addr2].filter(Boolean).join(', ')}
+        {r.label.city ? ` · ${[r.label.city, r.label.state].filter(Boolean).join(', ')} ${r.label.zip || ''}` : ''}
+      </div>
+      {r.addressFixed && <div className="mt-0.5 text-[11px] font-medium text-[#1e5b92]">Address fixed by dispatch — the label prints the fix</div>}
+    </div>
+  );
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-slate-50">
+      <div className={`${SCREEN_DASH} px-4 py-5 sm:px-6 sm:py-8 space-y-5`}>
+        <header className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900">Print labels</h1>
+            <p className="mt-1 text-sm text-slate-500">Pick a delivery day and a shipper, then print one order&rsquo;s labels or all of them.</p>
+          </div>
+          <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-white px-2.5 py-1 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-200"
+            title="The orders come from the board we already hold. Nothing on this screen spends a NuVizz call.">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> 0 NuVizz calls
+          </span>
+        </header>
+
+        {/* THE TWO QUESTIONS, in the order they are asked: which day, then whose freight. */}
+        <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 divide-y divide-slate-200">
+          <div className={`${isMobile ? 'p-4 space-y-2' : 'px-6 py-4 flex flex-wrap items-center gap-3'}`}>
+            <div className="w-28 shrink-0 text-sm font-semibold text-slate-900">Delivery day</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => setDate(today)} className={LBL_CHIP(date === today)} aria-pressed={date === today}>Today</button>
+              <button type="button" onClick={() => setDate(rangeAddDays(today, 1))} className={LBL_CHIP(date === rangeAddDays(today, 1))} aria-pressed={date === rangeAddDays(today, 1)}>Tomorrow</button>
+              <input type="date" aria-label="Delivery day" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} className={LBL_FIELD} />
+              <span className="text-sm text-slate-500">{formatDateLong(date)}</span>
+            </div>
+          </div>
+          <div className={`${isMobile ? 'p-4 space-y-2' : 'px-6 py-4 flex flex-wrap items-start gap-3'}`}>
+            <div className="w-28 shrink-0 pt-2 text-sm font-semibold text-slate-900">Shipper</div>
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Shipper">
+                {shippers.map((x) => (
+                  <button key={x.key} type="button" onClick={() => pickShipper(x.key)} aria-pressed={shipper === x.key} className={LBL_CHIP(shipper === x.key)}
+                    title={x.key === 'ULINE' ? 'Uline freight already carries Uline’s own scannable labels' : `Order numbers starting ${x.key}`}>
+                    <span>{x.name}</span>
+                    <span className={`rounded-md px-1.5 text-xs tabular-nums ${shipper === x.key ? 'bg-white/20' : 'bg-slate-100 text-slate-600'}`}>{x.orders}</span>
+                  </button>
+                ))}
+                {!loading && !err && data && shippers.length === 0 && (
+                  <span className="text-sm text-slate-500">No deliveries on the board for {formatDateLong(date)}.</span>
+                )}
+              </div>
+              {data && (
+                <p className="text-xs text-slate-500">
+                  The shipper is read off the order number: AVRT is Averitt, ESTES is Estes, plain numbers are Uline, and every other prefix shows as itself.
+                  {data.pickups > 0 && <> Pickups are not listed ({data.pickups} that day) — their freight is not on our dock.</>}
+                  {data.boardAt && date === today && <> Board as of {labelsClock(data.boardAt)}.</>}
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {err && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 break-words">Could not read the board: {err}</div>}
+
+        {!shipper && data && shippers.length > 0 && (
+          <div className="rounded-xl border border-dashed border-slate-300 px-6 py-10 text-center">
+            <Tag size={20} className="mx-auto text-slate-400" />
+            <div className="mt-2 text-sm font-medium text-slate-700">Pick a shipper to list its orders</div>
+            <div className="mt-1 text-xs text-slate-500">Every order for that shipper on {formatDateLong(date)} comes up, each with its own Print button.</div>
+          </div>
+        )}
+
+        {shipper && data && (
+          <section aria-label={`${shipperName} orders`} className="space-y-3">
+            {/* THE LIST'S HEADER: what it is, and the two ways to print it. */}
+            <div className={isMobile ? 'space-y-3' : 'flex flex-wrap items-center gap-3'}>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-lg font-semibold text-slate-900">{shipperName} <span className="font-normal text-slate-500">· {formatDateLong(date)}</span></h2>
+                <p className="text-sm text-slate-500">
+                  {rows.length} order{rows.length === 1 ? '' : 's'} · {pagesOf(rows)} label page{pagesOf(rows) === 1 ? '' : 's'}
+                  {printedCount > 0 && <> · Print pressed for {printedCount} on this device</>}
+                  {loading && <> · loading…</>}
+                </p>
+              </div>
+              <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Find an order, name or city" aria-label="Find an order" className={`${LBL_FIELD} ${isMobile ? 'w-full' : 'w-64'}`} />
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" onClick={() => askPrint(chosen, 'selected')} disabled={!chosen.length} className={LBL_SECONDARY}>
+                  <Printer size={14} /> Print selected{chosen.length ? ` (${chosen.length} · ${pagesOf(chosen)} pages)` : ''}
+                </button>
+                <button type="button" onClick={() => askPrint(rows, `all ${shipperName}`)} disabled={!rows.length} className={LBL_PRIMARY}>
+                  <Printer size={14} /> Print all · {pagesOf(rows)} page{pagesOf(rows) === 1 ? '' : 's'}
+                </button>
+              </div>
+            </div>
+
+            {Object.values(data.errors || {}).length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-1">
+                {Object.values(data.errors).map((m) => <div key={m}>{m}</div>)}
+              </div>
+            )}
+            {confirm && (
+              <div className={`rounded-xl border border-[#1e5b92]/30 bg-[#1e5b92]/5 px-4 py-3 ${isMobile ? 'space-y-3' : 'flex flex-wrap items-center gap-3'}`}>
+                <div className="min-w-0 flex-1 text-sm text-slate-800">
+                  This prints <span className="font-semibold">{confirm.pages} pages</span> for {confirm.list.length} orders. Print them?
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => openPrint(confirm.list, confirm.what)} className={LBL_PRIMARY}>Print {confirm.pages} pages</button>
+                  <button type="button" onClick={() => setConfirm(null)} className={LBL_SECONDARY}>Cancel</button>
+                </div>
+              </div>
+            )}
+            {skipped.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 break-words">
+                Not printed: {skipped.map((k) => `${k.name || k.stopNbr || 'order'} — ${k.reason}`).join('; ')}. Everything else printed.
+              </div>
+            )}
+
+            {!rows.length && !loading && (
+              <div className="rounded-xl border border-dashed border-slate-300 px-6 py-8 text-center text-sm text-slate-600">
+                No {shipperName} deliveries on the board for {dayWord}.
+              </div>
+            )}
+            {rows.length > 0 && !shown.length && (
+              <div className="rounded-xl border border-dashed border-slate-300 px-6 py-8 text-center text-sm text-slate-600">
+                No {shipperName} order matches &ldquo;{filter}&rdquo;.
+              </div>
+            )}
+
+            {shown.length > 0 && (wide ? (
+              <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="w-12 px-4 py-2.5">
+                        <label className="inline-flex h-10 w-10 -m-3 items-center justify-center">
+                          <input type="checkbox" checked={allShownOn} onChange={toggleAllShown} aria-label="Select every order listed" className="h-4 w-4 accent-[#1e5b92]" />
+                        </label>
+                      </th>
+                      <th className="px-3 py-2.5">Order</th>
+                      <th className="px-3 py-2.5">Ship to</th>
+                      <th className="px-3 py-2.5">Pieces</th>
+                      <th className="px-3 py-2.5">Weight</th>
+                      <th className="px-3 py-2.5">Route</th>
+                      <th className="px-3 py-2.5">Status</th>
+                      <th className="px-4 py-2.5 text-right">Labels</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {shown.map((r) => (
+                      <tr key={r.stopNbr} className={selected.has(r.stopNbr) ? 'bg-[#1e5b92]/5' : 'hover:bg-slate-50'}>
+                        <td className="px-4 py-3 align-top">
+                          <label className="inline-flex h-10 w-10 -m-3 items-center justify-center">
+                            <input type="checkbox" checked={selected.has(r.stopNbr)} onChange={() => toggle(r.stopNbr)} aria-label={`Select ${r.stopNbr}`} className="h-4 w-4 accent-[#1e5b92]" />
+                          </label>
+                        </td>
+                        <td className="px-3 py-3 align-top">
+                          <div className="font-mono text-sm font-semibold text-slate-900 whitespace-nowrap">{r.stopNbr}</div>
+                          {r.label.ref && <div className="text-xs text-slate-500 whitespace-nowrap">Ref {r.label.ref}</div>}
+                        </td>
+                        <td className="px-3 py-3 align-top">{shipTo(r)}</td>
+                        <td className="px-3 py-3 align-top">
+                          <div className={`text-sm ${r.countMissing ? 'text-amber-700 font-medium' : 'text-slate-800'}`}
+                            title={r.countMissing ? 'The order carries no skid or loose count, so one page prints — check the freight' : undefined}>
+                            {/* Breaks only BETWEEN the two counts, never inside "1 loose" — and each piece
+                                stays narrow, so the column does not push the Print buttons off a laptop. */}
+                            {r.countMissing ? labelPiecesText(r) : (<>
+                              {r.skids > 0 && <span className="whitespace-nowrap">{r.skids} skid{r.skids === 1 ? '' : 's'}{r.loose > 0 ? ' ·' : ''}</span>}
+                              {r.skids > 0 && r.loose > 0 ? ' ' : ''}
+                              {r.loose > 0 && <span className="whitespace-nowrap">{r.loose} loose</span>}
+                            </>)}
+                          </div>
+                          <div className="text-xs text-slate-500">{r.pages} page{r.pages === 1 ? '' : 's'}</div>
+                        </td>
+                        <td className="px-3 py-3 align-top text-sm text-slate-700 tabular-nums whitespace-nowrap">{r.label.weight ? `${Number(r.label.weight).toLocaleString()} lb` : '—'}</td>
+                        <td className="px-3 py-3 align-top">
+                          <div className="text-sm text-slate-800">{r.route || 'Not on a route'}</div>
+                          {r.driver && <div className="text-xs text-slate-500">{r.driver}</div>}
+                        </td>
+                        <td className="px-3 py-3 align-top"><LabelStateChip state={r.state} /></td>
+                        <td className="px-4 py-3 align-top text-right">{rowActions(r)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <label className="inline-flex min-h-[40px] items-center gap-2 text-sm text-slate-700">
+                  <input type="checkbox" checked={allShownOn} onChange={toggleAllShown} className="h-4 w-4 accent-[#1e5b92]" />
+                  Select every order listed
+                </label>
+                <div className={`grid gap-3 ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                  {shown.map((r) => (
+                    <div key={r.stopNbr} className={`rounded-xl bg-white p-4 shadow-sm ring-1 ${selected.has(r.stopNbr) ? 'ring-[#1e5b92]/60' : 'ring-slate-200'} space-y-2`}>
+                      <div className="flex items-start gap-2">
+                        <label className="inline-flex h-10 w-10 -m-2 shrink-0 items-center justify-center">
+                          <input type="checkbox" checked={selected.has(r.stopNbr)} onChange={() => toggle(r.stopNbr)} aria-label={`Select ${r.stopNbr}`} className="h-4 w-4 accent-[#1e5b92]" />
+                        </label>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-sm font-semibold text-slate-900 break-all">{r.stopNbr}</span>
+                            <LabelStateChip state={r.state} />
+                          </div>
+                          {r.label.ref && <div className="text-xs text-slate-500">Ref {r.label.ref}</div>}
+                        </div>
+                      </div>
+                      {shipTo(r)}
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600">
+                        <span className={r.countMissing ? 'font-medium text-amber-700' : ''}>{r.countMissing ? 'No count — one page prints' : labelPiecesText(r)}</span>
+                        {r.label.weight && <span>{Number(r.label.weight).toLocaleString()} lb</span>}
+                        <span>{r.route || 'Not on a route'}{r.driver ? ` · ${r.driver}` : ''}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                        <LabelPrintedNote at={printed[r.stopNbr]} />
+                        <button type="button" onClick={() => askPrint([r], r.stopNbr)} className={`${LBL_SECONDARY} ml-auto`} aria-label={`Print labels for ${r.stopNbr}`}>
+                          <Tag size={14} /> Print {r.pages} page{r.pages === 1 ? '' : 's'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </section>
+        )}
+      </div>
+      {doc && <PrintDocModal title={doc.title} html={doc.html} pageW={816} onClose={() => setDoc(null)} onPrint={() => markPrinted(doc.nbrs)} />}
+    </div>
   );
 }
 

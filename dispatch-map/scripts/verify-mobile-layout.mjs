@@ -34,6 +34,7 @@ import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
+import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
 
@@ -160,6 +161,8 @@ const SCREENS = [
     }) } },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
   { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
+  // Anchored: several screens carry a "Print labels" BUTTON; only the menu item starts with it.
+  { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
   // Seeded with a recorded test call AND a rejected model value, so the longest rows on the
@@ -570,6 +573,52 @@ const PROBES = {
       },
     },
   ],
+  // ── PRINT LABELS (v1.67.0) ──────────────────────────────────────────────────
+  // At rest the screen is two rows of chips and an empty box. Everything a dock worker uses —
+  // the order cards with their Print buttons, the ticked state, the big-batch question — exists
+  // only after a tap, so each is a probe that PROVES its state rather than that it clicked.
+  labels: [
+    {
+      name: 'a shipper picked',
+      open: async (page) => {
+        const chip = page.getByRole('button', { name: /^estes/i }).first();
+        if (!(await chip.isVisible().catch(() => false))) return false;
+        await chip.click();
+        await page.waitForTimeout(700);
+        return page.getByRole('button', { name: /^print labels for estes-/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'orders ticked',
+      open: async (page) => {
+        const chip = page.getByRole('button', { name: /^estes/i }).first();
+        if (!(await chip.isVisible().catch(() => false))) return false;
+        await chip.click();
+        await page.waitForTimeout(700);
+        const boxes = page.getByRole('checkbox', { name: /^select estes-/i });
+        if ((await boxes.count()) < 2) return false;
+        await boxes.nth(0).check();
+        await boxes.nth(1).check();
+        await page.waitForTimeout(300);
+        return page.getByRole('button', { name: /^print selected \(2/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // Uline's fixture day is 260 pages — over the line where Print all asks before it builds.
+      name: 'a big batch asks first',
+      open: async (page) => {
+        const chip = page.getByRole('button', { name: /^uline/i }).first();
+        if (!(await chip.isVisible().catch(() => false))) return false;
+        await chip.click();
+        await page.waitForTimeout(700);
+        const all = page.getByRole('button', { name: /^print all/i }).first();
+        if (!(await all.isVisible().catch(() => false))) return false;
+        await all.click();
+        await page.waitForTimeout(300);
+        return page.getByText(/this prints \d+ pages/i).first().isVisible().catch(() => false);
+      },
+    },
+  ],
   flaghistory: [
     {
       // The date picker is furniture that only exists after a tap, so at rest the guard would
@@ -854,6 +903,10 @@ function stubRoutes(page, emailHtml) {
     // them would leave the guard measuring a screen the app never renders.
     // THE CLAUDE SHADOW TAB — its worst rows (see scripts/lib/claude-shadow-fixture.mjs).
     if (u.includes('claude-shadow')) return R(CLAUDE_SHADOW_STATUS);
+    // PRINT LABELS (v1.67.0) — the day's shippers, or one shipper's orders, BUILT by the real
+    // label-shippers.js (scripts/lib/labels-fixture.mjs). Before the catch-all, which would
+    // answer it with an empty board and measure a screen with nothing on it.
+    if (u.includes('labels-by-shipper')) return R(labelsAnswer(u));
     if (u.includes('stop-lookup')) return R(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.
