@@ -314,3 +314,22 @@ test('CLAUDE_SHADOW=off: settings are refused like everything else the shadow do
     } finally { fake.restore(); }
   });
 });
+
+test('TWO SAVES IN THE SAME MILLISECOND both keep their change-log row — CI hit this: the second was refused and went unlogged', async () => {
+  const store = new Map();
+  const fixed = new Date('2026-09-24T16:23:29.514Z');
+  const deps = {
+    getDoc: async (p) => (store.has(p) ? store.get(p) : null),
+    listDocs: async (c) => [...store.entries()].filter(([k]) => k.startsWith(`${c}/`) && k.slice(c.length + 1).split('/').length === 1).map(([k, v]) => ({ _id: k.split('/').pop(), ...v })),
+    shadowSet: async (p, v) => { store.set(p, v); return true; },
+    shadowPatch: async (p, v) => { store.set(p, { ...(store.get(p) || {}), ...v }); return true; },
+    shadowDelete: async (p) => { store.delete(p); },
+    shadowCreate: async (p, v) => { if (store.has(p)) throw new Error('already exists'); store.set(p, v); return true; },
+    rebuild: async () => {},
+    now: () => fixed,
+  };
+  await saveSettings({ caps: [{ kind: 'route', name: 'BEN 1', cap: 20 }] }, 'a', deps);
+  await saveSettings({ caps: [{ kind: 'route', name: 'BEN 1', cap: null }] }, 'b', deps);
+  const logs = [...store.entries()].filter(([k]) => k.startsWith(`${SETTINGS_LOG_COLLECTION}/`)).map(([, v]) => [v.before, v.after]);
+  assert.deepEqual(logs.sort(), [[20, null], [null, 20]].sort());
+});

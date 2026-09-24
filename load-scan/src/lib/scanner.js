@@ -105,13 +105,14 @@ function loadQuagga() {
  * @param onPair      ({pro, og, engine}) for each complete piece
  * @param onPartial   ({pro, og}) so the UI can say "hold steady, need the OG"
  * @param onStatus    (string) human-readable engine/state line
+ * @param davisLabels () => boolean — LOADSCAN_DAVIS_LABELS as the manifest reported it
  * @param onRaw       (string[]) EVERY value the decoder returned, classified or
  *                    not. The dock has no console, so without this "the scanner
  *                    doesn't work" cannot be told apart from "it read something
  *                    the rules rejected".
  * @returns { stop, engine }
  */
-export async function startScanner({ videoEl, containerEl, onPair, onPartial, onStatus, onRaw, onOrphan }) {
+export async function startScanner({ videoEl, containerEl, onPair, onPartial, onStatus, onRaw, onOrphan, davisLabels = () => true }) {
   const useNative = await detectNativeSupport();
 
   // Which engine is live, for the scan rows an expiry emits. Set before each
@@ -120,6 +121,7 @@ export async function startScanner({ videoEl, containerEl, onPair, onPartial, on
 
   const buffer = createPairBuffer({
     windowMs: CAMERA_PAIR_WINDOW_MS,
+    davisLabels,
     onAbandon: (half) => {
       // A PRO that outlived the window with no piece id IS a piece — the WMS
       // rule, kept. It goes down the same path as any camera piece, where the

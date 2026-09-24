@@ -63,6 +63,10 @@ const SCREENS = [
   { key: 'routing-loads', label: 'Routing (beta) — Routes / Loads rail', nav: /routing/i,
     prefs: { 'routing.rightPanel': 'routesLoads', 'routing.routesLoadsTab': 'loads' } },
   { key: 'neworder', label: 'New Order', nav: /new order/i },
+  // Bulk add sits behind New Order's Single / Bulk toggle (remembered in localStorage), so the
+  // guard only ever saw Single and Bulk add's phone layout shipped unmeasured — including the
+  // service-date strip that moved onto its main page in v1.65.0.
+  { key: 'neworder-bulk', label: 'New Order — Bulk add', nav: /new order/i, prefs: { 'dd_neworder_mode': 'bulk' } },
   { key: 'quote', label: 'Quote', nav: /quote/i },
   // SEEDED WITH A REAL RUN ON PURPOSE. With no stored verdict this screen is a header, a
   // mailbox card and nothing else — so the part that carries the furniture (the verdict
@@ -929,7 +933,7 @@ for (const device of DEVICES) {
     // a screen it did not mean to measure reads as proof of the screen it named.
     await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
     await page.evaluate((prefs) => {
-      for (const k of ['routing.rightPanel', 'routing.routesLoadsTab']) { try { localStorage.removeItem(k); } catch { /* private mode */ } }
+      for (const k of ['routing.rightPanel', 'routing.routesLoadsTab', 'dd_neworder_mode']) { try { localStorage.removeItem(k); } catch { /* private mode */ } }
       for (const [k, v] of Object.entries(prefs || {})) { try { localStorage.setItem(k, v); } catch { /* private mode */ } }
     }, screen.prefs || {});
     await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });

@@ -69,23 +69,38 @@ export interface ScanRow {
  *
  * Needed because a torn, smudged or missing OG barcode used to leave the driver
  * with NO way to record the piece at all — the manual form demanded both.
+ *
+ * The key is 1-7 digits, not exactly 7: it is the client's normalizePro, the LAST seven
+ * digits of the stop's key. A Uline PRO always gives 7; a non-Uline stop number with fewer
+ * digits (SHP29379 -> 29379, SO-88213 -> 88213) gives fewer, and a 7-only rule silently
+ * refused every hand-added or "Add OVER the count" piece on those stops while the phone
+ * marked the row synced. Widening only ADDS accepted ids; every 7-digit id reads as before.
  */
-export const TYPED_RE = /^TYPED-\d{7}-\d{1,3}$/;
+export const TYPED_RE = /^TYPED-\d{1,7}-\d{1,3}$/;
 
 /**
  * A piece SCANNED by PRO where the OG barcode was never decoded.
  *
  * The scanner no longer waits for both barcodes — see createScanResolver. A PRO
  * alone is a piece, so it needs an id, and it must stay distinguishable from a
- * piece with a real OG (exact per-piece dedup) and from one typed by hand.
+ * piece with a real OG (exact per-piece dedup) and from one typed by hand. Key width: see TYPED_RE.
  */
-export const NOOG_RE = /^NOOG-\d{7}-\d{1,3}$/;
+export const NOOG_RE = /^NOOG-\d{1,7}-\d{1,3}$/;
+
+/**
+ * A piece scanned off a DAVIS LABEL (DD/<stop #>/<piece>, printed by the dispatch
+ * map). The client normalises it to DD-<stop key>-<seq> (scan-logic davisPieceId):
+ * one printed page, one id, so a reprint of the same page cannot count twice.
+ * Accepted whatever LOADSCAN_DAVIS_LABELS says — the switch governs READING the
+ * label; a row already counted and queued offline must still upload.
+ */
+export const DD_RE = /^DD-[A-Z0-9](?:[A-Z0-9-]{0,38}[A-Z0-9])?-\d{1,3}$/;
 
 export function normalizeScan(raw: any): { row?: ScanRow; reason?: string } {
   const og = String(raw?.og ?? '').trim().toUpperCase();
   if (!og) return { reason: 'missing og' };
-  if (!OG_RE.test(og) && !TYPED_RE.test(og) && !NOOG_RE.test(og)) {
-    return { reason: `og not OG+10 digits, TYPED-pro-n or NOOG-pro-n: ${og.slice(0, 24)}` };
+  if (!OG_RE.test(og) && !TYPED_RE.test(og) && !NOOG_RE.test(og) && !DD_RE.test(og)) {
+    return { reason: `og not OG+10 digits, TYPED-pro-n, NOOG-pro-n or DD-stop-n: ${og.slice(0, 24)}` };
   }
 
   const pro = normalizePro(raw?.pro);

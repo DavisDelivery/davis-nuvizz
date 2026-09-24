@@ -42,6 +42,8 @@ export default async (req: Request): Promise<Response> => {
       // A feature flag, not a secret; parsed in manifest.carrierHandConfirmEnabled
       // (only off/0/false/no turn it off) — deliberately not imported here.
       carrier_hand_confirm_env: buildVar(process.env.LOADSCAN_CARRIER_HAND_CONFIRM),
+      // Same: parsed in manifest.davisLabelsEnabled; the client obeys rules.davisLabels.
+      davis_labels_env: buildVar(process.env.LOADSCAN_DAVIS_LABELS),
       node: process.version,
       now: new Date().toISOString(),
     }),
