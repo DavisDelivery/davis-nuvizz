@@ -44,7 +44,17 @@ const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TERMINAL = new Set(['DELIVERED', 'EXCEPTION', 'CANCELLED']);
 
 const s = (v) => String(v ?? '').trim();
-const numOrNull = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+// NULL IS NOT ZERO. This was `Number(v)` alone, and Number(null) is 0 — the trap CLAUDE.md records
+// shipping a midnight deadline for a stop with no deadline. nuvizz-scan.mts writes an explicit null
+// for loadStopSeq, cartons and weight whenever NuVizz has none, so every unplanned stop rendered as
+// "stop 0 · 0 pc · 0 plt · 0 lb", sorted to the TOP of its day (seq 0 beats every real sequence),
+// and pieces never reached the volume fallback because 0 is not nullish. Found while building the
+// address search, which renders these same rows; fixed here so both views stop saying it.
+const numOrNull = (v) => {
+  if (v === null || v === undefined || (typeof v === 'string' && v.trim() === '')) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
 const byDateDesc = (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
 
 /**

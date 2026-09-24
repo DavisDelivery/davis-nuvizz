@@ -23,6 +23,7 @@
 import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
+import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
@@ -133,6 +134,26 @@ const PROBES = {
       await page.waitForTimeout(500);
       // PROVES ITS STATE, like every probe here: the panel names the dock it is editing.
       return page.getByText(/editing this dock/i).first().isVisible().catch(() => false);
+    } },
+    // ADDRESS / CITY SEARCH (v1.62.0), LAST: the tab choice is remembered, and every probe above
+    // opens the order box. Four fields, three date pills and the whole place answer.
+    { name: 'an address searched', open: async (page) => {
+      await closeOrderDrawer(page);
+      const tab = page.getByRole('tab', { name: /address or city/i }).first();
+      if (!(await tab.isVisible().catch(() => false))) return false;
+      await tab.click().catch(() => {});
+      await page.waitForTimeout(300);
+      await page.getByLabel(/street address/i).first().fill('1100 Northside Dr');
+      await page.getByLabel(/^city$/i).first().fill('Atlanta');
+      if (!(await openByName(page, /^look up$/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByText(/every stop at/i).first().isVisible().catch(() => false);
+    } },
+    { name: 'an address searched over a range', open: async (page) => {
+      if (!(await openByName(page, /^range$/i))) return false;
+      await page.waitForTimeout(500);
+      const dates = await page.getByLabel(/first day to search/i).first().isVisible().catch(() => false);
+      return dates && page.getByText(/every stop at/i).first().isVisible().catch(() => false);
     } },
   ],
   addrhistory: [
@@ -289,6 +310,8 @@ for (const dev of TABLETS) {
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.
       u.includes('detail=') ? ORDER_DETAIL : u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW
+        // THE ADDRESS / CITY ANSWER (v1.62.0), keyed on the params only that mode sends.
+        : /[?&](addr|city|zip)=/.test(u) ? PLACE_VIEW
         // THE MISS, keyed on the one number the probe asks for (same rule as the phone guard).
         : u.includes('stop=000000000') ? STOP_LOOKUP_NOTFOUND : STOP_LOOKUP_DOSSIER);
     // THE ULINE STRAIGHT-TRUCK REVIEW, at its worst case for layout: a 44-character name over

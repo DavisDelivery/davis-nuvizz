@@ -27,6 +27,7 @@ import { updateRoutingReferencesForDay } from './routing-reference.mts';
 import { updateDriverDaysForDay } from './routing-driver-days.mts';
 import { updateServiceTimesForDay } from './routing-service-times.mts';
 import { updateCustomerDriversForDay } from './routing-customer-drivers.mts';
+import { updateStopSearchForDay } from './stop-search-store.mts';
 
 // One post-seal hook: name + the pass to run. Order is stable (rollup first, then
 // paint, then the engine miners) but each is independent.
@@ -42,6 +43,12 @@ const HOOKS: Array<{ name: string; run: (t: string, d: string, s: any[]) => Prom
   { name: 'driver-days', run: updateDriverDaysForDay },
   { name: 'service-times', run: updateServiceTimesForDay },
   { name: 'customer-drivers', run: updateCustomerDriversForDay },
+  // THE SEARCH DIGEST (v1.62.0): one document per sealed day that turns "every stop at this
+  // address / in this city, all dates" into one read per day instead of one per stop — see
+  // src/lib/stop-search.js for why that is the only way it fits the 26-second limit. LAST, because
+  // nothing else here reads it; its failure is recorded by name like any other hook's and
+  // history-search-rebuild re-derives it from the warehouse. STOP_SEARCH=off puts it back.
+  { name: 'stop-search', run: updateStopSearchForDay },
 ];
 
 // Run every post-seal hook against the day's stop records. Never throws — a hook

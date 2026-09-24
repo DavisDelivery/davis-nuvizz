@@ -9,6 +9,8 @@
 //   GET ?name=…&year=2026        a YEAR of that customer, counted nightly rather than swept
 //   GET ?detail=…&date=…         ONE order, unmasked — line items, POD, instructions, contact
 //   GET ?stop=…&days=30          widen the board window (default 14 back / 3 ahead, max 60)
+//   GET ?addr=…&city=…&state=…&zip=…   EVERY STOP AT AN ADDRESS / IN A CITY — all dates we hold
+//        [&date=D | &from=A&to=B]      unless one day or a range is given (v1.62.0, stop-search.js)
 //   → { ok, nuvizzCalls: 0, dossier, window, errors, … }
 //
 // STRICTLY FIRESTORE-ONLY. ZERO NuVizz calls, and that is the point rather than a nicety:
@@ -72,6 +74,10 @@ import { isMirrorDeploy } from './lib/mirror-guard.mts';
 import { selectWriteRows } from './nuvizz-stop-explain.mts';
 import { requireUser } from './lib/require-user.mts';
 import { resolveRange, selectionFromParams } from '../../src/lib/history-range.js';
+import { stopSearchEnabled, readSealedDays, readSearchDigests } from './lib/stop-search-store.mts';
+import {
+  placeQuery, placeQueryUsable, placeRange, placeSelectionFromParams, decodeSearchDigest, buildPlaceView, inPlaceRange,
+} from '../../src/lib/stop-search.js';
 import {
   buildStopDossier, buildCustomerView, buildCustomerYear, buildOrderDetail, classifyQuery,
   stopIdVariants, notesSummary, isDayId, customerNameKey, nameMatchesQuery, promptedCallAvailability,
@@ -164,6 +170,99 @@ export default async (req: Request): Promise<Response> => {
   const stopRaw = String(url.searchParams.get('stop') ?? url.searchParams.get('pro') ?? '').trim();
   const nameRaw = String(url.searchParams.get('name') ?? '').trim();
   const today = etDayString();
+
+  // ── PLACE MODE — "every stop at this address", "every delivery done in that city" ──────
+  //
+  // Chad, 2026-09-24: "need to be able to look up stops by address & city as there are times i
+  // may want to see every delivery done in that city so will need some date ranges as well as
+  // specific dates date ranges should default to all unless set"
+  //
+  // Three reads, and the order matters:
+  //   1. the days we HOLD in the range (sealed manifests, four fields each) — which is also the
+  //      floor "all dates" starts from, so nothing has to guess where history begins;
+  //   2. the SEARCH DIGEST for those days, a month at a time (one small document per day —
+  //      src/lib/stop-search.js says why that is the only shape "all" fits into 26 seconds);
+  //   3. the LIVE BOARD for the handful of days no digest can hold yet: today, the board ahead,
+  //      and the last few days in case a seal has not run. The expensive read (a whole board a
+  //      day), so it is only ever those days.
+  // And then the part that makes an empty answer trustworthy: every day in the range we HOLD but
+  // could not search is NAMED. An address search that quietly skipped a week would tell a
+  // caller "we never delivered there" about exactly that week.
+  const placeArg = (k: string) => String(url.searchParams.get(k) ?? '').trim();
+  const addrRaw = placeArg('addr');
+  const cityRaw = placeArg('city');
+  const zipRaw = placeArg('zip');
+  if (!stopRaw && !nameRaw && !url.searchParams.get('detail') && (addrRaw || cityRaw || zipRaw)) {
+    const q = placeQuery({ addr: addrRaw, city: cityRaw, state: placeArg('state'), zip: zipRaw });
+    if (!placeQueryUsable(q)) return J({ ok: false, error: 'type an address, a city or a ZIP to search by' }, 400);
+    const range = placeRange(placeSelectionFromParams((k: string) => url.searchParams.get(k)), today, DAYS_AHEAD);
+    if (!stopSearchEnabled()) {
+      // SAID, not emptied: a switched-off search that answered "0 stops" would read as a fact.
+      return J({
+        ok: true, nuvizzCalls: 0, mode: 'place', switchedOff: true, today, query: q, range,
+        note: 'STOP_SEARCH=off — address and city search is switched off. Nothing was searched, so this is not a "no stops there".',
+      });
+    }
+
+    const sealedR = await tryRead(() => readSealedDays(TENANT, range.from, range.to), [] as string[]);
+    const floor = range.from || sealedR.value[0] || null;
+    const digestR = await tryRead(() => readSearchDigests(TENANT, floor, range.to), [] as any[]);
+    const decoded = digestR.value.map(decodeSearchDigest).filter(Boolean) as any[];
+    const unreadable = digestR.value.length - decoded.length;
+    const digestDays = new Set(decoded.map((d) => d.date));
+
+    // RECENT_SEAL_DAYS back, DAYS_AHEAD forward — the same reach the per-order view gives the
+    // board, for the same reason: those are the days the nightly index cannot have yet.
+    const boardDays = boardWindow(today, RECENT_SEAL_DAYS, DAYS_AHEAD).filter((d) => inPlaceRange(d, range) && !digestDays.has(d));
+    const boardR = await tryRead(() => Promise.all(boardDays.map(async (date) => {
+      const { stops } = await readStops(TENANT, date, { mask: CUSTOMER_STOP_FIELDS });
+      return { date, source: 'board', stops: stops || [] };
+    })), [] as any[]);
+
+    const days = [
+      ...decoded.filter((d) => inPlaceRange(d.date, range)).map((d) => ({ date: d.date, source: 'sealed', stops: d.rows })),
+      ...boardR.value,
+    ];
+    const view = buildPlaceView({ query: q, range, today, days });
+
+    const searched = [...new Set([...digestDays, ...boardR.value.map((d: any) => d.date)])].filter((d) => inPlaceRange(d, range)).sort();
+    const searchedSet = new Set(searched);
+    const missing = sealedR.value.filter((d) => inPlaceRange(d, range) && !searchedSet.has(d));
+    const complete = sealedR.read === true && digestR.read === true && boardR.read === true && missing.length === 0 && unreadable === 0;
+    const digestRows = decoded.reduce((n, d) => n + d.rows.length, 0);
+    const boardRows = boardR.value.reduce((n: number, d: any) => n + d.stops.length, 0);
+    const span = searched.length ? `${searched[0]} → ${searched[searched.length - 1]}` : 'no days';
+    return J({
+      ok: true, nuvizzCalls: 0, mode: 'place', today, query: q, range,
+      view,
+      coverage: {
+        searchedDays: searched.length,
+        from: searched[0] || null,
+        to: searched[searched.length - 1] || null,
+        digestDays: digestDays.size,
+        boardDays: boardR.value.map((d: any) => d.date),
+        heldDays: sealedR.value.filter((d) => inPlaceRange(d, range)).length,
+        missing: missing.slice(-40),
+        missingCount: missing.length,
+        unreadable,
+        complete,
+      },
+      sources: [
+        { key: 'search', label: 'Search index', where: 'history_search', note: `one document per sealed day — ${digestDays.size} read${unreadable ? `, ${unreadable} unreadable` : ''}`,
+          looked: digestR.read, count: digestRows, found: digestRows > 0, state: digestR.read ? (digestRows ? 'found' : 'empty') : 'unread' },
+        { key: 'board', label: "Today's board", where: 'nuvizz_stop_index/…/stops', note: boardDays.length ? `${boardDays.length} day${boardDays.length === 1 ? '' : 's'} the index cannot hold yet` : 'every day in range is indexed',
+          looked: boardDays.length ? boardR.read : 'skipped', count: boardRows, found: boardRows > 0, state: !boardDays.length ? 'skipped' : boardR.read ? (boardRows ? 'found' : 'empty') : 'unread' },
+        { key: 'sealed', label: 'Days we hold', where: 'history_days', note: missing.length
+            ? `${missing.length} held day${missing.length === 1 ? '' : 's'} not searched yet — no index built: ${missing.slice(-3).join(', ')}${missing.length > 3 ? ', …' : ''}`
+            : `searched ${span}`,
+          looked: sealedR.read, count: sealedR.value.length, found: sealedR.value.length > 0, state: sealedR.read ? (missing.length ? 'partial' : 'found') : 'unread' },
+      ],
+      errors: Object.fromEntries(Object.entries({
+        sealed: sealedR.error, search: digestR.error, board: boardR.error,
+      }).filter(([, v]) => v)),
+      note: 'Firestore only — nothing here spent a NuVizz call.',
+    });
+  }
 
   // ── CUSTOMER MODE — "how many deliveries for EARTHLY ALTERNATIVE today?" ───
   //

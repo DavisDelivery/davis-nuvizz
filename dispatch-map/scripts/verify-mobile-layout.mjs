@@ -33,6 +33,7 @@ import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
+import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
 
@@ -524,6 +525,46 @@ const PROBES = {
         return page.getByText(/history_pros/i).first().isVisible().catch(() => false);
       },
     },
+    // ── ADDRESS / CITY SEARCH (v1.62.0) ─────────────────────────────────────────
+    // The second form on this screen — four fields and three date pills — and an answer with stat
+    // tiles, month bars, a wrapping address list, the postal-city banner, the amber "days not
+    // searched" note and day cards. None of it exists until the Address tab is chosen and a search
+    // runs. LAST in this list on purpose: the tab choice is remembered per device, and every probe
+    // above opens the order box.
+    {
+      name: 'an address searched',
+      open: async (page) => {
+        const tab = page.getByRole('tab', { name: /address or city/i }).first();
+        if (!(await tab.isVisible().catch(() => false))) return false;
+        await tab.click();
+        await page.waitForTimeout(300);
+        await page.getByLabel(/street address/i).first().fill('1100 Northside Dr');
+        await page.getByLabel(/^city$/i).first().fill('Atlanta');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        return page.getByText(/every stop at/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // RANGE OPEN: two date inputs and a "to" on one line — the widest the form gets at 360px.
+      name: 'an address searched over a range',
+      open: async (page) => {
+        const tab = page.getByRole('tab', { name: /address or city/i }).first();
+        if (!(await tab.isVisible().catch(() => false))) return false;
+        await tab.click();
+        await page.waitForTimeout(300);
+        await page.getByLabel(/street address/i).first().fill('1100 Northside Dr');
+        await page.getByLabel(/^city$/i).first().fill('Atlanta');
+        const range = page.getByRole('button', { name: /^range$/i }).first();
+        if (!(await range.isVisible().catch(() => false))) return false;
+        await range.click();
+        await page.waitForTimeout(300);
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        const dates = await page.getByLabel(/first day to search/i).first().isVisible().catch(() => false);
+        return dates && page.getByText(/every stop at/i).first().isVisible().catch(() => false);
+      },
+    },
   ],
   flaghistory: [
     {
@@ -813,6 +854,8 @@ function stubRoutes(page, emailHtml) {
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.
       u.includes('detail=') ? ORDER_DETAIL : u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW
+        // THE ADDRESS / CITY ANSWER (v1.62.0), keyed on the params only that mode sends.
+        : /[?&](addr|city|zip)=/.test(u) ? PLACE_VIEW
         // THE MISS, keyed on the one number the probe asks for — the card that carries the
         // prompted-call button, the state a rep is looking at when they decide to spend it.
         : u.includes('stop=000000000') ? STOP_LOOKUP_NOTFOUND : STOP_LOOKUP_DOSSIER);
