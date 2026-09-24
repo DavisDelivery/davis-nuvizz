@@ -437,7 +437,12 @@ test('successive typed pieces for one PRO are distinct', async () => {
 test('a typed id cannot masquerade as a real OG, and junk is still refused', async () => {
   const session = await import('../netlify/functions/scan-session.mts');
   assert.ok(session.normalizeScan({ og: 'OG6028555794', pro: '7156834' }).row, 'a real OG still works');
-  assert.ok(session.normalizeScan({ og: 'TYPED-123-1', pro: '7156834' }).reason, 'PRO must be 7 digits');
+  // The key is the stop's normalizePro: 7 digits for a Uline PRO, FEWER for a non-Uline stop
+  // number (SHP29379 -> 29379). A 7-only rule silently refused every hand-added piece on those
+  // stops while the phone marked it synced. More than 7, or none, is still refused.
+  assert.ok(session.normalizeScan({ og: 'TYPED-123-1', pro: '123' }).row, 'a short non-Uline key is a real key');
+  assert.ok(session.normalizeScan({ og: 'TYPED-12345678-1', pro: '7156834' }).reason, 'never more than 7 digits');
+  assert.ok(session.normalizeScan({ og: 'TYPED--1', pro: '7156834' }).reason, 'needs a key');
   assert.ok(session.normalizeScan({ og: 'TYPED-7156834-', pro: '7156834' }).reason, 'needs an index');
   assert.ok(session.normalizeScan({ og: 'NONSENSE', pro: '7156834' }).reason, 'junk still rejected');
 });

@@ -218,6 +218,31 @@ export function carrierHandConfirmEnabled(env: any = process.env): boolean {
   return !['off', '0', 'false', 'no'].includes(v);
 }
 
+/**
+ * Does the scanner read the DAVIS LABEL (DD/<stop #>/<piece>)?
+ *
+ * The dispatch map prints it for every order created in New Order, one page per
+ * piece, so non-Uline freight created there finally carries a barcode this app
+ * can read. Chad (Sep 24 2026): the label is "a bar code we can scan for our
+ * load out app and wms app". It changes the Sep 10 law ("anything non-Uline
+ * will not have a barcode and will be manual adds") for freight that carries
+ * one — so it ships behind a switch.
+ *
+ * LOADSCAN_DAVIS_LABELS=off puts the old behaviour back with no code change: the
+ * client reads `rules.davisLabels` from /load-manifest and, when it is false,
+ * classifies a Davis label as 'unknown' exactly as before. Scan rows already
+ * queued under a DD- piece id still upload either way (scan-session.mts accepts
+ * the id unconditionally) — a switch must never strand freight a loader
+ * already counted in a dead zone. /health echoes the raw variable.
+ *
+ * House shape: default ON, only an explicit off-word turns it off, anything
+ * malformed leaves it ON.
+ */
+export function davisLabelsEnabled(env: any = process.env): boolean {
+  const v = String(env?.LOADSCAN_DAVIS_LABELS ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
 /** A Uline stop number: the 7-digit PRO, possibly zero-padded to 9. Nothing else. */
 export function looksLikeUlineStop(stopNbr: any): boolean {
   return /^\d{7,9}$/.test(String(stopNbr ?? '').trim());

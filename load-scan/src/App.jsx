@@ -13,7 +13,7 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode, activeScans } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, findDavisStop, davisPieceId, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode, activeScans } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
@@ -309,7 +309,7 @@ function clockTime(v) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-function OrderCard({ stop, progress, groupCount, onClose, onAddPiece, onMarkDamaged, onVoidPiece }) {
+function OrderCard({ stop, progress, groupCount, onClose, onAddPiece, onMarkDamaged, onVoidPiece, davisLabels = true }) {
   if (!stop) return null;
   const cityLine = [[stop.city, stop.state].filter(Boolean).join(', '), stop.zip].filter(Boolean).join(' ');
   const addr = [stop.addr1, cityLine].filter(Boolean).join('\n');
@@ -334,7 +334,13 @@ function OrderCard({ stop, progress, groupCount, onClose, onAddPiece, onMarkDama
         </Banner>
       ) : null}
       {stop.scannable === false ? (
-        <Banner kind="info">No barcode this app can read on this freight — confirm it by hand.</Banner>
+        <Banner kind="info">
+          {/* A Uline stop is scannable:false only when its count was estimated — it has a Uline
+              label, so it is never told it has none. */}
+          {davisLabels && !/^\d{7,9}$/.test(String(stop.stopNbr ?? '').trim())
+            ? 'No Uline label on this freight. Scan its Davis label if it has one — otherwise confirm it by hand.'
+            : 'No barcode this app can read on this freight — confirm it by hand.'}
+        </Banner>
       ) : null}
 
       <div className="rounded-lg bg-slate-50 ring-1 ring-slate-200 px-3 py-2">
@@ -476,6 +482,17 @@ function OutcomeCard({ result, partial, orphan, onClear }) {
             <span className="block text-xs mt-0.5">
               Read the piece ID, but nothing says which order it belongs to. Scan the bottom barcode on
               this label once, then the top barcode alone counts every other piece of that order.
+            </span>
+            {dismiss}
+          </Banner>
+        );
+      }
+      if (orphan.kind === 'davis-nokey') {
+        return (
+          <Banner kind="warn">
+            <span className="font-semibold">Davis label for order {orphan.value} — this app cannot count it.</span>
+            <span className="block text-xs mt-0.5">
+              That order number has no digits for the scan record to key on. Nothing was counted — confirm the stop by hand.
             </span>
             {dismiss}
           </Banner>
@@ -912,6 +929,12 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // doesn't work" cannot be told apart from "it read something and the rules
   // rejected it", and those need opposite fixes.
   const [rawLog, setRawLog] = useState([]);
+  // LOADSCAN_DAVIS_LABELS, as the server reported it on this manifest
+  // (rules.davisLabels). Only an explicit false turns reading Davis labels off;
+  // a manifest from before the rule existed (cached offline) reads as ON.
+  // A ref, because the camera session and the gun's pair buffer outlive renders.
+  const davisLabelsRef = useRef(true);
+  davisLabelsRef.current = manifest?.rules?.davisLabels !== false;
   // A repeat PRO waiting for a deliberate tap before it books another piece.
   const [dupPending, setDupPending] = useState(null);
 
@@ -1005,7 +1028,9 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     const quietBefore = now - (lastDecodeAt.current || 0) > PRO_REACQUIRE_MS;
     let sawAny = false;
     for (const v of values || []) {
-      const cls = classifyBarcode(v);
+      const cls = classifyBarcode(v, { davisLabels: davisLabelsRef.current });
+      // A Davis page is deliberately NOT a "label present" signal: that clock exists for
+      // the Uline PRO re-acquire rule, and a Davis read must never delay a Uline label.
       if (cls.kind === 'pro' || cls.kind === 'og') sawAny = true;
       // TOP BARCODE, ORDER OPEN — book it here and now. Handing it to the pair
       // buffer instead would make it wait out the window for a PRO it does not
@@ -1212,6 +1237,42 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
 
   const record = useCallback(
     async (pair, engineName) => {
+      // A DAVIS LABEL (DD/<stop #>/<piece>, printed by the dispatch map's New
+      // Order) names its stop EXACTLY and carries its own piece id, so it is
+      // resolved here, before any of the Uline rules below, into the same
+      // {pro, og} every other piece is. Exact stop number, never the last-7
+      // rule: an Estes number whose tail matches a Uline PRO must not land on
+      // the Uline stop. Everything after this — the cap, the dedup, the queue,
+      // the upload — is the path every piece already takes.
+      let davisStop = null;
+      if (pair && pair.davis) {
+        const label = pair.davis;
+        const hit = findDavisStop(label, stops);
+        const pieceId = davisPieceId(label.stopNbr, label.seq);
+        const key = hit ? hit.primaryPro || (hit.pros || [])[0] || '' : '';
+        if (hit && (!key || !pieceId)) {
+          // On this load, but its stop number has no digits for the scan store
+          // to key on. Say so — never a silent drop, never a false "wrong load".
+          playVerdict('orphan');
+          if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
+          setOrphan({ kind: 'davis-nokey', value: label.stopNbr, at: Date.now() });
+          return null;
+        }
+        if (!hit) {
+          let owner = null;
+          for (const l of otherLoads || []) {
+            const other = findDavisStop(label, l.stops);
+            if (other) { owner = { loadNbr: l.loadNbr, driverName: l.driverName || null, businessName: other.businessName || null }; break; }
+          }
+          const red = { outcome: OUTCOME.RED, pro: label.stopNbr, og: pieceId, stop: null, owner };
+          setResult(red);
+          setPartial({ pro: null, og: null });
+          if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+          return red;
+        }
+        davisStop = hit;
+        pair = { pro: key, og: pieceId };
+      }
       // A PRO with no OG. The piece is real, but there is no per-piece id to
       // de-duplicate on, so a label drifting back into view minutes later would
       // silently count twice. The WMS solved this by never auto-logging a
@@ -1261,7 +1322,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // real id book in its place. One aim, one piece, either way. Only
       // scanner-minted NOOGs inside the grace window qualify — a typed piece or
       // an override is a person's deliberate statement, not a half-read.
-      if (pair.og && isScanner) {
+      if (pair.og && isScanner && !davisStop) {
         const stale = findUpgradeableNoog(liveScans, pair.pro);
         if (stale) {
           const reason = `piece id arrived — upgraded to ${pair.og}`;
@@ -1280,7 +1341,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // the over-count refusal below and the repeat-PRO rule under it are the
       // same question asked twice, and they must not be able to disagree.
       const p7 = normalizePro(pair.pro);
-      const owner = stops.find((s2) => (s2.pros || []).some((x) => normalizePro(x) === p7)) || null;
+      const owner = davisStop || stops.find((s2) => (s2.pros || []).some((x) => normalizePro(x) === p7)) || null;
       const done = owner ? stopProgress(owner, liveScans, handConfirms) : null;
       // The manifest is only a guard when it actually carries a count. A stop
       // whose total was estimated (no pallets figure on the index row) gets the
@@ -1365,7 +1426,10 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         pair = { ...pair, og: `NOOG-${pro7}-${n}` };
       }
       const liveOgs = new Set([...scannedOgs, ...justBooked.current.map((b) => String(b.og).toUpperCase())]);
-      const evaluated = evaluateScan(pair, stops, liveOgs, otherLoads);
+      // A Davis piece is judged against ITS stop only. Handing evaluateScan the whole load
+      // would let a Uline stop that shares the same 7-digit key decide the verdict — its
+      // appointment warning on Estes freight, or none on a Davis stop that needs one.
+      const evaluated = evaluateScan(pair, davisStop ? [davisStop] : stops, liveOgs, otherLoads);
       recording.current = false;
       if (evaluated.outcome === OUTCOME.SILENT) return evaluated; // no prompt, no button, no decision
       setResult(evaluated);
@@ -1425,7 +1489,12 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // booked, because `done` above was measured before it. An order that has
       // reached its manifest count closes itself, so the next piece id cannot
       // land in freight that is already complete.
-      if (owner && evaluated.stop?.stopNbr === owner.stopNbr) {
+      // A Davis label books itself completely, so it never OPENS an order: an
+      // open order lets lone Uline piece ids book against it, and a Uline OG
+      // must never land on a Davis stop. It closes any order that was open.
+      if (davisStop) {
+        setActiveOrder(null);
+      } else if (owner && evaluated.stop?.stopNbr === owner.stopNbr) {
         const expected = Number(owner.expectedPieces || 0);
         const aboard = (done ? done.scanned : 0) + 1;
         setActiveOrder(
@@ -1530,13 +1599,14 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         onPartial: setPartial,
         onStatus: setStatus,
         onOrphan: (half) => onCameraOrphanRef.current?.(half),
+        davisLabels: () => davisLabelsRef.current,
         onRaw: (values) => {
           // EVERY frame, before anything else: this is the stream that tells the
           // repeat rule whether a label ever left the lens.
           noteRaw(values);
           rawSeen.current += values.length;
           setRawLog((prev) => [
-            ...values.map((v) => ({ v: String(v), kind: classifyBarcode(v).kind })),
+            ...values.map((v) => ({ v: String(v), kind: classifyBarcode(v, { davisLabels: davisLabelsRef.current }).kind })),
             ...prev,
           ].slice(0, 6));
         },
@@ -1629,7 +1699,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     // app showed nothing at all about what it had received — a barcode it did not
     // recognise vanished without a sound and the only way to find out what the
     // gun actually sent was to scan into a notes app.
-    const cls = classifyBarcode(raw);
+    const cls = classifyBarcode(raw, { davisLabels: davisLabelsRef.current });
     // A trigger pull is a discrete sighting: the gun cannot hover, so every pull
     // past the double-fire guard is the loader deliberately presenting a label.
     noteRaw([raw], 'wedge');
@@ -1717,6 +1787,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   if (!wedgePairRef.current) {
     wedgePairRef.current = createPairBuffer({
       windowMs: WEDGE_PAIR_WINDOW_MS,
+      davisLabels: () => davisLabelsRef.current,
       onAbandon: (half) => onOrphanRef.current?.(half),
     });
   }
@@ -2230,6 +2301,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       {openStop ? (
         <OrderCard
           stop={openStop}
+          davisLabels={davisLabelsRef.current}
           progress={stopProgress(openStop, scans, handConfirms)}
           groupCount={groupCount}
           onAddPiece={() => {

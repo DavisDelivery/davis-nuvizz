@@ -75,6 +75,8 @@ import { driverLabelLines, driverFixStale } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
+import { labelOrderFromCreate, labelOrderFromPushLog, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
+import { buildLabelsHtml } from './lib/label-html.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
 import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
@@ -174,7 +176,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.64.0';
+const APP_VERSION = '1.65.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -228,6 +230,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.65.0', 'DAVIS DELIVERY LABELS \u2014 ITS OWN LABEL, PRINTED BY THE ORDER, SAVED WITH IT. Chad: \u201cThis is supposed to be its own label, separate entity \u2026 just something we can print by the order, but it is not a delivery ticket. It is not a manifest \u2026 just like we can print a delivery ticket.\u201d ONE LETTER PAGE PER PIECE (skids first, then loose): the service date, SHIP TO in big type, SKID 1 of 2 beside the order\u2019s skid / loose / total / weight, one barcode across the page (DD/<NuVizz stop #>/<piece>), the stop # and reference, items and delivery notes, the website QR and \u201cWE CAN DELIVER FOR YOU TOO!\u201d. It opens in the SAME viewer and Print button as the Delivery Ticket, so it prints the way a ticket prints and never opens a new window (which strands the iPad home-screen app). SAVED WITH THE ORDER: every order created from New Order, Bulk add and the Estes manifest push saves its label to its own Firestore collection (order-labels) \u2014 nothing else reads or writes it \u2014 so a label can be printed again any time; ZERO NuVizz calls. WHERE: NEW ORDER is always LIVE now (Chad: \u201ctake the beta out of here and just make it live all the time\u201d); after Create it offers Print label and Delivery ticket, and a Labels & tickets list shows every order created on a day with Label and Ticket beside each. BULK ADD: the SERVICE DATE is on the main page, out of the Pickup drop-down (Chad: \u201cit should be on main page for that upload\u201d), shown as a weekday date and locked while a batch sends; Create and the Estes push offer Print labels for the batch; Pushed to NuVizz has Select all, a tick per row, Print labels for the selected, and a Label button on every row \u2014 a clean run lands there with its batch already ticked. The \u201cA NEW load (one import)\u201d mode is not touched (Chad: \u201cthe labels shouldn\u2019t touch the new load\u201d). One order that cannot be printed (a character a barcode cannot carry, or over 99 pieces) is left out and NAMED; the rest still print. LOAD-SCAN v0.51.0 READS IT: camera and gun, matched on the EXACT stop number, one page = one piece, capped at the manifest count; two pages of one order side by side each book once; a Davis read never changes how a Uline label books; LOADSCAN_DAVIS_LABELS=off turns reading it off with no deploy. Also fixed there: a hand-added or over-the-count piece on a stop whose number has fewer than 7 digits (SHP29379) was silently refused by the server while the phone marked it synced. THE WMS reads it too (its own PR). The Delivery Ticket, the manifest print and the Route Workbench are not changed.'],
   ['1.64.0', 'YOUR OWN TRUCK CAPS ON THE CLAUDE SHADOW TAB, OVER THE LEARNED ONES. Chad: “truck capacity should be learned from all the data we have and we should have a ui where we can customize it.” The learned capacity card now has Edit caps. Type a cap in skid spots beside any driver or route and it replaces the learned one for that driver or route; clear the box and the learned cap is back. A driver or route with no history yet (a new hire, a new route) can be given a cap too. The loose-pieces-per-skid-spot setting (10 by default, one number for every truck) is editable, and changing it rebuilds every learned number on the spot: at 5 loose to a spot, 17 skids and 30 bags is 23 spots, not 20. Each row says whether its cap is yours or learned, and who set yours and when; every change, a cleared cap included, is kept in a log. THINGS THAT WILL NOT HAPPEN: a cleared box is never saved as a cap of 0 (a truck that holds nothing) — blank means use the learned cap, and anything that is not a number from 1 to 60 is refused with the reason; two dispatchers saving different drivers at the same moment cannot erase each other, because every cap is its own record; a save that times out is read back before it is called failed, and one that cannot be confirmed says so; only the boxes you actually change are sent, so a Refresh mid-edit cannot overwrite somebody else’s save; turning a phone sideways does not lose what was typed; and if the settings cannot be read, every row says unknown instead of pretending there are no caps. NOT DECIDED YET, and the card says so: when a load’s driver and its route both have a cap, which one it is held to — that is Chad’s call, and nothing plans with these numbers yet. Nothing here touches the board, the Build Panel, the learned engine or any dispatcher setting; it writes only the shadow’s own records, and CLAUDE_SHADOW=off stops it with everything else.'],
   ['1.63.0', 'THE CLAUDE SHADOW LEARNS TRUCK CAPACITY FROM EVERY SEALED DAY, PER DRIVER AND PER ROUTE, LOOSE PIECES INCLUDED. Chad: \u201ctruck capacity should be learned from all the data we have\u201d, learned \u201cfrom the routes they\u2019re assigned to\u201d, and \u201cif they put 17 skids on a box truck, you then can\u2019t put 30 bags of peanuts as well.\u201d The Claude shadow tab now shows what each driver and each route has actually carried out of the dock, read from the sealed history (82 days, back to June 4) at zero NuVizz calls. A truck trip is one route with one driver on one day, deliveries only, and ONLY STOPS THAT RODE THE TRUCK THAT DAY: a delivered stop counts when its delivery stamp is on that day, an unable-to-deliver when its last update is, and a stop still out for delivery when the day sealed does not count at all, because an order nobody closed keeps its route and driver and gets re-filed onto the next day (the same rule the learned engine adopted after the DAWSONVILLE/CRUMPTON replay). Pickups come back on the truck and take no outbound room; an order still scheduled at the end of the day never left. Freight is measured in skid spots, skids plus loose pieces at 10 loose to a spot, so 17 skids and 30 bags is 20 spots. The learned cap is the fuller end of what they have carried, the 95th percentile of their trips, and it needs 20 trips, because below 20 the 95th percentile is simply the single fullest trip and one mis-keyed day would set it; the typical load, the most ever and the fullest trip sit beside it so the number can be checked against a real day. A TRUCK LEARNED TWICE ITS SIZE IS PREVENTED: when the day\u2019s load roster shows more live loads under a route name than the history has trips for it, one trip absorbed two loads and is left out; when the roster cannot say (no roster that day, which is all of June, or a missing stop count), the trip is left out too rather than guessed clean. Every trip and stop left out is counted on screen by reason. The shadow also records each route\u2019s planned stop order and the order it was actually driven, for the planner to learn from. It learns every night at 4:30 AM ET after the history seals, and on Learn now, which learns as many days as fit in about 15 seconds, shows exactly what that run did, and leaves the rest for the next press or the night. Nothing here changes the board, the Build Panel, the learned engine or any setting a dispatcher uses; it writes only the shadow\u2019s own records, nothing plans with these numbers yet, and CLAUDE_SHADOW=off stops it with everything else. Customizing the numbers is the next release.'],
   ['1.62.3', 'TRACTOR OK ON THE ULINE TAB NOW TAKES ULINE\u2019S STRAIGHT-TRUCK STAMP OFF THE CUSTOMER PROFILE. Chad: \u201csame thing if we marked it tractor ok it should remove the uline straight truck advisory stamp on the order profile.\u201d Every Tractor OK on the tab \u2014 the button, T, the full-screen bar and Change to Tractor OK \u2014 now writes what unticking \u201cUline: straight truck (advisory)\u201d by hand on the stop card writes: the flag taken out of Equipment restrictions (a remove, so nothing else on the list is touched) and the list locked as a dispatcher\u2019s. THE LOCK IS WHAT MAKES IT STICK. The scanner adds every flag it detects to an unlocked list on every scan and Uline writes \u201cstraight truck\u201d on every order, so an unlocked removal comes straight back with the next Uline order \u2014 checked by running the scanner\u2019s own rule on the written note both ways. What Uline wrote stays on record in the scanner\u2019s audit trail. WHAT IT DOES NOT CHANGE, read off the code: Tractor OK already let the router send a 53\u2032 and already kept the 9pm alert quiet, so no truck and no alert moves. What does change: the customer LEAVES THIS TAB on the next load, because Uline\u2019s stamp is what put it here. Undo puts the stamp back and the lock as it was. Once the stamp is off, the decided list no longer offers Clear on that row (it would say Uline\u2019s flag takes over again, and there is none). Customers marked Tractor OK before this change, or painted Tractor-trailer OK in Routing, show a \u201cTake Uline\u2019s stamp off the profile\u201d button in the decided list \u2014 one tap each, and the Vehicle mark\u2019s own date is left alone. Nothing is sent to NuVizz.'],
@@ -31619,6 +31622,103 @@ function OrderField({ label, req, value, onChange, placeholder, type = 'text', c
   );
 }
 
+// ── DAVIS DELIVERY LABELS ────────────────────────────────────────────────────
+// Chad, Sep 24 2026: "This is supposed to be its own label, separate entity … just something we
+// can print by the order, but it is not a delivery ticket. It is not a manifest … just like we
+// can print a delivery ticket, just like we can print a route." One Letter page per piece with a
+// barcode the load-out app and the WMS read (DD/<NuVizz stop #>/<piece>). The rules are
+// src/lib/order-labels.js, the page src/lib/label-html.js; it opens in PrintDocModal, the same
+// viewer and Print button as the Delivery Ticket. Each created order's label is saved to its own
+// Firestore collection (order-labels), so it can be printed again any time. ZERO NuVizz calls.
+// The Delivery Ticket, the manifest print and the "A NEW load" import are not touched.
+const labelLogoUrl = () => (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo-label.png';
+
+/** Save created orders' labels. Never throws: the order already exists, and a failed save is SAID, not hidden. */
+async function saveOrderLabels(labels) {
+  try {
+    const r = await apiFetch('/.netlify/functions/order-labels', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ labels }),
+    });
+    const d = await r.json().catch(() => ({}));
+    return d.ok ? { ok: true } : { ok: false, reason: d.reason || `HTTP ${r.status}` };
+  } catch (e) { return { ok: false, reason: e?.message || 'network error' }; }
+}
+
+/** The labels saved for one day (the day the orders were created, Eastern). */
+function useOrderLabels(date, refreshKey = 0) {
+  const [state, setState] = useState({ loading: false, labels: [], error: null, date: null });
+  useEffect(() => {
+    if (!date) return undefined;
+    let alive = true;
+    setState((x) => ({ ...x, loading: true, error: null }));
+    apiFetch(`/.netlify/functions/order-labels?date=${encodeURIComponent(date)}`)
+      .then((r) => r.json())
+      .then((d) => { if (alive) setState({ loading: false, labels: Array.isArray(d.labels) ? d.labels : [], error: d.ok ? null : (d.reason || 'load failed'), date }); })
+      .catch((e) => { if (alive) setState({ loading: false, labels: [], error: e?.message || 'load failed', date }); });
+    return () => { alive = false; };
+  }, [date, refreshKey]);
+  return state;
+}
+
+/**
+ * Print Davis labels for one or more orders. Builds the pages on the tap and opens them in the
+ * Delivery Ticket's viewer. An order whose number cannot go in a barcode, or that is over the
+ * per-order page limit, is left out and NAMED beside the button; the rest still print.
+ */
+function PrintLabelsButton({ orders, label = null, size = 'md', disabled = false }) {
+  const [doc, setDoc] = useState(null);          // { html, title } while the viewer is open
+  const [skipped, setSkipped] = useState([]);
+  const list = (orders || []).filter(Boolean);
+  if (!list.length && !label) return null;
+  const { pages } = labelPageCount(list);
+  const open = () => {
+    const r = buildLabelsHtml(list, { logoUrl: labelLogoUrl(), maxPages: MAX_LABEL_PAGES });
+    setSkipped(r.skipped);
+    if (r.pages) setDoc({ html: r.html, title: `Davis labels · ${r.printed.length} order${r.printed.length === 1 ? '' : 's'} · ${r.pages} page${r.pages === 1 ? '' : 's'}` });
+  };
+  const sm = size === 'sm';
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <button
+        type="button" onClick={open} disabled={disabled || !list.length}
+        title="Davis delivery label — one page per piece, skids first, then loose"
+        className={`inline-flex items-center gap-1.5 rounded border font-semibold border-slate-800 bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed ${sm ? 'px-2 py-1 text-[11px]' : 'px-3 py-1.5 text-[12px]'}`}
+      >
+        <Tag size={sm ? 12 : 14} /> {label || `Print label${list.length === 1 ? '' : 's'} (${pages} page${pages === 1 ? '' : 's'})`}
+      </button>
+      {skipped.length > 0 && (
+        <span className="text-[11px] text-amber-700">Not printed: {skipped.map((k) => `${k.name || k.stopNbr || 'order'} — ${k.reason}`).join('; ')}</span>
+      )}
+      {doc && <PrintDocModal title={doc.title} html={doc.html} pageW={816} onClose={() => setDoc(null)} />}
+    </span>
+  );
+}
+
+/** The Delivery Ticket for an order New Order just created, built from its saved label record. */
+function LabelTicketButton({ labelRec, size = 'md' }) {
+  const [open, setOpen] = useState(false);
+  const html = useMemo(
+    () => (open && labelRec ? buildTicketHtml(ticketStopFromLabel(labelRec), (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg') : ''),
+    [open, labelRec],
+  );
+  if (!labelRec) return null;
+  const sm = size === 'sm';
+  return (
+    <>
+      <button
+        type="button" onClick={() => setOpen(true)}
+        className={`inline-flex items-center gap-1.5 rounded border font-semibold border-slate-300 bg-white text-slate-700 hover:bg-slate-50 ${sm ? 'px-2 py-1 text-[11px]' : 'px-3 py-1.5 text-[12px]'}`}
+      >
+        <FileText size={sm ? 12 : 14} /> Delivery ticket
+      </button>
+      {open && <PrintDocModal title={`Delivery Ticket · ${labelRec.stopNbr}`} html={html} pageW={816} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+const LABEL_SOURCE_NAME = { single: 'New Order', bulk: 'Bulk add', manifest: 'Estes manifest' };
+
 // New Order opens on a Single / Bulk toggle so both ways to create an order live under one
 // tab (per the "put the bulk add tab under new order" debug request — it previously had its
 // own top-level nav tab). Neither inner screen's logic is touched; this is a thin shell that
@@ -31678,9 +31778,15 @@ function NewOrderSingleScreen() {
   const [originSaved, setOriginSaved] = useState(false);   // transient "✓ Saved" confirmation
   const [row, setRow] = useState(EMPTY_ORDER_ROW);
   const [serviceDate, setServiceDate] = useState(todayLocalYMD());
-  const [live, setLive] = useState(false);
+  // ALWAYS LIVE. Chad, Sep 24 2026: "take the beta out of here and just make it live all the
+  // time." Create sends the order to NuVizz; the server's write flag still gates every write.
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState(null); // { ok, beta?, msg }
+  const [result, setResult] = useState(null); // { ok, updated?, msg, label?, labelSaveError? }
+  // The day's created orders, read back from the saved labels — so a label or ticket can be
+  // printed again after the next order has been created, or on another day.
+  const [listDate, setListDate] = useState(() => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date()));
+  const [listRefresh, setListRefresh] = useState(0);
+  const created = useOrderLabels(listDate, listRefresh);
 
   const set = (k) => (e) => setRow((r) => ({ ...r, [k]: k === 'phone' ? fmtPhone(e.target.value) : e.target.value }));
   const setOrig = (k) => (e) => { setOriginSaved(false); setOrigin((o) => ({ ...o, [k]: e.target.value })); };
@@ -31754,24 +31860,27 @@ function NewOrderSingleScreen() {
         origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() },
         serviceDate, timeZone: 'America/New_York',
       };
-      if (!live) {
-        setResult({ ok: true, beta: true, msg: `○ Beta — would create an order for ${payloadRow.name} (nothing sent). Flip to ● LIVE to create it in NuVizz.` });
-        return;
-      }
       let res;
       try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: opIdRef.current, createdBy: 'dispatcher' }); }
       catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
       if (res.ok && res.result?.ok) {
         const nbr = res.result.entityNbr || payloadRow.stopNbr || '(number assigned by NuVizz)';
         opIdRef.current = newClientOpId();   // next order = new idempotency key
+        // The label (and the ticket New Order prints) carry the number NuVizz returned, or the
+        // Order # typed when NuVizz echoes none — the number the order is filed under. No
+        // number at all = no label, and the banner says so instead of printing a blank.
+        const label = labelOrderFromCreate(payloadRow, res.result.entityNbr || payloadRow.stopNbr, { serviceDate, ref: payloadRow.pro || '', origin: settings.origin, source: 'single' });
+        const saved = label ? await saveOrderLabels([label]) : { ok: true };
+        const labelBits = { label, labelSaveError: saved.ok ? null : saved.reason };
         if (res.result.updated) {
           // stop/sync/update is an UPSERT: the typed Order # already existed, and NuVizz
           // REPLACED that order's details. Say so loudly; keep the form so it's reviewable.
-          setResult({ ok: true, updated: true, msg: `⚠ Order ${nbr} ALREADY EXISTED — NuVizz UPDATED it (its address/details were replaced with what you entered). Verify in the portal if that wasn't intended.` });
+          setResult({ ok: true, updated: true, msg: `⚠ Order ${nbr} ALREADY EXISTED — NuVizz UPDATED it (its address/details were replaced with what you entered). Verify in the portal if that wasn't intended.`, ...labelBits });
         } else {
-          setResult({ ok: true, msg: `✓ Order created — ${nbr}. It's now UNPLANNED; plan it onto a load in Routing.` });
+          setResult({ ok: true, msg: `✓ Order created — ${nbr}. It's now UNPLANNED; plan it onto a load in Routing.`, ...labelBits });
           setRow(EMPTY_ORDER_ROW);   // ready for the next order; keep origin + date
         }
+        setListRefresh((k) => k + 1);
       } else {
         setResult({ ok: false, msg: `✗ Create failed: ${res.error || res.result?.error || 'write error'}` });
       }
@@ -31781,19 +31890,10 @@ function NewOrderSingleScreen() {
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
       <div className={`p-4 space-y-4 ${SCREEN_FORM}`}>
-        {/* Header + Beta/Live */}
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h1 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Package size={18} /> New Order</h1>
-            <p className="text-[12px] text-slate-500">Create a delivery order in NuVizz. It lands <b>unplanned</b> — plan it onto a load in Routing.</p>
-          </div>
-          <button
-            onClick={() => setLive((v) => !v)}
-            title={live ? 'LIVE — Create sends the order to NuVizz. Click for Beta (preview only).' : 'BETA — Create only previews (nothing sent). Click to go Live.'}
-            className={`inline-flex items-center gap-1 text-[12px] font-bold px-2.5 py-1.5 rounded border shrink-0 ${live ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
-          >
-            {live ? '● LIVE' : '○ Beta'}
-          </button>
+        {/* Header — always live (no Beta toggle) */}
+        <div>
+          <h1 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Package size={18} /> New Order</h1>
+          <p className="text-[12px] text-slate-500">Create a delivery order in NuVizz. It lands <b>unplanned</b> — plan it onto a load in Routing.</p>
         </div>
 
         {/* Origin (from) — pick a saved pickup location or edit for this order */}
@@ -31887,19 +31987,61 @@ function NewOrderSingleScreen() {
 
         {/* Result + submit */}
         {result && (
-          <div className={`rounded-lg px-3 py-2 text-[13px] ${result.ok ? (result.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : result.updated ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-green-50 text-green-800 border border-green-200') : 'bg-red-50 text-red-800 border border-red-200'}`}>
+          <div className={`rounded-lg px-3 py-2 text-[13px] ${result.ok ? (result.updated ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-green-50 text-green-800 border border-green-200') : 'bg-red-50 text-red-800 border border-red-200'}`}>
             {result.msg}
+            {result.ok && result.label && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <PrintLabelsButton orders={[result.label]} />
+                <LabelTicketButton labelRec={result.label} />
+              </div>
+            )}
+            {result.ok && !result.label && (
+              <div className="mt-1 text-[12px]">NuVizz sent back no order number, so no label was made — find the order in the portal before printing anything for it.</div>
+            )}
+            {result.labelSaveError && (
+              <div className="mt-1 text-[12px] text-amber-800">The label was not saved for later ({result.labelSaveError}) — print it now; it will not be in the list below.</div>
+            )}
           </div>
         )}
-        <div className="flex items-center justify-between gap-3 pb-6">
-          <span className="text-[12px] text-slate-500">{!originComplete ? 'Set the origin address first.' : !deliveryComplete ? 'Fill the required (*) delivery fields.' : live ? 'Ready — this WILL create the order in NuVizz.' : 'Beta — Create previews only.'}</span>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[12px] text-slate-500">{!originComplete ? 'Set the origin address first.' : !deliveryComplete ? 'Fill the required (*) delivery fields.' : !serviceDate ? 'Pick the service date.' : 'Ready — this will create the order in NuVizz.'}</span>
           <button
             onClick={submit} disabled={!canSubmit}
             className={`inline-flex items-center gap-1.5 px-4 py-2 rounded font-semibold text-white text-sm shrink-0 ${canSubmit ? '' : 'opacity-40 cursor-not-allowed'}`}
-            style={{ background: live ? '#dc2626' : BRAND }}
+            style={{ background: BRAND }}
           >
-            <Plus size={16} /> {busy ? 'Creating…' : live ? 'Create order (LIVE)' : 'Preview (Beta)'}
+            <Plus size={16} /> {busy ? 'Creating…' : 'Create order'}
           </button>
+        </div>
+
+        {/* Orders created on a day — reprint a label or a Delivery Ticket any time. Read back
+            from the saved labels (order-labels), zero NuVizz calls. */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2 mb-6">
+          <div className="flex items-center flex-wrap gap-2">
+            <div className="text-[13px] font-semibold text-slate-700 inline-flex items-center gap-1.5"><Tag size={14} /> Labels &amp; tickets</div>
+            <input type="date" value={listDate} onChange={(e) => e.target.value && setListDate(e.target.value)} aria-label="Created on" className="border border-slate-300 rounded px-2 py-1 text-[12px]" />
+            <span className="text-[12px] text-slate-500">{created.loading ? 'loading…' : `${created.labels.length} order${created.labels.length === 1 ? '' : 's'} created`}</span>
+            {created.labels.length > 1 && <PrintLabelsButton orders={created.labels} size="sm" label={`Print all labels (${labelPageCount(created.labels).pages} pages)`} />}
+          </div>
+          {created.error && <div className="text-[11px] text-amber-700">Labels unavailable: {created.error}</div>}
+          {created.labels.length === 0 ? (
+            !created.loading && <div className="text-[12px] text-slate-400">No orders created on this day.</div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {created.labels.map((l) => (
+                <li key={l.stopNbr} className="py-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-medium text-slate-700 truncate">{l.name || '—'} <span className="font-mono text-[12px] text-slate-500">{l.stopNbr}</span></div>
+                    <div className="text-[11px] text-slate-500 truncate">{[l.addr1, l.city, l.state].filter(Boolean).join(', ')}{LABEL_SOURCE_NAME[l.source] ? ` · ${LABEL_SOURCE_NAME[l.source]}` : ''}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <PrintLabelsButton orders={[l]} size="sm" label={`Label (${labelPageCount([l]).pages})`} />
+                    <LabelTicketButton labelRec={l} size="sm" />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </div>
@@ -31987,6 +32129,13 @@ function BulkOrderScreen() {
   const etTodayStr = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
   const [pushedDate, setPushedDate] = useState(etTodayStr);
   const [pushedLog, setPushedLog] = useState({ loading: false, records: [], error: null, date: null });
+  // Labels for the Pushed to NuVizz rows: the ones saved when each order was created (Chad: "I
+  // want to be able to select all in the bulk add to print labels or just click on specific rows
+  // to print the labels"). Rows pushed before labels were saved fall back to the push log itself.
+  const [pushedLabelRefresh, setPushedLabelRefresh] = useState(0);
+  const pushedLabels = useOrderLabels(bulkView === 'pushed' ? pushedDate : null, pushedLabelRefresh);
+  const [pushedSel, setPushedSel] = useState(() => new Set());   // selected row keys (NuVizz #)
+  useEffect(() => { setPushedSel(new Set()); }, [pushedDate]);
   const pushedReqRef = useRef(null);   // latest requested date — stale responses must not render under a newer label
   const fetchPushedLog = useCallback(async (date) => {
     if (!date) return;
@@ -32299,6 +32448,7 @@ function BulkOrderScreen() {
     setBusy(true); setResults(null); setProgress({ done: 0, total: targets.length });
     const out = [];
     const pushedLogRecords = [];   // durable cloud push-history — feeds the "Pushed to NuVizz" tab
+    const labelOrders = [];        // one Davis delivery label per created order — saved to order-labels after the run
     // Sequential — one create at a time, each with its own idempotency key, to respect the
     // NuVizz daily-call ceiling/breaker and never fire a duplicate on a mid-batch retry.
     for (let k = 0; k < targets.length; k++) {
@@ -32325,6 +32475,10 @@ function BulkOrderScreen() {
       if (!ok && !r._opId) setRows((rs) => rs.map((x) => (x === r ? { ...x, _opId: opId } : x)));
       out.push({ idx, name: payloadRow.name, ok, updated: !!res.result?.updated, nbr: res.result?.entityNbr || payloadRow.stopNbr || '', error: ok ? null : (res.error || res.result?.error || 'write error') });
       if (ok) {
+        // The label's barcode carries the NuVizz stop # (the grid's PRO/SHP, or what NuVizz
+        // returned); the grid's Order # (SO) prints beside it as the reference.
+        const lbl = labelOrderFromCreate(payloadRow, res.result?.entityNbr || refs.stopNbr, { serviceDate, ref: refs.pro || '', origin: settings.origin, source: 'bulk' });
+        if (lbl) labelOrders.push(lbl);
         pushedLogRecords.push({
           // Log the PRO (SHP) as the order ref — that's what NuVizz now shows as this order's Stop Number.
           orderRef: refs.stopNbr, nuvizzNbr: res.result?.entityNbr || refs.stopNbr,
@@ -32340,7 +32494,14 @@ function BulkOrderScreen() {
     const okIdx = new Set(out.filter((o) => o.ok).map((o) => o.idx));
     // Keep failed + incomplete rows for a retry; drop the ones that succeeded.
     setRows((rs) => { const kept = rs.filter((r, idx) => !bulkRowIsBlank(r) && !okIdx.has(idx)); return kept.length ? kept : [bulkEmptyRow()]; });
-    setResults({ created: out.filter((o) => o.ok && !o.updated).length, updated: out.filter((o) => o.ok && o.updated).length, failed: out.filter((o) => !o.ok).length, rows: out });
+    const noLabel = out.filter((o) => o.ok).length - labelOrders.length;
+    setResults({ created: out.filter((o) => o.ok && !o.updated).length, updated: out.filter((o) => o.ok && o.updated).length, failed: out.filter((o) => !o.ok).length, rows: out, labels: labelOrders, noLabel });
+    if (labelOrders.length) {
+      saveOrderLabels(labelOrders).then((r) => {
+        if (!r.ok) setResults((x) => (x ? { ...x, labelSaveError: r.reason } : x));
+        setPushedLabelRefresh((k) => k + 1);
+      });
+    }
     // Durably log what was pushed so the Pushed tab shows it by date, from any device (best-effort,
     // our own Firestore log — a hiccup never fails the create). On a clean run, jump to the receipt.
     if (pushedLogRecords.length) {
@@ -32352,7 +32513,12 @@ function BulkOrderScreen() {
       } catch { /* history is best-effort */ }
       const today = etTodayStr();
       if (pushedDate !== today) setPushedDate(today); else fetchPushedLog(today);
-      if (!out.some((o) => !o.ok)) setBulkView('pushed');
+      if (!out.some((o) => !o.ok)) {
+        // A clean run lands on the receipt with the batch it just created already ticked, so
+        // Print labels is one tap.
+        setPushedSel(new Set(labelOrders.map((l) => l.stopNbr)));
+        setBulkView('pushed');
+      }
     }
   };
 
@@ -32498,6 +32664,7 @@ function BulkOrderScreen() {
     setIntakeBusy(true); setIntakeResults(null); setIntakeProgress({ done: 0, total: targets.length });
     let sent = 0, updated = 0, failed = 0;
     const pushedLogRecords = [];   // durable cloud push-history (written after the loop)
+    const labelOrders = [];        // one Davis delivery label per pushed order — saved to order-labels after the loop
     for (let k = 0; k < targets.length; k++) {
       const r = targets[k];
       const payloadRow = {
@@ -32518,6 +32685,8 @@ function BulkOrderScreen() {
       const ok = !!(res.ok && res.result?.ok);
       if (ok) {
         sent++; if (res.result?.updated) updated++;
+        const lbl = labelOrderFromCreate(payloadRow, res.result?.entityNbr || payloadRow.stopNbr, { serviceDate, ref: payloadRow.pro || '', origin: settings.origin, source: 'manifest' });
+        if (lbl) labelOrders.push(lbl);
         pushedLogRecords.push({
           orderRef: (r.stopNbr || '').trim() || null, nuvizzNbr: res.result?.entityNbr || (r.stopNbr || '').trim() || null,
           name: r.name || '', addr1: r.addr1 || '', addr2: r.addr2 || '', city: r.city || '', state: r.state || '', zip: r.zip || '',
@@ -32545,10 +32714,13 @@ function BulkOrderScreen() {
       const today = etTodayStr();
       if (pushedDate !== today) setPushedDate(today); else fetchPushedLog(today);
     }
+    const labelSave = labelOrders.length ? await saveOrderLabels(labelOrders) : { ok: true };
+    if (labelOrders.length) setPushedLabelRefresh((k) => k + 1);
     setIntakeBusy(false); setIntakeProgress(null);
     setIntakeResults({ ok: failed === 0, msg: failed
       ? `⚠ Pushed ${sent} of ${targets.length} — ${failed} failed (kept in Held with the reason).`
-      : `✓ Pushed ${sent} order(s) to NuVizz${updated ? ` (${updated} updated existing)` : ''} — they land UNPLANNED; plan them in Routing.` });
+      : `✓ Pushed ${sent} order(s) to NuVizz${updated ? ` (${updated} updated existing)` : ''} — they land UNPLANNED; plan them in Routing.`,
+      labels: labelOrders, noLabel: sent - labelOrders.length, labelSaveError: labelSave.ok ? null : labelSave.reason });
     if (failed === 0) setIntakeTab('pushed');
   };
   const canPushIntake = originComplete && !!serviceDate && !intakeBusy
@@ -32584,12 +32756,26 @@ function BulkOrderScreen() {
         </div>
 
         {bulkView === 'orders' && (<>
-        {/* Shared pickup + service date (applies to the whole batch) */}
+        {/* SERVICE DATE — on the main page, never folded away. Chad, Sep 24 2026: "I don't want
+            the service date hidden behind a drop down on bulk add it should be on main page for
+            that upload." It is the date every order created or pushed below is sent with, and
+            the date printed on its labels. In normal flow and wrapping, so a phone moves it
+            rather than overlapping it. */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-wrap items-end gap-x-4 gap-y-1">
+          <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} disabled={busy || intakeBusy} className="max-w-[200px]" />
+          <span className="text-[12px] text-slate-600 pb-1.5">
+            {serviceDate
+              ? <><b>{formatDateLong(serviceDate)}</b> — every order created or pushed below goes to NuVizz with this date.</>
+              : <span className="text-amber-700 font-medium">Pick the service date — nothing can be created without it.</span>}
+          </span>
+        </div>
+
+        {/* Shared pickup (applies to the whole batch) */}
         <div className="bg-white border border-slate-200 rounded-lg p-3">
           <button onClick={() => setShowOrigin((v) => !v)} className="w-full flex items-center justify-between text-left">
-            <span className="text-[13px] font-semibold text-slate-700">Pickup + date <span className="font-normal text-slate-400">(applies to all rows)</span>{!originComplete && <span className="ml-2 text-[11px] font-normal text-amber-600">— required</span>}</span>
+            <span className="text-[13px] font-semibold text-slate-700">Pickup <span className="font-normal text-slate-400">(applies to all rows)</span>{!originComplete && <span className="ml-2 text-[11px] font-normal text-amber-600">— required</span>}</span>
             <span className="text-[12px] text-slate-500 inline-flex items-center gap-1">
-              {originComplete && !showOrigin ? `${origin.name} · ${origin.city}, ${origin.state} · ${serviceDate}` : ''}
+              {originComplete && !showOrigin ? `${origin.name} · ${origin.city}, ${origin.state}` : ''}
               {showOrigin ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </span>
           </button>
@@ -32612,7 +32798,6 @@ function BulkOrderScreen() {
                 <OrderField className="col-span-2" label="ZIP" req value={origin.zip} onChange={setOrig('zip')} placeholder="30518" />
               </div>
               <div className="flex items-end gap-3 flex-wrap">
-                <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} className="max-w-[200px]" />
                 <button onClick={persistOrigin} disabled={!originComplete} title={originComplete ? 'Save this pickup location for reuse' : 'Fill all pickup fields to save'} className={`text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border ${originComplete ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50' : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed'}`}><Save size={13} /> {originIsSaved ? 'Update pickup location' : 'Save pickup location'}</button>
                 {originSaved && <span className="text-[12px] font-medium text-green-700 inline-flex items-center gap-1"><FileCheck size={13} /> Saved</span>}
               </div>
@@ -32767,10 +32952,10 @@ function BulkOrderScreen() {
                 <EngineStatTile label="Orders" value={intakeRows.length} hint={!multiManifest && m.totalPros != null ? `Manifest header says ${m.totalPros} PROs` : (multiManifest ? `${merged.length} manifests` : '')} />
                 <EngineStatTile label="Mnf units" value={mnfUnits} hint="Manifest handling units (→ Pallets)" />
                 <EngineStatTile label="Weight" value={`${Number(mnfWeight || 0).toLocaleString()} lb`} />
-                <EngineStatTile label="Pickup" value={origin.name || '—'} hint="Set in the Pickup + date card above" />
+                <EngineStatTile label="Pickup" value={origin.name || '—'} hint="Set in the Pickup card above" />
               </div>
               <div className="text-[12px] text-blue-900 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
-                Enter <b>Pallets</b>, <b>Loose pcs</b>, <b>Phone</b>, <b>Dispatch notes</b> and <b>Price</b> per order (Price → NuVizz Seal #), then <b>check the rows to push</b> and hit <b>Push to NuVizz</b>. Unchecked orders stay in the <b>Held</b> queue (saved on this device). Pickup = <b>{origin.name || 'your pickup'}</b> for every order — set it in the Pickup + date card above. Expand a row (▸) to edit its address.
+                Enter <b>Pallets</b>, <b>Loose pcs</b>, <b>Phone</b>, <b>Dispatch notes</b> and <b>Price</b> per order (Price → NuVizz Seal #), then <b>check the rows to push</b> and hit <b>Push to NuVizz</b>. Unchecked orders stay in the <b>Held</b> queue (saved on this device). Pickup = <b>{origin.name || 'your pickup'}</b> for every order — set it in the Pickup card above. Expand a row (▸) to edit its address.
               </div>
               {/* MISSING ORDERS — the manifest's own header count vs what was read. Red and on
                   its own, above the amber line: "this file is short 6 orders" is not the same
@@ -32929,12 +33114,20 @@ function BulkOrderScreen() {
                 <div className="rounded-lg px-3 py-2 text-[13px] bg-blue-50 text-blue-800 border border-blue-200">⏳ Pushing {intakeProgress.done}/{intakeProgress.total}…</div>
               )}
               {intakeResults && (
-                <div className={`rounded-lg px-3 py-2 text-[13px] ${intakeResults.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : intakeResults.ok ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-amber-50 text-amber-800 border border-amber-200'}`}>{intakeResults.msg}</div>
+                <div className={`rounded-lg px-3 py-2 text-[13px] space-y-1 ${intakeResults.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : intakeResults.ok ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-amber-50 text-amber-800 border border-amber-200'}`}>
+                  <div>{intakeResults.msg}</div>
+                  {intakeResults.labels && intakeResults.labels.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2"><PrintLabelsButton orders={intakeResults.labels} /><span className="text-[11px]">Reprint any time from Bulk add → Pushed to NuVizz.</span></div>
+                  )}
+                  {intakeResults.noLabel > 0 && <div className="text-[12px] text-amber-800">{intakeResults.noLabel} order{intakeResults.noLabel === 1 ? '' : 's'} came back from NuVizz with no order number, so no label was made for {intakeResults.noLabel === 1 ? 'it' : 'them'}.</div>}
+                  {intakeResults.labelSaveError && <div className="text-[12px] text-amber-800">These labels were not saved for later ({intakeResults.labelSaveError}) — print them now.</div>}
+                </div>
               )}
               {intakeTab === 'held' && (
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-[12px] text-slate-500">
-                    {!originComplete ? 'Set the pickup + service date first.'
+                    {!originComplete ? 'Set the pickup location first.'
+                      : !serviceDate ? 'Pick the service date at the top of the page.'
                       : checkedHeld.length === 0 ? 'Check ☑ the rows to push — unchecked rows stay Held for a later push.'
                       : !canPushIntake ? 'A checked row is missing required fields — expand it (▸) and fill them.'
                       : live ? `Ready — this WILL create ${checkedHeld.length} order(s) in NuVizz. ${heldRows.length - checkedHeld.length} stay held.`
@@ -33019,6 +33212,11 @@ function BulkOrderScreen() {
             {results.beta ? results.msg : (
               <div className="space-y-1">
                 <div className="font-medium">{results.failed ? `⚠ ${results.created + results.updated} of ${results.created + results.updated + results.failed} created` : `✓ Created ${results.created}${results.updated ? ` (+${results.updated} updated existing)` : ''} order(s) — now UNPLANNED; plan them onto loads in Routing.`}</div>
+                {results.labels && results.labels.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2"><PrintLabelsButton orders={results.labels} /><span className="text-[11px]">Reprint any time from Pushed to NuVizz.</span></div>
+                )}
+                {results.noLabel > 0 && <div className="text-[12px] text-amber-800">{results.noLabel} order{results.noLabel === 1 ? '' : 's'} came back from NuVizz with no order number, so no label was made for {results.noLabel === 1 ? 'it' : 'them'}.</div>}
+                  {results.labelSaveError && <div className="text-[12px] text-amber-800">These labels were not saved for later ({results.labelSaveError}) — print them now.</div>}
                 {results.failed > 0 && (
                   <ul className="list-disc ml-5 text-[12px]">
                     {results.rows.filter((o) => !o.ok).slice(0, 12).map((o, k) => <li key={k}><b>{o.name || `Row ${o.idx + 1}`}</b>: {o.error}</li>)}
@@ -33033,7 +33231,8 @@ function BulkOrderScreen() {
         {/* Create */}
         <div className="flex items-center justify-between gap-3 pb-6">
           <span className="text-[12px] text-slate-500">
-            {!originComplete ? 'Set the pickup + service date first.'
+            {!originComplete ? 'Set the pickup location first.'
+                      : !serviceDate ? 'Pick the service date at the top of the page.'
               : readyCount === 0 && activeRows.length > 0 && pushRows.length === 0 ? `All ${activeRows.length} row(s) are queued — check ☑ at least one row to push it.`
               : readyCount === 0 ? `Fill at least one row (required * fields${asLoad ? ' — PRO / shipment # too in load mode' : ''}).`
               : asLoad && incompleteCount > 0 ? `Load mode sends the load's COMPLETE stop list — finish or remove the ${incompleteCount} incomplete row(s) first.`
@@ -33056,6 +33255,14 @@ function BulkOrderScreen() {
         {bulkView === 'pushed' && (() => {
           const recs = pushedLog.records || [];
           const isToday = pushedDate === etTodayStr();
+          // One label per row: the one saved at create time, else built from the push log.
+          const savedByNbr = new Map((pushedLabels.labels || []).map((l) => [l.stopNbr, l]));
+          const rowKey = (r, i) => r.nuvizzNbr || r.orderRef || `row${i}`;
+          const rowLabel = (r) => savedByNbr.get(r.nuvizzNbr || r.orderRef) || labelOrderFromPushLog(r);
+          const keys = recs.map(rowKey);
+          const selLabels = recs.filter((r, i) => pushedSel.has(keys[i])).map(rowLabel).filter(Boolean);
+          const allSel = recs.length > 0 && keys.every((k) => pushedSel.has(k));
+          const toggle = (k) => setPushedSel((prev) => { const next = new Set(prev); if (next.has(k)) next.delete(k); else next.add(k); return next; });
           const fmtTime = (iso) => { try { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(iso)); } catch { return ''; } };
           return (
             <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-3">
@@ -33069,10 +33276,22 @@ function BulkOrderScreen() {
                 {pushedLog.error && <span className="text-[11px] text-amber-700">History unavailable: {pushedLog.error}</span>}
                 <span className="text-[11px] text-slate-400 w-full">Every order you push from Bulk Add is logged here — pick a day to see exactly what was sent. Reads our own log only (zero NuVizz calls).</span>
               </div>
+              {recs.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 border border-slate-200 px-2 py-1.5">
+                  <label className="inline-flex items-center gap-1.5 text-[12px] text-slate-700 cursor-pointer">
+                    <input type="checkbox" checked={allSel} onChange={() => setPushedSel(allSel ? new Set() : new Set(keys))} />
+                    Select all
+                  </label>
+                  <span className="text-[12px] text-slate-500">{selLabels.length} selected</span>
+                  <PrintLabelsButton orders={selLabels} label={selLabels.length ? `Print labels for ${selLabels.length} selected (${labelPageCount(selLabels).pages} pages)` : 'Print labels — tick rows first'} disabled={!selLabels.length} />
+                  {pushedLabels.error && <span className="text-[11px] text-amber-700">Saved labels unavailable ({pushedLabels.error}) — printing from the push log.</span>}
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <table className="text-[12px] border-collapse w-full">
                   <thead>
                     <tr className="text-left text-[11px] text-slate-500 border-b border-slate-200">
+                      <th className="px-2 pb-1 font-medium w-7" aria-label="Select" />
                       <th className="px-2 pb-1 font-medium">Consignee</th>
                       <th className="px-2 pb-1 font-medium">Order #</th>
                       <th className="px-2 pb-1 font-medium">NuVizz #</th>
@@ -33081,13 +33300,15 @@ function BulkOrderScreen() {
                       <th className="px-2 pb-1 font-medium text-right">Wt</th>
                       <th className="px-2 pb-1 font-medium text-right">Price</th>
                       <th className="px-2 pb-1 font-medium whitespace-nowrap">Pushed</th>
+                      <th className="px-2 pb-1 font-medium">Label</th>
                     </tr>
                   </thead>
                   <tbody>
                     {recs.length === 0 ? (
-                      <tr><td colSpan={8} className="py-4 text-center text-slate-400">{pushedLog.loading ? 'Loading…' : `Nothing pushed on ${pushedDate}.`}</td></tr>
+                      <tr><td colSpan={10} className="py-4 text-center text-slate-400">{pushedLog.loading ? 'Loading…' : `Nothing pushed on ${pushedDate}.`}</td></tr>
                     ) : recs.map((r, i) => (
-                      <tr key={`${r.orderRef || r.nuvizzNbr || i}_${i}`} className="border-b border-slate-100 align-top">
+                      <tr key={`${r.orderRef || r.nuvizzNbr || i}_${i}`} className={`border-b border-slate-100 align-top ${pushedSel.has(keys[i]) ? 'bg-blue-50/60' : ''}`}>
+                        <td className="px-2 py-1"><input type="checkbox" checked={pushedSel.has(keys[i])} onChange={() => toggle(keys[i])} aria-label={`Select ${r.name || keys[i]}`} /></td>
                         <td className="px-2 py-1"><div className="font-medium text-slate-700">{r.name || '—'}</div>{(r.addr1 || r.addr2) && <div className="text-[11px] text-slate-500">{[r.addr1, r.addr2].filter(Boolean).join(', ')}</div>}{(r.city || r.state) && <div className="text-[11px] text-slate-400">{[r.city, r.state].filter(Boolean).join(', ')}</div>}</td>
                         <td className="px-2 py-1 text-slate-600 tabular-nums">{r.orderRef || '—'}</td>
                         <td className="px-2 py-1 tabular-nums">{r.nuvizzNbr || '—'}{r.updated && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 align-middle">updated</span>}</td>
@@ -33096,6 +33317,7 @@ function BulkOrderScreen() {
                         <td className="px-2 py-1 text-right tabular-nums">{r.weight || ''}</td>
                         <td className="px-2 py-1 text-right tabular-nums">{r.price ? `$${r.price}` : ''}</td>
                         <td className="px-2 py-1 text-slate-500 whitespace-nowrap">{fmtTime(r.pushedAt)}</td>
+                        <td className="px-2 py-1 whitespace-nowrap">{rowLabel(r) ? <PrintLabelsButton orders={[rowLabel(r)]} size="sm" label={`Label (${labelPageCount([rowLabel(r)]).pages})`} /> : <span className="text-[11px] text-slate-400">no #</span>}</td>
                       </tr>
                     ))}
                   </tbody>
