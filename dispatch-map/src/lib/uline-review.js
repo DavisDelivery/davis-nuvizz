@@ -143,6 +143,10 @@ export function buildUlineRows(days, notesByKey, { positionOf, addressOf, tracto
           uline: ulineWords(note),
           tractor: null,
           buildingType: normalizeBuildingType(note?.building_type),
+          // The profile's "No tractor trailer" chip and the list lock — what a tick changes and
+          // what its Undo must put back exactly (v1.62.1).
+          ntt: (Array.isArray(note?.equipment_restrictions) ? note.equipment_restrictions : []).includes(NO_TRACTOR_KEY),
+          restrictionLock: restrictionLockOf(note),
         };
         const t = typeof tractorOf === 'function' ? tractorOf(mk) : null;
         if (t && (Number(t.count) > 0 || t.last)) row.tractor = { count: Number(t.count) || 0, last: s(t.last) || null };
@@ -168,14 +172,14 @@ export function sortUlineRows(rows) {
 }
 
 /**
- * The fields a decision writes, and nothing else.
+ * The vehicle-mark fields a decision writes.
  *
  * The same three the Routing brush and the stop card write (App.jsx markEligibility and the two
  * notes saves), so a location decided here is indistinguishable from one decided there — and a
- * change of mind on either screen reads back correctly on the other. NEVER the restriction list,
- * never auto_scan_dismissed: `vehicle_eligibility` is the one statement every reader already
- * ranks above the Uline flag, and touching the list would fight the scanner, which re-adds the
- * flag on every Uline order.
+ * change of mind on either screen reads back correctly on the other. Never auto_scan_dismissed,
+ * and Uline's own flag is never REMOVED from the list: the scanner re-adds it on every Uline
+ * order. A "No tractor trailer" answer ALSO ticks the profile's restriction — see
+ * noTractorTickFields below, which is the one list write this screen makes, and why it is safe.
  *
  * `stamp` is injected (serverTimestamp in the browser) so this stays pure and testable.
  */
@@ -188,6 +192,90 @@ export function eligibilityPayload(matchKey, next, stamp) {
     vehicle_eligibility_by: 'dispatcher',
     last_updated: stamp,
   };
+}
+
+// ── "NO TRACTOR TRAILER" TICKS THE CUSTOMER PROFILE TOO (v1.62.1) ──────────────────
+//
+// Chad, after answering No tractor trailer here and opening the customer: "if i select no tractor
+// trailer it should then select the no tractor trailer icon on the customer profile and it
+// didn't." It did not because this screen wrote only the Vehicle mark (Box truck only), and the
+// stop card keeps that and the Equipment restrictions chip as two separate statements on purpose
+// (v0.99.3). So the answer now writes both — the chip EXACTLY as the stop card's own toggle
+// writes it (App.jsx toggleRestriction):
+//
+//   equipment_restrictions ∪ 'no_tractor_trailer'
+//   manual_overrides.equipment_restrictions = true        ← the lock
+//
+// THE LOCK IS NOT OPTIONAL. It is what makes the tick a PERSON's: restrictionConfidence reads
+// every key on a locked list as confirmed, so the pin draws a solid "no" instead of Uline's
+// half-and-half. And without it the scanner's legacy migration (customer-notes-writer.ts) swaps
+// a no_tractor_trailer that old scans tagged from Uline's order text back to the Uline advisory:
+// the tick would vanish on the next scan. With it the scanner never touches the list again —
+// the same thing that happens when a dispatcher ticks the chip on the stop card.
+//
+// WHAT IT DOES NOT CHANGE, read off the code: the router already holds a box-only customer off
+// a tractor (routing-build-background equipmentReqsFrom), and the 9pm trailer alert already
+// treats a box-only customer riding a tractor route as a conflict (trailer-block
+// dispatcherTrailerBlock). The tick changes what the profile and
+// the pin SAY, not which trucks or which alerts.
+//
+// arrayUnion, not the list re-written: rows do not carry the whole list, and a read-modify-write
+// would drop anything added between the read and the press. The sentinels are injected (`fv`:
+// arrayUnion / arrayRemove / deleteField from firebase/firestore) so this module stays pure.
+export const NO_TRACTOR_KEY = 'no_tractor_trailer';
+
+/** Is the lock on — true / false as stored, null when the field is absent. Undo needs the three. */
+export function restrictionLockOf(note) {
+  const v = note?.manual_overrides?.equipment_restrictions;
+  return v === true ? true : v === false ? false : null;
+}
+
+/** The profile half of a "No tractor trailer" answer. */
+export function noTractorTickFields(fv) {
+  return {
+    equipment_restrictions: fv.arrayUnion(NO_TRACTOR_KEY),
+    manual_overrides: { equipment_restrictions: true },
+  };
+}
+
+/** The whole "No tractor trailer" answer: Box truck only AND the profile's chip, one write. */
+export function noTractorWrite(matchKey, stamp, fv) {
+  return { ...eligibilityPayload(matchKey, 'box_only', stamp), ...noTractorTickFields(fv) };
+}
+
+/** What the row holds, restriction-wise — the snapshot Undo restores. */
+export function restrictionSnapshot(row) {
+  return {
+    ntt: row?.ntt === true,
+    restrictionLock: row?.restrictionLock === true ? true : row?.restrictionLock === false ? false : null,
+    baseDecision: row?.baseDecision || 'undecided',
+  };
+}
+
+/** The row after a tick: the chip lit, the list locked — so a person's "no" now stands under the
+ *  vehicle mark, exactly as ulineDecision would read the note on the next load. */
+export const TICKED = Object.freeze({ ntt: true, restrictionLock: true, baseDecision: 'confirmed' });
+
+/** Undo of the tick: exactly what was there. The key comes off only if this press put it on; the
+ *  lock goes back to its old value, or is DELETED when there was none. */
+export function noTractorUntickFields(was, fv) {
+  const out = {};
+  if (was?.ntt !== true) out.equipment_restrictions = fv.arrayRemove(NO_TRACTOR_KEY);
+  if (was?.restrictionLock !== true) {
+    out.manual_overrides = { equipment_restrictions: was?.restrictionLock === false ? false : fv.deleteField() };
+  }
+  return out;
+}
+
+/**
+ * May this screen move a decided row TOWARD a tractor — Change to Tractor OK, or Clear? Not when
+ * a person's "No tractor trailer" stands under the vehicle mark (baseDecision 'confirmed'): the
+ * v1.60.0 rule, that Tractor OK drops EVERY trailer restriction and a person's no is changed on
+ * the stop card. Once an answer here ticks the profile, that person is the dispatcher who pressed
+ * it — Undo right after is the way back; later, the stop card, where both marks sit together.
+ */
+export function canMoveTowardTractor(row) {
+  return (row?.baseDecision || 'undecided') !== 'confirmed';
 }
 
 /** The decision a row moves to once `next` is written — pure, so the screen's optimistic update
@@ -235,21 +323,25 @@ export const BOX_ONLY_BUILDING_TYPES = new Set(['residential']);
 
 /**
  * One press of a building-type chip → one merged write, and what it did.
- * Returns { fields, eligibility } — `eligibility` is 'box_only' when the press also decided the
- * vehicle question (so the screen moves the row and Undo restores both), else undefined.
+ * Returns { fields, eligibility, ticks } — `eligibility` is 'box_only' when the press also
+ * decided the vehicle question (so the screen moves the row and Undo restores it), and `ticks`
+ * says it also ticked the profile's No tractor trailer: Residential's "no tractor" is the same
+ * whole answer the No tractor trailer button gives (v1.62.1), not half of it.
  */
-export function buildingTypeWrite(matchKey, type, stamp) {
+export function buildingTypeWrite(matchKey, type, stamp, fv) {
   const bt = normalizeBuildingType(type);
   const fields = buildingTypePayload(matchKey, bt, stamp);
-  if (!BOX_ONLY_BUILDING_TYPES.has(bt)) return { fields, eligibility: undefined };
-  return { fields: { ...fields, ...eligibilityPayload(matchKey, 'box_only', stamp) }, eligibility: 'box_only' };
+  if (!BOX_ONLY_BUILDING_TYPES.has(bt)) return { fields, eligibility: undefined, ticks: false };
+  return { fields: { ...fields, ...noTractorWrite(matchKey, stamp, fv) }, eligibility: 'box_only', ticks: true };
 }
 
-/** The write that puts a press back — building type, and the vehicle mark when the press moved
- *  it. Built from what the row held BEFORE the press, never from a guess at it. */
-export function undoWrite(matchKey, prev, stamp) {
+/** The write that puts a press back — building type, the vehicle mark, and the profile tick,
+ *  each only when the press moved it. Built from what the row held BEFORE the press, never from a
+ *  guess at it. */
+export function undoWrite(matchKey, prev, stamp, fv) {
   const fields = {};
   if (prev && 'buildingType' in prev) Object.assign(fields, buildingTypePayload(matchKey, prev.buildingType, stamp));
   if (prev && 'eligibility' in prev) Object.assign(fields, eligibilityPayload(matchKey, prev.eligibility, stamp));
+  if (prev && 'restriction' in prev) Object.assign(fields, { match_key: s(matchKey), ...noTractorUntickFields(prev.restriction, fv), last_updated: stamp });
   return fields;
 }
