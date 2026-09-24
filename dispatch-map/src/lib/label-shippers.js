@@ -12,13 +12,14 @@
 //     6  9 digits + -N       007157687-1   Uline, a segmented piece row
 //    80  ESTES-<10 digits>   ESTES-0538243875   Estes (bulk-orders.js prefixes the Estes manifest push)
 //    29  AVRT-<10 digits>    AVRT-0170416694    Averitt (AVRT is Averitt Express's carrier code)
-//     5  SHP<digits>         SHP29379      Davis-created in Bulk add
+//     5  SHP<digits>         SHP29379      Puremaxx (Chad, Sep 24: "Shp is puremaxx"), created in Bulk add
 //     7  RA<digits>          RA5732712     all PICKUPS that day
 //     6  MILLER…, PRIMARY…, TRENZ…
 //
 // So the shipper is the letters an order number starts with, and plain digits are Uline. The
-// names below are the only ones the code can vouch for; every other prefix is shown as itself
-// (SHP, MILLER …) rather than given a name nobody checked. No bare ten-digit number was on the
+// names below are the only ones the code or Chad can vouch for — SHP is Puremaxx because he said
+// so — and every other prefix is shown as itself (MILLER, RA …) rather than given a name nobody
+// checked. No bare ten-digit number was on the
 // board, so none is called Averitt here — it lands in "Other numbers" where it can be seen.
 //
 // The label itself is built by order-labels.js (labelOrderFromStop, the SAME function the stop
@@ -28,7 +29,7 @@ import { labelOrderFromStop, labelPieces } from './order-labels.js';
 import { normalizeMatchKey } from './matchKey.js';
 import { resolveStopPhone } from './stop-contact.js';
 
-export const SHIPPER_NAMES = { AVRT: 'Averitt', ESTES: 'Estes', ULINE: 'Uline', OTHER: 'Other numbers' };
+export const SHIPPER_NAMES = { AVRT: 'Averitt', ESTES: 'Estes', SHP: 'Puremaxx', ULINE: 'Uline', OTHER: 'Other numbers' };
 
 const str = (v) => (v == null ? '' : String(v).trim());
 

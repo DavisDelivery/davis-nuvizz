@@ -22,7 +22,9 @@ test('the order number IS the shipper — every shape the board carried', () => 
   assert.deepEqual(shipperOf('ESTES-0538243875'), { key: 'ESTES', name: 'Estes' });
   assert.deepEqual(shipperOf('AVRT-0170416694'), { key: 'AVRT', name: 'Averitt' });
   assert.deepEqual(shipperOf('avrt-0170416694'), { key: 'AVRT', name: 'Averitt' }, 'case never splits a shipper');
-  assert.deepEqual(shipperOf('SHP29379'), { key: 'SHP', name: 'SHP' }, 'a prefix nobody named is shown as itself');
+  // Chad, Sep 24: "Shp is puremaxx".
+  assert.deepEqual(shipperOf('SHP29379'), { key: 'SHP', name: 'Puremaxx' });
+  assert.deepEqual(shipperOf('MCC4410'), { key: 'MCC', name: 'MCC' }, 'a prefix nobody named is shown as itself');
   assert.deepEqual(shipperOf('RA5732712'), { key: 'RA', name: 'RA' });
   assert.deepEqual(shipperOf('MILLER123'), { key: 'MILLER', name: 'MILLER' });
   assert.deepEqual(shipperOf('007163747'), { key: 'ULINE', name: 'Uline' });

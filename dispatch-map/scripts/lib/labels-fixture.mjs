@@ -47,7 +47,7 @@ export const LABELS_DAY = base;
 export const LABELS_BY_SHIPPER = {
   ESTES: forShipper('ESTES', 'Estes'),
   AVRT: forShipper('AVRT', 'Averitt'),
-  SHP: forShipper('SHP', 'SHP'),
+  SHP: forShipper('SHP', 'Puremaxx'),
   MILLER: forShipper('MILLER', 'MILLER'),
   ULINE: forShipper('ULINE', 'Uline'),
 };
