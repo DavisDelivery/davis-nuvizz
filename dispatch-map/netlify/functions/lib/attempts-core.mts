@@ -111,11 +111,22 @@ function numOrNull(x: any): number | null {
 // the routes are in as well … it's hard to grade the learned routing engine against the routes if
 // it's not learning and looking at the order of the routes." The freeze kept driver, load and
 // route but dropped the stop's position, so the 8:30 plan could say which truck a stop was on and
-// never in what order. The board row already carries it — `routeSeq` is NuVizz's ShipTo Display
-// Seq, the delivery order within the load (lib/nuvizz-list.mts:147) — along with the planned
-// arrival NuVizz orders the route by (:299) and, where the scan enriched it, the load's own id,
-// which is the one field that keeps two same-named loads apart. All three are ADDED; every field
-// the attempts join reads is unchanged, and each is null when the row does not carry it.
+// never in what order. `routeSeq` is NuVizz's ShipTo Display Seq, the delivery order within the
+// load (lib/nuvizz-list.mts:147), read off the board row this freeze already reads.
+//
+// v1.60.2 — ONLY WHEN THERE IS ONE, AND NOTHING ELSE. Three corrections to 1.59.2, found by the
+// review of it:
+//   • A stop with no position now carries NO routeSeq field at all, rather than `routeSeq: null`.
+//     The Stops lookup reads the day's seq with `Number(v)` (src/lib/stop-lookup.js), and
+//     Number(null) is 0, so an explicit null on a plan-only day rendered "· stop 0". Absent reads
+//     back as no position, exactly as before 1.59.2.
+//   • `loadId` is gone. No writer puts a top-level loadId on a board row — the enriched id lives
+//     at raw.load.loadId, as of the order's one-time enrichment — so the field was null on every
+//     list-discovery row while the changelog said it was kept.
+//   • `plannedEtaDTTM` is gone. It is not a live list field, so on an enriched row it can be the
+//     enrichment's stale value rather than the 8:30 one (lib/nuvizz-list.mts LIVE_LIST_FIELDS).
+//     A time presented as "the 8:30 plan" that is really yesterday's is worse than no time.
+// Every field the attempts join reads is unchanged.
 export function buildPlanRecord(s: any, date: string, capturedAt: string): any {
   return {
     tenant: TENANT,
@@ -127,10 +138,8 @@ export function buildPlanRecord(s: any, date: string, capturedAt: string): any {
     driverName: s.driverName ?? null,
     driverKey: driverKeyFor(s),
     loadNbr: s.loadNbr ?? null,
-    loadId: s.loadId ?? null,
     routeName: s.routeName ?? null,
-    routeSeq: numOrNull(s.routeSeq),
-    plannedEtaDTTM: s.plannedEtaDTTM ?? null,
+    ...(numOrNull(s.routeSeq) != null ? { routeSeq: numOrNull(s.routeSeq) } : {}),
     businessName: s.businessName ?? null,
     customerMatchKey: stopMatchKey(s),
     addr1: s.addr1 ?? null,

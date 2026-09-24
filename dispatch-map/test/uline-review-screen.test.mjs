@@ -159,7 +159,7 @@ test('A NO-PIN ROW CANNOT BLANK THE NEXT ROW\'S PICTURES — the holders never u
 test('the street view does not keep showing the LAST building under a new row', () => {
   // A stale 'ok' from the previous location would hide the overlay over a panorama still
   // pointed at the old building — the most misleading picture this tab could show.
-  // (Since v1.60.2 the same branch also stops the stale panorama drawing — see the guards below.)
+  // (Since v1.60.3 the same branch also stops the stale panorama drawing — see the guards below.)
   assert.match(fnSource('UlineStreetView'), /if \(!google \|\| !holder\.current \|\| !pin\) \{[\s\S]{0,160}?setState\('loading'\);\s*return undefined;\s*\}/);
 });
 

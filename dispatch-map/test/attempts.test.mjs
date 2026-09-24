@@ -8,6 +8,7 @@ import {
   attemptFireDecision, buildPlanRecord, buildAttemptItem,
 } from '../netlify/functions/lib/attempts-core.mts';
 import { recountManifest } from '../netlify/functions/lib/attempts-store.mts';
+import { mergeDay } from '../src/lib/stop-lookup.js';
 
 // ── ATT marker ────────────────────────────────────────────────────────────────
 test('isAttemptShipment: ATT prefix (any case) marks an attempt; clean numbers do not', () => {
@@ -92,15 +93,11 @@ test('buildPlanRecord: freezes who had the stop, keyed by clean stopNbr', () => 
 });
 
 // v1.59.2 — the 8:30 freeze keeps WHERE on the route each stop was, not just which truck.
-// Real shape: PASSION CITY CHURCH (RA56488430) was stop 14 on THEO on 2026-09-23's sealed record.
+// v1.60.2 — and only that: no position means NO field (never null, never 0), and the loadId and
+// plannedEtaDTTM 1.59.2 also froze are gone (null on every list row / possibly stale).
 test('buildPlanRecord: the 8:30 freeze keeps the stop’s position on its route', () => {
-  const r = buildPlanRecord(
-    { ...PLANNED_STOP, routeSeq: 14, plannedEtaDTTM: '2026-09-23T10:40:00', loadId: '66f0c0ffee' },
-    '2026-09-23', '2026-09-23T12:30:00Z',
-  );
+  const r = buildPlanRecord({ ...PLANNED_STOP, routeSeq: 14 }, '2026-09-23', '2026-09-23T12:30:00Z');
   assert.equal(r.routeSeq, 14);
-  assert.equal(r.plannedEtaDTTM, '2026-09-23T10:40:00');
-  assert.equal(r.loadId, '66f0c0ffee');
 });
 
 test('buildPlanRecord: a route read back in stop order is the order the dispatcher planned', () => {
@@ -113,24 +110,40 @@ test('buildPlanRecord: a route read back in stop order is the order the dispatch
   assert.deepEqual(order, ['A', 'B', 'C']);
 });
 
-test('buildPlanRecord: a stop with no position records NULL, never 0 (Number(null) is 0 and 0 is finite)', () => {
-  // 0 would read as "first stop on the route" — a planned position the dispatcher never gave it.
+test('buildPlanRecord: a stop with no position carries NO routeSeq field — not null, not 0', () => {
+  // 0 would read as "first stop on the route" — a planned position the dispatcher never gave it —
+  // and an explicit null is no better: the Stops lookup reads it with Number(), and Number(null) is 0.
   for (const routeSeq of [undefined, null, '', '   ', 'n/a']) {
     const r = buildPlanRecord({ ...PLANNED_STOP, routeSeq }, '2026-09-23', 'now');
-    assert.equal(r.routeSeq, null, `routeSeq ${JSON.stringify(routeSeq)} must freeze as null`);
+    assert.equal('routeSeq' in r, false, `routeSeq ${JSON.stringify(routeSeq)} must freeze as no field`);
   }
-  const bare = buildPlanRecord(PLANNED_STOP, '2026-09-23', 'now');
-  assert.equal(bare.plannedEtaDTTM, null);
-  assert.equal(bare.loadId, null);
 });
 
-test('buildPlanRecord: the new order fields leave every field the attempts join reads unchanged', () => {
+test('buildPlanRecord: a real position of 0 is kept (a Display Seq of 0 is a value, not an absence)', () => {
+  assert.equal(buildPlanRecord({ ...PLANNED_STOP, routeSeq: 0 }, '2026-09-23', 'now').routeSeq, 0);
+});
+
+test('buildPlanRecord: 1.59.2’s loadId and plannedEtaDTTM are no longer frozen', () => {
+  const r = buildPlanRecord({ ...PLANNED_STOP, routeSeq: 5, loadId: 'y', plannedEtaDTTM: 'x' }, '2026-09-23', 'now');
+  assert.equal('loadId' in r, false);
+  assert.equal('plannedEtaDTTM' in r, false);
+});
+
+test('Stops lookup: a plan-only day whose stop had no position shows no "stop N" (the 1.59.2 "stop 0" regression)', () => {
+  // The morning plan is the day's only copy (no sealed row, no board row). Before 1.59.2 the record
+  // had no routeSeq and the day read seq null; 1.59.2 froze routeSeq: null and it read 0 ("· stop 0").
+  const plan = buildPlanRecord({ ...PLANNED_STOP, routeSeq: null }, '2026-09-23', 'now');
+  const day = mergeDay({ date: '2026-09-23', sealed: null, board: null, attempt: null, plan }, { today: '2026-09-24' });
+  assert.equal(day.seq, null);
+  const placed = buildPlanRecord({ ...PLANNED_STOP, routeSeq: 7 }, '2026-09-23', 'now');
+  assert.equal(mergeDay({ date: '2026-09-23', sealed: null, board: null, attempt: null, plan: placed }, { today: '2026-09-24' }).seq, 7);
+});
+
+test('buildPlanRecord: the position field leaves every field the attempts join reads unchanged', () => {
   const before = buildPlanRecord(PLANNED_STOP, '2026-06-23', 'now');
-  const after = buildPlanRecord({ ...PLANNED_STOP, routeSeq: 5, plannedEtaDTTM: 'x', loadId: 'y' }, '2026-06-23', 'now');
-  for (const k of Object.keys(before)) {
-    if (['routeSeq', 'plannedEtaDTTM', 'loadId'].includes(k)) continue;
-    assert.deepEqual(after[k], before[k], `field ${k} changed`);
-  }
+  const after = buildPlanRecord({ ...PLANNED_STOP, routeSeq: 5 }, '2026-06-23', 'now');
+  for (const k of Object.keys(before)) assert.deepEqual(after[k], before[k], `field ${k} changed`);
+  assert.deepEqual(Object.keys(after).filter((k) => !(k in before)), ['routeSeq']);
   assert.deepEqual(
     buildAttemptItem(after, { shipmentNbr: 'ATT007137828' }, '2026-06-23', 'now'),
     buildAttemptItem(before, { shipmentNbr: 'ATT007137828' }, '2026-06-23', 'now'),
