@@ -319,13 +319,23 @@ const APP = fileURLToPath(new URL('../src/App.jsx', import.meta.url));
 
 test('ONE ELEMENT PER SESSION, NOT ONE PER LOOK — the Immersive Maps SKU bills per element created', () => {
   return readFile(APP, 'utf8').then((src) => {
-    const creations = src.match(/new\s+\w+\.Map3DElement\(|new\s+Map3DElement\(/g) || [];
-    assert.equal(creations.length, 1, 'exactly one construction site, guarded by a ref');
-    // Guarded BOTH before the await and again after it: the library load is async, so two
-    // quick Ctrl presses can both reach the constructor otherwise — two elements, two bills,
-    // two WebGL canvases stacked on the board.
-    const guards = src.match(/if\s*\(\s*!\s*elRef\.current\s*\)/g) || [];
-    assert.ok(guards.length >= 2, `the construction must be guarded on both sides of the await, found ${guards.length}`);
+    // TWO 3D SURFACES, each with exactly ONE construction site: the Map's Ctrl layer and the
+    // Uline review's building view (v1.61.0), which re-points its one element per location.
+    // A third is a new meter — it has to be added to this count on purpose, not arrive unseen.
+    const sites = [...src.matchAll(/new\s+\w+\.Map3DElement\(|new\s+Map3DElement\(/g)].map((m) => m.index);
+    assert.equal(sites.length, 2, 'exactly two construction sites — the Map and the Uline review');
+    for (const at of sites) {
+      const body = src.slice(src.lastIndexOf('\nfunction ', at), at);
+      const name = (body.match(/^\nfunction (\w+)/) || [])[1] || '?';
+      // Guarded BOTH before the await and again after it: the library load is async, so two
+      // quick presses can both reach the constructor otherwise — two elements, two bills,
+      // two WebGL canvases stacked on the board. Checked PER SITE: a count over the whole
+      // file would let one well-guarded site vouch for an unguarded one.
+      const awaitAt = body.lastIndexOf("await google.maps.importLibrary('maps3d')");
+      assert.ok(awaitAt > 0, `${name}: the element is built after the library load`);
+      assert.match(body.slice(0, awaitAt), /if\s*\(\s*!\s*elRef\.current\s*\)/, `${name}: guarded by the ref before the await`);
+      assert.match(body.slice(awaitAt), /if\s*\(\s*!\s*elRef\.current[\s)&]/, `${name}: and re-checked after it`);
+    }
     // And the close path must NOT destroy it — hiding is the whole cost design.
     assert.ok(!/elRef\.current\s*=\s*null/.test(src),
       'closing must hide the layer, never drop the element (the next open would re-bill)');

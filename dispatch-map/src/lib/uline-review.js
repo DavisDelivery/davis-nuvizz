@@ -196,3 +196,60 @@ export function decisionAfter(row, next) {
   const v = normalizeEligibility(next);
   return v || row?.baseDecision || 'undecided';
 }
+
+// ── BUILDING TYPE, FROM THIS SCREEN ─────────────────────────────────────────────
+//
+// Chad: "also give me options to label building type like this is residential so i would like
+// to mark it as such and then would be double duty as residentials we don't allow to be planned
+// on tractors as we flag it as well as it would be marked residential."
+//
+// WHAT THE CODE DID BEFORE THIS, read rather than assumed, because it is not what that sentence
+// expects: a Residential building type keeps NOTHING off a tractor. place-mark.js puts only
+// school, church and government in NO_TRACTOR_PLACE_MARKS ("Residential is never part of it"),
+// and the auto-builder does not read building_type at all — "that rule is deliberately NOT
+// written into equipment_restrictions". So "mark it residential" alone would have labelled the
+// pin and changed no truck.
+//
+// SO RESIDENTIAL DOES THE DOUBLE DUTY HE ASKED FOR, EXPLICITLY, IN ONE WRITE: the building type
+// AND Box truck only — the one mark the router enforces and the trailer-conflict alert watches.
+// Scoped to this press, on purpose. Making every residential in the place rule count as
+// no-tractor would re-flag everything Shiplify tags RES across the whole map, and the code does
+// not record why residential was left out of that rule — that is a question for Chad, not a
+// side effect of a button.
+
+/** The fields a building-type label writes — the same three every stop-card notes save writes
+ *  (building_type + _at + _by), so a type set here reads identically everywhere. */
+export function buildingTypePayload(matchKey, type, stamp) {
+  return {
+    match_key: s(matchKey),
+    building_type: normalizeBuildingType(type),
+    building_type_at: stamp,
+    building_type_by: 'dispatcher',
+    last_updated: stamp,
+  };
+}
+
+/** Building types that also mean "no 53′ here", on this screen. Residential only — the one Chad
+ *  named. School, church and government already carry the place rule's no-tractor FLAG. */
+export const BOX_ONLY_BUILDING_TYPES = new Set(['residential']);
+
+/**
+ * One press of a building-type chip → one merged write, and what it did.
+ * Returns { fields, eligibility } — `eligibility` is 'box_only' when the press also decided the
+ * vehicle question (so the screen moves the row and Undo restores both), else undefined.
+ */
+export function buildingTypeWrite(matchKey, type, stamp) {
+  const bt = normalizeBuildingType(type);
+  const fields = buildingTypePayload(matchKey, bt, stamp);
+  if (!BOX_ONLY_BUILDING_TYPES.has(bt)) return { fields, eligibility: undefined };
+  return { fields: { ...fields, ...eligibilityPayload(matchKey, 'box_only', stamp) }, eligibility: 'box_only' };
+}
+
+/** The write that puts a press back — building type, and the vehicle mark when the press moved
+ *  it. Built from what the row held BEFORE the press, never from a guess at it. */
+export function undoWrite(matchKey, prev, stamp) {
+  const fields = {};
+  if (prev && 'buildingType' in prev) Object.assign(fields, buildingTypePayload(matchKey, prev.buildingType, stamp));
+  if (prev && 'eligibility' in prev) Object.assign(fields, eligibilityPayload(matchKey, prev.eligibility, stamp));
+  return fields;
+}

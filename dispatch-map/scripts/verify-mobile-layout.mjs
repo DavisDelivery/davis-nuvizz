@@ -321,7 +321,7 @@ const PROBES = {
         if (!(await tab.isVisible().catch(() => false))) return false;
         await tab.click();
         await page.waitForTimeout(300);
-        const street = page.getByRole('tab', { name: /^street view$/i }).first();
+        const street = page.getByRole('tab', { name: /^street$/i }).first();
         if (!(await street.isVisible().catch(() => false))) return false;
         await street.click();
         await page.waitForTimeout(250);
@@ -330,6 +330,41 @@ const PROBES = {
         await decided.click();
         await page.waitForTimeout(250);
         return page.getByRole('button', { name: /^change to /i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // The 3D view is its own billed build, made on its first tap — so it is its own state.
+      // Proven open by the tab reading SELECTED, not merely by the tap having been sent.
+      name: 'Uline — 3D view open',
+      open: async (page) => {
+        const tab = page.getByRole('tab', { name: /uline straight truck/i }).first();
+        if (!(await tab.isVisible().catch(() => false))) return false;
+        await tab.click();
+        await page.waitForTimeout(300);
+        const three = page.getByRole('tab', { name: /^3d$/i }).first();
+        if (!(await three.isVisible().catch(() => false))) return false;
+        await three.click();
+        await page.waitForTimeout(250);
+        return page.getByRole('tab', { name: /^3d$/i, selected: true }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // FULL SCREEN INSIDE THE BROWSER: the picture fills the window with the name, the view
+      // switch and the three answers in a bar across the top. That bar is one layer
+      // (data-overlay-layer) whose controls must not collide at 360px — Close, three view tabs
+      // and three answers share two rows there. Proven open: the dialog and its Close are up.
+      name: 'Uline — full screen in the browser',
+      open: async (page) => {
+        const tab = page.getByRole('tab', { name: /uline straight truck/i }).first();
+        if (!(await tab.isVisible().catch(() => false))) return false;
+        await tab.click();
+        await page.waitForTimeout(300);
+        const full = page.getByRole('button', { name: /^full screen$/i }).first();
+        if (!(await full.isVisible().catch(() => false))) return false;
+        await full.click();
+        await page.waitForTimeout(300);
+        if (!(await page.getByRole('dialog').first().isVisible().catch(() => false))) return false;
+        return page.getByRole('button', { name: /^close$/i }).first().isVisible().catch(() => false);
       },
     },
     {
