@@ -96,7 +96,7 @@ import {
   limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
   buildingTypeChanged, NO_TRACTOR_PLACE_MARKS,
 } from './lib/place-mark.js';
-import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES, noTractorWrite, noTractorTickFields, restrictionSnapshot, TICKED, canMoveTowardTractor } from './lib/uline-review.js';
+import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES, noTractorWrite, noTractorTickFields, restrictionSnapshot, TICKED, canMoveTowardTractor, tractorOkWrite, ulineUntickFields, afterUlineOff } from './lib/uline-review.js';
 import {
   glyphCenter, glyphBadge, glyphMuted, glyphClusterBadge, GLYPH_INK_ON_LIME, FORKLIFT_BADGE_LIME,
 } from './lib/place-glyphs.js';
@@ -174,7 +174,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.62.2';
+const APP_VERSION = '1.62.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -228,6 +228,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.62.3', 'TRACTOR OK ON THE ULINE TAB NOW TAKES ULINE\u2019S STRAIGHT-TRUCK STAMP OFF THE CUSTOMER PROFILE. Chad: \u201csame thing if we marked it tractor ok it should remove the uline straight truck advisory stamp on the order profile.\u201d Every Tractor OK on the tab \u2014 the button, T, the full-screen bar and Change to Tractor OK \u2014 now writes what unticking \u201cUline: straight truck (advisory)\u201d by hand on the stop card writes: the flag taken out of Equipment restrictions (a remove, so nothing else on the list is touched) and the list locked as a dispatcher\u2019s. THE LOCK IS WHAT MAKES IT STICK. The scanner adds every flag it detects to an unlocked list on every scan and Uline writes \u201cstraight truck\u201d on every order, so an unlocked removal comes straight back with the next Uline order \u2014 checked by running the scanner\u2019s own rule on the written note both ways. What Uline wrote stays on record in the scanner\u2019s audit trail. WHAT IT DOES NOT CHANGE, read off the code: Tractor OK already let the router send a 53\u2032 and already kept the 9pm alert quiet, so no truck and no alert moves. What does change: the customer LEAVES THIS TAB on the next load, because Uline\u2019s stamp is what put it here. Undo puts the stamp back and the lock as it was. Once the stamp is off, the decided list no longer offers Clear on that row (it would say Uline\u2019s flag takes over again, and there is none). Customers marked Tractor OK before this change, or painted Tractor-trailer OK in Routing, show a \u201cTake Uline\u2019s stamp off the profile\u201d button in the decided list \u2014 one tap each, and the Vehicle mark\u2019s own date is left alone. Nothing is sent to NuVizz.'],
   ['1.62.2', 'NO TRACTOR TRAILER ON THE ULINE TAB NOW TICKS IT ON THE CUSTOMER PROFILE. Chad: \u201cwhen working in the address history if i select no tractor trailer it should then select the no tractor trailer icon on the customer profile and it didn\u2019t.\u201d It did not because the tab wrote only the Vehicle mark (Box truck only), and the stop card keeps that and the Equipment restrictions chip as two separate statements on purpose (v0.99.3). EVERY No tractor trailer on the tab \u2014 the button, N, the full-screen bar, Change to\u2026 and Residential \u2014 now writes both, the chip EXACTLY as the stop card\u2019s own toggle writes it: no_tractor_trailer added to Equipment restrictions (a union, so nothing else on the list is touched) and the list locked as a dispatcher\u2019s. The lock is what makes it a person\u2019s mark \u2014 the pin draws a solid \u201cno\u201d instead of Uline\u2019s half-and-half \u2014 and without it the scanner\u2019s legacy migration could swap the tick back to the Uline advisory on the next scan. WHAT IT DOES NOT CHANGE, read off the code: the router already kept a Box truck only customer off a tractor and the 9pm trailer alert already treated one riding a tractor route as a conflict, so no truck and no alert moves \u2014 only what the profile and the pin say. Undo puts back exactly what was there, the lock included. Once the profile is ticked a person\u2019s no stands under the answer, so the decided list no longer offers Change to Tractor OK or Clear on that row: the stop card, where both marks sit, is where it is changed (the v1.60.0 rule for Tractor OK over a person\u2019s no). Customers answered No tractor trailer on the tab BEFORE this fix, or painted Box truck only in Routing, show a \u201cTick No tractor trailer on the profile\u201d button in the decided list \u2014 one tap each, and the Vehicle mark\u2019s own date is left alone. Nothing is sent to NuVizz.'],
   ['1.62.1', 'THE SHIPLIFY TEST BOX IS THE LAST THING ON AN ORDER NOW. Chad, 2026-09-24, pointing at the box: \u201cmove this to the very bottom of an order profile.\u201d It sat up with the address, between the tractor line and the order\u2019s own details, where a trial result was the first thing read on every order. It is reference material, so it now comes after Recent deliveries on the desktop sidebar and on the phone drawer, and last on the stop lookup (which has no Recent deliveries section). ONLY THE BOX MOVED. The building type (the school/church/government mark and who set it) and the red no-tractor line stay up with the address, because they are about which truck can go there \u2014 the same thing the tractor line beside them says. With a tab\u2019s Shiplify switch off the box is absent entirely, and its new section draws no empty strip. 4 new tests, one mutation-checked (put the box back above Recent deliveries and it goes red). One commit, so git revert is the whole way back.'],
   ['1.62.0', 'STOPS BY ADDRESS AND BY CITY, OVER ALL DATES UNLESS A DAY OR A RANGE IS SET. Chad: “need to be able to look up stops by address & city as there are times i may want to see every delivery done in that city so will need some date ranges as well as specific dates date ranges should default to all unless set.” WHAT THE SCREEN DID WITH AN ADDRESS BEFORE THIS: the one box sent anything with a space in it to the customer-NAME search, so “1100 Northside Dr”, “Atlanta” and “30318” all searched business names and found nothing. Stop lookup now has two tabs — Order or customer, and Address or city — and the second takes a street address, a city, a state and a ZIP, with All dates / One day / Range under them. ALL IS THE DEFAULT AND IT IS NOT REMEMBERED: every visit starts on it, because a day picked last Tuesday and silently kept would narrow this morning’s search without anybody choosing to. WHY IT NEEDED A NIGHTLY INDEX, measured off the code rather than guessed: the warehouse is stored one day per folder with nothing keyed by place, the endpoint has 26 seconds, and “all dates” as a sweep is every stop ever captured — 57,227 at the last backfill, the thing the year view already refused to do for the same reason. So when a day seals, one SEARCH DIGEST is written for it (history_search, a new post-seal hook): every stop that day reduced to the columns a search needs and a row shows. All dates is then one read per day we hold, about 110 today, instead of one per stop. ONE DOCUMENT PER DAY, NOT PER CITY, ON PURPOSE: a city-keyed index would silently miss every stop whose stored city is not spelled the way the rep typed it, and the postal city and the town a customer names are routinely different. Scanning the day means an ADDRESS search never depends on the city field, and a city search can say “this address also has stops filed under SANDY SPRINGS” instead of a bare zero. THE MATCHING RULES, and which way each errs: the house number is exact and is the house number (110 never finds 1100, and “100 Main” never finds 5100 Main St Ste 100 through its suite — a false match hands a rep the wrong building’s proof of delivery); Drive/Dr, Suite/Ste, Northwest/NW, Building/Bldg and case never decide a match; the city is exact, never a prefix, because Peachtree City and Peachtree Corners are forty miles apart and the totals for one must not absorb the other — the cities that start with what was typed are OFFERED, with counts, never added. A WHOLE ADDRESS PASTED INTO THE FIRST BOX IS TAKEN APART — “1100 Northside Dr, Atlanta, GA 30318” is a street, a city, a state and a ZIP, not a six-word street name that no stop could ever match — conservatively: without commas only a trailing ZIP and a state code that is not also a street word move (NE is north-east and CT is Court, so they never do), and a box the rep filled in by hand always wins over a pasted part. EVERY DAY WE HOLD BUT COULD NOT SEARCH IS NAMED on screen, amber, above the counts, so an index gap can never read as “we never delivered there”. Today and the board ahead come from the live board; a sealed day is never also read from the board, so nothing counts twice. The answer is the counts over EVERY match (stops, delivered, came back, not closed out), month by month, the busiest addresses (tap one to narrow), the cities and the drivers, then the newest 500 stops listed in the customer view’s own day tables with the order opening under its row. BACKFILL: history-search-rebuild builds the digest for days sealed before this shipped — ten a call, oldest first, with a dry run that says what it would build — Firestore only. STOP_SEARCH=off puts every side back at once: the nightly write, the rebuild and the search, which then says it is switched off rather than showing zero. AND A BUG IN THE CUSTOMER VIEW, found building this because the same rows render here: the shared row builder read null as zero (Number(null) is 0), and the scanner writes explicit nulls for an unplanned stop’s sequence, cartons and weight — so every such stop read “stop 0 · 0 pc · 0 plt · 0 lb”, sorted to the TOP of its day, and never reached its volume for a piece count. Null is null now, in both views; a real zero is still a zero. 45 new tests (13 end to end against the Firestore fake, every key rule mutation-checked — broken on purpose and seen to fail), two probes on each layout guard, zero NuVizz calls anywhere in it.'],
@@ -33413,6 +33414,8 @@ function useUlineReview(nonce) {
    * EVERY "NO TRACTOR TRAILER" TICKS THE PROFILE (v1.62.2) — the button, N, the full-screen bar,
    * Change to…, Residential — because they all arrive here. Chad: "if i select no tractor trailer
    * it should then select the no tractor trailer icon on the customer profile and it didn't."
+   * And EVERY "TRACTOR OK" TAKES ULINE'S STAMP OFF IT (v1.62.3), through the same door: "same
+   * thing if we marked it tractor ok it should remove the uline straight truck advisory stamp."
    */
   const apply = React.useCallback(async (row, change, { undo = false } = {}) => {
     if (!db || !row?.key) { setWriteErr('Firestore is not connected on this page — nothing was saved.'); return false; }
@@ -33426,7 +33429,7 @@ function useUlineReview(nonce) {
       fields = undoWrite(row.key, change, stamp, fv);
       if ('eligibility' in change) nextElig = change.eligibility;
       if ('buildingType' in change) nextType = change.buildingType;
-      if ('restriction' in change) nextRestr = change.restriction;
+      if ('restriction' in change) { const { op, ...snap } = change.restriction; nextRestr = snap; }
     } else if ('buildingType' in change) {
       const w = buildingTypeWrite(row.key, change.buildingType, stamp, fv);
       fields = w.fields;
@@ -33444,13 +33447,24 @@ function useUlineReview(nonce) {
       fields = { match_key: row.key, ...noTractorTickFields(fv), last_updated: stamp };
       prev.restriction = restrictionSnapshot(row); nextRestr = TICKED;
       what = 'No tractor trailer ticked on the customer profile';
+    } else if (change.ulineOff) {
+      // Uline's stamp ALONE, for a location already Tractor-trailer OK — answered before v1.62.3,
+      // or painted in Routing. The vehicle mark and its date are left as they are.
+      fields = { match_key: row.key, ...ulineUntickFields(fv), last_updated: stamp };
+      prev.restriction = { ...restrictionSnapshot(row), op: 'uline-off' }; nextRestr = afterUlineOff(row);
+      what = 'Uline’s straight-truck stamp taken off the customer profile';
     } else {
       nextElig = change.eligibility ?? null;
       const ticks = nextElig === 'box_only';
-      fields = ticks ? noTractorWrite(row.key, stamp, fv) : eligibilityPayload(row.key, change.eligibility, stamp);
+      const unstamps = nextElig === 'tractor';
+      fields = ticks ? noTractorWrite(row.key, stamp, fv)
+        : unstamps ? tractorOkWrite(row.key, stamp, fv)
+          : eligibilityPayload(row.key, change.eligibility, stamp);
       prev.eligibility = currentElig(row);
       if (ticks) { prev.restriction = restrictionSnapshot(row); nextRestr = TICKED; }
-      what = ticks ? 'No tractor trailer — Box truck only, ticked on the customer profile' : nextElig === 'tractor' ? 'Tractor-trailer OK' : 'not set';
+      if (unstamps) { prev.restriction = { ...restrictionSnapshot(row), op: 'uline-off' }; nextRestr = afterUlineOff(row); }
+      what = ticks ? 'No tractor trailer — Box truck only, ticked on the customer profile'
+        : unstamps ? 'Tractor-trailer OK — Uline’s straight-truck stamp taken off the customer profile' : 'not set';
     }
     setBusyKey(row.key); setWriteErr(null);
     try {
@@ -33905,7 +33919,7 @@ function UlineDecisionButtons({ row, u, onDone, onSkip, stacked = false, compact
       </button>
       <button type="button" disabled={busy} onClick={() => go('tractor')} style={tall}
         className={`${base} bg-green-600 border-green-700 text-white hover:bg-green-700`}
-        title="A 53′ fits. The router stops holding this location to a box truck because of Uline’s note.">
+        title="A 53′ fits. The router stops holding this location to a box truck, and Uline’s straight-truck stamp comes off the customer profile.">
         Tractor OK{keys ? <span className="ml-1.5 text-[10px] font-normal opacity-80">T</span> : ''}
       </button>
       <button type="button" disabled={busy} onClick={onSkip} style={tall}
@@ -33969,6 +33983,15 @@ function UlineDecidedList({ u, stacked = false }) {
                       Tick No tractor trailer on the profile
                     </button>
                   )}
+                  {/* Tractor-trailer OK with Uline's stamp still on the profile: answered before
+                      v1.62.3, or painted in Routing. One tap takes it off the way the answer now does. */}
+                  {r.decision === 'tractor' && r.ulineOn !== false && (
+                    <button type="button" onClick={() => u.apply(r, { ulineOff: true })} disabled={u.busyKey === r.key}
+                      className="rounded-lg border border-green-300 px-2.5 text-[11px] font-semibold bg-white text-green-800 hover:bg-green-50" style={{ minHeight: 40 }}
+                      title="Untick Uline: straight truck (advisory) in this customer's Equipment restrictions — the Vehicle mark is already Tractor-trailer OK">
+                      Take Uline’s stamp off the profile
+                    </button>
+                  )}
                   {r.decision === 'box_only' && !toTractor && (
                     <span className="text-[10px] text-slate-500">{r.ntt ? 'No tractor trailer is ticked on the profile' : 'A person’s trailer restriction is on the profile'} — change it on the stop card</span>
                   )}
@@ -33978,9 +34001,13 @@ function UlineDecidedList({ u, stacked = false }) {
                         className="rounded-lg border px-2.5 text-[11px] font-semibold bg-white hover:bg-slate-50" style={{ minHeight: 40 }}>
                         Change to {other === 'tractor' ? 'Tractor OK' : 'No tractor trailer'}
                       </button>
-                      <button type="button" onClick={() => u.decide(r, null)} disabled={u.busyKey === r.key}
-                        className="rounded-lg border px-2.5 text-[11px] font-semibold bg-white hover:bg-slate-50 text-slate-500" style={{ minHeight: 40 }}
-                        title="Back to undecided — Uline’s flag holds the location to a box truck again">Clear</button>
+                      {/* Clear says Uline's flag takes over again — untrue once the stamp is off the
+                          profile, so it is not offered then: Undo right after, or the stop card. */}
+                      {r.ulineOn !== false && (
+                        <button type="button" onClick={() => u.decide(r, null)} disabled={u.busyKey === r.key}
+                          className="rounded-lg border px-2.5 text-[11px] font-semibold bg-white hover:bg-slate-50 text-slate-500" style={{ minHeight: 40 }}
+                          title="Back to undecided — Uline’s flag holds the location to a box truck again">Clear</button>
+                      )}
                     </>
                   )}
                 </div>

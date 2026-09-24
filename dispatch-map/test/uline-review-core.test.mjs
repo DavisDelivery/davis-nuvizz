@@ -14,7 +14,7 @@ import {
   ULINE_KEY, hasUlineAdvisory, ulineDecision, ulineWords, bearingDeg, buildUlineRows, sortUlineRows,
   eligibilityPayload, decisionAfter, buildingTypePayload, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES,
   NO_TRACTOR_KEY, noTractorWrite, noTractorTickFields, noTractorUntickFields, restrictionLockOf, restrictionSnapshot,
-  TICKED, canMoveTowardTractor,
+  TICKED, canMoveTowardTractor, tractorOkWrite, ulineUntickFields, ulineRestoreFields, afterUlineOff,
 } from '../src/lib/uline-review.js';
 import { confirmedBlockerKeys } from '../src/lib/trailer-block.js';
 
@@ -346,4 +346,53 @@ test('NO ONE-TAP TRACTOR OK OVER A PERSON\'S NO — once the profile is ticked, 
   assert.equal(canMoveTowardTractor({}), true, 'a row with no base is undecided');
   assert.equal(canMoveTowardTractor({ baseDecision: 'confirmed' }), false);
   assert.equal(canMoveTowardTractor({ ...{ baseDecision: 'undecided' }, ...TICKED }), false, 'the tick itself moves the row there');
+});
+
+// ── v1.62.3: "Tractor OK" takes Uline's stamp off the customer profile ─────────────────
+
+test('TRACTOR OK TAKES ULINE\'S STAMP OFF EXACTLY AS THE STOP CARD\'S UNTICK DOES — the key out AND the lock', () => {
+  // The stop card's toggle removes the key and sets manual_overrides.equipment_restrictions.
+  // Without the lock the scanner re-adds Uline's flag on the next Uline order.
+  const STAMP = { __stamp: true };
+  const f = tractorOkWrite('acme|1|x', STAMP, FV);
+  assert.equal(f.vehicle_eligibility, 'tractor', 'still Tractor-trailer OK — the mark the router reads');
+  assert.equal(f.vehicle_eligibility_by, 'dispatcher');
+  assert.deepEqual(f.equipment_restrictions, { op: 'arrayRemove', v: [ULINE_KEY] }, 'a remove, never a rewritten list');
+  assert.deepEqual(f.manual_overrides, { equipment_restrictions: true });
+  assert.deepEqual(ulineUntickFields(FV), { equipment_restrictions: { op: 'arrayRemove', v: [ULINE_KEY] }, manual_overrides: { equipment_restrictions: true } });
+  assert.ok(!JSON.stringify(f).includes('no_tractor_trailer'), 'nothing else on the list is touched');
+});
+
+test('UNDO OF TRACTOR OK PUTS ULINE\'S STAMP BACK, AND THE LOCK AS IT WAS', () => {
+  assert.deepEqual(ulineRestoreFields({ ulineOn: true, restrictionLock: null }, FV),
+    { equipment_restrictions: { op: 'arrayUnion', v: [ULINE_KEY] }, manual_overrides: { equipment_restrictions: { op: 'deleteField' } } });
+  assert.deepEqual(ulineRestoreFields({ ulineOn: true, restrictionLock: false }, FV),
+    { equipment_restrictions: { op: 'arrayUnion', v: [ULINE_KEY] }, manual_overrides: { equipment_restrictions: false } });
+  assert.deepEqual(ulineRestoreFields({ ulineOn: false, restrictionLock: true }, FV), {}, 'nothing was taken off, nothing goes back');
+  // Through undoWrite, chosen by the snapshot's op — and a tick's undo is unchanged.
+  const w = undoWrite('k', { eligibility: null, restriction: { ...restrictionSnapshot({ ulineOn: true }), op: 'uline-off' } }, {}, FV);
+  assert.equal(w.vehicle_eligibility, null);
+  assert.deepEqual(w.equipment_restrictions, { op: 'arrayUnion', v: [ULINE_KEY] });
+  const tick = undoWrite('k', { eligibility: null, restriction: restrictionSnapshot({ ntt: false }) }, {}, FV);
+  assert.deepEqual(tick.equipment_restrictions, { op: 'arrayRemove', v: ['no_tractor_trailer'] });
+});
+
+test('rows carry Uline\'s stamp — on at load, since it is what put the row on this tab', () => {
+  const day = { date: '2026-09-24', stops: [{ matchKey: 'a', businessName: 'A' }] };
+  const [row] = buildUlineRows([day], new Map([['a', { equipment_restrictions: [ULINE_KEY] }]]));
+  assert.equal(row.ulineOn, true);
+  assert.equal(restrictionSnapshot(row).ulineOn, true);
+});
+
+test('THE NEXT LOAD AGREES WITH THE SCREEN — the stamp off means the customer leaves this tab', () => {
+  // What the written note looks like after Tractor OK on an undecided row.
+  const note = { equipment_restrictions: [], manual_overrides: { equipment_restrictions: true }, vehicle_eligibility: 'tractor' };
+  assert.equal(hasUlineAdvisory(note), false, 'no longer Uline-flagged: off the tab on the next load');
+  assert.equal(ulineDecision(note), 'tractor');
+  assert.equal(ulineDecision({ ...note, vehicle_eligibility: null }), afterUlineOff({ baseDecision: 'undecided' }).baseDecision);
+  // The one advisory blocker such a row can still carry — a legacy no_tractor_trailer from Uline's
+  // text — hardens under the lock, and the row says so rather than pretending it did not.
+  const legacy = { equipment_restrictions: ['no_tractor_trailer'], manual_overrides: { equipment_restrictions: true }, auto_sources: { no_tractor_trailer: ['orderInstructions'] } };
+  assert.equal(ulineDecision(legacy), afterUlineOff({ ntt: true, baseDecision: 'undecided' }).baseDecision);
+  assert.deepEqual(afterUlineOff({ baseDecision: 'undecided' }), { ulineOn: false, restrictionLock: true, baseDecision: 'undecided' });
 });
