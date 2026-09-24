@@ -63,9 +63,15 @@ export function judgeRequest(url: string, method: string, body: unknown): void {
     const writes = Array.isArray(parsed?.writes) ? parsed.writes : null;
     if (!writes) throw new EgressRefused('refused: a Firestore commit the lock cannot read');
     for (const w of writes) {
-      const name = w?.update?.name ?? w?.delete ?? w?.transform?.document;
-      const path = typeof name === 'string' ? docPathOf('/' + name.replace(/^\/+/, '')) : null;
-      if (!path || !isShadowDoc(path)) throw new EgressRefused(`refused: a Firestore write outside ${SHADOW_DOC_PREFIX}* (${String(name).slice(0, 120)})`);
+      // EVERY name a write carries is judged, not the first one found: a write naming a shadow
+      // document in one field and another document in a second is refused, whatever Firestore
+      // would have made of it.
+      const names = [w?.update?.name, w?.delete, w?.transform?.document].filter((n) => n !== undefined);
+      if (!names.length) throw new EgressRefused('refused: a Firestore write the lock cannot read');
+      for (const name of names) {
+        const path = typeof name === 'string' ? docPathOf('/' + name.replace(/^\/+/, '')) : null;
+        if (!path || !isShadowDoc(path)) throw new EgressRefused(`refused: a Firestore write outside ${SHADOW_DOC_PREFIX}* (${String(name).slice(0, 120)})`);
+      }
     }
     return;
   }
@@ -102,6 +108,13 @@ export function lockEgress(): void {
   Object.defineProperty(locked, LOCK_MARK, { value: true });
   g.fetch = locked;
 }
+
+// LOCKED AT IMPORT, not only when a handler runs. Every claude-shadow* function imports this
+// module FIRST (the guard checks the order), and ES modules evaluate in import order, so the lock
+// is in place before any other module's top-level code — a top-level await in a shadow library
+// included — can reach fetch. The handler calls lockEgress() again in case anything replaced
+// fetch since.
+lockEgress();
 
 /** Whether the fetch this instance would use right now is the lock. */
 export function egressLocked(): boolean {

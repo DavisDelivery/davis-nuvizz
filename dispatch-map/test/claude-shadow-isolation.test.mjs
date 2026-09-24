@@ -356,6 +356,20 @@ test('THE RUNTIME NET: a shadow function that does not lock egress FIRST fails',
   assert.ok(has(edited, 'egress'), rules(edited).join());
 });
 
+test('REVIEW 3: the lock is imported FIRST — a shadow library\'s top-level code cannot run before egress is locked', async () => {
+  const second = await check({ [ENTRY]: CLEAN[ENTRY].replace("    import { lockEgress } from './lib/claude-shadow/egress.mts';\n", '') .replace("import { getDoc } from './lib/firestore.mts';", "import { getDoc } from './lib/firestore.mts';\n    import { lockEgress } from './lib/claude-shadow/egress.mts';") });
+  assert.ok(has(second, 'egress'), rules(second).join());
+});
+
+test('REVIEW 3: process other than process.env FAILS — mainModule.require, binding, getBuiltinModule are sockets without fetch', async () => {
+  for (const body of ["process.mainModule.require('https')", "process['bind' + 'ing']('tcp_wrap')", 'process.env.CLAUDE_SHADOW && process.exit(1)']) {
+    const r = await check({ [PLAN]: `export function plan() { ${body}; return {}; }` });
+    assert.ok(has(r, 'owned-forbidden'), `${body}: ${rules(r)}`);
+  }
+  const env = await check({ [PLAN]: `export function plan() { return { on: process.env.CLAUDE_SHADOW }; }` });
+  assert.deepEqual(env.violations, [], 'process.env is how the switches are read, and stays allowed');
+});
+
 // ── the real repo ─────────────────────────────────────────────────────────────
 
 test('THE REAL REPO passes: the Claude shadow planner reaches only reviewed modules, one network door and one write gateway', async () => {

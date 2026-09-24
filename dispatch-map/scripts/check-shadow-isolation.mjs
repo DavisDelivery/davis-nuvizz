@@ -84,7 +84,7 @@ export const LAYOUT = {
 
 // Rule 6. SHA-256 of egress.mts as esbuild prints it with comments stripped. A change to the lock
 // fails here until someone has re-read it and pasted the new value (the failure prints it).
-export const EGRESS_SHA256 = '516a42e8617e763e9836f59c26df8e3ee4a54c1f488ad550e1f3fb546ea29f20';
+export const EGRESS_SHA256 = 'fbc5653ec917c0956ca55b83cfc7691e0509e55517b3fd3743ee0e73374b1ef3';
 
 export const SERVER_HOSTS = ['api.anthropic.com', 'firestore.googleapis.com', 'oauth2.googleapis.com', 'www.googleapis.com'];
 export const MESSAGES_URL_LITERAL = 'https://api.anthropic.com/v1/messages';
@@ -157,6 +157,9 @@ const OWNED_FORBIDDEN = [
   [ESCAPE_HATCHES, 'createRequire / getBuiltinModule / process.binding / _http_ / _tls_ / WebAssembly / Worker — a way to the network without fetch'],
   [/googleapis\.com|FIREBASE_SA|\bgetAccessToken\b|\bloadServiceAccount\b|\bfirestoreDatabase\b/, 'Firestore credentials or hosts — shadow code reaches Firestore only through firestore.mts read helpers and store.mts'],
   [SITE_FUNCTION_PATH, "the site's own function paths — server shadow code may not call another function (that is how a NuVizz scan would be triggered)"],
+  // process only as process.env: process.binding, .dlopen, .getBuiltinModule and .mainModule.require
+  // are each a way to a socket that never names fetch.
+  [/\bprocess\b(?!\s*\.\s*env\b)/, 'process other than process.env'],
   [/\bNUVIZZ_[A-Z0-9_]*/, 'a NUVIZZ_ variable'],
   [/nuvizz\\?\.com/i, 'a NuVizz host'],
 ];
@@ -401,6 +404,10 @@ export async function checkShadowIsolation(root = DEFAULT_ROOT) {
       const first = name && (new RegExp(`\\b${name.replace('$', '\\$')}\\s*=\\s*async\\s*(?:function\\s*[\\w$]*\\s*)?\\([^)]*\\)\\s*(?:=>\\s*)?\\{\\s*lockEgress\\(\\);`).test(code)
         || new RegExp(`async\\s+function\\s+${name.replace('$', '\\$')}\\s*\\([^)]*\\)\\s*\\{\\s*lockEgress\\(\\);`).test(code));
       if (!importsLock || !first) v('egress', file, 'a shadow function must import lockEgress from lib/claude-shadow/egress.mts and call lockEgress(); as the FIRST statement of its default handler');
+      // …and import it FIRST, so the lock (installed at import) is in place before any other
+      // module's top-level code runs.
+      const firstImport = code.match(/(?:^|[;\n])\s*import\b[^;]*?["']([^"']+)["']/);
+      if (!firstImport || !sameModule(resolveLocal(file, firstImport[1]), LAYOUT.egress)) v('egress', file, "lib/claude-shadow/egress.mts must be this function's FIRST import — it locks egress at import time, before any other module runs");
     }
     // Rule 3: the one door to the network.
     const fetches = (code.match(/\bfetch\b/g) || []).length;

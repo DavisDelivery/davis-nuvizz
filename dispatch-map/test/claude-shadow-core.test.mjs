@@ -331,6 +331,9 @@ test('THE LOCK REFUSES every Firestore WRITE outside claude_shadow_* — PATCH, 
   assert.throws(() => judgeRequest(`${FS}:commit`, 'POST', commit('att_plan/davis__2026-09-25')), EgressRefused);
   assert.throws(() => judgeRequest(`${FS}:commit`, 'POST', JSON.stringify({ writes: [{ delete: 'projects/p/databases/(default)/documents/nuvizz_ops/scan_config' }] })), EgressRefused);
   assert.throws(() => judgeRequest(`${FS}:commit`, 'POST', 'not json'), EgressRefused, 'a commit the lock cannot read is refused');
+  // EVERY name in a write is judged: a shadow update carrying a second, non-shadow name is refused.
+  assert.throws(() => judgeRequest(`${FS}:commit`, 'POST', JSON.stringify({ writes: [{ update: { name: 'projects/p/databases/(default)/documents/claude_shadow_x/y' }, delete: 'projects/p/databases/(default)/documents/att_plan/davis__2026-09-25' }] })), EgressRefused);
+  assert.throws(() => judgeRequest(`${FS}:commit`, 'POST', JSON.stringify({ writes: [{ verify: { name: 'x' } }] })), EgressRefused, 'a write shape the lock does not know is refused');
   // The tab-between-dots path the store refuses: by the time the lock sees the URL, the parser has
   // made it '..' and resolved it — so it is judged as what it IS, a write to att_plan.
   assert.throws(() => judgeRequest(`${FS}/claude_shadow_runs/.\t./att_plan/davis__2026-09-25`, 'PATCH', '{}'), EgressRefused);
@@ -360,8 +363,22 @@ test('THE LOCK wraps fetch, sends exactly what it judged, and cannot be talked p
     await globalThis.fetch(`${FS}/att_plan/davis__2026-09-25`, sly);
     assert.equal(sent.at(-1).method, 'GET', 'what went out is what was judged');
     assert.equal(sent.length, 2, 'refused requests never reached the network');
+    // Anything that replaces fetch removes the lock — which is why every handler calls
+    // lockEgress() again first thing, and the next call puts it back.
+    globalThis.fetch = async () => new Response('{}');
+    assert.equal(egressLocked(), false);
+    lockEgress();
+    assert.equal(egressLocked(), true);
   } finally { globalThis.fetch = real; }
-  assert.equal(egressLocked(), false, 'restoring fetch removes the lock, and the next lockEgress() puts it back');
+});
+
+test('THE LOCK is installed at IMPORT — before a handler runs, before any other module\'s top-level code', async () => {
+  const real = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response('{}');
+    await import(`../netlify/functions/lib/claude-shadow/egress.mts?fresh=${Date.now()}`);
+    assert.equal(egressLocked(), true);
+  } finally { globalThis.fetch = real; }
 });
 
 test('THE ENDPOINT locks egress before it does anything else', async () => {
