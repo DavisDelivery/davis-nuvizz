@@ -196,20 +196,34 @@ export default function BacktestMap({ date, at, phone }) {
   const [note, setNote] = useState(null);
   const maps = useRef({ a: null, b: null });
   const [paneTick, setPaneTick] = useState(0);
+  const [attempt, setAttempt] = useState(0);
 
+  // The day's map is a read, and reading twice changes nothing — so a server error (seen once on a
+  // cold function: HTTP 502, then 200 in 0.7 s on every try after) is asked again once, by itself,
+  // before the screen says anything. A second failure says so, with a button to try again.
   useEffect(() => {
     let live = true;
     setM(null); setErr(null);
-    apiFetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'backtest-map', date }) })
-      .then(async (r) => {
-        const j = await r.json().catch(() => null);
+    const ask = () => apiFetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'backtest-map', date }) })
+      .then(async (r) => ({ r, j: await r.json().catch(() => null) }));
+    const pause = () => new Promise((res) => { setTimeout(res, 1500); });
+    (async () => {
+      let got = null, fail = null;
+      for (let i = 0; i < 2; i++) {
+        try {
+          got = await ask();
+          if (got.r.ok && got.j?.ok && got.j.map) { fail = null; break; }
+          fail = got.j?.error || `HTTP ${got.r.status}`;
+          if (got.r.status < 500) break;       // a 4xx is an answer (no backtest, stops not on file) — do not ask again
+        } catch (e) { fail = String(e?.message || e); }
+        if (i === 0) await pause();
         if (!live) return;
-        if (!r.ok || !j?.ok || !j.map) setErr(j?.error || `HTTP ${r.status}`);
-        else setM(j.map);
-      })
-      .catch((e) => { if (live) setErr(String(e?.message || e)); });
+      }
+      if (!live) return;
+      if (fail) setErr(fail); else setM(got.j.map);
+    })();
     return () => { live = false; };
-  }, [date]);
+  }, [date, attempt]);
 
   useEffect(() => {
     let live = true;
@@ -281,7 +295,16 @@ export default function BacktestMap({ date, at, phone }) {
   const noteLine = <div role="status" aria-live="polite">{note && <p className="text-xs text-amber-800">{note}</p>}</div>;
   const orderLine = oddOrder && <p className="text-[11px] text-slate-600">{oddOrder}</p>;
 
-  if (problem) return <div className="space-y-2">{header}<div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">The map could not load: {problem}</div></div>;
+  if (problem) {
+    return (
+      <div className="space-y-2">{header}
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 flex flex-wrap items-center justify-between gap-2">
+          <span>The map could not load: {problem}</span>
+          {err && <button onClick={() => setAttempt((n) => n + 1)} className="rounded-lg border border-rose-300 bg-white px-3 font-semibold min-h-[44px]">Try again</button>}
+        </div>
+      </div>
+    );
+  }
   if (stale) return <div className="space-y-2">{header}<div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">This day was backtested again after you opened it, so the map would not match the numbers below. Close the day and open it again.</div></div>;
   if (!m || !g) return <div className="space-y-2">{header}<div className="text-xs text-slate-500">Loading the map…</div></div>;
 
