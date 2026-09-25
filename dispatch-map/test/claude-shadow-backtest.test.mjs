@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildBacktestProblem, evaluateAssignment, makeSequencer, measurePlan, compareBacktest, coLoad, capFor,
-  blocksTractor, usableCoords, btBriefing, btLoopProblem, TRAILER_BLOCKER_KEYS, PROFILE_MAX_SKIDS, BT_SYSTEM, BT_TOOLS, mayLeaveUnplanned,
+  blocksTractor, usableCoords, btBriefing, btLoopProblem, TRAILER_BLOCKER_KEYS, PROFILE_MAX_SKIDS, BT_SYSTEM, BT_TOOLS, mayLeaveUnplanned, PROFILE_MAX_LBS,
 } from '../netlify/functions/lib/claude-shadow/backtest-core.mts';
 import { TRAILER_BLOCKER_KEYS as ENGINE_BLOCKERS } from '../netlify/functions/lib/routing-assignment-solver.mts';
 import { DEFAULT_TRUCK_PROFILES } from '../netlify/functions/lib/truck-profiles.mts';
@@ -287,6 +287,30 @@ test('the shadow’s trailer-blocker list and profile skid counts are the engine
   assert.deepEqual([...TRAILER_BLOCKER_KEYS].sort(), [...ENGINE_BLOCKERS].sort());
   const byClass = Object.fromEntries(DEFAULT_TRUCK_PROFILES.map((t) => [/TRACTOR/.test(t.truckClass) ? 'tractor' : 'box_truck', t.maxSkids]));
   assert.deepEqual(PROFILE_MAX_SKIDS, byClass);
+  const lbsByClass = Object.fromEntries(DEFAULT_TRUCK_PROFILES.map((t) => [/TRACTOR/.test(t.truckClass) ? 'tractor' : 'box_truck', t.maxWeightLbs]));
+  assert.deepEqual(PROFILE_MAX_LBS, lbsByClass);
+});
+
+test('weight is a hard limit — the first production plan put 10,084 lb on a 10,000 lb box truck — but dispatch’s own load is never refused', () => {
+  const caps = { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 40 }, DULUTH: { name: 'DULUTH', cap: 40 } } };
+  const p = buildBacktestProblem(input({ caps }));
+  const box = p.loads.find((l) => l.cls !== 'tractor');
+  assert.equal(box.maxLbs, 9200, 'the 10,000 lb rating less the 800 lb of the unlocated stop that rode on it');
+  const seqr = makeSequencer(p, CFG);
+  const own = evaluateAssignment(p, { loads: p.loads.map((l) => ({ load: l.id, stops: l.dispatch })), unplanned: [] }, CFG, seqr);
+  assert.ok(!own.summary.hardViolations.some((v) => /lb limit/.test(v)), own.summary.hardViolations.join('; '));
+  // 8 stops of 800 lb = 6,400 lb fits a box; make them heavy and it does not.
+  const heavyRows = day().map((r) => ({ ...r, weight: 1600 }));
+  const hp = buildBacktestProblem(input({ caps, rows: heavyRows }));
+  const hbox = hp.loads.find((l) => l.cls !== 'tractor');
+  const res = evaluateAssignment(hp, { loads: [{ load: hbox.id, stops: hp.stops.map((s) => s.id) }], unplanned: [] }, CFG, makeSequencer(hp, CFG));
+  assert.match(res.summary.hardViolations.join(' '), new RegExp(`${hbox.id} carries 12800 lb — over its 8400 lb limit`), 'rating less the 1,600 lb unlocated stop');
+  // A truck dispatch loaded past its rating keeps what it carried, and says so.
+  const over = day().map((r, i) => (i < 4 ? { ...r, weight: 3000 } : r));      // GAINESVILLE (Ben, tractor) 12,000; fine
+  const op = buildBacktestProblem(input({ caps, rows: over.map((r, i) => (i >= 4 && i < 8 ? { ...r, weight: 2600 } : r)) }));
+  const obox = op.loads.find((l) => l.cls !== 'tractor');
+  assert.equal(obox.maxLbs, 10400);
+  assert.match(obox.lbsNote, /raised from 9200 to 10400 lb/);
 });
 
 test('coordinates: null, blank, 0,0 and out-of-range are not a place', () => {
