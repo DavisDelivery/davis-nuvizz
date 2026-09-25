@@ -57,7 +57,8 @@ const SCREENS = [
   { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
-  { key: 'claudeshadow', label: 'Claude shadow', nav: /claude shadow/i, inMore: true },
+  // Routing's third tab since v1.68.2: Routing, then the Build | Engine | Shadow toggle.
+  { key: 'claudeshadow', label: 'Routing — Shadow (Claude shadow)', nav: /routing/i, sub: /^shadow$/i, arrive: 'Claude shadow' },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i, inMore: true },
 ];
 
@@ -298,6 +299,15 @@ async function gotoScreen(page, screen) {
   if (!(await use.isVisible().catch(() => false))) return false;
   await use.click();
   await page.waitForTimeout(900);
+  // A sub-tab (Routing's Build | Engine | Shadow). It must prove it arrived, or the guard would
+  // measure the Build screen under the Shadow screen's name.
+  if (screen.sub) {
+    const tabBtn = page.getByRole('button', { name: screen.sub }).first();
+    if (!(await tabBtn.isVisible().catch(() => false))) return false;
+    await tabBtn.click();
+    await page.waitForTimeout(900);
+  }
+  if (screen.arrive && !(await page.getByRole('heading', { name: screen.arrive }).first().isVisible().catch(() => false))) return false;
   return true;
 }
 

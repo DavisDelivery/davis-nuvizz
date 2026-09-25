@@ -178,7 +178,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.68.1';
+const APP_VERSION = '1.68.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -232,6 +232,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.68.2', 'CLAUDE SHADOW IS ROUTING\u2019S THIRD TAB: BUILD | ENGINE | SHADOW. Chad: \u201ci want you to move the claude shadow tab to here beside the build and engine buttons add a 3rd that is called shadow.\u201d A MOVE, NOT A COPY. The toggle at the far right of the top bar on Routing now reads Build | Engine | Shadow, and Shadow opens the same Claude shadow screen that used to live under More \u2014 the screen itself is unchanged. Its More-menu entry and its phone-menu entry are gone, so there is one way in, not two that drift apart. ON A PHONE, the same way Engine is reached: Routing \u2192 the gear \u2192 \u201c\u21c4 Shadow view\u201d, and the Build | Engine | Shadow row sits at the top of the Engine and Shadow screens so the way back is always on screen. Opening Routing still lands on Build, as it always has. The Build Panel and the Route Workbench are not touched: the only line on the Routing screen is one more gear entry beside Engine\u2019s, phone only. The phone, tablet and desktop layout guards now reach the screen through Routing \u2192 Shadow and must see its heading before they measure it. PUT IT BACK: revert this one commit.'],
   ['1.68.1', 'THE BUSINESS LABELS ON THE ULINE TAB’S FROM-ABOVE MAP CAN BE CLICKED. Chad: “I want to be able to click on these labels when evaluating a stop so i can see their addresses i look at labeled addresses as confirmed like in this photo where the pin is not exactly on a building.” The satellite close-up was built with Google’s place labels switched off for clicks (clickableIcons: false); every other map in the app leaves them on. Now clicking a label such as Aquakleen or Norcross Corporate Park opens Google’s own card with that business’s name and address, so a pin that lands between buildings can be checked against the addresses around it. Only that one setting on that one map changed; the pin, the zoom and the street and 3D views are as they were. Put back: revert this commit.'],
   ['1.68.0', 'STOP LOOKUP, REDESIGNED: BOTH SEARCHES ON ONE PANEL, NO TABS. Chad, on v1.62.0: “terrible UI design why would you put on two tabs when there is tons of blank screen I don’t love any of this ui feels like an amateur wrote it i don’t like the design or astehtics” — and, after the screenshots: “Merge it.” The order-or-customer search and the address, city or ZIP search now sit side by side in one panel on a desktop (two halves at 1024px, the address half the wider from 1280px, the two rows of boxes held level whichever description wraps), each its own form so Enter runs the search the cursor is in; on a phone they stack with the order box first, and after a search the page scrolls to the answer. One set of sizes for every box and button (44px boxes, 15px text, the brand blue for each half’s one button, Look up and Find stops), a single All dates / One day / Range switch instead of three loose buttons, and a small status dot in place of the green 0 NuVizz calls box. The two cards of instructions under the search are gone. In their place, RECENT LOOKUPS: the searches run on that device, newest first, one tap to run again; the same search typed twice in different case is kept once, eight are kept, and a damaged stored list costs the list, never the screen. Unchanged: an address search still covers All dates unless a day or range is picked, and the pick is still not remembered; the answers under the panel look as they did. NOT IN THIS: the held “days not in history” follow-up, which still waits on Chad. 8 new tests (the recent-list rules, each broken on purpose and seen to fail); the phone and tablet guards drive both forms without a tab and measure the recent list.'],
   ['1.67.1', 'SHP IS PUREMAXX. Chad: “Shp is puremaxx.” The Print labels screen now names the SHP shipper Puremaxx, on its chip, on the list heading and in the line under the chips, the same way AVRT reads Averitt and ESTES reads Estes. Only the name changes: which orders are Puremaxx’s is still read off the order number (SHP…), exactly as before, and every other prefix (MILLER, MCC, RA and the rest) still shows as itself until somebody says whose it is. The board carries no ship-from name to check it against (the orders’ ship-from block is empty on the board), so the name is Chad’s word, written the way he typed it with a capital P; say so if Puremaxx is styled differently.'],
@@ -11217,14 +11218,9 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                       the v0.54.50 shape — dispatch runs on a phone. */}
                   {addrBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{addrBadge > 99 ? '99+' : addrBadge}</span>}
                 </button>
-                {/* Claude shadow — the same entry the desktop More menu has, per the note above. */}
-                <button
-                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
-                  onClick={() => onSelectMenu('claudeshadow')}
-                  role="menuitem"
-                >
-                  <Sparkles size={12} /> Claude shadow
-                </button>
+                {/* Claude shadow is not here any more: it is Routing's third tab, Build | Engine |
+                    Shadow (Chad, 2026-09-25). On a phone it is Routing → gear → Shadow view, and
+                    the row on the Engine and Shadow screens — the same way Engine is reached. */}
                 {/* UAT only — and here BECAUSE of the note above: dispatch runs on a phone,
                     and a screen added to one navigation and not the other is a screen that
                     does not exist on a phone. */}
@@ -23573,7 +23569,7 @@ function EngineResultPanel({ result, kind, onDismiss }) {
   );
 }
 
-function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }) {
+function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, onOpenShadow = null }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, lastCompletedScanAt, ops, scanUnplannedCount } = useStops(selectedDate);
   // Stops status card (same pill as the dispatch Map, top-right of the routing map):
@@ -26869,6 +26865,8 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     // the map for a control used once a week. It is a gear action now; the Engine screen keeps the
     // Build/Engine row so the way back is on screen.
     ...(onOpenEngine ? [{ key: 'engine', label: '⇄ Engine view (shadow routing)', onClick: onOpenEngine }] : []),
+    // Same shape for the Claude shadow tab, Routing's third (Chad, 2026-09-25). Phone only, like Engine's.
+    ...(onOpenShadow ? [{ key: 'shadow', label: '⇄ Shadow view (Claude’s comparison plan)', onClick: onOpenShadow }] : []),
     { key: 'versionLog', label: `ⓘ Version history (v${APP_VERSION})`, onClick: () => setVersionLogOpen(true) },
     // The Shiplify trial file — desktop and phone gear alike.
     { key: 'shiplifyImport', label: '⇪ Import Shiplify results', onClick: () => setShiplifyImportOpen(true) },
@@ -29686,15 +29684,19 @@ function EngineAgreementChart({ days }) {
   );
 }
 
-// Build ⇄ Engine toggle. A segmented control (the app's standard two-way sub-mode pattern).
+// Build | Engine | Shadow toggle. A segmented control (the app's standard sub-mode pattern).
 // Rendered at the far RIGHT of the top nav row on desktop (only while on Routing), and inside
 // the Routing screen on mobile (whose app bar is a chip menu with no persistent tab row).
+//
+// SHADOW is the Claude shadow tab (src/shadow/ClaudeShadowScreen.jsx). Chad, 2026-09-25: "move
+// the claude shadow tab to here beside the build and engine buttons add a 3rd that is called
+// shadow". It was a More-menu screen of its own until then; the screen itself is unchanged.
 function RoutingSubTabs({ tab, onChange }) {
   const btn = (id, label) => (
     <button
       key={id}
       onClick={() => onChange(id)}
-      className={`px-3 py-1 text-[12px] font-semibold ${tab === id ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} ${id === 'engine' ? 'border-l border-slate-300' : ''}`}
+      className={`px-3 py-1 text-[12px] font-semibold ${tab === id ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} ${id !== 'build' ? 'border-l border-slate-300' : ''}`}
       style={tab === id ? { background: BRAND } : undefined}
     >{label}</button>
   );
@@ -29702,27 +29704,30 @@ function RoutingSubTabs({ tab, onChange }) {
     <div className="flex rounded-md border border-slate-300 overflow-hidden shrink-0">
       {btn('build', 'Build')}
       {btn('engine', 'Engine')}
+      {btn('shadow', 'Shadow')}
     </div>
   );
 }
 
-// Routing section = the beta Build screen + the Engine (shadow) tab. `routingTab`/`setRoutingTab`
-// are LIFTED to the shell so the Build/Engine toggle can live in the top nav row on desktop; the
-// in-screen sub-tab bar renders only on mobile (`showSubTabs`).
-function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTabs, presence }) {
+// Routing section = the beta Build screen + the Engine (shadow) tab + the Claude shadow tab.
+// `routingTab`/`setRoutingTab` are LIFTED to the shell so the Build/Engine/Shadow toggle can live
+// in the top nav row on desktop; the in-screen sub-tab bar renders only on mobile (`showSubTabs`).
+function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTabs, isMobile, presence }) {
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* PHONE: the row shows on the ENGINE screen only (v0.93.15). On Build it cost 59px above the
-          map for one control used once a week; Build reaches Engine from the app-bar gear, and
-          Engine keeps this row so the way back is always on screen. */}
+      {/* PHONE: the row shows on the ENGINE and SHADOW screens only (v0.93.15). On Build it cost
+          59px above the map for one control used once a week; Build reaches Engine and Shadow from
+          the app-bar gear, and both keep this row so the way back is always on screen. */}
       {showSubTabs && routingTab !== 'build' && (
         <div className="flex items-center border-b bg-white px-2 py-1.5 shrink-0">
           <RoutingSubTabs tab={routingTab} onChange={setRoutingTab} />
         </div>
       )}
       {routingTab === 'build'
-        ? <RoutingScreen debugCaptureRef={debugCaptureRef} presence={presence} onOpenEngine={showSubTabs ? () => setRoutingTab('engine') : null} />
-        : <EngineScreen />}
+        ? <RoutingScreen debugCaptureRef={debugCaptureRef} presence={presence} onOpenEngine={showSubTabs ? () => setRoutingTab('engine') : null} onOpenShadow={showSubTabs ? () => setRoutingTab('shadow') : null} />
+        : routingTab === 'shadow'
+          ? <ClaudeShadowScreen isMobile={isMobile} />
+          : <EngineScreen />}
     </div>
   );
 }
@@ -30228,10 +30233,11 @@ function Shell() {
     return unsub;
   }, []);
 
-  // Routing Build ⇄ Engine sub-tab, lifted here so the toggle can render in the top nav row
-  // (far right) on desktop while the Routing screen consumes the same state.
+  // Routing Build | Engine | Shadow sub-tab, lifted here so the toggle can render in the top nav
+  // row (far right) on desktop while the Routing screen consumes the same state. Anything stored
+  // that this build does not know opens Build.
   const [routingTab, setRoutingTab] = useState(() => {
-    try { return localStorage.getItem('routing.tab') === 'engine' ? 'engine' : 'build'; } catch { return 'build'; }
+    try { const v = localStorage.getItem('routing.tab'); return v === 'engine' || v === 'shadow' ? v : 'build'; } catch { return 'build'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.tab', routingTab); } catch {} }, [routingTab]);
   // Opening the Routing screen defaults to the BUILD tab (Chad's preference). Switching to
@@ -30276,7 +30282,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'claudeshadow', 'uatbench'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'uatbench'];
     setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -30425,8 +30431,7 @@ function Shell() {
                 { id: 'labels', label: 'Print labels', hint: 'Davis labels by shipper and day — 0 NuVizz calls', icon: <Tag size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
-                // Claude will plan tomorrow beside the router, for comparison only. Phone menu below too.
-                { id: 'claudeshadow', label: 'Claude shadow', hint: 'Claude’s comparison plan for tomorrow — not planning yet; 0 NuVizz calls', icon: <Sparkles size={14} /> },
+                // Claude shadow moved to Routing's Build | Engine | Shadow toggle (Chad, 2026-09-25).
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
                 { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
                 // UAT ONLY, keyed on the HOSTNAME — the one fact about a deploy nobody can
@@ -30449,7 +30454,7 @@ function Shell() {
                 screens, two positions, each right on its own map. */}
           </div>
           {/* Far right of the nav row: the presence chip (who else is on) plus the Routing
-              Build/Engine toggle — the toggle shows ONLY on the Routing screen. */}
+              Build/Engine/Shadow toggle — the toggle shows ONLY on the Routing screen. */}
           <div className="flex items-center gap-2">
             <PresenceChip presence={presence} />
             {tab === 'routing' && ROUTING_FLAG && <RoutingSubTabs tab={routingTab} onChange={setRoutingTab} />}
@@ -30457,7 +30462,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'claudeshadow' ? <ClaudeShadowScreen isMobile={isMobile} /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
