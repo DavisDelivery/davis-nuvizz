@@ -87,7 +87,15 @@ export default async (req: Request): Promise<Response> => {
 
   const url = new URL(req.url);
   const date = url.searchParams.get('date') || '';
-  const live = url.searchParams.get('live') === '1';
+  const cacheOnlyAsked = url.searchParams.get('cacheOnly') === '1';
+  const live = url.searchParams.get('live') === '1' && !cacheOnlyAsked;   // cacheOnly wins: it is the promise not to call
+  // ?cacheOnly=1 — THE STORED COPY OR NOTHING, NEVER A CALL. Opening a Compare card for a route
+  // NuVizz dated yesterday reads that day's roster (lib/wb-own-day.js); a click must never spend
+  // a NuVizz call without anyone knowing, so that read asks for this and takes 'none' for an answer.
+  const cacheOnly = cacheOnlyAsked;
+  if (cacheOnly && !isFirestoreEnabled()) {
+    return J({ ok: true, date, source: 'none', at: null, count: 0, loads: [], shells: null, note: 'cacheOnly — no store to read, and none was fetched' });
+  }
 
   // ── ?explain=1 — IS THE ROSTER POPULATING? Answered with data, at ZERO vendor cost ──────
   //
@@ -169,6 +177,13 @@ export default async (req: Request): Promise<Response> => {
       // WHICH ONE IS RIGHT IS A DISPATCH JUDGEMENT, NOT AN ENGINEERING ONE — free and silent
       // versus honest and one press away — so it ships default-ON (today's behaviour, nothing
       // changes without the flag) and he can flip it without a deploy.
+      if (cacheOnly) {
+        // Whatever the cache holds, even a copy shouldServeCachedRoster would refresh — this caller
+        // asked for the stored answer, not a fresh one.
+        return J(cached
+          ? { ok: true, date, source: 'cache', at: cached.at, count: cached.loads.length, loads: cached.loads, pull: cached.pull ?? null, shells: null }
+          : { ok: true, date, source: 'none', at: null, count: 0, loads: [], shells: null, note: 'cacheOnly — no stored roster for this date, and none was fetched' });
+      }
       const autoLiveOn = !/^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ROSTER_AUTO_LIVE ?? '').trim());
       if (!autoLiveOn) {
         return J({

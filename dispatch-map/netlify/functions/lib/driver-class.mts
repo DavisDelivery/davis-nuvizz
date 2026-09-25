@@ -1,6 +1,6 @@
 // lib/driver-class.mts — WHICH TRUCK A DRIVER RUNS: the MarginIQ employees roster, then the one pin.
 //
-// Moved here, unchanged, from routing-plan-core.mts (v1.70.0) so the Claude shadow can use the SAME
+// Moved here, unchanged, from routing-plan-core.mts (v1.71.0) so the Claude shadow can use the SAME
 // rule the learned engine uses without importing the engine's whole graph — routing-plan-core
 // reaches setDoc, history-store and tractor-flags, none of which the shadow's isolation guard may
 // admit. routing-plan-core re-exports both names, so every existing caller is untouched, and

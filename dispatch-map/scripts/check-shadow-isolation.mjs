@@ -100,7 +100,7 @@ export const REVIEWED_SHARED = {
   'netlify/functions/lib/require-user.mts': 'the auth gate; reads the user document, calls no vendor',
   'netlify/functions/lib/auth-core.mts': 'session-token signing and checking; node:crypto only',
   'netlify/functions/lib/auth-store.mts': 'the user store, reached only through requireUser, which reads it',
-  // v1.70.0 — the Claude router's backtest measures plans with the learned engine's OWN estimator and
+  // v1.71.0 — the Claude router's backtest measures plans with the learned engine's OWN estimator and
   // sequencer, so its miles and minutes line up with the Engine tab's. Each is pure: no I/O, no host.
   'netlify/functions/lib/routing-engine-solver.mts': 'the learned engine\'s sequencer and travel estimator; PURE (its header: no I/O); its only value import is zones.mts (the config and score imports are type-only)',
   'netlify/functions/lib/zones.mts': 'geohash zone ids; PURE, no imports',
@@ -123,7 +123,7 @@ export const SHARED_IMPORTS = {
   // and the egress lock judges it as one. The shadow learns from history_days with it.
   'netlify/functions/lib/firestore.mts': ['getDoc', 'isFirestoreEnabled', 'listDocs'],
   'netlify/functions/lib/require-user.mts': ['requireUser'],
-  // v1.70.0 — the Claude router's backtest (lib/claude-shadow/backtest-core.mts, backtest.mts).
+  // v1.71.0 — the Claude router's backtest (lib/claude-shadow/backtest-core.mts, backtest.mts).
   'netlify/functions/lib/routing-engine-solver.mts': ['solveRoute', 'haversineMiles', 'travelMinutesForMiles'],
   'netlify/functions/lib/zones.mts': ['zoneId'],
   'netlify/functions/lib/driver-class.mts': ['employeeClassMap', 'CLASS_OVERRIDE'],

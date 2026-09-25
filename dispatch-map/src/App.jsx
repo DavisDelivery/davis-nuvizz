@@ -86,7 +86,7 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUE
 // so the screen can never build a query the server reads differently.
 import { placeParams, placeQuery, placeQueryUsable } from './lib/stop-search.js';
 import { addRecent, parseRecent, recentAgo, recentEntry, recentKindLabel, recentKey } from './lib/stop-lookup-recent.js';
-import { weekOf, weekLabel, addDays } from './lib/load-lookup.js';
+import { weekOf, weekLabel, addDays, PERIODS, periodRange } from './lib/load-lookup.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -127,6 +127,7 @@ import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
 import { boardStatusPanel } from './lib/board-status-card.js';
 import { buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner, rosterDriverOf } from './lib/route-status.js';
+import { wbOwnDayRosterEnabled, routeOwnDay, ownDayIdentity } from './lib/wb-own-day.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { shouldAutoStageBuild } from './lib/build-autostage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
@@ -179,7 +180,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.70.0';
+const APP_VERSION = '1.71.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -233,7 +234,9 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.70.0', 'THE CLAUDE ROUTER, AND A BACKTEST THAT SAYS WHAT IT WOULD HAVE SAVED. Chad: \u201cI want you to build out the Claude router now. And then if there\u2019s a way that we can backfill it and back test it \u2026 take everything that was delivered on the loads that was delivered and then seeing how the Claude router would have done it differently \u2026 statistics about it being different, like how much more successful it was or the mileage that it reduced, the cost it reduced.\u201d WHAT IT IS. Routing \u2192 Shadow now opens on \u201cClaude router \u2014 tried on past days\u201d. Pick sealed days and press Backtest: for each day Claude (claude-opus-5-5) is given the stops that actually rode out and the trucks that actually ran, and assigns every stop to a truck through a check-and-revise loop \u2014 it proposes a full plan, a checker rejects anything over a truck\u2019s skid cap, any stop on no truck or two, any no-53\u2032 stop on a tractor, and any truck whose day (drive time plus 15 min on site a stop, the engine\u2019s default) runs past the engine\u2019s 10-hour shift \u2014 raised, like a cap, to what dispatch\u2019s own truck took \u2014 and gives back each truck\u2019s miles and drive time; Claude revises until the plan is clean, then submits. A delivered stop may NOT be left off (dropping freight would read as saved miles); the one exception is a no-tractor stop dispatch sent on a tractor. Stops are numbered by place, never in dispatch\u2019s load order, so the question does not carry the answer. WHAT IT MEASURES, THREE COLUMNS ON ONE YARDSTICK (the learned engine\u2019s own estimator, so it lines up with the Engine tab): dispatch as it was driven; dispatch\u2019s same trucks with the stops re-ordered by the engine (so a saving that is only a better stop ORDER is never credited to Claude); and Claude. Road miles, drive time, trucks used, skid use, over-cap loads, no-tractor stops on a tractor, stops moved. Totals across every day backtested sit at the top. COST. Nothing in the app says what a mile or a driver-hour costs Davis, so no dollar saving is shown until you enter a rate in Router settings ($/mile, $/drive-hour); it is never guessed. WHAT IT CANNOT SEE, said on every result: truck class is the driver\u2019s CURRENT MarginIQ type, equipment limits are the CURRENT customer notes, delivery windows are not a constraint (most stored windows are the vendor\u2019s 08:00\u201320:00 default), and capacity is learned only from days BEFORE the day tested. MONEY. The model is the only spend: at most $5 a day by default (Router settings), at most 8 rounds, and every Backtest button asks first and states the ceiling \u2014 a real one: no round starts that could pass it at its most expensive, a round whose cost cannot be read back is charged on the high side, and a model with no price is refused. Rounds are streamed (a long unstreamed round is cut off at 5 minutes waiting for headers). Stop means stop, even pressed mid-build. And ALL backtests together stop at $25 per 24 hours \u2014 CLAUDE_ROUTER_DAILY_USD, an env var on purpose: Router settings sit behind the same door as the Backtest button, so a ceiling kept there would bound nothing; days past it wait, they are not failed. A scheduled worker runs queued days one at a time, a few rounds every three minutes, checkpointing every round so nothing is paid for twice. It refuses \u2014 and spends nothing \u2014 with CLAUDE_SHADOW=off, with no API key, or on the UAT mirror (which copies production\u2019s key). 0 NuVizz calls; it writes only claude_shadow_*; the board, the Build Panel and the Route Workbench are not touched. ALSO: the engine\u2019s driver\u2192truck-class rule moved, unchanged, into its own small file so the shadow can share it (a test pins that the engine uses the very same function). PUT IT BACK: CLAUDE_SHADOW=off stops every run at once; revert this commit to remove the panel.'],
+  ['1.71.0', 'THE CLAUDE ROUTER, AND A BACKTEST THAT SAYS WHAT IT WOULD HAVE SAVED. Chad: \u201cI want you to build out the Claude router now. And then if there\u2019s a way that we can backfill it and back test it \u2026 take everything that was delivered on the loads that was delivered and then seeing how the Claude router would have done it differently \u2026 statistics about it being different, like how much more successful it was or the mileage that it reduced, the cost it reduced.\u201d WHAT IT IS. Routing \u2192 Shadow now opens on \u201cClaude router \u2014 tried on past days\u201d. Pick sealed days and press Backtest: for each day Claude (claude-opus-5-5) is given the stops that actually rode out and the trucks that actually ran, and assigns every stop to a truck through a check-and-revise loop \u2014 it proposes a full plan, a checker rejects anything over a truck\u2019s skid cap, any stop on no truck or two, any no-53\u2032 stop on a tractor, and any truck whose day (drive time plus 15 min on site a stop, the engine\u2019s default) runs past the engine\u2019s 10-hour shift \u2014 raised, like a cap, to what dispatch\u2019s own truck took \u2014 and gives back each truck\u2019s miles and drive time; Claude revises until the plan is clean, then submits. A delivered stop may NOT be left off (dropping freight would read as saved miles); the one exception is a no-tractor stop dispatch sent on a tractor. Stops are numbered by place, never in dispatch\u2019s load order, so the question does not carry the answer. WHAT IT MEASURES, THREE COLUMNS ON ONE YARDSTICK (the learned engine\u2019s own estimator, so it lines up with the Engine tab): dispatch as it was driven; dispatch\u2019s same trucks with the stops re-ordered by the engine (so a saving that is only a better stop ORDER is never credited to Claude); and Claude. Road miles, drive time, trucks used, skid use, over-cap loads, no-tractor stops on a tractor, stops moved. Totals across every day backtested sit at the top. COST. Nothing in the app says what a mile or a driver-hour costs Davis, so no dollar saving is shown until you enter a rate in Router settings ($/mile, $/drive-hour); it is never guessed. WHAT IT CANNOT SEE, said on every result: truck class is the driver\u2019s CURRENT MarginIQ type, equipment limits are the CURRENT customer notes, delivery windows are not a constraint (most stored windows are the vendor\u2019s 08:00\u201320:00 default), and capacity is learned only from days BEFORE the day tested. MONEY. The model is the only spend: at most $5 a day by default (Router settings), at most 8 rounds, and every Backtest button asks first and states the ceiling \u2014 a real one: no round starts that could pass it at its most expensive, a round whose cost cannot be read back is charged on the high side, and a model with no price is refused. Rounds are streamed (a long unstreamed round is cut off at 5 minutes waiting for headers). Stop means stop, even pressed mid-build. And ALL backtests together stop at $25 per 24 hours \u2014 CLAUDE_ROUTER_DAILY_USD, an env var on purpose: Router settings sit behind the same door as the Backtest button, so a ceiling kept there would bound nothing; days past it wait, they are not failed. A scheduled worker runs queued days one at a time, a few rounds every three minutes, checkpointing every round so nothing is paid for twice. It refuses \u2014 and spends nothing \u2014 with CLAUDE_SHADOW=off, with no API key, or on the UAT mirror (which copies production\u2019s key). 0 NuVizz calls; it writes only claude_shadow_*; the board, the Build Panel and the Route Workbench are not touched. ALSO: the engine\u2019s driver\u2192truck-class rule moved, unchanged, into its own small file so the shadow can share it (a test pins that the engine uses the very same function). PUT IT BACK: CLAUDE_SHADOW=off stops every run at once; revert this commit to remove the panel.'],
+  ['1.70.0', 'STOP LOOKUP DATES ARE BUTTONS NOW, AND THEY START ON TODAY — FOR THE ADDRESS SEARCH AND FOR A DRIVER’S LOADS. Chad: “dates for address and drivers loads i want it to default to today button for this week last week this month this year last year range”. Both searches carry the same row: Today, This week, Last week, This month, This year, Last year, Range. A period still running ends today; last week and last year run to their own last day. The address search replaces All dates / One day with these. The driver lookup was a week at a time; it now takes any of them. Up to two weeks it reads whole days as before; past that it reads each sealed day’s drivers list first and then only that driver’s orders, so a year fits in one look. Records start Jun 4, 2026, so Last year says every day had no record rather than showing an empty screen as an answer. AND OUT FOR DELIVERY IS NOT “NOT CLOSED OUT”. Chad, on a load reading “18 not closed out”: “should specify out for delivery and ones actually not closed out from previous days”. An open order on today’s load now reads Out for delivery, in blue beside the count; only an order left open on an earlier day reads Not closed out. Firestore only: 0 NuVizz calls.'],
+  ['1.69.1', 'A ROUTE IN THE ROUTES PANEL OPENS IN COMPARE, EVEN WHEN NUVIZZ DATED IT THE DAY BEFORE. Chad, 2026-09-24, with ESTES APPT listed in the Routes panel and the Compare card refusing it: \u201cif its panel for routes it should load.\u201d WHY IT REFUSED, read off the stored board and rosters, not guessed: a card must know its NuVizz load or a Save is refused and strands the stops moved onto it, so it looks the route up on the SELECTED day\u2019s load roster. ESTES APPT\u2019s load (DAVIS000204757, Draft) is on 9/23\u2019s roster, because NuVizz still dates its stops 9/23; the scan carries open route stops forward onto today, so the route showed on 9/24 while its load lived on 9/23. THE FIX: when the day\u2019s roster cannot name the load and no stop carries a load id, the card looks on the roster of the day NuVizz files those stops under and takes the load that owns the name THERE \u2014 and says so: \u201cOpened ESTES APPT on NuVizz load DAVIS000204757 \u2014 NuVizz still dates this load and its stops 2026-09-23.\u201d NARROW ON PURPOSE, because route names repeat every day and the wrong same-named load is the one thing a card must never save to: every open stop must share one earlier NuVizz day; that day must have exactly one load owning the name (the screen\u2019s own rule \u2014 a cancelled twin loses, two live loads means nobody speaks); a cancelled load never speaks for live freight. Anything short of that keeps the old refusal word for word, with a clearer reason when the earlier day was checked and could not answer. IT CAN NEVER SPEND A NUVIZZ CALL: the earlier day is read with a new cacheOnly=1 on the roster endpoint, which answers from the stored copy or answers \u2018none\u2019, and wins over live=1. PROVEN IN A REAL BROWSER, both ways: a new CI guard (verify:wb-own-day) builds that exact board, clicks ESTES APPT and an ordinary route in the Routes panel, and records every roster request. On this build ESTES APPT opens on its own load, the ordinary route opens unchanged and reads no other day, and the earlier day is read once, cache-only. On main, and on this build with the switch off, ESTES APPT does not open. 11 unit tests, two mutation-checked. THE ROUTE WORKBENCH IS FROZEN AND THIS IS A WORKBENCH CHANGE, made because Chad named it; the commit carries his sentence. VITE_WB_OWN_DAY_ROSTER=off puts back the old refusal (build-time, so it is a redeploy). NOT CHANGED: the Routes panel\u2019s own Assign and Dispatch buttons still resolve the load from today\u2019s roster only, so on a route like ESTES APPT they still say its load id has not loaded \u2014 the Compare card\u2019s own driver box works, because it saves with the card.'],
   ['1.69.0', 'A DRIVER’S WEEK OF LOADS, ON STOP LOOKUP. Chad: “add a load look up so if i wanted to evaluate a weeks worth of a drivers loads … want milage of load earnings of load cost of load stops ect” — and “i want this to be part of the stops lookup tab.” The Stop lookup panel has a third search across the bottom: pick a week (Monday to Sunday, ‹ ›) and type a driver, or leave the name blank to see everyone who ran loads that week. The answer is the week in eight tiles — loads, delivered, road miles, time from first to last delivery, freight, order prices, per mile and per stop, and cost — then every load, day by day: stops and orders, delivered or not, first → last delivery, freight, road miles, order prices, per mile. “Map & stops” opens a load: a map of the yard and the stops numbered in the order they were delivered, and the orders beside it; tap one for its full record. A table on a desktop, cards on a tablet and phone. WHERE EACH NUMBER COMES FROM, AND WHAT COULD NOT BE ANSWERED. ROAD MILES were stored nowhere (NuVizz’s planned distance only arrives with the one-time enrichment, the travel cache keeps drive seconds, and Motive is read for positions, never an odometer), so they are measured: Google’s driving distance over the stops in the order they were delivered, yard to yard — one Google Routes request per load, kept, so a sealed load is measured once. LOAD_MILES=off stops every Google request. EARNINGS are the price on each order: Uline’s TOTAL-AMOUNT line, or the NuVizz Seal # where Davis records a price. An order that ran twice is priced once, on the load that delivered it; an order with no price is counted, never guessed; and a per-mile rate is printed only where every order behind it is priced. COST IS NOT IN THE SYSTEM — no driver pay, fuel or truck cost is stored anywhere this app reads — and the tile says so instead of printing a zero. Firestore only: 0 NuVizz calls. Dispatcher and up.'],
   ['1.68.2', 'CLAUDE SHADOW IS ROUTING\u2019S THIRD TAB: BUILD | ENGINE | SHADOW. Chad: \u201ci want you to move the claude shadow tab to here beside the build and engine buttons add a 3rd that is called shadow.\u201d A MOVE, NOT A COPY. The toggle at the far right of the top bar on Routing now reads Build | Engine | Shadow, and Shadow opens the same Claude shadow screen that used to live under More \u2014 the screen itself is unchanged. Its More-menu entry and its phone-menu entry are gone, so there is one way in, not two that drift apart. ON A PHONE, the same way Engine is reached: Routing \u2192 the gear \u2192 \u201c\u21c4 Shadow view\u201d, and the Build | Engine | Shadow row sits at the top of the Engine and Shadow screens so the way back is always on screen. Opening Routing still lands on Build, as it always has. The Build Panel and the Route Workbench are not touched: the only line on the Routing screen is one more gear entry beside Engine\u2019s, phone only. The phone, tablet and desktop layout guards now reach the screen through Routing \u2192 Shadow and must see its heading before they measure it. FOUND IN REVIEW AND FIXED BEFORE MERGE, two things. (1) The third button is ~74px, and the tab row is the only part of the top bar that can shrink \u2014 so on Routing at 1180\u20131366px it pushed MESSAGES off the end of the row, and its unread badge with it; on Routing that badge is the only sign a driver or customer has texted. Measured: 1180 lost 62px, 1366 lost 25px, where v1.68.1 fitted. Now the presence chip\u2019s TEXT gives way first (it keeps its dot; the whole label is in its tooltip) and the toggle never shrinks: Messages and its badge fit at 1180, 1194, 1366, 1440 and 1920, and the widths v1.68.1 already clipped (820, 1080, 1280) are all better than they were. With room to spare nothing moves. verify-routing-topbar now fails the first cut at exactly those widths and passes this one. (2) Leaving Routing from Shadow and coming back mounted the Shadow screen for one render \u2014 one wasted status request (Firestore reads, 0 NuVizz) \u2014 before landing on Build; entering Routing now lands on Build from the first render, which also stops the same wasted request from Engine. PUT IT BACK: revert this one commit.'],
   ['1.68.1', 'THE BUSINESS LABELS ON THE ULINE TAB’S FROM-ABOVE MAP CAN BE CLICKED. Chad: “I want to be able to click on these labels when evaluating a stop so i can see their addresses i look at labeled addresses as confirmed like in this photo where the pin is not exactly on a building.” The satellite close-up was built with Google’s place labels switched off for clicks (clickableIcons: false); every other map in the app leaves them on. Now clicking a label such as Aquakleen or Norcross Corporate Park opens Google’s own card with that business’s name and address, so a pin that lands between buildings can be checked against the addresses around it. Only that one setting on that one map changed; the pin, the zoom and the street and 3D views are as they were. Put back: revert this commit.'],
@@ -1266,6 +1269,9 @@ const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 const MOCK_MODE = import.meta.env.VITE_USE_MOCK_NUVIZZ === 'true';
 const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+// A Routes-panel route opens in Compare even when NuVizz dates its stops earlier (lib/wb-own-day.js).
+// VITE_WB_OWN_DAY_ROSTER=off puts back the old refusal. Build-time, so flipping it is a redeploy.
+const WB_OWN_DAY_ROSTER_ON = wbOwnDayRosterEnabled(import.meta.env);
 // THE WALL DISPLAY DRAWS ITS MAP AS A PICTURE — see lib/tv-static-map.js for why, and for the
 // house-shape switch. Read once at module load, like every other build-time flag here.
 // VITE_TV_STATIC_MAP=off puts the TV back on the live JS map; anything malformed leaves it ON.
@@ -23574,6 +23580,9 @@ function EngineResultPanel({ result, kind, onDismiss }) {
 
 function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, onOpenShadow = null }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
+  // Read by the Compare card's open path, which runs off refs (deps []).
+  const selectedDateRef = useRef(selectedDate);
+  selectedDateRef.current = selectedDate;
   const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, lastCompletedScanAt, ops, scanUnplannedCount } = useStops(selectedDate);
   // Stops status card (same pill as the dispatch Map, top-right of the routing map):
   // stops count + total pallets + feed freshness + NuVizz call meter. Shares the Map's
@@ -24348,6 +24357,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   // SOURCE load of a planned stop, in the same press (see lib/send-selection.js) — so the rules
   // (already open, the cap, two same-day loads sharing a name, no NuVizz identity) live here once
   // and come back as a card or a sentence. Pure over `prev` plus the board/roster refs.
+  // Rosters of EARLIER days, fetched only for a route the selected day's roster cannot name, and
+  // only from the stored copy (cacheOnly=1: an unstored day answers 'none' — a click never spends a
+  // NuVizz call). day → { at, loads }. Re-asked after five minutes, so a load captured since shows.
+  const ownDayRosterRef = useRef(new Map());
   const buildWbCard = useCallback((key, prev) => {
     if (!key) return { refusal: 'No load to open.' };
     if (prev.some((r) => r.key === key)) return { already: true };   // already open
@@ -24403,27 +24416,66 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // STEVEN and NOR, and NOR refused too rather than unplan a stop bound for the dead card.
     // Assign and Dispatch already refuse this exact state with a message; opening a Compare
     // card was the one path that let you do the work first and find out afterwards.
-    if (!loadId && !loadNbr) {
+    // A ROUTE IN THE ROUTES PANEL OPENS (Chad, 2026-09-24: "if its panel for routes it should
+    // load"). The selected day's roster has no load for it — but NuVizz may simply still date its
+    // stops earlier (ESTES APPT: stops dated 9/23, load DAVIS000204757 on 9/23's roster, route
+    // clamped onto 9/24's board). Then the load that owns the name on THAT day's roster is this
+    // route's load. openRouteInWorkbench fetched that roster (stored copy only, never a NuVizz
+    // call) before calling here. Every narrowing rule is in lib/wb-own-day.js.
+    let ownDay = null;
+    let ownDayLoad = null;
+    if (!loadId && !loadNbr && WB_OWN_DAY_ROSTER_ON && !rosterEntry0?.ambiguous) {
+      ownDay = routeOwnDay(routeStops, selectedDateRef.current);
+      const held = ownDay ? ownDayRosterRef.current.get(ownDay) : null;
+      ownDayLoad = held ? ownDayIdentity(held.loads, name || key) : null;
+    }
+    if (!loadId && !loadNbr && !ownDayLoad) {
       const shown = loadDisplayName(name, key) || String(key);
       return { refusal: rosterEntry0?.ambiguous
         ? `Two loads are named "${shown}" today, so a card can't tell which one it would save to. Rename one in the portal (or cancel the one you're not using), then refresh.`
-        : `"${shown}" has no NuVizz load number or id yet, so a Save would be refused. Open it from the Loads grid, or refresh once the day's loads have loaded.` };
+        : ownDay
+          ? `"${shown}" has no NuVizz load on today's roster, and ${ownDay} (the day NuVizz dates its stops) has no single load by that name either, so a Save would be refused. Check the load's date in the portal.`
+          : `"${shown}" has no NuVizz load number or id yet, so a Save would be refused. Open it from the Loads grid, or refresh once the day's loads have loaded.` };
     }
     // Ids already staged onto ANOTHER open card stay there (the staged move wins) — otherwise a
     // freshly-opened card re-seeds them from the board and the stop sits in BOTH cards' orders.
     const stagedElsewhere = new Set(prev.flatMap((r) => r.order));
     const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr)).filter((id) => !stagedElsewhere.has(id));
-    return { card: { key, name, loadNbr, loadId, order, collapsed: false } };
+    return {
+      card: { key, name, loadNbr: loadNbr || ownDayLoad?.loadNbr || null, loadId: loadId || ownDayLoad?.loadId || null, order, collapsed: false },
+      ...(ownDayLoad ? { ownDay, ownDayLoad } : {}),
+    };
   }, []);
+  const ownDayRosterToFetch = useCallback((key) => {
+    if (!WB_OWN_DAY_ROSTER_ON) return null;
+    const routeStops = boardStopsAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === key);
+    if (!routeStops.length || routeStops.some((s) => s.raw?.load?.loadId ?? s.loadId)) return null;
+    const e = loadRosterRef.current.get(String(key)) || loadRosterRef.current.get(String(key).toLowerCase()) || null;
+    if (e && (e.ambiguous || e.loadId || e.loadNbr)) return null;   // today's roster already answers
+    const day = routeOwnDay(routeStops, selectedDateRef.current);
+    if (!day) return null;
+    const held = ownDayRosterRef.current.get(day);
+    return held && Date.now() - held.at < 5 * 60 * 1000 ? null : day;
+  }, []);
+  const fetchOwnDayRoster = useCallback((day) => apiFetch(`/.netlify/functions/nuvizz-loads-roster?date=${encodeURIComponent(day)}&cacheOnly=1`, { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null)
+    .then((j) => { ownDayRosterRef.current.set(day, { at: Date.now(), loads: j && j.ok ? (j.loads || []) : [] }); }), []);
   const openRouteInWorkbench = useCallback((key) => {
     if (!key) return;
-    setWbRoutes((prev) => {
+    const openNow = () => setWbRoutes((prev) => {
       const r = buildWbCard(key, prev);
       if (r.already) return prev;
       if (r.refusal) { setLastAction(r.refusal); return prev; }
+      // Say which load it opened on, and why that is not today's — a card saving to a load dated
+      // yesterday must never look like an ordinary one.
+      if (r.ownDayLoad) setLastAction(`Opened "${loadDisplayName(r.card.name, key) || key}" on NuVizz load ${r.ownDayLoad.loadNbr || r.ownDayLoad.loadId} — NuVizz still dates this load and its stops ${r.ownDay}.`);
       return [...prev, r.card];
     });
-  }, [buildWbCard]);
+    const day = ownDayRosterToFetch(key);
+    if (day) { fetchOwnDayRoster(day).finally(openNow); return; }
+    openNow();
+  }, [buildWbCard, ownDayRosterToFetch, fetchOwnDayRoster]);
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
   const closeAllWb = useCallback(() => setWbRoutes([]), []);
   const toggleWbCollapse = useCallback((key) => setWbRoutes((prev) => prev.map((r) => (r.key === key ? { ...r, collapsed: !r.collapsed } : r))), []);
@@ -37835,40 +37887,48 @@ function CustomerHeader({ v, today, stacked }) {
  *  is deliberately not remembered between visits: a day picked last Tuesday and silently kept
  *  would narrow this morning's search without anybody choosing to, which is the opposite of
  *  "default to all unless set". Within a visit it holds while the rep refines the address. */
-function PlaceDateBar({ sel, setSel, today, stacked }) {
-  // The board reaches three days ahead (the scan's write horizon), so a day on it is searchable.
-  const horizon = rangeAddDays(today, 3);
-  // ONE CONTROL, THREE SETTINGS — a segmented track, not three loose buttons, so it reads as the
-  // single choice it is. On a desktop the track is exactly the height of the boxes beside it
-  // (36 + 2×4 = 44); on a phone each segment keeps the 40px thumb floor.
-  const seg = (on) => `${stacked ? 'flex-1 min-h-[40px]' : 'h-9'} rounded-md px-3 text-sm font-medium whitespace-nowrap transition-colors ${
+/**
+ * THE PERIOD BUTTONS — one control for the address search and the driver lookup (v1.70.0).
+ * Chad: "dates for address and drivers loads i want it to default to today button for this week
+ * last week this month this year last year range". `sel` is { period, from, to }: the period is a
+ * button, and from/to are only read for Range. The rule for what each button means is ONE pure
+ * function (periodRange in src/lib/load-lookup.js), so the two searches cannot disagree about it.
+ * Phone: four to a row at the thumb floor; desktop: one wrapping segmented track.
+ */
+function PlaceDateBar({ sel, setSel, today, stacked, what = 'search' }) {
+  const period = sel?.period || 'today';
+  const seg = (on) => `${stacked ? 'min-h-[40px] px-1' : 'h-9 px-3'} rounded-md text-sm font-medium whitespace-nowrap transition-colors ${
     on ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-600 hover:text-slate-900'}`;
   const field = `${LOOKUP_DATE}${stacked ? ' flex-1' : ''}`;
+  const pickRange = () => {
+    const cur = periodRange(period, today, sel) || { from: today, to: today };
+    setSel({ period: 'range', from: cur.from, to: cur.to });
+  };
   return (
     <div className={stacked ? 'space-y-2' : 'flex flex-wrap items-center gap-2 min-w-0'}>
-      <div role="group" aria-label="Dates to search" className={`${stacked ? 'flex' : 'inline-flex'} items-center gap-1 rounded-lg bg-slate-100 p-1`}>
-        <button type="button" aria-pressed={sel.kind === 'all'} onClick={() => setSel({ kind: 'all' })} className={seg(sel.kind === 'all')}>All dates</button>
-        <button type="button" aria-pressed={sel.kind === 'day'} onClick={() => setSel({ kind: 'day', date: sel.date || today })} className={seg(sel.kind === 'day')}>One day</button>
-        <button type="button" aria-pressed={sel.kind === 'range'} onClick={() => setSel({ kind: 'range', from: sel.from || rangeAddDays(today, -29), to: sel.to || today })}
-          className={seg(sel.kind === 'range')}>Range</button>
+      <div role="group" aria-label={`Dates to ${what}`} className={`${stacked ? 'grid grid-cols-3' : 'inline-flex flex-wrap'} items-center gap-1 rounded-lg bg-slate-100 p-1`}>
+        {PERIODS.map(([id, label]) => (
+          <button key={id} type="button" aria-pressed={period === id}
+            onClick={() => (id === 'range' ? pickRange() : setSel({ period: id }))} className={seg(period === id)}>{label}</button>
+        ))}
       </div>
-      {sel.kind === 'day' && (
+      {period === 'range' && (
         <div className="flex items-center gap-2 min-w-0">
-          <input type="date" aria-label="The day to search" value={sel.date || ''} max={horizon}
-            onChange={(e) => e.target.value && setSel({ kind: 'day', date: e.target.value })} className={field} />
-        </div>
-      )}
-      {sel.kind === 'range' && (
-        <div className="flex items-center gap-2 min-w-0">
-          <input type="date" aria-label="First day to search" value={sel.from || ''} max={horizon}
-            onChange={(e) => e.target.value && setSel({ kind: 'range', from: e.target.value, to: sel.to || e.target.value })} className={field} />
+          <input type="date" aria-label={`First day to ${what}`} value={sel.from || ''} max={today}
+            onChange={(e) => e.target.value && setSel({ period: 'range', from: e.target.value, to: sel.to || e.target.value })} className={field} />
           <span className="text-sm text-slate-400 shrink-0">to</span>
-          <input type="date" aria-label="Last day to search" value={sel.to || ''} max={horizon}
-            onChange={(e) => e.target.value && setSel({ kind: 'range', from: sel.from || e.target.value, to: e.target.value })} className={field} />
+          <input type="date" aria-label={`Last day to ${what}`} value={sel.to || ''} max={today}
+            onChange={(e) => e.target.value && setSel({ period: 'range', from: sel.from || e.target.value, to: e.target.value })} className={field} />
         </div>
       )}
     </div>
   );
+}
+
+/** The address search's selection, in the shape its endpoint has always taken. */
+function placeSelOf(sel, today) {
+  const r = periodRange(sel?.period || 'today', today, sel) || { from: today, to: today };
+  return { kind: 'range', from: r.from, to: r.to };
 }
 
 /** Month by month — the shape of "every delivery in that city" that a person can actually read. */
@@ -38148,7 +38208,7 @@ function LookupSectionHead({ icon, title, children }) {
  * the one a rep reaches for most — and every control at the 40px thumb floor.
  */
 function StopSearchPanel({ stacked, busy, q, setQ, onOrder, onClearOrder, place, setPlace, placeSel, onPlaceSel, onPlace, onClearPlace, today,
-  drvName, setDrvName, drvDay, setDrvDay, drvNames, drvGate, onDriver, onClearDriver }) {
+  drvName, setDrvName, drvSel, setDrvSel, drvNames, drvGate, onDriver, onClearDriver }) {
   const placeOk = placeQueryUsable(placeQuery(place));
   const hasPlace = !!(place.addr || place.city || place.state || place.zip);
   const setField = (k) => (e) => { const v = e.target.value; setPlace((p) => ({ ...p, [k]: v })); };
@@ -38242,12 +38302,12 @@ function StopSearchPanel({ stacked, busy, q, setQ, onOrder, onClearOrder, place,
         onSubmit={(e) => { e.preventDefault(); if (!busy && !drvGate) onDriver(); }}>
         <div className={stacked ? 'space-y-3' : 'flex flex-col gap-4 xl:flex-row xl:items-center xl:gap-8'}>
           <div className={stacked ? '' : 'xl:w-[27rem] xl:shrink-0'}>
-            <LookupSectionHead icon={<Truck size={18} />} title={'Driver\u2019s week'}>
-              Every load one driver ran in a week: stops, freight, times, road miles and order prices, with a map of each load.
+            <LookupSectionHead icon={<Truck size={18} />} title={'Driver\u2019s loads'}>
+              Every load one driver ran, today or over any dates: stops, freight, times, road miles and order prices, with a map of each load.
             </LookupSectionHead>
           </div>
           <div className={stacked ? 'space-y-2' : 'flex flex-1 flex-wrap items-center gap-3'}>
-            <DriverWeekStepper day={drvDay} setDay={setDrvDay} today={today} stacked={stacked} />
+            <PlaceDateBar sel={drvSel} setSel={setDrvSel} today={today} stacked={stacked} what="show" />
             <div className={`${LOOKUP_FIELD}${stacked ? '' : ' flex-1 min-w-[15rem]'}`}>
               <Truck size={16} className="text-slate-400 shrink-0" />
               <input value={drvName} onChange={(e) => setDrvName(e.target.value)} list="stop-lookup-drivers"
@@ -38257,7 +38317,7 @@ function StopSearchPanel({ stacked, busy, q, setQ, onOrder, onClearOrder, place,
             </div>
             <datalist id="stop-lookup-drivers">{(drvNames || []).map((n) => <option key={n} value={n} />)}</datalist>
             <button type="submit" disabled={!!busy || !!drvGate} className={`${LOOKUP_PRIMARY}${stacked ? ' w-full' : ''}`}>
-              {busy === 'driver' ? 'Reading the week…' : 'Show the week'}
+              {busy === 'driver' ? 'Reading…' : 'Show loads'}
             </button>
           </div>
         </div>
@@ -38340,27 +38400,15 @@ const LOAD_DAY_SOURCE = {
   unread: ['bg-red-500', 'Could not be read — this week may be short'],
 };
 
-/** "Sep 21 – 27" with the week before and after. The week after today's is not offered. */
-function DriverWeekStepper({ day, setDay, today, stacked }) {
-  const wk = weekOf(day) || weekOf(today);
-  const current = weekOf(today);
-  const atCurrent = wk.from >= current.from;
-  return (
-    <div className={`flex items-center gap-2 ${stacked ? 'w-full' : ''}`}>
-      <div className={`flex items-center h-11 rounded-lg bg-white ring-1 ring-inset ring-slate-300 ${stacked ? 'flex-1 min-w-0' : ''}`}>
-        <button type="button" onClick={() => setDay(addDays(wk.from, -7))} aria-label="The week before"
-          className="grid h-11 w-11 shrink-0 place-items-center rounded-l-lg text-slate-500 hover:text-slate-900 hover:bg-slate-50"><ChevronLeft size={18} /></button>
-        <span className={`px-1 text-center text-sm font-semibold text-slate-900 whitespace-nowrap ${stacked ? 'flex-1 min-w-0' : 'min-w-[10.5rem]'}`}>{weekLabel(wk)}</span>
-        <button type="button" onClick={() => setDay(addDays(wk.from, 7))} disabled={atCurrent} aria-label="The week after"
-          className="grid h-11 w-11 shrink-0 place-items-center rounded-r-lg text-slate-500 hover:text-slate-900 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent"><ChevronRight size={18} /></button>
-      </div>
-      {!atCurrent && <button type="button" onClick={() => setDay(today)} className={LOOKUP_GHOST}>This week</button>}
-    </div>
-  );
-}
-
 /** Which of the week's seven days were read, and from where — a dot per day. */
 function DriverWeekDays({ days }) {
+  // A month or a year is too many dots to read: say how many days came from where instead.
+  if ((days || []).length > 14) {
+    const n = (k) => days.filter((d) => d.source === k).length;
+    const parts = [[n('sealed'), 'sealed'], [n('board'), 'off the board'], [n('none'), 'with no record'], [n('unread'), 'could not be read']]
+      .filter(([c]) => c > 0).map(([c, w]) => `${c} ${w}`);
+    return <div className="text-[11px] text-slate-500">{days.filter((d) => d.source !== 'future').length} days read: {parts.join(' · ') || 'none'}</div>;
+  }
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
       {(days || []).map((d) => {
@@ -38405,8 +38453,10 @@ const LOAD_OUTCOME = {
   delivered: ['text-slate-700', null],
   'not-delivered': ['text-red-700 font-semibold', 'Not delivered'],
   // NOT "still open": on a sealed day an order nobody closed out is not open any more — it was
-  // rolled, or the driver never marked it. The words say what the record says and no more.
+  // rolled, or the driver never marked it. On TODAY's load it is simply still out (Chad: "should
+  // specify out for delivery and ones actually not closed out from previous days").
   open: ['text-amber-700 font-semibold', 'Not closed out'],
+  out: ['text-sky-700 font-semibold', 'Out for delivery'],
 };
 
 /**
@@ -38454,7 +38504,7 @@ function LoadMap({ load, yard, stacked }) {
       if (r.stop != null || r.lat == null || r.lng == null) continue;
       bounds.extend({ lat: r.lat, lng: r.lng });
       const [color, mark, word] = r.outcome === 'not-delivered' ? ['#dc2626', '!', 'not delivered']
-        : r.outcome === 'open' ? ['#d97706', '?', 'not closed out'] : ['#64748b', '·', 'delivered, no time on record'];
+        : r.outcome === 'open' ? ['#d97706', '?', 'not closed out'] : r.outcome === 'out' ? ['#0284c7', '›', 'out for delivery'] : ['#64748b', '·', 'delivered, no time on record'];
       pin({ lat: r.lat, lng: r.lng }, color, mark, `${r.businessName || r.stopNbr} — ${word}`, 24, 10);
     }
     boundsRef.current = bounds;
@@ -38486,11 +38536,11 @@ function LoadStopList({ rows, onOrder, renderDetail, narrow = false }) {
       {[...inRun, ...rest].flatMap((r) => {
         const panel = renderDetail?.(r.stopNbr, r.date, narrow ? { stacked: true } : undefined);
         const [tone, word] = LOAD_OUTCOME[r.outcome] || LOAD_OUTCOME.open;
-        const badge = r.stop != null ? BRAND : r.outcome === 'not-delivered' ? '#dc2626' : r.outcome === 'open' ? '#d97706' : '#64748b';
+        const badge = r.stop != null ? BRAND : r.outcome === 'not-delivered' ? '#dc2626' : r.outcome === 'open' ? '#d97706' : r.outcome === 'out' ? '#0284c7' : '#64748b';
         return [(
           <li key={`${r.stopNbr}|${r.date}`} className={`flex items-start gap-3 px-3 py-2.5 ${panel ? 'bg-blue-50' : ''}`}>
             <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white" style={{ background: badge }}>
-              {r.stop != null ? r.stop : r.outcome === 'not-delivered' ? '!' : r.outcome === 'open' ? '?' : '·'}
+              {r.stop != null ? r.stop : r.outcome === 'not-delivered' ? '!' : r.outcome === 'open' ? '?' : r.outcome === 'out' ? '›' : '·'}
             </span>
             <div className="min-w-0 flex-1">
               <button type="button" onClick={() => onOrder(r.stopNbr, r.date)} aria-expanded={!!panel}
@@ -38522,7 +38572,7 @@ function LoadDetail({ load, yard, stacked, milesWhy, onOrder, renderDetail }) {
         <LoadMap load={load} yard={yard} stacked={stacked} />
         <p className="text-[11px] leading-relaxed text-slate-500">
           <span className="font-semibold text-slate-700">Y</span> the yard · <span className="font-semibold" style={{ color: BRAND }}>1, 2, 3</span> stops in the order they were delivered ·
-          <span className="font-semibold text-red-700"> !</span> not delivered · <span className="font-semibold text-amber-700">?</span> not closed out.
+          <span className="font-semibold text-red-700"> !</span> not delivered · <span className="font-semibold text-amber-700">?</span> not closed out on an earlier day · <span className="font-semibold text-sky-700">›</span> out for delivery today.
           The line joins the stops in that order; it is not the roads driven.
           {load.miles?.miles == null && milesWhy && <span className="font-medium text-amber-800"> Road miles for this load: {milesWhy}.</span>}
           {unplaced > 0 && ` ${plural(unplaced, 'delivered order')} could not be placed in the run (${[left.noTime ? `${left.noTime} with no delivery time` : '', left.noPin ? `${left.noPin} with no pin` : ''].filter(Boolean).join(', ')}).`}
@@ -38548,7 +38598,7 @@ function DriverWeekSummary({ data }) {
     <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
       <LoadTile label="Loads" value={t.loads} sub={`${plural(t.days, 'day')} · ${plural(t.stops, 'stop')}`} />
       <LoadTile label="Delivered" value={`${t.delivered} of ${t.orders}`}
-        sub={[t.notDelivered ? `${t.notDelivered} not delivered` : '', t.open ? `${t.open} not closed out` : '', t.pickups ? plural(t.pickups, 'pickup') : '', t.attempts ? plural(t.attempts, 'redelivery').replace('redeliverys', 'redeliveries') : ''].filter(Boolean).join(' · ') || 'every order delivered'} />
+        sub={[t.outForDelivery ? `${t.outForDelivery} out for delivery` : '', t.notDelivered ? `${t.notDelivered} not delivered` : '', t.open ? `${t.open} not closed out from earlier days` : '', t.pickups ? plural(t.pickups, 'pickup') : '', t.attempts ? plural(t.attempts, 'redelivery').replace('redeliverys', 'redeliveries') : ''].filter(Boolean).join(' · ') || 'every order delivered'} />
       <LoadTile label="Road miles" value={loadMilesText(t.miles)} sub={milesSub} />
       <LoadTile label="On the road" value={loadSpan(t.spanMin)} sub={t.stopsPerHour != null ? `first to last delivery · ${t.stopsPerHour} stops an hour` : 'first to last delivery'} />
       <LoadTile label="Freight" value={loadLb(t.weight)} sub={`${plural(t.skids, 'skid')} · ${t.loose} loose`} />
@@ -38567,6 +38617,8 @@ function loadFacts(l, miles) {
     orders: `${plural(l.orders, 'order')}${l.pickups ? ` · ${l.pickups} PU` : ''}`,
     delivered: `${l.delivered} of ${l.orders}`,
     exceptions: [l.notDelivered ? `${l.notDelivered} not delivered` : '', l.open ? `${l.open} not closed out` : ''].filter(Boolean).join(' · '),
+    // Still out is not a problem, so it is said in blue beside the count, never in the red line.
+    outNow: l.outForDelivery ? `${l.outForDelivery} out for delivery` : '',
     window: l.firstAt ? `${stopWhen(l.firstAt)} → ${stopWhen(l.lastAt)}` : '—',
     span: loadSpan(l.spanMin),
     freight: `${loadLb(l.weight)} · ${l.skids} sk`,
@@ -38606,7 +38658,7 @@ function DriverWeekTable({ data, openLoad, onToggleLoad, onOrder, renderDetail }
                 <td className="px-3 py-3 whitespace-nowrap text-slate-700">{loadDay(l.date)}</td>
                 <td className="px-3 py-3"><div className="font-semibold text-slate-900">{l.name}</div>{f.truck && <div className="text-[11px] text-slate-500">{f.truck}</div>}</td>
                 <td className="px-3 py-3 text-right tabular-nums"><div className="font-semibold">{f.stops}</div><div className="text-[11px] text-slate-500 whitespace-nowrap">{f.orders}</div></td>
-                <td className="px-3 py-3"><div className="tabular-nums">{f.delivered}</div>{f.exceptions && <div className="text-[11px] font-medium text-red-700 whitespace-nowrap">{f.exceptions}</div>}</td>
+                <td className="px-3 py-3"><div className="tabular-nums">{f.delivered}</div>{f.outNow && <div className="text-[11px] font-medium text-sky-700 whitespace-nowrap">{f.outNow}</div>}{f.exceptions && <div className="text-[11px] font-medium text-red-700 whitespace-nowrap">{f.exceptions}</div>}</td>
                 <td className="px-3 py-3 whitespace-nowrap"><div className="tabular-nums">{f.window}</div><div className="text-[11px] text-slate-500">{f.span}</div></td>
                 <td className="px-3 py-3 text-right whitespace-nowrap tabular-nums text-slate-700">{f.freight}</td>
                 <td className="px-3 py-3 text-right" title={f.milesWhy}><div className="tabular-nums whitespace-nowrap">{f.miles}</div><div className="text-[11px] text-slate-500 whitespace-nowrap">{f.milesShort}</div></td>
@@ -38657,7 +38709,7 @@ function DriverWeekCards({ data, stacked, openLoad, onToggleLoad, onOrder, rende
               </div>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
                 <div><dt className="text-slate-500">Stops</dt><dd className="font-medium text-slate-900">{f.stops} · {f.orders}</dd></div>
-                <div><dt className="text-slate-500">Delivered</dt><dd className="font-medium text-slate-900">{f.delivered}{f.exceptions && <span className="block text-red-700">{f.exceptions}</span>}</dd></div>
+                <div><dt className="text-slate-500">Delivered</dt><dd className="font-medium text-slate-900">{f.delivered}{f.outNow && <span className="block text-sky-700">{f.outNow}</span>}{f.exceptions && <span className="block text-red-700">{f.exceptions}</span>}</dd></div>
                 <div><dt className="text-slate-500">First → last</dt><dd className="font-medium text-slate-900 tabular-nums">{f.window}<span className="block font-normal text-slate-500">{f.span}</span></dd></div>
                 <div><dt className="text-slate-500">Road miles</dt><dd className="font-medium text-slate-900 tabular-nums">{f.miles}<span className="block font-normal text-slate-500">{f.milesWhy}</span></dd></div>
                 <div><dt className="text-slate-500">Freight</dt><dd className="font-medium text-slate-900 tabular-nums">{f.freight}</dd></div>
@@ -38684,7 +38736,7 @@ function DriverWeekResults({ data, stacked, wide, openLoad, onToggleLoad, onOrde
       <div className="rounded-2xl bg-white p-4 sm:p-6 shadow-sm ring-1 ring-slate-200 space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
           <div className="min-w-0">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Driver&rsquo;s week · {weekLabel(data.week)}</div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Driver&rsquo;s loads · {weekLabel(data.week)}</div>
             <h2 className="text-lg sm:text-xl font-semibold text-slate-900 break-words">{data.driver?.label}</h2>
           </div>
           <DriverWeekDays days={data.days} />
@@ -38725,7 +38777,7 @@ function DriverWeekChooser({ data, stacked, onPick }) {
       <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
         <div className="min-w-0">
           <h2 className="text-[15px] font-semibold text-slate-900 break-words">{title}</h2>
-          <p className="mt-1 text-[13px] text-slate-500">{list.length ? 'Pick one to see their week.' : 'No load that week carries a driver in our records.'}{typed && !hits.length && list.length ? ' These drivers did:' : ''}</p>
+          <p className="mt-1 text-[13px] text-slate-500">{list.length ? 'Pick one to see their week.' : 'No load in those dates carries a driver in our records.'}{typed && !hits.length && list.length ? ' These drivers did:' : ''}</p>
         </div>
         <DriverWeekDays days={data.days} />
       </div>
@@ -38853,7 +38905,7 @@ function StopLookupScreen() {
   });
   // THE DATES ARE NOT REMEMBERED — Chad: "date ranges should default to all unless set". Every
   // visit starts on ALL; see PlaceDateBar for why keeping last week's pick would break that.
-  const [placeSel, setPlaceSel] = useState({ kind: 'all' });
+  const [placeSel, setPlaceSel] = useState({ period: 'today' });
   const [placeRowsShown, setPlaceRowsShown] = useState(PLACE_PAGE);
   // ── A DRIVER'S WEEK (v1.69.0) ───────────────────────────────────────────────
   // The NAME is remembered like the order box; the WEEK is not — every visit starts on this week,
@@ -38863,7 +38915,7 @@ function StopLookupScreen() {
   const [drvName, setDrvName] = useState(() => {
     try { return localStorage.getItem(STOP_LOOKUP_DRIVER) || ''; } catch { return ''; }
   });
-  const [drvDay, setDrvDay] = useState(today);
+  const [drvSel, setDrvSel] = useState({ period: 'today' });
   const [drvNames, setDrvNames] = useState([]);   // the datalist — whoever the last answer named
   const [openLoad, setOpenLoad] = useState(null); // ONE load open at a time: each open map is a billed map load
   // A slower answer to an older week is DROPPED, never painted over a newer one — stepping the week
@@ -39169,7 +39221,7 @@ function StopLookupScreen() {
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     try { localStorage.setItem(STOP_LOOKUP_PLACE, JSON.stringify(f)); } catch { /* a remembered box is a convenience */ }
     try {
-      const r = await apiFetch(`/.netlify/functions/stop-lookup?${placeParams(f, selNow)}`);
+      const r = await apiFetch(`/.netlify/functions/stop-lookup?${placeParams(f, placeSelOf(selNow, todayInET()))}`);
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'search failed');
       setData(j);
@@ -39201,14 +39253,14 @@ function StopLookupScreen() {
    * territory sheet's identity rule), so "colin" and "COLIN 2" find the same man; no name, or a
    * name two drivers answer to, comes back as a list to pick from. A pick is sent back by KEY.
    */
-  const runDriver = useCallback(async ({ name, key, day } = {}) => {
+  const runDriver = useCallback(async ({ name, key, sel } = {}) => {
     if (driverGate.reason) { setErr(driverGate.reason); return; }
-    const wk = weekOf(day || today) || weekOf(today);
+    const wk = periodRange(sel?.period || 'today', today, sel) || { from: today, to: today };
     setLoading(true); setBusy('driver'); setErr(null); setPromptMsg(null); closeOrder(); setOpenLoad(null);
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     const typed = String(name ?? '').trim();
     try { localStorage.setItem(STOP_LOOKUP_DRIVER, typed); } catch { /* a remembered box is a convenience */ }
-    const p = new URLSearchParams({ week: wk.from });
+    const p = new URLSearchParams({ from: wk.from, to: wk.to });
     if (key) p.set('key', key); else if (typed) p.set('driver', typed);
     const req = ++drvReqRef.current;
     try {
@@ -39220,7 +39272,7 @@ function StopLookupScreen() {
       setDrvNames((j.drivers || []).map((d) => d.label));
       if (j.mode === 'driver-week') {
         setDrvName(j.driver?.label || typed);
-        remember(recentEntry({ kind: 'driver', term: j.driver?.label, key: j.driver?.key, week: j.week?.from }));
+        remember(recentEntry({ kind: 'driver', term: j.driver?.label, key: j.driver?.key, from: j.week?.from, to: j.week?.to }));
       }
       setAnswerTick((n) => n + 1);
     } catch (e) {
@@ -39230,10 +39282,12 @@ function StopLookupScreen() {
 
   /** Step the week. A week already on screen is re-read for the same driver — the same person,
    *  another week, which is the comparison this screen is for. */
-  const changeDriverWeek = useCallback((day) => {
-    setDrvDay(day);
-    if (data?.mode === 'driver-week') runDriver({ key: data.driver?.key, name: data.driver?.label, day });
-    else if (data?.mode === 'driver-week-choose') runDriver({ name: data.typed || '', day });
+  const changeDriverWeek = useCallback((sel) => {
+    setDrvSel(sel);
+    // Range re-reads only once both boxes hold a day — the first box typed is not a question yet.
+    if (sel.period === 'range' && !(sel.from && sel.to)) return;
+    if (data?.mode === 'driver-week') runDriver({ key: data.driver?.key, name: data.driver?.label, sel });
+    else if (data?.mode === 'driver-week-choose') runDriver({ name: data.typed || '', sel });
   }, [data, runDriver]);
 
   /** A recent lookup, run again exactly as a rep would: the box refilled, then searched. Dates
@@ -39242,8 +39296,9 @@ function StopLookupScreen() {
   const runRecent = useCallback((e) => {
     if (!e) return;
     if (e.kind === 'driver') {
-      setDrvName(e.term); setDrvDay(e.week);
-      runDriver({ key: e.key, name: e.term, day: e.week });
+      const sel = e.from && e.to ? { period: 'range', from: e.from, to: e.to } : { period: 'today' };
+      setDrvName(e.term); setDrvSel(sel);
+      runDriver({ key: e.key, name: e.term, sel });
       return;
     }
     if (e.kind === 'place') {
@@ -39295,8 +39350,8 @@ function StopLookupScreen() {
             onOrder={() => { setNameKey(null); setYearOn(false); submit(q, { nameKey: null, year: null }); }}
             place={place} setPlace={setPlace} placeSel={placeSel} onPlaceSel={changePlaceSel}
             onPlace={() => runPlace(place, placeSel)} onClearPlace={clearPlace}
-            drvName={drvName} setDrvName={setDrvName} drvDay={drvDay} setDrvDay={changeDriverWeek} drvNames={drvNames}
-            drvGate={driverGate.reason} onDriver={() => runDriver({ name: drvName, day: drvDay })} onClearDriver={clearDriver} />
+            drvName={drvName} setDrvName={setDrvName} drvSel={drvSel} setDrvSel={changeDriverWeek} drvNames={drvNames}
+            drvGate={driverGate.reason} onDriver={() => runDriver({ name: drvName, sel: drvSel })} onClearDriver={clearDriver} />
         </div>
 
         {err && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 break-words">{err}</div>}
@@ -39307,7 +39362,7 @@ function StopLookupScreen() {
 
         {data?.mode === 'driver-week-choose' && (
           <DriverWeekChooser data={data} stacked={isMobile}
-            onPick={(d) => { setDrvName(d.label); runDriver({ key: d.key, name: d.label, day: data.week?.from }); }} />
+            onPick={(d) => { setDrvName(d.label); runDriver({ key: d.key, name: d.label, sel: { period: 'range', from: data.week?.from, to: data.week?.to } }); }} />
         )}
 
         {data?.mode === 'driver-week' && (

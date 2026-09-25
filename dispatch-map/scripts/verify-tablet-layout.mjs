@@ -170,7 +170,7 @@ const PROBES = {
     // — the line the Labels table drew when this guard caught its buttons clipped at 1080.
     { name: 'the week\'s drivers to choose', open: async (page) => {
       await closeOrderDrawer(page);
-      if (!(await openByName(page, /^show the week$/i))) return false;
+      if (!(await openByName(page, /^show loads$/i))) return false;
       await page.waitForTimeout(500);
       return page.getByText(/who ran loads/i).first().isVisible().catch(() => false);
     } },
@@ -178,7 +178,7 @@ const PROBES = {
       const box = page.getByLabel(/^driver name$/i).first();
       if (!(await box.isVisible().catch(() => false))) return false;
       await box.fill('robert');
-      if (!(await openByName(page, /^show the week$/i))) return false;
+      if (!(await openByName(page, /^show loads$/i))) return false;
       await page.waitForTimeout(500);
       return page.getByRole('button', { name: /^map & stops/i }).first().isVisible().catch(() => false);
     } },

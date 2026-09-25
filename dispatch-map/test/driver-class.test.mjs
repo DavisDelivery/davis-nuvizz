@@ -1,6 +1,6 @@
 // test/driver-class.test.mjs — THE CLASS RULE MOVED, IT DID NOT CHANGE.
 //
-// employeeClassMap and CLASS_OVERRIDE moved out of routing-plan-core.mts (v1.70.0) so the Claude
+// employeeClassMap and CLASS_OVERRIDE moved out of routing-plan-core.mts (v1.71.0) so the Claude
 // shadow can share the learned engine's truck-class rule without the engine's import graph. The
 // engine must keep using the very same objects, and the rule must read a roster exactly as before:
 // a driver whose MarginIQ Vehicle Type says tractor is a tractor on both sides of the comparison.

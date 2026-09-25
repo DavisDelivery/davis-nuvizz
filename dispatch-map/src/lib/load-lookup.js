@@ -69,13 +69,58 @@ export function weekOf(day) {
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monDay = (day) => `${MON[Number(day.slice(5, 7)) - 1]} ${Number(day.slice(8, 10))}`;
 
-/** "Sep 21 – 27", "Sep 28 – Oct 4", "Dec 28, 2026 – Jan 3, 2027". */
+/** "Sep 21 – 27", "Sep 28 – Oct 4", "Dec 28, 2026 – Jan 3, 2027", and one day as "Sep 25". */
 export function weekLabel(week) {
   if (!week?.from || !week?.to) return '';
   const [a, b] = [week.from, week.to];
+  if (a === b) return monDay(a);
   if (a.slice(0, 4) !== b.slice(0, 4)) return `${monDay(a)}, ${a.slice(0, 4)} – ${monDay(b)}, ${b.slice(0, 4)}`;
   if (a.slice(5, 7) === b.slice(5, 7)) return `${monDay(a)} – ${Number(b.slice(8, 10))}`;
   return `${monDay(a)} – ${monDay(b)}`;
+}
+
+// ── THE PERIOD BUTTONS ───────────────────────────────────────────────────────
+//
+// Chad, 2026-09-25: "dates for address and drivers loads i want it to default to today button
+// for this week last week this month this year last year range". One rule for both searches, so
+// "this week" can never mean Monday on one and Sunday on the other.
+
+export const PERIODS = [
+  ['today', 'Today'], ['this-week', 'This week'], ['last-week', 'Last week'],
+  ['this-month', 'This month'], ['this-year', 'This year'], ['last-year', 'Last year'], ['range', 'Range'],
+];
+
+/**
+ * A period button → { from, to }. A period that is still running ends TODAY, never on a day that
+ * has not happened; a finished one (last week, last year) runs to its own last day. 'range' is
+ * whatever the two date boxes say, the later first if they were typed backwards.
+ */
+export function periodRange(period, today, custom = {}) {
+  if (!DAY_RE.test(s(today))) return null;
+  const y = Number(today.slice(0, 4));
+  const wk = weekOf(today);
+  switch (period) {
+    case 'today': return { from: today, to: today };
+    case 'this-week': return { from: wk.from, to: today };
+    case 'last-week': return { from: addDays(wk.from, -7), to: addDays(wk.from, -1) };
+    case 'this-month': return { from: `${today.slice(0, 7)}-01`, to: today };
+    case 'this-year': return { from: `${y}-01-01`, to: today };
+    case 'last-year': return { from: `${y - 1}-01-01`, to: `${y - 1}-12-31` };
+    case 'range': {
+      const a = s(custom.from); const b = s(custom.to);
+      if (!DAY_RE.test(a) || !DAY_RE.test(b)) return null;
+      return a <= b ? { from: a, to: b } : { from: b, to: a };
+    }
+    default: return null;
+  }
+}
+
+/** Every day from `from` to `to` inclusive, at most `max` of them (the latest kept). */
+export function datesBetween(from, to, max = 400) {
+  if (!DAY_RE.test(s(from)) || !DAY_RE.test(s(to)) || from > to) return [];
+  const out = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) out.push(d);
+  return out.length > max ? out.slice(out.length - max) : out;
 }
 
 // ── TIME, ON DAVIS'S CLOCK ───────────────────────────────────────────────────
@@ -318,7 +363,11 @@ export const toMiles = (meters) => (Number.isFinite(meters) ? Math.round((meters
  * ONE LOAD, EVERYTHING WE HOLD ABOUT IT. `rows` are its orders on one board day; `priced` says
  * which of them carry the order's price for this week (see pricedRows).
  */
-export function buildLoad(date, name, rows, { truck = null, priced = null } = {}) {
+export function buildLoad(date, name, rows, { truck = null, priced = null, today = null } = {}) {
+  // Chad, on "18 not closed out" for a load running today: "should specify out for delivery and
+  // ones actually not closed out from previous days". An open order on TODAY's load is still out;
+  // one on an earlier day was never closed out. Without `today` every open order is the latter.
+  const running = !!today && date >= today;
   const list = [...(rows || [])].sort((a, b) => seqOf(a) - seqOf(b) || compareStopNbr(a.stopNbr, b.stopNbr));
   const pricing = priced || pricedRows(list);
   const { run, noTime, noPin } = deliveredRun(list);
@@ -329,7 +378,7 @@ export function buildLoad(date, name, rows, { truck = null, priced = null } = {}
   const price = { delivered: 0, deliveredOrders: 0, notDelivered: 0, notDeliveredOrders: 0, priced: 0, orders: 0, unpriced: 0, unreadable: 0, conflicts: 0, elsewhere: 0 };
   const views = list.map((r) => {
     const p = pricing.get(r) || { counted: false, price: orderPrice(r) };
-    const out = outcomeOf(r);
+    const out = outcomeOf(r) === 'open' && running ? 'out' : outcomeOf(r);
     if (p.counted) {
       price.orders += 1;
       if (p.price.amount != null) {
@@ -365,6 +414,7 @@ export function buildLoad(date, name, rows, { truck = null, priced = null } = {}
     delivered: views.filter((v) => v.outcome === 'delivered').length,
     notDelivered: views.filter((v) => v.outcome === 'not-delivered').length,
     open: views.filter((v) => v.outcome === 'open').length,
+    outForDelivery: views.filter((v) => v.outcome === 'out').length,
     attempts: views.filter((v) => v.attempt).length,
     weight: Math.round(sum('weight')), skids: sum('skids'), loose: sum('loose'),
     firstAt, lastAt, spanMin,
@@ -420,7 +470,7 @@ export function pricedRows(rows) {
  * rather than borrowing another day's trucks. `miles` is { [load.key]: { meters, ... } } from
  * the endpoint, applied here so the ratios below are computed in one place.
  */
-export function driverWeek(stops, driverKey, { aliases = [], classes = {}, miles = {}, dropCancelled = true } = {}) {
+export function driverWeek(stops, driverKey, { aliases = [], classes = {}, miles = {}, dropCancelled = true, today = null } = {}) {
   const folded = applyAliases(stops || [], aliases);
   const mine = folded.filter((r) => loadOf(r) && driverKeyOf(r) === driverKey);
   // The board's own switch (BOARD_DROP_CANCELLED): off there means off here, so this screen can
@@ -434,7 +484,7 @@ export function driverWeek(stops, driverKey, { aliases = [], classes = {}, miles
   }
   const loads = [...byLoad.entries()].map(([k, rows]) => {
     const [date, name] = [k.slice(0, 10), k.slice(11)];
-    const load = buildLoad(date, name, rows, { truck: classes?.[date]?.[name] || null, priced });
+    const load = buildLoad(date, name, rows, { truck: classes?.[date]?.[name] || null, priced, today });
     return withMiles(load, miles[load.key]);
   }).sort((a, b) => (a.date !== b.date ? a.date.localeCompare(b.date) : (a.firstAt || '~').localeCompare(b.firstAt || '~') || a.name.localeCompare(b.name)));
   const label = mine.reduce((acc, r) => betterLabel(acc, canonicalDriver(s(r.driverName) || s(r.driverUserName)).label), '');
@@ -454,7 +504,7 @@ export function withMiles(load, m) {
   const complete = load.price.orders > 0 && load.price.unpriced === 0;
   return {
     ...load,
-    miles: { miles, source: m?.source || null, reason: m?.reason || null, inProgress: load.open > 0 },
+    miles: { miles, source: m?.source || null, reason: m?.reason || null, inProgress: (load.outForDelivery || 0) > 0 },
     perMile: complete && miles ? cents(load.price.delivered / miles) : null,
     perStop: complete && load.run.length ? cents(load.price.delivered / load.run.length) : null,
     priceComplete: complete,
@@ -478,7 +528,7 @@ export function weekTotals(loads) {
     days: new Set(L.map((l) => l.date)).size,
     orders: add((l) => l.orders), deliveries: add((l) => l.deliveries), pickups: add((l) => l.pickups),
     stops: add((l) => l.stops), delivered: add((l) => l.delivered), notDelivered: add((l) => l.notDelivered),
-    open: add((l) => l.open), attempts: add((l) => l.attempts),
+    open: add((l) => l.open), outForDelivery: add((l) => l.outForDelivery || 0), attempts: add((l) => l.attempts),
     weight: add((l) => l.weight), skids: add((l) => l.skids), loose: add((l) => l.loose),
     miles: measured.length ? Math.round(measured.reduce((a, l) => a + l.miles.miles, 0) * 10) / 10 : null,
     milesLoads: measured.length,
