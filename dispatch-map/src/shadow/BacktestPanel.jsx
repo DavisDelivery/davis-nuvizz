@@ -38,12 +38,13 @@ const one = (v) => (typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleStr
 const hrs = (min) => (typeof min === 'number' ? `${(min / 60).toFixed(1)} h` : '—');
 
 // A change, coloured by whether it is a saving. For miles, minutes, trucks and cost, DOWN is good.
-function Delta({ d, unit = '', pct = true }) {
+function Delta({ d, unit = '', pct = true, money = false }) {
   if (!d || typeof d.abs !== 'number') return <span className="text-slate-400">—</span>;
   const good = d.abs < 0, zero = d.abs === 0;
   const cls = zero ? 'text-slate-500' : good ? 'text-emerald-700' : 'text-rose-700';
-  const sign = d.abs > 0 ? '+' : '';
-  return <span className={`${cls} font-semibold tabular-nums`}>{sign}{one(d.abs)}{unit}{pct && typeof d.pct === 'number' ? ` (${d.pct > 0 ? '+' : ''}${d.pct.toFixed(1)}%)` : ''}</span>;
+  const sign = d.abs > 0 ? '+' : d.abs < 0 ? '−' : '';
+  const mag = money ? `$${Math.abs(d.abs).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${one(Math.abs(d.abs))}${unit}`;
+  return <span className={`${cls} font-semibold tabular-nums`}>{sign}{mag}{pct && typeof d.pct === 'number' ? ` (${d.pct > 0 ? '+' : ''}${d.pct.toFixed(1)}%)` : ''}</span>;
 }
 function TruckDelta({ n }) {
   if (typeof n !== 'number') return <span className="text-slate-400">—</span>;
@@ -157,7 +158,7 @@ function Totals({ t, phone }) {
       <Item label={`Road miles, ${t.days} day${t.days === 1 ? '' : 's'}`}><Delta d={t.milesDelta} unit=" mi" /></Item>
       <Item label="Drive time"><Delta d={{ abs: t.minDelta.abs / 60, pct: t.minDelta.pct }} unit=" h" /></Item>
       <Item label="Trucks used"><TruckDelta n={t.trucks.claude - t.trucks.driven} /></Item>
-      <Item label="Cost (your rates)">{t.costDelta ? <Delta d={t.costDelta} unit="" /> : <span className="text-slate-400 text-xs">enter $/mile or $/drive-hour in settings</span>}</Item>
+      <Item label="Cost (your rates)">{t.costDelta ? <Delta d={t.costDelta} money /> : <span className="text-slate-400 text-xs">enter $/mile or $/drive-hour in settings</span>}</Item>
       <Item label="Stops moved to another truck">{int(t.moved)} of {int(t.stops)}</Item>
       <Item label="Stop order alone (same loads)"><Delta d={t.seqMilesDelta} unit=" mi" /></Item>
       <Item label="Model spend">{usd(t.spent)}</Item>
@@ -186,10 +187,12 @@ function RouterSettings({ v, onSave }) {
   const field = 'rounded border px-2 py-1 text-xs min-h-[44px] w-full bg-white';
   return (
     <div>
-      <button onClick={() => setOpen((o) => !o)} className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 min-h-[44px]">
-        <Settings2 size={13} /> Router settings {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        <span className="text-slate-400 ml-1">cap rule {s.capRule} · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}</span>
-      </button>
+      <div className="flex flex-wrap items-center gap-x-2">
+        <button onClick={() => setOpen((o) => !o)} className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 min-h-[44px] shrink-0">
+          <Settings2 size={13} /> Router settings {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </button>
+        <span className="text-xs text-slate-400">cap rule {s.capRule} · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}</span>
+      </div>
       {note && <p className="text-[11px] text-slate-600">{note}</p>}
       {open && form && (
         <div className="mt-2 grid grid-cols-2 md:grid-cols-3 gap-2 rounded-lg border bg-slate-50 p-3">
@@ -362,7 +365,7 @@ function DayDetail({ date, loadResult, phone, onClose }) {
       {r && (
         <>
           <div className={phone ? 'grid grid-cols-1 gap-1 text-xs' : 'flex flex-wrap gap-x-6 gap-y-1 text-xs'}>
-            <span>Claude vs as driven: <Delta d={r.vsDriven?.miles} unit=" mi" /> · <Delta d={r.vsDriven?.driveMin ? { abs: r.vsDriven.driveMin.abs / 60, pct: r.vsDriven.driveMin.pct } : null} unit=" h" /> · <TruckDelta n={r.vsDriven?.trucks} />{r.vsDriven?.cost && <> · <Delta d={r.vsDriven.cost} /></>}</span>
+            <span>Claude vs as driven: <Delta d={r.vsDriven?.miles} unit=" mi" /> · <Delta d={r.vsDriven?.driveMin ? { abs: r.vsDriven.driveMin.abs / 60, pct: r.vsDriven.driveMin.pct } : null} unit=" h" /> · <TruckDelta n={r.vsDriven?.trucks} />{r.vsDriven?.cost && <> · <Delta d={r.vsDriven.cost} money /></>}</span>
             <span className="text-slate-600">of which stop order alone: <Delta d={r.sequencingOnly?.miles} unit=" mi" /> · truck assignment: <Delta d={r.assignmentOnly?.miles} unit=" mi" /></span>
             <span className="text-slate-600">{int(r.agreement?.stopsMoved)} stops moved to another truck · stops riding together agree {typeof r.agreement?.coLoadRecall === 'number' ? `${r.agreement.coLoadRecall}%` : '—'}</span>
           </div>
@@ -495,7 +498,7 @@ export default function BacktestPanel({ phone }) {
                   <span className="text-right">{r?.vsDriven ? <Delta d={r.vsDriven.miles} unit="" /> : ''}</span>
                   <span className="text-right">{r?.vsDriven?.driveMin ? <Delta d={{ abs: r.vsDriven.driveMin.abs / 60, pct: r.vsDriven.driveMin.pct }} unit=" h" /> : ''}</span>
                   <span className="text-right">{r?.vsDriven ? <TruckDelta n={r.vsDriven.trucks} /> : ''}</span>
-                  <span className="text-right">{r?.vsDriven?.cost ? <Delta d={r.vsDriven.cost} pct={false} /> : ''}</span>
+                  <span className="text-right">{r?.vsDriven?.cost ? <Delta d={r.vsDriven.cost} pct={false} money /> : ''}</span>
                   <span className="text-right text-slate-500">{r ? usd(r.usd) : st.job?.usd ? usd(st.job.usd) : ''}</span>
                 </div>
               );
