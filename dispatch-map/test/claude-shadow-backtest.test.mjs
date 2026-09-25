@@ -231,8 +231,35 @@ test('folding two trucks into one is refused when no driver could finish that da
   const box = p.loads.find((l) => l.cls !== 'tractor');
   const one = evaluateAssignment(p, { loads: [{ load: box.id, stops: p.stops.map((s) => s.id) }], unplanned: [] }, cfg, seqr);
   assert.ok(!one.summary.hardViolations.some((v) => /over its cap/.test(v)), 'room on the truck is not the problem');
-  assert.match(one.summary.hardViolations.join(' '), new RegExp(`${box.id} runs \\d+ min .* past its \\d+-minute day`));
+  assert.match(one.summary.hardViolations.join(' '), new RegExp(`${box.driver} would work \\d+ min on ${box.id} .* past their \\d+-minute day`));
   assert.match(btBriefing(p), /day limit \(min\)/);
+});
+
+test('a driver on two loads has ONE day between them — the 2026-09-23 plan gave one driver 49 stops and 17.7 h across two', () => {
+  const cfg = { ...CFG, typical_shift_hours: 4 };
+  const caps = { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 60 }, DULUTH: { name: 'DULUTH', cap: 60 }, TRAILER: { name: 'TRAILER', cap: 60 } } };
+  const rows = day();
+  // Ben also ran a second load under another name that day.
+  const extra = [row('TRAILER', 'Ben  Paintsil', north(7)), row('TRAILER', 'Ben  Paintsil', north(8))];
+  const p = buildBacktestProblem(input({ rows: [...rows, ...extra], cfg, caps }));
+  const bens = p.loads.filter((l) => l.driver.replace(/\s+/g, ' ') === 'Ben Paintsil');
+  assert.equal(bens.length, 2);
+  assert.equal(bens[0].maxMin, bens[1].maxMin, 'both loads carry the same driver limit');
+  assert.match(btBriefing(p), /Drivers on more than one load \(ONE day between them\): Ben +Paintsil = L\d\+L\d/);
+  const seqr = makeSequencer(p, cfg);
+  // Dispatch's own day is never refused.
+  const own = evaluateAssignment(p, { loads: p.loads.map((l) => ({ load: l.id, stops: l.dispatch })), unplanned: [] }, cfg, seqr);
+  assert.ok(!own.summary.hardViolations.some((v) => /past their/.test(v)), own.summary.hardViolations.join('; '));
+  // Put every stop on Ben's two loads: each load alone is under the limit, together they are not.
+  const all = p.stops.map((s) => s.id);
+  const half = Math.ceil(all.length / 2);
+  const plan = { loads: [{ load: bens[0].id, stops: all.slice(0, half) }, { load: bens[1].id, stops: all.slice(half) }], unplanned: [] };
+  const m = measurePlan(p, new Map(plan.loads.map((x) => [x.load, x.stops])), cfg, seqr);
+  const perLoad = m.loads.map((l) => l.routeMin);
+  assert.ok(perLoad.every((x) => x <= bens[0].maxMin), `each load alone fits: ${perLoad} vs ${bens[0].maxMin}`);
+  const res = evaluateAssignment(p, plan, cfg, seqr);
+  const hits = res.summary.hardViolations.filter((v) => /Ben +Paintsil would work \d+ min on L\d \+ L\d/.test(v));
+  assert.equal(hits.length, 1, `one violation per driver, not per load: ${res.summary.hardViolations.join('; ')}`);
 });
 
 test('stop numbers say nothing about dispatch: the same stops carried on different trucks get the same numbers', () => {

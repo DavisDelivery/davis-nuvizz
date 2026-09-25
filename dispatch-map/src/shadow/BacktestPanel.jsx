@@ -269,7 +269,7 @@ function Scorecard({ r, phone }) {
     ['Avg truck fill', (x) => (typeof x.util === 'number' ? `${x.util}%` : '—')],
     ['Loads over cap', (x) => int(x.overCap)],
     ['No-tractor stops on a tractor', (x) => int(x.blocked)],
-    ['Loads past their day', (x) => int(x.overTime)],
+    ['Drivers past their day', (x) => int(x.overTime)],
     ['Stops left unplanned', (x) => int(x.unplanned)],
   ];
   const costRow = r.costs && typeof r.costs.driven === 'number';
