@@ -210,6 +210,10 @@ test('explain=1 answers in COUNTS — what the records hold for prices and times
       [4, 4, 3, 3, 4, 0, 0],
     );
     assert.equal(body.explain.find((d) => d.date === WED).priceFromSeal, 1);
+    // Whose orders go unpriced, and how many loads could carry a rate — counts, keyed by shipper
+    // prefix and never by customer.
+    assert.deepEqual(mon.unpricedByShipper, {});
+    assert.deepEqual([mon.loads, mon.loadsFullyPriced], [2, 2]);
     const text = JSON.stringify(body);
     assert.ok(!/CONSIGNEE|COLIN|ENOCK|CUMMING/.test(text), 'no customer, place or driver in a count');
   } finally { fake.restore(); }
@@ -278,6 +282,24 @@ test('a load called "APPT #2" is cached like any other — a # or ? in a name mu
     const { body } = await withKey(() => call(`week=${D}&key=COLIN`));
     assert.equal(bodies.length, first, 'and the second look is all cache');
     assert.deepEqual(body.loads.map((l) => l.miles.source), ['cache', 'cache']);
+  } finally { fake.restore(); }
+});
+
+test('explain=1 says WHOSE orders are unpriced and how many loads could carry a rate', async () => {
+  const D = '2026-09-15';
+  const fake = installFirestoreFake(sealed(D, [
+    st('007170201', D),                                                                            // Uline, priced
+    st('ESTES-0538240001', D, { orderInstructions: '' }),                                           // Estes, no price
+    st('AVRT-0170416601', D, { orderInstructions: '', routeName: 'NOR 2', loadNbr: 'NOR 2' }),      // Averitt, no price
+    st('007170202', D, { routeName: 'NOR 2', loadNbr: 'NOR 2' }),
+    st('007170203', D, { routeName: 'EAST 1', loadNbr: 'EAST 1' }),
+  ]));
+  try {
+    const { body } = await call(`week=${D}&explain=1`);
+    const d = body.explain.find((x) => x.date === D);
+    assert.deepEqual(d.unpricedByShipper, { ESTES: 1, AVRT: 1 });
+    assert.deepEqual([d.loads, d.loadsFullyPriced], [3, 1], 'COLIN 1 and NOR 2 each hold an unpriced order; EAST 1 is whole');
+    assert.ok(!/0538240001|0170416601|CONSIGNEE/.test(JSON.stringify(body)), 'a prefix count, never an order or a customer');
   } finally { fake.restore(); }
 });
 

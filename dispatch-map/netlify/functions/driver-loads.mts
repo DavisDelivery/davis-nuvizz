@@ -41,6 +41,7 @@ import { fetchWithTimeout } from './lib/async-util.mts';
 import { requireUser, jsonResponse } from './lib/require-user.mts';
 import { LOAD_STOP_FIELDS } from './lib/board-fields.mts';
 import { dropCancelledEnabled } from '../../src/lib/stop-cancelled.js';
+import { shipperOf } from '../../src/lib/label-shippers.js';
 import {
   weekOf, driversOfWeek, resolveDriver, driverWeek, routeChunks, pathFingerprint, orderPrice, finishedAt,
   loadOf, YARD, COST_NOT_RECORDED,
@@ -149,6 +150,19 @@ export function explainWeek(days: any[]) {
     const rows = d.rows || [];
     const onLoads = rows.filter((r: any) => loadOf(r));
     const prices = onLoads.map((r: any) => orderPrice(r));
+    // WHOSE orders carry no price, by the shipper the order number names — a count per prefix.
+    const unpricedByShipper: Record<string, number> = {};
+    onLoads.forEach((r: any, i: number) => {
+      if (prices[i].amount != null) return;
+      const k = shipperOf(r.stopNbr)?.key || 'NONE';
+      unpricedByShipper[k] = (unpricedByShipper[k] || 0) + 1;
+    });
+    // HOW OFTEN A RATE CAN PRINT: a load gets $/mile only when every order on it is priced.
+    const byLoad = new Map<string, boolean>();
+    onLoads.forEach((r: any, i: number) => {
+      const k = String(loadOf(r));
+      byLoad.set(k, (byLoad.get(k) ?? true) && prices[i].amount != null);
+    });
     return {
       date: d.date, source: d.source, error: d.error || null,
       rows: rows.length,
@@ -163,6 +177,9 @@ export function explainWeek(days: any[]) {
       priceConflicts: prices.filter((p: any) => p.conflict).length,
       sealDisagrees: prices.filter((p: any) => p.sealDiffers != null).length,
       unpriced: prices.filter((p: any) => p.amount == null).length,
+      unpricedByShipper,
+      loads: byLoad.size,
+      loadsFullyPriced: [...byLoad.values()].filter(Boolean).length,
     };
   });
 }
