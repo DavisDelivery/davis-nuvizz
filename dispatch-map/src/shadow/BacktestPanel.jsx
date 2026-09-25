@@ -457,8 +457,8 @@ export default function BacktestPanel({ phone }) {
           {b.msg && <p className="text-xs text-slate-700">{b.msg}</p>}
           <div className={phone ? 'space-y-2' : ''}>
             {!phone && (
-              <div className="grid grid-cols-[44px_130px_1fr_110px_110px_90px_100px_70px] gap-2 text-[11px] text-slate-500 px-1 pb-1 border-b">
-                <span /><span>Day</span><span>Status</span><span className="text-right">Miles</span><span className="text-right">Drive time</span><span className="text-right">Trucks</span><span className="text-right">Cost</span><span className="text-right">Spend</span>
+              <div className="grid grid-cols-[40px_104px_minmax(0,1fr)_128px_96px_84px_64px] lg:grid-cols-[40px_118px_minmax(0,1fr)_128px_104px_96px_84px_96px_64px] gap-2 text-[11px] text-slate-500 px-1 pb-1 border-b">
+                <span /><span>Day</span><span>Status</span><span /><span className="text-right">Miles</span><span className="hidden lg:block text-right">Drive time</span><span className="text-right">Trucks</span><span className="hidden lg:block text-right">Cost</span><span className="text-right">Spend</span>
               </div>
             )}
             {shown.map((d) => {
@@ -487,18 +487,18 @@ export default function BacktestPanel({ phone }) {
                 );
               }
               return (
-                <div key={d.date} className="grid grid-cols-[44px_130px_1fr_110px_110px_90px_100px_70px] gap-2 items-center text-xs px-1 border-b border-slate-100 min-h-[44px]">
-                  <input type="checkbox" className="w-4 h-4 justify-self-center" disabled={!canPick} checked={picked.has(d.date)} onChange={() => toggle(d.date)} aria-label={`Pick ${d.date}`} />
-                  <button onClick={open} disabled={!r} className="text-left font-medium text-slate-800 disabled:cursor-default">{fmtDay(d.date)}</button>
-                  <span className={`${chip} truncate`}>
-                    {st.text}
-                    {st.job && ACTIVE.has(st.job.status) && <button onClick={() => b.cancel(st.job._id)} className="ml-2 text-rose-700 underline">stop</button>}
-                    {r && <button onClick={open} className="ml-2 text-indigo-700 underline">open</button>}
+                <div key={d.date} className="grid grid-cols-[40px_104px_minmax(0,1fr)_128px_96px_84px_64px] lg:grid-cols-[40px_118px_minmax(0,1fr)_128px_104px_96px_84px_96px_64px] gap-2 items-center text-xs px-1 border-b border-slate-100 min-h-[44px]">
+                  <input type="checkbox" className="w-5 h-5 justify-self-center" disabled={!canPick} checked={picked.has(d.date)} onChange={() => toggle(d.date)} aria-label={`Pick ${d.date}`} />
+                  <span className="font-medium text-slate-800">{fmtDay(d.date)}</span>
+                  <span className={`${chip} truncate`} title={st.text}>{st.text}</span>
+                  <span className="flex gap-1 justify-end">
+                    {st.job && ACTIVE.has(st.job.status) && <button onClick={() => b.cancel(st.job._id)} className="rounded-lg border border-rose-200 bg-white px-2 text-rose-700 min-h-[44px] min-w-[52px]">Stop</button>}
+                    {r && <button onClick={open} className="rounded-lg border border-indigo-200 bg-white px-2 text-indigo-700 font-semibold min-h-[44px] min-w-[52px]">Open</button>}
                   </span>
                   <span className="text-right">{r?.vsDriven ? <Delta d={r.vsDriven.miles} unit="" /> : ''}</span>
-                  <span className="text-right">{r?.vsDriven?.driveMin ? <Delta d={{ abs: r.vsDriven.driveMin.abs / 60, pct: r.vsDriven.driveMin.pct }} unit=" h" /> : ''}</span>
+                  <span className="hidden lg:block text-right">{r?.vsDriven?.driveMin ? <Delta d={{ abs: r.vsDriven.driveMin.abs / 60, pct: r.vsDriven.driveMin.pct }} unit=" h" /> : ''}</span>
                   <span className="text-right">{r?.vsDriven ? <TruckDelta n={r.vsDriven.trucks} /> : ''}</span>
-                  <span className="text-right">{r?.vsDriven?.cost ? <Delta d={r.vsDriven.cost} pct={false} money /> : ''}</span>
+                  <span className="hidden lg:block text-right">{r?.vsDriven?.cost ? <Delta d={r.vsDriven.cost} pct={false} money /> : ''}</span>
                   <span className="text-right text-slate-500">{r ? usd(r.usd) : st.job?.usd ? usd(st.job.usd) : ''}</span>
                 </div>
               );
