@@ -82,9 +82,9 @@ function useBacktests() {
     return { r, j };
   }, []);
 
-  const queue = useCallback(async (dates, maxUsd) => {
+  const queue = useCallback(async (dates, maxUsd, daily) => {
     if (!dates.length) return false;
-    const ceiling = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd * dates.length)} at the model (${usd(maxUsd)} a day — no round starts that could pass it), usually much less.` : '';
+    const ceiling = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd * dates.length)} at the model (${usd(maxUsd)} a day — no round starts that could pass it), usually much less.${daily ? ` All backtests together stop at ${usd(daily.usd)} per 24 hours; days past that wait.` : ''}` : '';
     if (!window.confirm(`Backtest ${dates.length} day${dates.length === 1 ? '' : 's'} with Claude?${ceiling} The worker runs them one at a time, a few minutes each.`)) return false;
     setBusy(true); setMsg(null);
     let queued = false;
@@ -216,7 +216,7 @@ function RouterSettings({ v, onSave }) {
         <button onClick={() => (open ? setOpen(false) : openForm())} className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 min-h-[44px] shrink-0">
           <Settings2 size={13} /> Router settings {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
-        <span className="text-xs text-slate-400">cap rule {s.capRule} · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}</span>
+        <span className="text-xs text-slate-400">cap rule {s.capRule} · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}{v.ceiling ? ` · all backtests ≤${usd(v.ceiling.usd)} per 24 h (${usd(v.ceiling.spent24h)} used)` : ''}</span>
       </div>
       {note && <p className="text-[11px] text-slate-600">{note}</p>}
       {open && form && (
@@ -419,10 +419,10 @@ function DayDetail({ date, loadResult, phone, onClose, rates }) {
 
 // ── the days ────────────────────────────────────────────────────────────────
 
-function statusOf(day, jobsByDate) {
+function statusOf(day, jobsByDate, held = false) {
   const job = jobsByDate.get(day.date);
   if (job && ACTIVE.has(job.status)) {
-    if (job.status === 'queued') return { k: 'queued', text: 'queued', job };
+    if (job.status === 'queued') return { k: 'queued', text: held ? 'queued · waiting on the 24-hour ceiling' : 'queued', job };
     return { k: 'running', text: `running · round ${job.rounds || 0} · ${usd(job.usd || 0)}`, job };
   }
   if (day.result) {
@@ -481,7 +481,7 @@ export default function BacktestPanel({ phone }) {
           <RouterSettings v={v} onSave={b.saveSettings} />
           {openDay && <DayDetail key={`${openDay}|${days.find((d) => d.date === openDay)?.result?.at || ''}`} date={openDay} loadResult={b.loadResult} phone={phone} rates={rates} onClose={() => setOpenDay(null)} />}
           <div className="flex flex-wrap items-center gap-2">
-            <button disabled={!picked.size || b.busy || !!v.refused} onClick={async () => { if (await b.queue([...picked], v.settings.maxUsd)) setPicked(new Set()); }}
+            <button disabled={!picked.size || b.busy || !!v.refused} onClick={async () => { if (await b.queue([...picked], v.settings.maxUsd, v.ceiling)) setPicked(new Set()); }}
               className="rounded-lg bg-indigo-700 text-white px-3 text-xs font-semibold min-h-[44px] disabled:opacity-50 inline-flex items-center gap-1">
               <Play size={13} /> Backtest {picked.size || ''} day{picked.size === 1 ? '' : 's'}{picked.size ? ` (at most ${usd(picked.size * v.settings.maxUsd)})` : ''}
             </button>
@@ -496,7 +496,7 @@ export default function BacktestPanel({ phone }) {
               </div>
             )}
             {shown.map((d) => {
-              const st = statusOf(d, jobsByDate);
+              const st = statusOf(d, jobsByDate, !!v.ceiling?.holding);
               const r = withRates(d.result, rates);
               const canPick = st.k === 'none' || st.k === 'failed' || st.k === 'cancelled' || st.k === 'done';
               const open = () => r && setOpenDay(d.date);

@@ -87,6 +87,8 @@ export const CLAUDE_SHADOW_BACKTESTS = {
   bounds: { maxRounds: [2, 20], maxUsd: [0.5, 50], maxTokens: [8000, 64000], costPerMile: [0, 50], costPerDriveHour: [0, 500] },
   efforts: ['low', 'medium', 'high'], capRules: ['tighter', 'driver', 'route'],
   spend: { usd: 1284.37, runs: 312 },
+  ceiling: { usd: 25, spent24h: 24.87, holding: true },   // the longest queued status: "waiting on the 24-hour ceiling"
+
   days: Array.from({ length: 24 }, (_, i) => ({ date: day(i), result: i === 0 ? result(0, 4381.6, 3902.2) : i === 2 ? result(2, 3977.1, 4012.8) : i === 5 ? result(5, 4120.4, 3688.9) : null })),
   jobs: [
     { _id: `bt__${day(3)}__run`, kind: 'backtest', date: day(3), status: 'running', createdAt: '2026-09-25T14:10:00Z', rounds: 4, usd: 1.9312 },

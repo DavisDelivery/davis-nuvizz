@@ -316,3 +316,40 @@ test('a tick that overlaps the owner and trips on one read leaves the job alone;
   await workerTick(broken);
   assert.equal(st2.docs.get(jp(st2)).status, 'failed');
 });
+
+test('the 24-hour ceiling is an env var the API cannot move: spent out, a queued day waits; nearly spent, a day gets only what is left', async () => {
+  const { dailyCeilingUsd } = await import('../netlify/functions/lib/claude-shadow/backtest.mts');
+  assert.equal(dailyCeilingUsd({}), 25);
+  assert.equal(dailyCeilingUsd({ CLAUDE_ROUTER_DAILY_USD: '0' }), 0, '0 stops all backtest spend');
+  assert.equal(dailyCeilingUsd({ CLAUDE_ROUTER_DAILY_USD: '60' }), 60);
+  assert.equal(dailyCeilingUsd({ CLAUDE_ROUTER_DAILY_USD: 'lots' }), 25, 'malformed keeps the default, never no ceiling');
+  assert.equal(dailyCeilingUsd({ CLAUDE_ROUTER_DAILY_USD: '-3' }), 25);
+  const c = clock();
+  const recent = { kind: 'backtest', date: '2026-09-20', status: 'done', usd: 25, createdAt: '2026-09-25T10:00:00Z', updatedAt: '2026-09-25T11:00:00Z' };
+  // Spent out: the queued day waits, nothing is built, nothing is paid.
+  const st = store({ ...seedDay(), 'claude_shadow_jobs/prior': recent });
+  const m = model([reply([{ type: 'tool_use', id: 't1', name: 'evaluate_plan', input: PLAN }])]);
+  const d = deps(st, m, c);
+  await enqueueBacktests([D], 'disp', d);
+  const held = await workerTick(d);
+  assert.equal(held.idle, true);
+  assert.match(held.held, /CLAUDE_ROUTER_DAILY_USD/);
+  assert.equal(m.calls.length, 0);
+  assert.equal(st.docs.get(jp(st)).status, 'queued', 'waiting, not failed');
+  // A day-old spend no longer counts.
+  const st2 = store({ ...seedDay(), 'claude_shadow_jobs/prior': { ...recent, updatedAt: '2026-09-24T11:00:00Z' } });
+  const m2 = model([reply([{ type: 'tool_use', id: 't1', name: 'submit_plan', input: { ...PLAN, loads: PLAN.loads.map((l) => ({ ...l, why: 'w' })), summary: 's' } }])]);
+  const d2 = deps(st2, m2, clock());
+  await enqueueBacktests([D], 'disp', d2);
+  assert.equal((await workerTick(d2)).done, true);
+  assert.equal(m2.calls.length, 1);
+  // Nearly spent: $1 left of the ceiling caps this day at $1, below its own $5.
+  const st3 = store({ ...seedDay(), 'claude_shadow_jobs/prior': { ...recent, usd: 24 } });
+  const m3 = model([reply([{ type: 'tool_use', id: 't1', name: 'evaluate_plan', input: PLAN }])]);
+  const d3 = deps(st3, m3, clock());
+  await enqueueBacktests([D], 'disp', d3);
+  await workerTick(d3);
+  const job = [...st3.docs.entries()].find(([p]) => /^claude_shadow_jobs\/bt__2026/.test(p) && p.split('/').length === 2)[1];
+  assert.ok(job.usd <= 1 + 1e-9, `spent ${job.usd}`);
+  if (job.ended === 'max-usd') assert.match(job.endNote, /24-hour ceiling/);
+});

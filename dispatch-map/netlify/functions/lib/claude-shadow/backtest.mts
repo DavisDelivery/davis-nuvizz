@@ -122,6 +122,29 @@ export function routerRefusal(env: Record<string, any>, firestoreOn: boolean = i
   return null;
 }
 
+// ── the 24-hour ceiling ─────────────────────────────────────────────────────
+//
+// Router settings are written through the same endpoint that queues backtests, so a per-day cap
+// set THERE bounds nothing against whoever can reach that endpoint. This ceiling is an env var —
+// nothing the API can change — over every backtest's spend in the last 24 hours. House shape:
+// unset or malformed keeps the default; 0 stops all backtest spend.
+export const DAILY_CEILING_DEFAULT = 25;
+export function dailyCeilingUsd(env: Record<string, any>): number {
+  const raw = String(env?.CLAUDE_ROUTER_DAILY_USD ?? '').trim();
+  if (raw === '') return DAILY_CEILING_DEFAULT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 1000 ? n : DAILY_CEILING_DEFAULT;
+}
+export function spentSince(jobs: any[], sinceMs: number): number {
+  let t = 0;
+  for (const j of jobs || []) {
+    const at = Date.parse(String(j?.updatedAt || j?.createdAt || ''));
+    if (Number.isFinite(at) && at >= sinceMs && typeof j?.usd === 'number') t += j.usd;
+  }
+  return Math.round(t * 1e6) / 1e6;
+}
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 // ── reading one day ─────────────────────────────────────────────────────────
 
 async function inPool<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Promise<R[]> {
@@ -269,6 +292,14 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
   const live = jobs.filter((j) => !j.cancelRequested);
   const job = live.find((j) => j.status === 'running') || live.find((j) => j.status === 'queued');
   if (!job) return { ok: true, idle: true };
+  const ceiling = dailyCeilingUsd(deps.env);
+  const room = Math.round((ceiling - spentSince(jobs, t0 - DAY_MS)) * 1e6) / 1e6;
+  // A day not yet started waits while the last 24 hours cannot pay even one round's output; it is
+  // not failed, and it starts when the window rolls on.
+  const js = job.settings || {};
+  const rate = PRICES_PER_MTOK[js.model || shadowModel(deps.env).model]?.output ?? Infinity;
+  const oneRoundOut = ((js.maxTokens || ROUTER_DEFAULTS.maxTokens) * rate) / 1e6;
+  if (job.status === 'queued' && room < oneRoundOut) return { ok: true, idle: true, held: `the 24-hour backtest ceiling ($${ceiling}, CLAUDE_ROUTER_DAILY_USD) is spent` };
   const id = String(job._id);
   const at = () => deps.now().toISOString();
   // Only the invocation that DID something with this job — built its day, or claimed a round —
@@ -310,6 +341,10 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
     };
     let state = await loadState(id, deps);
     let persisted = state.rounds.length;
+    // This job may spend no more than what the 24-hour ceiling has left (its own spend so far is
+    // inside `room`'s total already, so its budget is what it has spent plus what is left).
+    const ownCap = settings.maxUsd;
+    settings.maxUsd = Math.min(ownCap, Math.round((state.usd + Math.max(0, room)) * 1e6) / 1e6);
     const apiKey = String(deps.env?.ANTHROPIC_API_KEY || '');
     state = await runRounds(loopProblem, state, settings, {
       call: (req) => deps.call(req, { apiKey, timeoutMs: ROUND_TIMEOUT_MS }),
@@ -331,6 +366,10 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
       now: () => deps.now().getTime(),
       iso: at,
     }, START_ROUNDS_BEFORE_MS - (deps.now().getTime() - t0));
+    if (state.ended === 'max-usd' && settings.maxUsd < ownCap) {
+      state = { ...state, endNote: `${state.endNote} — the 24-hour ceiling across all backtests (CLAUDE_ROUTER_DAILY_USD, $${ceiling}) left this day $${settings.maxUsd.toFixed(2)} of its $${ownCap.toFixed(2)}` };
+      await deps.shadowPatch(jobPath(id), { endNote: state.endNote, updatedAt: at() });
+    }
     if (!state.ended) return { ok: true, job: id, rounds: state.rounds.length, usd: state.usd, continuing: true };
     return await finishJob(id, job, problem, cfg, state, deps);
   } catch (e: any) {
@@ -372,6 +411,14 @@ export async function finishJob(id: string, job: any, problem: BtProblem, cfg: a
   return { ok: true, job: id, done: true, headline };
 }
 
+/** The ceiling as the panel shows it — and whether the worker is holding queued days on it (same test). */
+function ceilingView(jobs: any[], rs: any, deps: BtDeps) {
+  const usd = dailyCeilingUsd(deps.env);
+  const spent24h = spentSince(jobs, deps.now().getTime() - DAY_MS);
+  const rate = PRICES_PER_MTOK[shadowModel(deps.env).model]?.output ?? Infinity;
+  return { usd, spent24h, holding: usd - spent24h < ((rs.maxTokens || ROUTER_DEFAULTS.maxTokens) * rate) / 1e6 };
+}
+
 /** The Backtest panel's read: sealed days, the latest result per day, the jobs, the settings. */
 export async function backtestView(deps: BtDeps = LIVE) {
   const [manifests, results, jobs, rsDoc] = await Promise.all([
@@ -388,6 +435,7 @@ export async function backtestView(deps: BtDeps = LIVE) {
     jobs: jobs.slice(-60).reverse(),
     // EVERY run's spend — failed, stopped and re-run days included — not just each day's latest result.
     spend: { usd: Math.round(jobs.reduce((a: number, j: any) => a + (typeof j.usd === 'number' ? j.usd : 0), 0) * 100) / 100, runs: jobs.length },
+    ceiling: ceilingView(jobs, routerSettingsFrom(rsDoc), deps),
     settings: routerSettingsFrom(rsDoc), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
     refused: routerRefusal(deps.env, deps.firestoreOn()),
     enabled: claudeShadowEnabled(deps.env),
