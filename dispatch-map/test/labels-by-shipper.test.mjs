@@ -52,6 +52,7 @@ test('THE DAY: who shipped what — barcode-less shippers first, cancelled and p
     assert.equal(fake.log.other.length, 0, 'no non-Firestore call may be made');
     assert.deepEqual(body.shippers.map((s) => `${s.key}:${s.orders}`), ['ESTES:2', 'AVRT:1', 'SHP:1', 'ULINE:2']);
     assert.equal(body.shippers[1].name, 'Averitt');
+    assert.equal(body.shippers[2].name, 'Puremaxx', 'Chad: "Shp is puremaxx"');
     assert.equal(body.cancelledOff, 1);
     assert.equal(body.pickups, 1);
     assert.equal(body.boardAt, '2026-09-24T13:05:00Z', 'the board\'s own scan time, so the screen can say how fresh it is');
