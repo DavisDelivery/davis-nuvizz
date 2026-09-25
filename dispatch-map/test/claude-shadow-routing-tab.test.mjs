@@ -56,6 +56,26 @@ test('a remembered sub-tab may be Shadow; anything this build does not know open
   assert.match(CODE, /useEffect\(\(\) => \{ if \(tab === 'routing'\) setRoutingTab\('build'\); \}, \[tab\]\);/);
 });
 
+test('entering Routing lands on Build from the FIRST render — leaving from Shadow does not remount it on the way back', () => {
+  // The effect above runs after a render that already used the old sub-tab; measured on the first
+  // cut, Shadow → Map → Routing fired one claude-shadow request nobody saw, on both views.
+  assert.match(CODE, /const openTab = \(next\) => \{\s*if \(next === 'routing' && tab !== 'routing'\) setRoutingTab\('build'\);\s*setTab\(next\);\s*\};/);
+  // Both ways in go through it: the desktop tab and the phone menu.
+  assert.match(CODE, /<TabBtn label="Routing \(beta\)"[^\n]*onClick=\{\(\) => openTab\('routing'\)\} \/>/);
+  assert.match(CODE, /openTab\(next === 'diagnostics' \? 'diag' : KNOWN\.includes\(next\) \? next : 'map'\);/);
+  assert.doesNotMatch(CODE, /onClick=\{\(\) => setTab\('routing'\)\}/, 'a way into Routing that skips the reset');
+});
+
+test('the header gives the presence chip\'s text up before the tab row — never the toggle, never Messages', () => {
+  // Measured in scripts/verify-routing-topbar.mjs (1180–1920px, an unread badge on Messages);
+  // this pins the two properties that make it hold: the cluster shrinks first, and the toggle's
+  // column cannot shrink (an `auto` column would — the toggle is overflow-hidden).
+  assert.match(CODE, /<div className="grid grid-flow-col grid-cols-\[minmax\(1\.75rem,auto\)\] auto-cols-max items-center gap-2" style=\{\{ flexShrink: 1e6 \}\}>\s*<PresenceChip presence=\{presence\} \/>\s*\{tab === 'routing' && ROUTING_FLAG && <RoutingSubTabs /);
+  const topbar = readFileSync(new URL('../scripts/verify-routing-topbar.mjs', import.meta.url), 'utf8');
+  assert.match(topbar, /for \(const width of \[1180, 1194, 1366, 1440, 1920\]\)/);
+  assert.match(topbar, /the tab row overflows by/);
+});
+
 test('every layout guard still measures it, reached the way a dispatcher now reaches it', () => {
   const mobile = readFileSync(new URL('../scripts/verify-mobile-layout.mjs', import.meta.url), 'utf8');
   assert.match(mobile, /\{ key: 'claudeshadow', label: '[^']+', nav: \/routing\/i, gear: \/shadow view\/i, arrive: 'Claude shadow' \}/);
