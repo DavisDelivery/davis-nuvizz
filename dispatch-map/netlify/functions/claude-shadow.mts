@@ -50,6 +50,7 @@ import { CAPACITY_PATH, LEARN_LAST_PATH, DEFAULT_LOOSE_PER_SKID } from './lib/cl
 import { planLearn, learnRefusal, runLearn } from './lib/claude-shadow/learn.mts';
 import { withOverrides, ratioInForce, CAP_BOUNDS, LOOSE_PER_SKID_BOUNDS } from './lib/claude-shadow/settings-core.mts';
 import { readSettings, saveSettings } from './lib/claude-shadow/settings.mts';
+import { backtestView, backtestResult, enqueueBacktests, cancelJob, saveRouterSettings, routerRefusal } from './lib/claude-shadow/backtest.mts';
 
 export const PROBE_LAST_PATH = 'claude_shadow_meta/probe_last';
 export const PROBE_LOG_COLLECTION = 'claude_shadow_probes';
@@ -74,8 +75,8 @@ function statusBody(lastProbe: any, lastProbeNote: string | null, learned: any =
     keyConfigured: anthropicKeyConfigured(),
     prefix: SHADOW_PREFIX,
     probe: { effort: PROBE_EFFORT, maxTokens: PROBE_MAX_TOKENS, ceilingUsd: probeCeilingUsd(m.model) },
-    built: ['switches', 'write gateway', 'isolation guard', 'test call', 'learned truck capacity and route order', 'capacity settings'],
-    notBuilt: ['snapshot', 'plan run', 'late-manifest flag', 'grading', 'comparison screen'],
+    built: ['switches', 'write gateway', 'isolation guard', 'test call', 'learned truck capacity and route order', 'capacity settings', 'Claude router + backtest on past days'],
+    notBuilt: ['nightly snapshot', 'nightly plan run', 'late-manifest flag', 'grading against the 8:30 plan', 'nightly comparison'],
     lastProbe,
     lastProbeNote,
     learned,
@@ -96,6 +97,11 @@ export default async (req: Request): Promise<Response> => {
       return J({ ...statusBody(null, 'Firestore is not configured on this site — the last test call cannot be read'), learnedNote: off, learnLastNote: off });
     }
     const view = new URL(req.url).searchParams.get('view');
+    // THE CLAUDE ROUTER'S BACKTESTS (v1.69.0): the sealed days, the latest result per day, the queue.
+    if (view === 'backtests') {
+      try { return J(await backtestView()); }
+      catch (e: any) { return J({ ok: false, error: String(e?.message || e), calls: 0 }, 502); }
+    }
     if (view === 'learn-plan') {
       try {
         const { stamps, ...plan } = await planLearn();
@@ -131,12 +137,22 @@ export default async (req: Request): Promise<Response> => {
   }
   if (req.method !== 'POST') return J({ ok: false, error: 'method not allowed' }, 405);
 
-  // Dispatcher, not viewer: this POST spends an Anthropic call. Inert until AUTH_REQUIRED=true.
-  const gate = await requireUser(req, { role: 'dispatcher' });
-  if (!gate.ok) return gate.response;
-
   let body: any = {};
   try { body = await req.json(); } catch { return J({ ok: false, error: 'bad json', calls: 0 }, 400); }
+
+  // ONE READ ARRIVES AS A POST: a day's full backtest result. The screen may call only fixed
+  // claude-shadow URLs (the isolation guard), so the date travels in the body — and a read stays a
+  // viewer's right, not a dispatcher's.
+  if (body?.action === 'backtest-result') {
+    const viewer = await requireUser(req, { role: 'viewer' });
+    if (!viewer.ok) return viewer.response;
+    try { const r = await backtestResult(String(body?.date || '')); return J({ ...r.body, calls: 0 }, r.status); }
+    catch (e: any) { return J({ ok: false, error: String(e?.message || e), calls: 0 }, 502); }
+  }
+
+  // Dispatcher, not viewer: these POSTs spend an Anthropic call or change a setting. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
   if (body?.action === 'settings') {
     const refused = learnRefusal();
     if (refused) return J({ ok: false, error: `settings are off here: ${refused}`, calls: 0 }, 409);
@@ -148,6 +164,25 @@ export default async (req: Request): Promise<Response> => {
     if (refused) return J({ ok: false, error: `learning is off here: ${refused}`, calls: 0 }, 409);
     const run = await runLearn({ trigger: 'manual', by: gate.user?.username ?? null, budgetMs: LEARN_NOW_BUDGET_MS });
     return J({ ...run, calls: 0 });
+  }
+  // THE CLAUDE ROUTER (v1.69.0). Queueing a backtest spends nothing here: the scheduled worker
+  // (claude-shadow-worker-background.mts) runs it, capped per day by the router's max $ setting.
+  if (body?.action === 'backtest') {
+    const refused = routerRefusal(process.env);
+    if (refused) return J({ ok: false, error: `the router is off here: ${refused}`, calls: 0 }, 409);
+    if (body?.confirm !== true) return J({ ok: false, error: 'a backtest spends money at the model: send confirm:true to queue it', calls: 0 }, 400);
+    const r = await enqueueBacktests(body?.dates, gate.user?.username ?? null);
+    return J({ ...r.body, calls: 0 }, r.status);
+  }
+  if (body?.action === 'backtest-cancel') {
+    const r = await cancelJob(String(body?.jobId || ''), gate.user?.username ?? null);
+    return J({ ...r.body, calls: 0 }, r.status);
+  }
+  if (body?.action === 'router-settings') {
+    const refused = learnRefusal();
+    if (refused) return J({ ok: false, error: `settings are off here: ${refused}`, calls: 0 }, 409);
+    const r = await saveRouterSettings(body?.change, gate.user?.username ?? null);
+    return J({ ...r.body, calls: 0 }, r.status);
   }
   if (body?.action !== 'probe') return J({ ok: false, error: 'unknown action', calls: 0 }, 400);
 

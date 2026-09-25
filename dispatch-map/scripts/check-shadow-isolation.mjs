@@ -100,6 +100,13 @@ export const REVIEWED_SHARED = {
   'netlify/functions/lib/require-user.mts': 'the auth gate; reads the user document, calls no vendor',
   'netlify/functions/lib/auth-core.mts': 'session-token signing and checking; node:crypto only',
   'netlify/functions/lib/auth-store.mts': 'the user store, reached only through requireUser, which reads it',
+  // v1.69.0 — the Claude router's backtest measures plans with the learned engine's OWN estimator and
+  // sequencer, so its miles and minutes line up with the Engine tab's. Each is pure: no I/O, no host.
+  'netlify/functions/lib/routing-engine-solver.mts': 'the learned engine\'s sequencer and travel estimator; PURE (its header: no I/O); its only value import is zones.mts (the config and score imports are type-only)',
+  'netlify/functions/lib/zones.mts': 'geohash zone ids; PURE, no imports',
+  'netlify/functions/lib/driver-class.mts': 'the engine\'s driver→truck-class rule (employees roster + the one pin); PURE, no imports — moved out of routing-plan-core.mts unchanged so the shadow can share it',
+  'netlify/functions/lib/routing-types.mts': 'shared routing types and the Buford DEPOT constant; no imports',
+  'netlify/functions/lib/routing-engine-config.mts': 'the engine\'s config defaults and clamps; the shadow imports only the PURE effectiveEngineConfig and engineConfigPath (rule 2), reads the stored doc itself with getDoc, and cannot reach the module\'s writer',
 };
 
 // The only builtins each reviewed module may import. Any other — and every builtin in a shadow
@@ -116,6 +123,12 @@ export const SHARED_IMPORTS = {
   // and the egress lock judges it as one. The shadow learns from history_days with it.
   'netlify/functions/lib/firestore.mts': ['getDoc', 'isFirestoreEnabled', 'listDocs'],
   'netlify/functions/lib/require-user.mts': ['requireUser'],
+  // v1.69.0 — the Claude router's backtest (lib/claude-shadow/backtest-core.mts, backtest.mts).
+  'netlify/functions/lib/routing-engine-solver.mts': ['solveRoute', 'haversineMiles', 'travelMinutesForMiles'],
+  'netlify/functions/lib/zones.mts': ['zoneId'],
+  'netlify/functions/lib/driver-class.mts': ['employeeClassMap', 'CLASS_OVERRIDE'],
+  'netlify/functions/lib/routing-types.mts': ['DEPOT'],
+  'netlify/functions/lib/routing-engine-config.mts': ['effectiveEngineConfig', 'engineConfigPath'],
 };
 
 // Rule 4. What the gateway may import from firestore.mts, and the only names it may export.

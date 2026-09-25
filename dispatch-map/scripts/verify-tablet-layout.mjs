@@ -26,7 +26,7 @@ import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -350,7 +350,7 @@ for (const dev of TABLETS) {
     // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
     // them would leave the guard measuring a screen the app never renders.
     // THE CLAUDE SHADOW TAB — the same worst-rows fixture the phone and desktop guards use.
-    if (u.includes('claude-shadow')) return J(CLAUDE_SHADOW_STATUS);
+    if (u.includes('claude-shadow')) return J(claudeShadowFixtureFor(u));
     // PRINT LABELS (v1.67.0) — the same built fixture the phone guard drives.
     if (u.includes('labels-by-shipper')) return J(labelsAnswer(u));
     if (u.includes('stop-lookup')) return J(

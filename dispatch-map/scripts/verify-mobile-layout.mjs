@@ -36,7 +36,7 @@ import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
 
@@ -919,7 +919,7 @@ function stubRoutes(page, emailHtml) {
     // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
     // them would leave the guard measuring a screen the app never renders.
     // THE CLAUDE SHADOW TAB — its worst rows (see scripts/lib/claude-shadow-fixture.mjs).
-    if (u.includes('claude-shadow')) return R(CLAUDE_SHADOW_STATUS);
+    if (u.includes('claude-shadow')) return R(claudeShadowFixtureFor(u));
     // PRINT LABELS (v1.67.0) — the day's shippers, or one shipper's orders, BUILT by the real
     // label-shippers.js (scripts/lib/labels-fixture.mjs). Before the catch-all, which would
     // answer it with an empty board and measure a screen with nothing on it.

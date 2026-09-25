@@ -10,8 +10,8 @@ export const CLAUDE_SHADOW_STATUS = {
   model: 'claude-opus-5-5', modelSource: 'default', modelRejected: 'opus five point five please, the new one',
   keyConfigured: true, prefix: 'claude_shadow_',
   probe: { effort: 'low', maxTokens: 2048, ceilingUsd: 0.049 },
-  built: ['switches', 'write gateway', 'isolation guard', 'test call', 'learned truck capacity and route order', 'capacity settings'],
-  notBuilt: ['snapshot', 'plan run', 'late-manifest flag', 'grading', 'comparison screen'],
+  built: ['switches', 'write gateway', 'isolation guard', 'test call', 'learned truck capacity and route order', 'capacity settings', 'Claude router + backtest on past days'],
+  notBuilt: ['nightly snapshot', 'nightly plan run', 'late-manifest flag', 'grading against the 8:30 plan', 'nightly comparison'],
   lastProbe: {
     at: '2026-09-24T21:30:00.000Z', by: 'legacy', requestedModel: 'claude-opus-5-5', servedModel: 'claude-opus-5-5',
     answered: true, ok: true, httpStatus: 200, error: null, toolCalled: true, stopReason: 'tool_use', ms: 4210,
@@ -60,3 +60,40 @@ export const CLAUDE_SHADOW_STATUS = {
     pairs: [],
   },
 };
+
+// THE CLAUDE ROUTER'S BACKTEST PANEL (v1.69.0) is fed from a DIFFERENT view of the same function,
+// so the guards must answer it with its own shape — the status body would render an empty panel and
+// the guard would measure nothing. Worst rows: a running job, a queued one, a failure with a long
+// reason, finished days with four-figure mileage and big swings, cost rates entered (the widest row).
+const day = (i) => {
+  const d = new Date(Date.UTC(2026, 8, 23 - i));
+  return d.toISOString().slice(0, 10);
+};
+const cols = (m, t) => ({ trucks: t, stops: 612, spots: 1043.6, capUsedTrucks: 1240.5, util: 84.1, miles: m, driveMin: Math.round(m * 1.9), overCap: 0, blocked: 0, unplanned: 0 });
+const result = (i, driven, claude) => ({
+  date: day(i), at: '2026-09-25T14:03:00.000Z', jobId: `bt__${day(i)}__x`, submitted: i !== 2, usd: 2.4817, rounds: 6, ended: 'submitted', model: 'claude-opus-5-5',
+  columns: { driven: cols(driven, 51), reseq: cols(driven * 0.94, 51), claude: cols(claude, 48) },
+  costs: { driven: driven * 2.1, reseq: driven * 0.94 * 2.1, claude: claude * 2.1 },
+  vsDriven: { miles: { abs: claude - driven, pct: Math.round(((claude - driven) / driven) * 1000) / 10 }, driveMin: { abs: -412, pct: -9.8 }, trucks: -3, cost: { abs: (claude - driven) * 2.1, pct: -11.2 } },
+  sequencingOnly: { miles: { abs: -0.06 * driven, pct: -6 } }, assignmentOnly: { miles: { abs: claude - 0.94 * driven, pct: -5.4 }, trucks: -3 },
+  agreement: { stopsMoved: 214, stopsSameLoad: 398, coLoadRecall: 61.3, coLoadPrecision: 58.9 },
+  stats: { stops: 612, loads: 51, excludedNoCoords: 7, capModelDays: 78 },
+});
+export const CLAUDE_SHADOW_BACKTESTS = {
+  ok: true, enabled: true, model: 'claude-opus-5-5', refused: null, nuvizzCalls: 0,
+  settings: { capRule: 'tighter', costPerMile: 2.1, costPerDriveHour: 38.5, effort: 'high', maxRounds: 8, maxUsd: 5, maxTokens: 32000 },
+  defaults: { capRule: 'tighter', costPerMile: null, costPerDriveHour: null, effort: 'high', maxRounds: 8, maxUsd: 5, maxTokens: 32000 },
+  bounds: { maxRounds: [2, 20], maxUsd: [0.5, 50], maxTokens: [8000, 64000], costPerMile: [0, 50], costPerDriveHour: [0, 500] },
+  efforts: ['low', 'medium', 'high', 'xhigh', 'max'], capRules: ['tighter', 'driver', 'route'],
+  days: Array.from({ length: 24 }, (_, i) => ({ date: day(i), result: i === 0 ? result(0, 4381.6, 3902.2) : i === 2 ? result(2, 3977.1, 4012.8) : i === 5 ? result(5, 4120.4, 3688.9) : null })),
+  jobs: [
+    { _id: `bt__${day(3)}__run`, kind: 'backtest', date: day(3), status: 'running', createdAt: '2026-09-25T14:10:00Z', rounds: 4, usd: 1.9312 },
+    { _id: `bt__${day(4)}__q`, kind: 'backtest', date: day(4), status: 'queued', createdAt: '2026-09-25T14:11:00Z', rounds: 0, usd: 0 },
+    { _id: `bt__${day(6)}__f`, kind: 'backtest', date: day(6), status: 'failed', createdAt: '2026-09-25T13:00:00Z', error: 'the API refused the request (HTTP 400): messages.2.content.0: a thinking block could not be verified against this conversation' },
+  ],
+};
+
+/** What a layout guard answers for a claude-shadow URL: the backtest view, or the status body. */
+export function claudeShadowFixtureFor(url) {
+  return String(url).includes('view=backtests') ? CLAUDE_SHADOW_BACKTESTS : CLAUDE_SHADOW_STATUS;
+}

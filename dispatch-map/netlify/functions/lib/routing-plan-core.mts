@@ -43,6 +43,7 @@ import {
   DEPOT_ID, buildTravelMatrix, solveRoute, travelMinutesForOrder, haversineMiles, type EngineStop,
 } from './routing-engine-solver.mts';
 import { scoreRoute, toScoreList } from './score.mts';
+import { employeeClassMap, CLASS_OVERRIDE } from './driver-class.mts';
 
 export const PLAN_PROPOSALS_COLLECTION = 'plan_proposals';
 export const PLAN_PROPOSALS_DAILY_COLLECTION = 'plan_proposals_daily';
@@ -61,8 +62,9 @@ export function experimentPath(tenant: string, label: string): string {
 // draft builder (routing-draft-core.mts); one definition so the two can never drift.
 // Supervisors run occasional 1-3 stop days and are never a real route-driver pool.
 export const SUPERVISOR_KEYS = new Set(['CHAD_DAVIS']);
-// Fallback truck-class pin for drivers without an employees-roster record.
-export const CLASS_OVERRIDE = new Map<string, string>([['JUNIOR_THOMAS', 'tractor']]);
+// Fallback truck-class pin for drivers without an employees-roster record — defined in
+// lib/driver-class.mts with employeeClassMap (v1.69.0) and re-exported here unchanged.
+export { employeeClassMap, CLASS_OVERRIDE };
 
 export function planProposalPath(tenant: string, date: string): string {
   return `${PLAN_PROPOSALS_COLLECTION}/${tenant}__${date}`;
@@ -214,25 +216,8 @@ export interface PlanInputs {
   employees?: any[];                   // MarginIQ employees roster (vehicleType source); absent → class fallbacks
 }
 
-// Phase 2.9 — PURE: employees roster → driver_key → truck class. Joined on the
-// same fold the engine keys everything by (NuVizz alias, else fullName,
-// else first+last; explicit aliases too), so Chad's MarginIQ Vehicle Type edits
-// flow straight into class gating and the per-class skid caps.
-export function employeeClassMap(employees: any[]): Map<string, string> {
-  const fold = (s: any) => String(s || '').trim().toUpperCase().replace(/\s+/g, '_');
-  const out = new Map<string, string>();
-  for (const e of employees || []) {
-    const vt = String(e?.vehicleType || '').toLowerCase();
-    if (vt !== 'tractor' && vt !== 'box_truck') continue;
-    const names = new Set<string>([
-      (e?.externalIds || {})?.nuvizz, e?.fullName,
-      `${e?.firstName || ''} ${e?.lastName || ''}`.trim(),
-      ...(Array.isArray(e?.aliases) ? e.aliases : []),
-    ].filter(Boolean).map(fold));
-    for (const k of names) if (k && !out.has(k)) out.set(k, vt);
-  }
-  return out;
-}
+// employeeClassMap moved to lib/driver-class.mts (v1.69.0), unchanged, so the Claude shadow can
+// share it without this module's graph. Re-exported above; test/driver-class.test.mjs pins it.
 
 // ── the ONE live/warehouse stop → AssignStop mapping ─────────────────────────
 //
