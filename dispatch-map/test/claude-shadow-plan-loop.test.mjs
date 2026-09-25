@@ -194,3 +194,21 @@ test('a round another worker has claimed is never paid for twice: this invocatio
   assert.equal(st.rounds.length, 0);
   assert.equal(st.ended, null);
 });
+
+test('a call that timed out after it was sent is charged a HIGH-side estimate, never $0; a 429 was refused before any work and costs nothing', () => {
+  const to = { ok: false, httpStatus: null, timedOut: true, ms: 600000, error: 'timed out', body: null };
+  const st = applyResponse(problem(), emptyState(), SETTINGS, to, 'x');
+  const r = st.rounds[0];
+  // At least every output token it was allowed: 32000 × $20/MTok = $0.64.
+  assert.ok(r.usd >= 0.64, `charged ${r.usd}`);
+  assert.equal(st.usd, r.usd, 'the estimate counts toward the cap');
+  assert.match(r.costBasis, /ESTIMATE, high side/);
+  const e5 = applyResponse(problem(), emptyState(), SETTINGS, { ok: false, httpStatus: 529, timedOut: false, ms: 10, error: 'overloaded', body: null }, 'x');
+  assert.ok(e5.usd > 0, 'a 5xx may have run; it is charged too');
+  const rl = applyResponse(problem(), emptyState(), SETTINGS, { ok: false, httpStatus: 429, timedOut: false, ms: 10, error: 'rate limited', body: null }, 'x');
+  assert.equal(rl.usd, 0);
+  assert.equal(rl.rounds[0].usd, null);
+  // The next round is then refused by the cap once the estimates add up.
+  const three = [1, 2, 3].reduce((s) => applyResponse(problem(), s, { ...SETTINGS, maxUsd: 2 }, to, 'x'), emptyState());
+  assert.equal(mayStartRound(three, { ...SETTINGS, maxUsd: 2 }).ok, false);
+});

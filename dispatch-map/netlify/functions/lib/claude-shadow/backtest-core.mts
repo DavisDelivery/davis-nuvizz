@@ -305,9 +305,9 @@ export function coLoad(a: Map<string, number[]>, b: Map<string, number[]>): { re
 export const BT_SYSTEM = [
   'You are the route planner for Davis Delivery Service, a freight carrier running box trucks and 53-foot tractor-trailers out of its Buford, Georgia terminal.',
   'You are given one day of delivery stops and the trucks (loads) available that day. Assign every stop to exactly one load so the day is delivered with as few road miles and drive minutes as possible, using as few trucks as sensibly possible.',
-  'HARD RULES (a plan that breaks one is rejected): every stop on exactly one load, or listed as unplanned with a reason; a load’s skid spots never exceed its cap (skid spots = skids + loose pieces ÷ the loose-per-spot ratio, already computed per stop as "spots"); a stop flagged no-tractor never rides on a tractor load.',
+  'HARD RULES (a plan that breaks one is rejected): every stop on exactly one load — the ONLY stop that may be listed unplanned instead is a no-tractor stop no box-truck load has room for, with a reason, and the evaluator refuses any other; a load’s skid spots never exceed its cap (skid spots = skids + loose pieces ÷ the loose-per-spot ratio, already computed per stop as "spots"); a stop flagged no-tractor never rides on a tractor load.',
   'SOFT GOALS: keep a customer’s orders (same customer and address) on one load; make each load a compact, contiguous area so the truck is not criss-crossing; balance the work sensibly; route names hint at the area a load usually serves, but you may use any truck anywhere.',
-  'Leaving a stop unplanned is a failure on a day like this: every stop was delivered. Only do it when no load can take it within its cap.',
+  'Leaving a stop unplanned is a failure on a day like this: every stop was delivered. The evaluator refuses it for any stop except a no-tractor stop that no box truck has room for.',
   'Each load’s stop order is set for you by a sequencing engine, and miles and minutes are measured as an open tour from the terminal with no return leg. You decide which stops ride on which load.',
   'Work method: call evaluate_plan with a COMPLETE assignment (all loads, all stops). It returns each load’s stops, skid spots against its cap, estimated miles and drive minutes, and every hard-rule violation. Revise and evaluate again until there are no violations and you cannot reduce miles further without breaking a rule. Then call submit_plan with that assignment and a short reason per load. Keep prose short; the tools carry the plan.',
 ].join('\n\n');
@@ -379,6 +379,22 @@ export const BT_TOOLS: ToolDef[] = [
 
 const MAX_LISTED = 40;
 
+/**
+ * The only stops a backtest plan may leave unplanned. Every stop rode out on D, and dispatch's own
+ * loads prove a legal home for each one (a cap is never below what ran) — EXCEPT a no-tractor stop
+ * dispatch sent on a tractor, which may have no box truck with room. Anything else left unplanned
+ * would shrink Claude's miles by dropping freight, and read as a saving.
+ */
+export function mayLeaveUnplanned(p: BtProblem): Set<number> {
+  const byId = new Map(p.stops.map((s) => [s.id, s]));
+  const out = new Set<number>();
+  for (const l of p.loads) {
+    if (l.cls !== 'tractor') continue;
+    for (const id of l.dispatch) if (byId.get(id)?.blocksTractor) out.add(id);
+  }
+  return out;
+}
+
 /** Check one proposed assignment against every HARD rule and measure it. */
 export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequencer): EvalResult {
   const loadIds = new Set(p.loads.map((l) => l.id));
@@ -403,12 +419,16 @@ export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequ
     if (typeof e?.why === 'string') why.set(load, e.why.slice(0, 300));
   }
   const unplanned: { stop: number; reason: string }[] = [];
+  const leavable = mayLeaveUnplanned(p);
   for (const u of Array.isArray(input?.unplanned) ? input.unplanned : []) {
     const id = Number(u?.stop);
     if (!byId.has(id)) { hard.push(`unknown unplanned stop ${JSON.stringify(u?.stop)}`); continue; }
     if (whereIs.has(id)) { hard.push(`stop ${id} is on ${whereIs.get(id)} and also listed unplanned`); continue; }
     whereIs.set(id, 'unplanned');
-    unplanned.push({ stop: id, reason: String(u?.reason ?? '').slice(0, 200) });
+    const reason = String(u?.reason ?? '').trim().slice(0, 200);
+    if (!leavable.has(id)) hard.push(`stop ${id} must be on a load: it was delivered this day and a load can legally carry it`);
+    else if (!reason) hard.push(`stop ${id} is unplanned with no reason`);
+    unplanned.push({ stop: id, reason });
   }
   const missing = p.stops.filter((s) => !whereIs.has(s.id)).map((s) => s.id);
   if (missing.length) hard.push(`${missing.length} stop(s) on no load and not listed unplanned: ${missing.slice(0, MAX_LISTED).join(', ')}${missing.length > MAX_LISTED ? ', …' : ''}`);

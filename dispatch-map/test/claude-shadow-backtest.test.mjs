@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildBacktestProblem, evaluateAssignment, makeSequencer, measurePlan, compareBacktest, coLoad, capFor,
-  blocksTractor, usableCoords, btBriefing, btLoopProblem, TRAILER_BLOCKER_KEYS, PROFILE_MAX_SKIDS, BT_SYSTEM, BT_TOOLS,
+  blocksTractor, usableCoords, btBriefing, btLoopProblem, TRAILER_BLOCKER_KEYS, PROFILE_MAX_SKIDS, BT_SYSTEM, BT_TOOLS, mayLeaveUnplanned,
 } from '../netlify/functions/lib/claude-shadow/backtest-core.mts';
 import { TRAILER_BLOCKER_KEYS as ENGINE_BLOCKERS } from '../netlify/functions/lib/routing-assignment-solver.mts';
 import { DEFAULT_TRUCK_PROFILES } from '../netlify/functions/lib/truck-profiles.mts';
@@ -109,6 +109,27 @@ test('every stop rides exactly once or is listed unplanned: a missing stop, a st
   assert.match(unknown.summary.hardViolations.join(' '), /unknown stop 999/);
   const both = evaluateAssignment(p, { loads: [{ load: a.id, stops: ids }], unplanned: [{ stop: ids[0], reason: 'x' }] }, CFG, seqr);
   assert.match(both.summary.hardViolations.join(' '), /also listed unplanned/);
+});
+
+test('dropping freight is never a saving: a delivered stop a load can carry may not be left unplanned; only a no-tractor stop that rode a tractor may, and only with a reason', () => {
+  const rows = day();
+  const notes = new Map([[rows[0].customerMatchKey, { equipment_restrictions: ['box_truck_only'] }]]);
+  const p = buildBacktestProblem(input({ rows, notes }));
+  const seqr = makeSequencer(p, CFG);
+  const blocked = p.stops.find((s) => s.n === rows[0].stopNbr).id;       // box-only, and dispatch sent it on Ben's tractor
+  const plain = p.stops.find((s) => s.n === rows[4].stopNbr).id;         // an ordinary stop on the box truck
+  assert.deepEqual([...mayLeaveUnplanned(p)], [blocked]);
+  const dispatchMinus = (drop) => p.loads.map((l) => ({ load: l.id, stops: l.dispatch.filter((id) => !drop.includes(id)) }));
+  // Leaving an ordinary delivered stop off would shorten Claude's miles by dropping freight — refused.
+  const dropped = evaluateAssignment(p, { loads: dispatchMinus([blocked, plain]), unplanned: [{ stop: blocked, reason: 'box only, no box room' }, { stop: plain, reason: 'far' }] }, CFG, seqr);
+  assert.equal(dropped.ok, false);
+  assert.match(dropped.summary.hardViolations.join(' '), new RegExp(`stop ${plain} must be on a load`));
+  assert.ok(!dropped.summary.hardViolations.some((v) => v.includes(`stop ${blocked} `)), 'the no-tractor stop that rode a tractor may be left');
+  // The permitted one still needs a reason.
+  const silent = evaluateAssignment(p, { loads: dispatchMinus([blocked]), unplanned: [{ stop: blocked, reason: '   ' }] }, CFG, seqr);
+  assert.match(silent.summary.hardViolations.join(' '), /no reason/);
+  const ok = evaluateAssignment(p, { loads: dispatchMinus([blocked]), unplanned: [{ stop: blocked, reason: 'box only; no box truck has room' }] }, CFG, seqr);
+  assert.equal(ok.ok, true, JSON.stringify(ok.summary.hardViolations));
 });
 
 test('a load past its cap is rejected; putting every stop on one truck is over cap when the cap is the tighter learned number', () => {

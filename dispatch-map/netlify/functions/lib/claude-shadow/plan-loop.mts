@@ -134,6 +134,23 @@ export function mayStartRound(state: LoopState, s: LoopSettings): { ok: boolean;
 }
 
 /**
+ * A call that left and came back with no usage — our deadline, a dropped connection, a 5xx — may
+ * still have been billed, and what it cost cannot be read back. Charge it on the HIGH side (the
+ * whole request at the uncached input price, plus every output token it was allowed) so the cap
+ * stops a run early rather than late. A 4xx (429 included) is refused before any work: $0.
+ */
+export function unreadCost(problem: Problem, state: LoopState, s: LoopSettings, call: CallResult): { usd: number | null; basis: string } | null {
+  if (call.ok) return null;
+  const sent = call.timedOut || call.httpStatus === null || call.httpStatus >= 500;
+  if (!sent) return null;
+  // ~2 characters per token is well under the real ratio for this JSON, so this overcounts.
+  const input = Math.ceil(JSON.stringify(buildRequest(problem, state, s)).length / 2);
+  const est = usageCost(s.model, { input_tokens: input, output_tokens: s.maxTokens });
+  if (est.usd === null) return null;
+  return { usd: est.usd, basis: `ESTIMATE, high side: the call failed (${call.timedOut ? 'timed out' : call.httpStatus ?? 'no response'}) after it was sent, so its billed usage cannot be read — charged as ~${input} input tokens at the uncached price plus all ${s.maxTokens} output tokens` };
+}
+
+/**
  * Take ONE response and fold it into the state: record the round, run every tool the model
  * called, and build the reply the next request will carry. Pure apart from problem.evaluate.
  */
@@ -143,7 +160,7 @@ export function applyResponse(problem: Problem, state: LoopState, s: LoopSetting
   const body = call.ok ? call.body : null;
   const content: any[] = Array.isArray(body?.content) ? body.content : [];
   const servedModel = typeof body?.model === 'string' ? body.model : null;
-  const cost = body?.usage ? usageCost(servedModel || s.model, body.usage) : null;
+  const cost = body?.usage ? usageCost(servedModel || s.model, body.usage) : unreadCost(problem, state, s, call);
   const round: RoundRecord = {
     n, at, ms: call.ms, httpStatus: call.httpStatus, ok: call.ok, error: call.error,
     stopReason: typeof body?.stop_reason === 'string' ? body.stop_reason : null,
@@ -156,7 +173,7 @@ export function applyResponse(problem: Problem, state: LoopState, s: LoopSetting
   if (!call.ok) {
     next.rounds.push(round);
     // A 4xx is the request's fault and will not fix itself; stop and say why. A timeout or 5xx
-    // may be transient: the round is recorded (it may still have been billed — usage is unknown)
+    // may be transient: the round is recorded (it may still have been billed: unreadCost charges it on the high side)
     // and the next attempt starts from the same history.
     const permanent = call.httpStatus !== null && call.httpStatus >= 400 && call.httpStatus < 500 && call.httpStatus !== 429;
     if (permanent) { next.ended = 'api-error'; next.endNote = `the API refused the request (HTTP ${call.httpStatus}): ${call.error}`; }

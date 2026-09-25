@@ -173,3 +173,40 @@ test('router settings: a cost rate has no default, a bad value refuses the whole
   assert.equal(st.docs.get(ROUTER_SETTINGS_PATH).updatedBy, 'disp');
   void jobPath;
 });
+
+test('Stop pressed while the last round is at the model: that round is paid for, but no result is published and the job stays stopped', async () => {
+  const st = store(seedDay());
+  const c = clock();
+  const d = deps(st, model([]), c);
+  await enqueueBacktests([D], 'disp', d);
+  const jobId = [...st.docs.keys()].find((p) => /^claude_shadow_jobs\/bt__[^/]+$/.test(p)).split('/')[1];
+  const submit = reply([{ type: 'tool_use', id: 't1', name: 'submit_plan', input: { ...PLAN, loads: PLAN.loads.map((l) => ({ ...l, why: 'w' })), summary: 's' } }]);
+  let calls = 0;
+  const out = await workerTick({ ...d, call: async () => { calls++; await cancelJob(jobId, 'disp', d); return submit; } });
+  assert.equal(calls, 1);
+  assert.equal(out.cancelled, true, JSON.stringify(out));
+  assert.equal(st.docs.get(jobPath(jobId)).status, 'cancelled', 'a finished round does not flip a stopped job back to done');
+  assert.equal(st.docs.has(resultPath(D)), false, 'nothing is published for a stopped day');
+  assert.ok(st.docs.get(jobPath(jobId)).usd > 0, 'what the round cost is still on the job');
+});
+
+test('a deploy between ticks cannot change what a resumed run replays: the prompt is frozen with the job', async () => {
+  const st = store(seedDay());
+  const c = clock();
+  const m = model([
+    reply([{ type: 'tool_use', id: 't1', name: 'evaluate_plan', input: PLAN }]),
+    reply([{ type: 'tool_use', id: 't2', name: 'submit_plan', input: { ...PLAN, loads: PLAN.loads.map((l) => ({ ...l, why: 'w' })), summary: 's' } }]),
+  ]);
+  const slow = async (req) => { c.tick(5 * 60 * 1000); return m.call(req); };
+  const d = { ...deps(st, m, c), call: slow };
+  await enqueueBacktests([D], 'disp', d);
+  await workerTick(d);
+  // Stand in for "the build that started this job had different prompt text": rewrite what was frozen.
+  const [path, doc] = [...st.docs.entries()].find(([p]) => p.endsWith('/data/problem'));
+  const frozen = JSON.parse(doc.promptJson);
+  st.docs.set(path, { ...doc, promptJson: JSON.stringify({ ...frozen, system: 'OLD BUILD SYSTEM TEXT', briefing: 'OLD BUILD BRIEFING' }) });
+  await workerTick(d);
+  assert.equal(m.calls.length, 2);
+  assert.equal(m.calls[1].system[0].text, 'OLD BUILD SYSTEM TEXT', 'the resumed round is sent the text the run started with');
+  assert.equal(m.calls[1].messages[0].content[0].text, 'OLD BUILD BRIEFING');
+});

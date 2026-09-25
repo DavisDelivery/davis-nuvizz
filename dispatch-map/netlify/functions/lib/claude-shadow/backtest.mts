@@ -242,6 +242,20 @@ async function claimRound(id: string, n: number, deps: BtDeps): Promise<boolean>
   return false;
 }
 
+async function wasCancelled(id: string, deps: BtDeps): Promise<boolean> {
+  const fresh = await deps.getDoc(jobPath(id)).catch(() => null);
+  return fresh?.status === 'cancelled';
+}
+
+/** The prompt stored with the job, if it reads; a malformed one falls back to today's code. */
+export function frozenPrompt(promptJson: string): Partial<{ system: string; tools: any[]; briefing: string }> {
+  try {
+    const p = JSON.parse(promptJson);
+    if (typeof p?.system === 'string' && Array.isArray(p?.tools) && typeof p?.briefing === 'string') return { system: p.system, tools: p.tools, briefing: p.briefing };
+  } catch { /* fall through */ }
+  return {};
+}
+
 /** One worker tick: take the oldest unfinished job and advance it. Returns what it did. */
 export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
   const t0 = deps.now().getTime();
@@ -262,7 +276,12 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
         await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at(), updatedAt: at(), error: 'the day has no stops that rode out with a usable location' });
         return { ok: true, job: id, failed: 'no stops' };
       }
-      stored = { problemJson: JSON.stringify(problem), cfgJson: JSON.stringify(cfg), builtAt: at() };
+      // The prompt is frozen WITH the data: a deploy mid-job that edits the system text, the tools or
+      // the briefing format would otherwise change the prefix under replayed thinking, and the API
+      // refuses that. The evaluator is still today's code — it is the rules, not the conversation.
+      const lp = btLoopProblem(problem, cfg);
+      const promptJson = JSON.stringify({ system: lp.system, tools: lp.tools, briefing: lp.briefing });
+      stored = { problemJson: JSON.stringify(problem), cfgJson: JSON.stringify(cfg), promptJson, builtAt: at() };
       await deps.shadowSet(`${jobPath(id)}/data/problem`, stored);
       await deps.shadowPatch(jobPath(id), {
         status: 'running', startedAt: at(), updatedAt: at(),
@@ -272,6 +291,7 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
     const problem: BtProblem = JSON.parse(stored.problemJson);
     const cfg = JSON.parse(stored.cfgJson);
     const loopProblem = btLoopProblem(problem, cfg);
+    if (typeof stored.promptJson === 'string') Object.assign(loopProblem, frozenPrompt(stored.promptJson));
     const s = job.settings || {};
     const settings: LoopSettings = {
       model: s.model || shadowModel(deps.env).model, effort: s.effort || ROUTER_DEFAULTS.effort,
@@ -303,7 +323,7 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
     return await finishJob(id, job, problem, cfg, state, deps);
   } catch (e: any) {
     const msg = String(e?.message || e).slice(0, 500);
-    await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at(), updatedAt: at(), error: msg }).catch(() => {});
+    if (!(await wasCancelled(id, deps))) await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at(), updatedAt: at(), error: msg }).catch(() => {});
     return { ok: false, job: id, error: msg };
   }
 }
@@ -311,6 +331,9 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
 /** The run ended: score the plan (the submitted one, else the last clean one) and store the result. */
 export async function finishJob(id: string, job: any, problem: BtProblem, cfg: any, state: LoopState, deps: BtDeps) {
   const at = deps.now().toISOString();
+  // Stopped while its last round was at the model: Stop means stop — no result is published and the
+  // job stays 'cancelled'. What that round cost is already on the job (the checkpoint wrote it).
+  if (await wasCancelled(id, deps)) return { ok: true, job: id, cancelled: true, usd: state.usd };
   const plan = state.final ?? state.bestClean;
   if (!plan) {
     await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at, updatedAt: at, error: `no plan without a hard-rule violation: ${state.endNote || state.ended}` });
