@@ -487,3 +487,10 @@ test('CLEAR IS NOT OFFERED ONCE ULINE\'S STAMP IS OFF — it would say the flag 
   const list = fnSource('UlineDecidedList');
   assert.match(list, /\{r\.ulineOn !== false && \(\s*<button type="button" onClick=\{\(\) => u\.decide\(r, null\)\}/);
 });
+
+test('the from-above map lets a business label be clicked, so its address can confirm the pin (v1.68.1)', () => {
+  // Chad: "I want to be able to click on these labels when evaluating a stop so i can see their addresses".
+  const sat = APP.slice(APP.indexOf('function UlineSatellite'), APP.indexOf('function UlineStreetView'));
+  assert.match(sat, /clickableIcons: true/);
+  assert.doesNotMatch(sat, /clickableIcons: false/);
+});
