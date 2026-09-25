@@ -137,17 +137,15 @@ const PROBES = {
       // PROVES ITS STATE, like every probe here: the panel names the dock it is editing.
       return page.getByText(/editing this dock/i).first().isVisible().catch(() => false);
     } },
-    // ADDRESS / CITY SEARCH (v1.62.0), LAST: the tab choice is remembered, and every probe above
-    // opens the order box. Four fields, three date pills and the whole place answer.
+    // ADDRESS / CITY SEARCH (v1.62.0) — its own form beside the order box since v1.63.0, so no
+    // tab to pick first. Four fields, three date settings and the whole place answer.
     { name: 'an address searched', open: async (page) => {
       await closeOrderDrawer(page);
-      const tab = page.getByRole('tab', { name: /address or city/i }).first();
-      if (!(await tab.isVisible().catch(() => false))) return false;
-      await tab.click().catch(() => {});
-      await page.waitForTimeout(300);
-      await page.getByLabel(/street address/i).first().fill('1100 Northside Dr');
+      const street = page.getByLabel(/street address/i).first();
+      if (!(await street.isVisible().catch(() => false))) return false;
+      await street.fill('1100 Northside Dr');
       await page.getByLabel(/^city$/i).first().fill('Atlanta');
-      if (!(await openByName(page, /^look up$/i))) return false;
+      if (!(await openByName(page, /^find stops$/i))) return false;
       await page.waitForTimeout(500);
       return page.getByText(/every stop at/i).first().isVisible().catch(() => false);
     } },
@@ -156,6 +154,14 @@ const PROBES = {
       await page.waitForTimeout(500);
       const dates = await page.getByLabel(/first day to search/i).first().isVisible().catch(() => false);
       return dates && page.getByText(/every stop at/i).first().isVisible().catch(() => false);
+    } },
+    // RECENT LOOKUPS (v1.63.0). Every probe above left a search behind; clearing the address
+    // form takes the answer away and puts the landing back, with the list on it.
+    { name: 'recent lookups listed', open: async (page) => {
+      await closeOrderDrawer(page);
+      if (!(await openByName(page, /^clear$/i))) return false;
+      await page.waitForTimeout(400);
+      return page.getByRole('button', { name: /1100 northside dr/i }).first().isVisible().catch(() => false);
     } },
   ],
   // PRINT LABELS (v1.67.0): the order cards two across at iPad width, ticked, and the big-batch

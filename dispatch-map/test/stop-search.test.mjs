@@ -359,15 +359,25 @@ test('THE NIGHTLY HOOK IS REGISTERED, LAST, AND BEHIND ITS SWITCH', () => {
   assert.match(STORE, /if \(!stopSearchEnabled\(\)\) return \{ skipped: 'STOP_SEARCH=off' \};/);
 });
 
-test('THE SCREEN: its own tab, ALL as the unremembered default, and the shared module to ask with', () => {
-  assert.match(CODE, /\[\['order', 'Order or customer'\], \['place', 'Address or city'\]\]/);
+test('THE SCREEN: both searches on screen at once, ALL as the unremembered default, and the shared module to ask with', () => {
+  // v1.63.0 — Chad, on v1.62.0's tabs: "why would you put on two tabs when there is tons of blank
+  // screen". ONE panel holds both forms; nothing on this screen hides a search behind a tab.
+  const screen = CODE.slice(CODE.indexOf('function StopLookupScreen'));
+  const panel = CODE.slice(CODE.indexOf('function StopSearchPanel'), CODE.indexOf('function StopRecentLookups'));
+  assert.doesNotMatch(screen.slice(0, screen.indexOf('\n}\n')), /role="tablist"/, 'no tabs on Stop lookup');
+  assert.match(panel, /aria-label="Search by order or customer"/);
+  assert.match(panel, /aria-label="Search by address, city or ZIP"/);
+  assert.equal((panel.match(/<form /g) || []).length, 2, 'two forms, so Enter runs the search the cursor is in');
+  // The two submit buttons are named apart — the guards (and a screen reader) find each by name.
+  assert.match(panel, /'Look up'/);
+  assert.match(panel, /'Find stops'/);
   // Dates start on ALL and are NOT written to localStorage — a remembered day would narrow
   // tomorrow's search without anybody choosing to.
   assert.match(CODE, /const \[placeSel, setPlaceSel\] = useState\(\{ kind: 'all' \}\);/);
   assert.doesNotMatch(CODE, /localStorage\.setItem\([^)]*placeSel/);
   assert.match(CODE, /apiFetch\(`\/\.netlify\/functions\/stop-lookup\?\$\{placeParams\(f, selNow\)\}`\)/);
   // TWO VIEWS: the answer renders the phone cards and the desktop table, off one component.
-  const results = CODE.slice(CODE.indexOf('function PlaceResults'), CODE.indexOf('const STOP_LOOKUP_MODE'));
+  const results = CODE.slice(CODE.indexOf('function PlaceResults'), CODE.indexOf('const STOP_LOOKUP_PLACE'));
   assert.match(results, /<CustomerDayCards key=\{day\.date\}/);
   assert.match(results, /<CustomerDayTable key=\{day\.date\}/);
   // The unsearched days are named on screen, not only in the ledger.
@@ -377,7 +387,7 @@ test('THE SCREEN: its own tab, ALL as the unremembered default, and the shared m
 });
 
 test('A SWITCHED-OFF SEARCH SAYS SO — it never renders as "no stops there"', () => {
-  const results = CODE.slice(CODE.indexOf('function PlaceResults'), CODE.indexOf('const STOP_LOOKUP_MODE'));
+  const results = CODE.slice(CODE.indexOf('function PlaceResults'), CODE.indexOf('const STOP_LOOKUP_PLACE'));
   assert.match(results, /if \(data\.switchedOff\) \{/);
   assert.match(results, /Nothing was searched/);
 });
@@ -390,6 +400,11 @@ test('BOTH LAYOUT GUARDS DRIVE THE ADDRESS SEARCH, off a fixture the real view b
     assert.match(src, /name: 'an address searched'/, `${f} must probe it`);
     assert.match(src, /name: 'an address searched over a range'/, `${f} must probe the range form`);
     assert.match(src, /every stop at/i, `${f} must PROVE the answer rendered`);
+    // v1.63.0: the form is on screen beside the order box — no tab to pick — and its button is
+    // named apart from the order box's, so the probe cannot press the wrong search.
+    assert.doesNotMatch(src, /getByRole\('tab', \{ name: \/address or city\/i \}\)/, `${f} still looks for the old tab`);
+    assert.match(src, /\/\^find stops\$\/i/, `${f} must press the address form's own button`);
+    assert.match(src, /name: 'recent lookups listed'/, `${f} must measure the landing with its list`);
   }
   const fx = readFileSync(new URL('../scripts/lib/place-search-fixture.mjs', import.meta.url), 'utf8');
   assert.match(fx, /buildPlaceView\(/, 'built by the real view builder, not typed');
