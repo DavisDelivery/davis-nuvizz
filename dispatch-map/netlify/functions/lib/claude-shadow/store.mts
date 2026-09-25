@@ -54,21 +54,51 @@ export function assertShadowPath(path: string): string {
   return safe;
 }
 
+// A THROTTLED WRITE IS RETRIED, NOT FATAL. 2026-09-25 15:26 UTC: a paid backtest round finished,
+// and the write recording it came back 429 — "This database has exceeded their maximum
+// request_rate/bandwidth/document_rate for writes, please retry with exponential backoff" — and
+// the job died with $1.52 spent. Firestore's own answer says what to do, so the gateway does it:
+// a 429, a 5xx, a dropped connection or the request deadline is tried again after 1, 2, 4 and
+// 8 seconds. Anything else — a 400, 403 or 404, a refused path — is not the network's fault and
+// throws at once. The helpers stay private: this file exports writers and nothing else.
+const TRANSIENT_STATUS_RE = /\bfailed: (?:429|500|502|503|504)\b/;
+const TRANSIENT_NET_RE = /ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|no answer within/i;
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
+
+function transient(e: any): boolean {
+  if (e instanceof ShadowPathError) return false;
+  const msg = String(e?.message || e);
+  // The runtime's own network failure is a TypeError whose message is "<request> failed".
+  return TRANSIENT_STATUS_RE.test(msg) || TRANSIENT_NET_RE.test(msg) || e?.name === 'TimeoutError' || (e?.name === 'TypeError' && /\bfailed\b/.test(msg));
+}
+
+async function withRetry<T>(write: () => Promise<T>): Promise<T> {
+  for (let i = 0; ; i++) {
+    try { return await write(); }
+    catch (e) {
+      if (i >= RETRY_DELAYS_MS.length || !transient(e)) throw e;
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[i]));
+    }
+  }
+}
+
 /** Replace a whole shadow document. Only for documents the shadow planner owns outright. */
 export async function shadowSet(path: string, data: Record<string, any>): Promise<boolean> {
-  return setDoc(assertShadowPath(path), data);
+  return withRetry(() => setDoc(assertShadowPath(path), data));
 }
 
 /** Field-masked write: only the named fields change. */
 export async function shadowPatch(path: string, fields: Record<string, any>): Promise<boolean> {
-  return updateDocFields(assertShadowPath(path), fields);
+  return withRetry(() => updateDocFields(assertShadowPath(path), fields));
 }
 
-/** Create only if absent — the claim pattern ("this night's snapshot was taken once"). */
+/** Create only if absent — the claim pattern ("this night's snapshot was taken once"). A retry
+ *  after a create that landed but whose answer was lost reads as "already taken", and the caller
+ *  stands down: the safe side of a claim. */
 export async function shadowCreate(path: string, data: Record<string, any>): Promise<boolean> {
-  return createDocIfAbsent(assertShadowPath(path), data);
+  return withRetry(() => createDocIfAbsent(assertShadowPath(path), data));
 }
 
 export async function shadowDelete(path: string): Promise<void> {
-  return deleteDoc(assertShadowPath(path));
+  return withRetry(() => deleteDoc(assertShadowPath(path)));
 }
