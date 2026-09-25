@@ -37,7 +37,7 @@ import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript } from './lib/claude-shadow-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
 
@@ -219,6 +219,35 @@ const PROBES = {
   // one claim MEASURE cannot make: it judges horizontal overflow only, and this menu drops UP from
   // the bottom of the screen, so "fully inside the viewport, Live dispatch readable without a
   // scroll" is asserted by hand.
+  // THE CLAUDE-vs-DISPATCH MAP (v1.72.0) lives two taps down — open a backtested day, open its map —
+  // and a review found no guard ever went there. This one does, with Google stood in (CI's key cannot
+  // load the real thing; the stand-in is installed for this probe's page load only), taps a stop so
+  // the stop card is measured too, and proves each step arrived.
+  claudeshadow: [{
+    name: 'a backtested day and its map open, a stop tapped',
+    fakeMaps: true,
+    open: async (page) => {
+      const opened = await page.evaluate(() => {
+        const cb = document.querySelector('input[aria-label="Pick 2026-09-23"]');
+        let row = cb && cb.parentElement;
+        for (let i = 0; row && i < 4; i++, row = row.parentElement) {
+          const b = [...row.querySelectorAll('button')].find((x) => /— open$/i.test((x.innerText || '').trim()));
+          if (b) { b.click(); return true; }
+        }
+        return false;
+      });
+      if (!opened) return false;
+      await page.waitForTimeout(600);
+      const btn = page.getByRole('button', { name: /map: claude vs dispatch/i }).first();
+      if (!(await btn.isVisible().catch(() => false))) return false;
+      await btn.click();
+      await page.waitForTimeout(900);
+      if (!(await page.getByText(/^Trucks \(\d+\)/).first().isVisible().catch(() => false))) return false;
+      if (!(await page.evaluate(() => window.__guardTapStop?.() === true))) return false;
+      await page.waitForTimeout(400);
+      return page.getByText(/stops at this address/).first().isVisible().catch(() => false);
+    },
+  }],
   routing: [
     { name: 'Setup sheet open', open: async (page) => { await page.getByRole('button', { name: /^setup/i }).first().click(); await page.waitForTimeout(600); return page.getByText(/Select stops/i).first().isVisible().catch(() => false); } },
     { name: 'Grid open on Stops', open: async (page) => { await page.getByRole('button', { name: /^stops \d+/i }).first().click(); await page.waitForTimeout(600); return page.getByText(/^Stop #$/).first().isVisible().catch(() => false); } },
@@ -961,7 +990,7 @@ function stubRoutes(page, emailHtml) {
     // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
     // them would leave the guard measuring a screen the app never renders.
     // THE CLAUDE SHADOW TAB — its worst rows (see scripts/lib/claude-shadow-fixture.mjs).
-    if (u.includes('claude-shadow')) return R(claudeShadowFixtureFor(u));
+    if (u.includes('claude-shadow')) return R(claudeShadowFixtureFor(u, route.request().postData()));
     // PRINT LABELS (v1.67.0) — the day's shippers, or one shipper's orders, BUILT by the real
     // label-shippers.js (scripts/lib/labels-fixture.mjs). Before the catch-all, which would
     // answer it with an empty board and measure a screen with nothing on it.
@@ -1088,6 +1117,7 @@ for (const device of DEVICES) {
 
     // Then the same screen with its sheets, drawers and disclosures open.
     for (const probe of (PROBES[screen.key] || [])) {
+      if (probe.fakeMaps) await page.route(isGoogleMapsScript, (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: CLAUDE_SHADOW_FAKE_MAPS }));
       await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
       await page.waitForTimeout(1000);
       if (!(await gotoScreen(page, screen))) continue;
@@ -1106,6 +1136,7 @@ for (const device of DEVICES) {
       for (const ov of pm.overlap) pp.push(`controls overlapping by ${ov.px}px — ${ov.el}`);
       if (pp.length === 0) ok(`${screen.label} → ${probe.name}`);
       else { bad(`${screen.label} → ${probe.name}`); for (const x of pp) console.log(`      ${x}`); }
+      if (probe.fakeMaps) await page.unroute(isGoogleMapsScript);
     }
   }
   await ctx.close();

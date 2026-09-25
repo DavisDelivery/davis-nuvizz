@@ -19,7 +19,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Sparkles, Power, Cpu, KeyRound, FlaskConical, RefreshCw, CheckCircle2, XCircle, CircleDashed, Truck, Pencil } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
-import BacktestPanel from './BacktestPanel.jsx';
+import BacktestPanel, { useOpenDay } from './BacktestPanel.jsx';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 
@@ -590,7 +590,7 @@ function DesktopView(h) {
         <Header onRefresh={h.load} loading={h.loading} />
         {h.err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{h.err}</div>}
         {h.loading && !h.status && <div className="text-xs text-slate-500">Loading…</div>}
-        <BacktestPanel />
+        <BacktestPanel day={h.day} />
         {h.status && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
             <SwitchCard s={h.status} />
@@ -611,7 +611,7 @@ function PhoneView(h) {
         <Header onRefresh={h.load} loading={h.loading} />
         {h.err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{h.err}</div>}
         {h.loading && !h.status && <div className="text-xs text-slate-500">Loading…</div>}
-        <BacktestPanel phone />
+        <BacktestPanel phone day={h.day} />
         {h.status && (
           <div className="flex flex-col gap-3">
             <CapacityCard s={h.status} phone learning={h.learning} learnMsg={h.learnMsg} onLearn={h.learnNow} ed={h.ed} />
@@ -628,5 +628,7 @@ function PhoneView(h) {
 export default function ClaudeShadowScreen({ isMobile }) {
   const h = useShadowStatus();
   const ed = useCapacityEditor(h.status, h.load);
-  return isMobile ? <PhoneView {...h} ed={ed} /> : <DesktopView {...h} ed={ed} />;
+  // Held here, above the view switch, so a phone turned sideways keeps its open day and map.
+  const day = useOpenDay();
+  return isMobile ? <PhoneView {...h} ed={ed} day={day} /> : <DesktopView {...h} ed={ed} day={day} />;
 }

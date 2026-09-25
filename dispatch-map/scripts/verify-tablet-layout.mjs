@@ -27,7 +27,7 @@ import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -66,6 +66,38 @@ const SCREENS = [
 // AT REST IS NOT ENOUGH, and the phone guard learned this the expensive way. Every defect
 // Chad photographed needed a tap first: the Status menu is not in the DOM until it is opened.
 const PROBES = {
+  // THE CLAUDE-vs-DISPATCH MAP (v1.72.0), two taps down: a review found no guard went there, and the
+  // iPad-portrait width is where its truck list was squeezed. Google is stood in (CI's key cannot load
+  // the real thing), which takes a reload — so this probe reloads with the stand-in routed and walks
+  // back to the Shadow tab. It stays routed for this tablet's remaining screens, none of which maps.
+  claudeshadow: [{
+    name: 'a backtested day and its map open, a stop tapped',
+    open: async (page) => {
+      await page.route(isGoogleMapsScript, (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: CLAUDE_SHADOW_FAKE_MAPS }));
+      await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
+      if (!(await gotoScreen(page, SCREENS.find((x) => x.key === 'claudeshadow')))) return false;
+      await page.waitForTimeout(600);
+      const opened = await page.evaluate(() => {
+        const cb = document.querySelector('input[aria-label="Pick 2026-09-23"]');
+        let row = cb && cb.parentElement;
+        for (let i = 0; row && i < 4; i++, row = row.parentElement) {
+          const b = [...row.querySelectorAll('button')].find((x) => /^open$/i.test((x.innerText || '').trim()));
+          if (b) { b.click(); return true; }
+        }
+        return false;
+      });
+      if (!opened) return false;
+      await page.waitForTimeout(600);
+      const btn = page.getByRole('button', { name: /map: claude vs dispatch/i }).first();
+      if (!(await btn.isVisible().catch(() => false))) return false;
+      await btn.click();
+      await page.waitForTimeout(900);
+      if (!(await page.getByText(/^Trucks \(\d+\)/).first().isVisible().catch(() => false))) return false;
+      if (!(await page.evaluate(() => window.__guardTapStop?.() === true))) return false;
+      await page.waitForTimeout(400);
+      return page.getByText(/stops at this address/).first().isVisible().catch(() => false);
+    },
+  }],
   routing: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
   map: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
   // The queue's sub-tabs at iPad width: a segmented bar on a 1024px tablet and a chip row on a
@@ -373,7 +405,7 @@ for (const dev of TABLETS) {
     // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
     // them would leave the guard measuring a screen the app never renders.
     // THE CLAUDE SHADOW TAB — the same worst-rows fixture the phone and desktop guards use.
-    if (u.includes('claude-shadow')) return J(claudeShadowFixtureFor(u));
+    if (u.includes('claude-shadow')) return J(claudeShadowFixtureFor(u, route.request().postData()));
     // PRINT LABELS (v1.67.0) — the same built fixture the phone guard drives.
     if (u.includes('labels-by-shipper')) return J(labelsAnswer(u));
     // A DRIVER'S WEEK (v1.69.0) — the same built fixture the phone guard drives.

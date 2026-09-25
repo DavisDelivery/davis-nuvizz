@@ -15,6 +15,25 @@ export const SELECT_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87b
 export const MAX_SELECTED = SELECT_COLORS.length;
 export const MUTED = '#7b8190';
 export const PLAN_LABEL = { driven: 'Dispatch — as driven', claude: 'Claude' };
+// How a dispatch truck's line got its order, when it was NOT the delivery stamps.
+export const ORDER_WORD = { planned: 'planned order', 'stop number': 'stop-number order' };
+
+/** Stop id → Claude's reason, for the stops Claude left unplanned. */
+export function unplannedOf(m) {
+  return new Map((m?.unplanned || []).map((u) => [Number(u.id), String(u.reason || '')]));
+}
+
+/**
+ * The dispatch trucks whose line is NOT the order they were delivered in (no delivery times, so the
+ * planned order or stop numbers stood in), as one sentence — or null when every line is as driven.
+ */
+export function orderNote(m) {
+  const odd = (m?.loads || []).filter((l) => l.orderSource && l.orderSource !== 'driven').sort(byRoute);
+  if (!odd.length) return null;
+  const words = [...new Set(odd.map((l) => ORDER_WORD[l.orderSource] || l.orderSource))].join(' or ');
+  const one = odd.length === 1;
+  return `${odd.length} dispatch truck${one ? '' : 's'} had no delivery times, so ${one ? 'its' : 'their'} line follows the ${words}, not the order delivered: ${odd.map((l) => l.route).join(', ')}.`;
+}
 
 const byRoute = (a, b) => String(a.route).localeCompare(String(b.route)) || String(a.id).localeCompare(String(b.id));
 
@@ -44,12 +63,15 @@ export function truckRows(m) {
   const d = new Map(planLoads(m, 'driven').map((l) => [l.id, l]));
   const c = new Map(planLoads(m, 'claude').map((l) => [l.id, l]));
   return (m?.loads || []).map((l) => ({
-    id: l.id, route: l.route, driver: l.driver, cls: l.cls,
+    id: l.id, route: l.route, driver: l.driver, cls: l.cls, orderSource: l.orderSource || 'driven',
     driven: d.get(l.id)?.stops || 0, claude: c.get(l.id)?.stops || 0,
   })).sort(byRoute);
 }
 
-/** What one stop did under each plan. */
+/**
+ * What one stop did under each plan. Dispatch's side says how its order was known (orderSource);
+ * Claude's side is { unplanned: true, reason } for a stop Claude left off every truck.
+ */
 export function stopStory(m, stopId) {
   const id = Number(stopId);
   const stop = (m?.stops || []).find((s) => s.id === id) || null;
@@ -59,9 +81,26 @@ export function stopStory(m, stopId) {
     const w = whereIs(m, plan).get(id);
     if (!w) return null;
     const l = loads.get(w.loadId);
-    return { loadId: w.loadId, route: l?.route ?? w.loadId, driver: l?.driver ?? '', cls: l?.cls ?? null, seq: w.seq, of: w.of };
+    return { loadId: w.loadId, route: l?.route ?? w.loadId, driver: l?.driver ?? '', cls: l?.cls ?? null, orderSource: l?.orderSource || 'driven', seq: w.seq, of: w.of };
   };
-  return { stop, driven: side('driven'), claude: side('claude'), sameTruck: side('driven')?.loadId === side('claude')?.loadId };
+  const driven = side('driven');
+  const un = unplannedOf(m);
+  const claude = side('claude') || (un.has(id) ? { unplanned: true, reason: un.get(id) } : null);
+  return { stop, driven, claude, sameTruck: !!driven?.loadId && driven.loadId === claude?.loadId };
+}
+
+/**
+ * Every stop at the tapped stop's exact point — one customer's several orders sit on one spot, and
+ * a tap reaches only the top marker, so the card must list them all (a split is the thing to see).
+ * The tapped stop comes first, then the rest by stop number.
+ */
+export function storiesAt(m, stopId) {
+  const id = Number(stopId);
+  const tapped = (m?.stops || []).find((s) => s.id === id);
+  if (!tapped) return [];
+  const here = (m.stops || []).filter((s) => s.id !== id && s.lat === tapped.lat && s.lng === tapped.lng)
+    .sort((a, b) => String(a.n).localeCompare(String(b.n)));
+  return [tapped, ...here].map((s) => stopStory(m, s.id)).filter(Boolean);
 }
 
 /**
@@ -91,17 +130,24 @@ export function pickTrucks(sel, loadIds) {
   return { next, refused };
 }
 
+const stopLabel = (s) => `${s.name || s.n} · ${s.city || ''}`.replace(/ · $/, '').trim();
+
 /**
  * One plan as GeoJSON for Google's Data layer: per truck a white casing and its route (Buford, then
- * its stops in order), every stop as a point, and the terminal. Coordinates are [lng, lat].
+ * its stops in order), every stop as a point titled with ITS TRUCK (colour alone never names one),
+ * and the terminal. On Claude's plan, a stop Claude left unplanned is still drawn — kind
+ * 'unplanned', with the reason — so the day's freight never silently thins out. [lng, lat].
  */
 export function planGeo(m, plan) {
   const stops = new Map((m?.stops || []).map((s) => [s.id, s]));
+  const loads = new Map((m?.loads || []).map((l) => [l.id, l]));
   const depot = m?.depot;
   const features = [];
   for (const [loadId, ids] of Object.entries(m?.plans?.[plan] || {})) {
     const pts = ids.map((id) => stops.get(Number(id))).filter(Boolean);
     if (!pts.length) continue;
+    const l = loads.get(loadId);
+    const odd = plan === 'driven' && l?.orderSource && l.orderSource !== 'driven' ? `, ${ORDER_WORD[l.orderSource] || l.orderSource}` : '';
     const line = [...(depot ? [[depot.lng, depot.lat]] : []), ...pts.map((s) => [s.lng, s.lat])];
     if (line.length > 1) {
       features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: line }, properties: { kind: 'casing', loadId } });
@@ -109,8 +155,21 @@ export function planGeo(m, plan) {
     }
     pts.forEach((s, i) => features.push({
       type: 'Feature', geometry: { type: 'Point', coordinates: [s.lng, s.lat] },
-      properties: { kind: 'stop', loadId, stopId: s.id, seq: i + 1, label: `${s.name || s.n} · ${s.city || ''}`.trim() },
+      properties: {
+        kind: 'stop', loadId, stopId: s.id, seq: i + 1, label: stopLabel(s),
+        title: `${stopLabel(s)} — ${l?.route ?? loadId}${l?.driver ? ` (${l.driver})` : ''}, stop ${i + 1} of ${pts.length}${odd}`,
+      },
     }));
+  }
+  if (plan === 'claude') {
+    for (const [id, reason] of unplannedOf(m)) {
+      const s = stops.get(id);
+      if (!s) continue;
+      features.push({
+        type: 'Feature', geometry: { type: 'Point', coordinates: [s.lng, s.lat] },
+        properties: { kind: 'unplanned', stopId: s.id, label: stopLabel(s), title: `${stopLabel(s)} — left unplanned by Claude${reason ? `: ${reason}` : ''}` },
+      });
+    }
   }
   if (depot) features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [depot.lng, depot.lat] }, properties: { kind: 'depot' } });
   return { type: 'FeatureCollection', features };

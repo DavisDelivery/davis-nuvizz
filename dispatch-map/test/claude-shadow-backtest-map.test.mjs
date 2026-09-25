@@ -11,7 +11,7 @@ import { buildBacktestProblem, compareBacktest, backtestMapPayload } from '../ne
 import { backtestMap, jobPath, resultPath } from '../netlify/functions/lib/claude-shadow/backtest.mts';
 import { effectiveEngineConfig } from '../netlify/functions/lib/routing-engine-config.mts';
 import {
-  whereIs, planLoads, truckRows, stopStory, toggleTruck, pickTrucks, planGeo, boundsOf, MAX_SELECTED, SELECT_COLORS,
+  whereIs, planLoads, truckRows, stopStory, storiesAt, orderNote, toggleTruck, pickTrucks, planGeo, boundsOf, MAX_SELECTED, SELECT_COLORS,
 } from '../src/shadow/backtest-map-core.js';
 
 const D = '2026-09-23';
@@ -122,4 +122,79 @@ test('the drawing: each route starts at Buford, coordinates are [lng, lat], ever
   assert.equal(g.features.filter((f) => f.properties.kind === 'depot').length, 1);
   const b = boundsOf(m);
   assert.ok(b.north >= 34.33 && b.south <= 34.00 && b.west <= -84.14 && b.east >= -83.82);
+});
+
+// ── review of the map (2026-09-25) ──
+
+test('REVIEW: a stop Claude left unplanned is still on Claude’s map — a hollow ring with the reason — and is named by its NuVizz number, not a renumbering', () => {
+  const { p } = built();
+  const north = p.stops.filter((s) => s.lat > 34.2).map((s) => s.id), south = p.stops.filter((s) => s.lat < 34.2).map((s) => s.id);
+  const left = south[0];
+  const plan = { loads: [{ load: 'L1', stops: north }, { load: 'L2', stops: south.slice(1) }], unplanned: [{ stop: left, reason: 'no box truck has room' }] };
+  const r = { ...compareBacktest(p, plan, CFG, { perMile: null, perDriveHour: null }), at: 'x', jobId: 'bt__x' };
+  const stored = r.unplanned[0];
+  assert.equal(stored.n, p.stops.find((s) => s.id === left).n, 'the stored result names the stop by its own number');
+  assert.equal(stored.name, p.stops.find((s) => s.id === left).name);
+  const m = backtestMapPayload(p, r);
+  assert.deepEqual(m.unplanned, [{ id: left, reason: 'no box truck has room' }]);
+  const claude = planGeo(m, 'claude').features;
+  const ring = claude.filter((f) => f.properties.kind === 'unplanned');
+  assert.equal(ring.length, 1);
+  assert.equal(ring[0].properties.stopId, left);
+  assert.match(ring[0].properties.title, /left unplanned by Claude: no box truck has room/);
+  // Every stop of the day is on Claude's map, planned or not.
+  assert.equal(claude.filter((f) => f.properties.kind === 'stop' || f.properties.kind === 'unplanned').length, 8);
+  assert.equal(planGeo(m, 'driven').features.filter((f) => f.properties.kind === 'unplanned').length, 0, 'dispatch delivered it — no ring there');
+  const story = stopStory(m, left);
+  assert.deepEqual(story.claude, { unplanned: true, reason: 'no box truck has room' });
+  assert.equal(story.sameTruck, false);
+  assert.ok(story.driven?.route, 'and dispatch’s truck for it is still told');
+});
+
+test('REVIEW: a dispatch truck drawn in its PLANNED order says so — in the payload, the list, the stop, and one sentence over the map', () => {
+  const { p, r } = built();
+  const m0 = backtestMapPayload(p, r);
+  assert.deepEqual(m0.loads.map((l) => l.orderSource), p.loads.map((l) => l.orderSource), 'carried through as stored');
+  assert.equal(orderNote(m0), null, 'every line is as driven: nothing to say');
+  const south = p.loads.find((l) => l.route === 'SOUTH');
+  south.orderSource = 'planned';
+  const m = backtestMapPayload(p, r);
+  assert.match(orderNote(m), /^1 dispatch truck had no delivery times, so its line follows the planned order, not the order delivered: SOUTH\.$/);
+  assert.equal(truckRows(m).find((x) => x.route === 'SOUTH').orderSource, 'planned');
+  const sStop = m.stops.find((s) => m.plans.driven[south.id].includes(s.id));
+  assert.equal(stopStory(m, sStop.id).driven.orderSource, 'planned');
+  const title = planGeo(m, 'driven').features.find((f) => f.properties.kind === 'stop' && f.properties.loadId === south.id).properties.title;
+  assert.match(title, /SOUTH \(Bo Tan\), stop 1 of 4, planned order$/);
+  // Claude's plan is the engine's order — no "planned order" there.
+  assert.doesNotMatch(planGeo(m, 'claude').features.find((f) => f.properties.kind === 'stop').properties.title, /planned order/);
+});
+
+test('REVIEW: one customer’s orders at one spot — a tap lists every one of them, so a split Claude made is visible', () => {
+  const m = {
+    depot: DEPOT,
+    stops: [
+      { id: 1, n: 'S002', lat: 34.3, lng: -83.8, name: 'ACME', city: 'GAINESVILLE', spots: 1, lbs: 100 },
+      { id: 2, n: 'S001', lat: 34.3, lng: -83.8, name: 'ACME', city: 'GAINESVILLE', spots: 1, lbs: 100 },
+      { id: 3, n: 'S003', lat: 34.0, lng: -84.1, name: 'OTHER', city: 'DULUTH', spots: 1, lbs: 100 },
+    ],
+    loads: [{ id: 'L1', route: 'NORTH', driver: 'Ann Lee', cls: 'box_truck' }, { id: 'L2', route: 'SOUTH', driver: 'Bo Tan', cls: 'box_truck' }],
+    plans: { driven: { L1: [1, 2], L2: [3] }, claude: { L1: [1], L2: [2, 3] } },
+    unplanned: [],
+  };
+  const here = storiesAt(m, 1);
+  assert.deepEqual(here.map((x) => x.stop.id), [1, 2], 'the tapped stop first, then the other order at that point');
+  assert.deepEqual(here.map((x) => [x.driven.route, x.claude.route]), [['NORTH', 'NORTH'], ['NORTH', 'SOUTH']]);
+  assert.deepEqual(storiesAt(m, 3).map((x) => x.stop.id), [3], 'a stop alone at its point is just itself');
+  assert.deepEqual(storiesAt(m, 99), []);
+});
+
+test('REVIEW: every stop’s title names its truck and driver — colour alone never identifies one', () => {
+  const { p, r } = built();
+  const m = backtestMapPayload(p, r);
+  for (const plan of ['driven', 'claude']) {
+    for (const f of planGeo(m, plan).features.filter((x) => x.properties.kind === 'stop')) {
+      const l = m.loads.find((x) => x.id === f.properties.loadId);
+      assert.ok(f.properties.title.includes(`${l.route} (${l.driver})`), f.properties.title);
+    }
+  }
 });

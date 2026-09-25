@@ -97,7 +97,108 @@ export const CLAUDE_SHADOW_BACKTESTS = {
   ],
 };
 
-/** What a layout guard answers for a claude-shadow URL: the backtest view, or the status body. */
-export function claudeShadowFixtureFor(url) {
+// ONE DAY OPENED, AND ITS MAP (v1.72.0). The guards used to answer every POST with the status body,
+// so an opened day sat at "Loading…" and the map said "could not load" — a layout nobody ever sees,
+// measured instead of the one they do. These are the worst rows the day and the map can carry: the
+// longest route and driver names, a truck drawn in its PLANNED order, a stop Claude left unplanned,
+// two orders at one address, and a truck Claude did not use. `at` is shared, so the map does not
+// (correctly) refuse to draw a run newer than the scorecard.
+const AT = '2026-09-25T14:03:00.000Z';
+const LONG_ROUTES = ['GAINESVILLE / DAWSONVILLE 2', 'ULINE APPT SUWANEE', 'CANTON/BALL GROUND/JASPER/ELLIJAY', 'COLIN/DJ 1', 'ATHENS WATKINSVILLE BOGART', 'TRAILER 3', 'BEN 2', 'BUFORD LOCAL'];
+const LONG_DRIVERS = ['Christopher Montgomery-Washington', 'New Hire With-A-Very-Long-Hyphenated-Surname', 'Scott Hart', 'Nana Owusu', 'Garry Pitts', 'Trevarr Howard', 'Ben Paintsil', 'Aaron Mitchell'];
+const mapLoads = LONG_ROUTES.map((route, i) => ({ id: `L${i + 1}`, route, driver: LONG_DRIVERS[i], cls: i === 5 ? 'tractor' : 'box_truck', orderSource: i === 7 ? 'planned' : 'driven' }));
+const mapStops = Array.from({ length: 40 }, (_, i) => ({
+  id: i + 1, n: `DAVIS00${String(203700 + i)}`,
+  // Two orders at one address (ids 1 and 2): the stop card must list both.
+  lat: i === 1 ? 33.95 : 33.95 + (i % 8) * 0.06, lng: i === 1 ? -84.2 : -84.2 + Math.floor(i / 8) * 0.07,
+  city: i % 3 ? 'LAWRENCEVILLE' : 'SUGAR HILL', zip: '30043',
+  name: i === 0 || i === 1 ? 'NORTH GEORGIA BUILDING SUPPLY AND MILLWORK COMPANY' : `CUSTOMER NUMBER ${i + 1}`,
+  spots: 2.5, lbs: 1840, noTractor: i === 7,
+}));
+const byLoad = (off) => Object.fromEntries(mapLoads.map((l, k) => [l.id, mapStops.filter((s) => (s.id + off) % 8 === k).map((s) => s.id)]));
+const claudePlan = byLoad(3);
+claudePlan.L1 = [...claudePlan.L1, ...claudePlan.L8];  // a truck Claude did not use: its stops ride L1
+delete claudePlan.L8;
+const UNPLANNED_ID = 7;                               // no-tractor, dispatch sent it on a tractor
+for (const k of Object.keys(claudePlan)) claudePlan[k] = claudePlan[k].filter((id) => id !== UNPLANNED_ID);
+export const CLAUDE_SHADOW_MAP = {
+  date: day(0), at: AT, depot: { lat: 34.14838, lng: -83.95948 },
+  stops: mapStops, loads: mapLoads,
+  plans: { driven: byLoad(0), reseq: byLoad(0), claude: claudePlan },
+  unplanned: [{ id: UNPLANNED_ID, reason: 'no box truck has room for a no-tractor stop this size' }],
+};
+const metric = (stops, miles) => ({ stops, spots: stops * 2.5, miles, driveMin: Math.round(miles * 1.9), over: false, blocked: 0 });
+export const CLAUDE_SHADOW_DAY_RESULT = {
+  ...result(0, 4381.6, 3902.2),
+  effort: 'high', planFrom: 'submitted', capRule: 'tighter', loosePerSkid: 10,
+  approximations: ['Truck class is the driver’s CURRENT MarginIQ type, not what it was on the day.', 'Delivery windows are not a constraint here: most stored windows are the vendor’s 08:00–20:00 default.'],
+  orderSources: { driven: 7, planned: 1 },
+  unplanned: [{ stop: UNPLANNED_ID, reason: 'no box truck has room for a no-tractor stop this size', n: mapStops[UNPLANNED_ID - 1].n, name: mapStops[UNPLANNED_ID - 1].name }],
+  loads: mapLoads.map((l, i) => ({
+    ...l, clsSource: i === 1 ? 'default' : 'roster', cap: 18.1 + i, capSource: 'learned', capNote: i === 2 ? 'raised to what dispatch delivered on this route' : null,
+    driven: metric(5, 176.7 + i * 11), reseq: metric(5, 147.3 + i * 9), claude: claudePlan[l.id] ? metric(claudePlan[l.id].length, 133.1 + i * 8) : null,
+    why: claudePlan[l.id] ? 'Canton / Ball Ground / Jasper / Ellijay run as one loop from the north end, then down 575 — one truck to the far corner, not two.' : null,
+  })),
+};
+CLAUDE_SHADOW_DAY_RESULT.at = AT;
+
+/**
+ * What a layout guard answers for a claude-shadow request: the backtest view, one day's result, one
+ * day's map, or the status body. POSTs are told apart by their action, the way the endpoint does.
+ */
+export function claudeShadowFixtureFor(url, body = null) {
+  let action = null;
+  try { action = body ? JSON.parse(body)?.action ?? null : null; } catch { action = null; }
+  if (action === 'backtest-result') return { ok: true, result: CLAUDE_SHADOW_DAY_RESULT };
+  if (action === 'backtest-map') return { ok: true, map: CLAUDE_SHADOW_MAP, nuvizzCalls: 0 };
   return String(url).includes('view=backtests') ? CLAUDE_SHADOW_BACKTESTS : CLAUDE_SHADOW_STATUS;
 }
+
+/**
+ * A stand-in for Google Maps that can hold the map's Data layer — CI builds with a key that cannot
+ * load the real thing. Anything it does not know answers with an inert stand-in, so the rest of
+ * the app survives loading it. window.__guardTapStop() taps the first stop on the visible map, so
+ * a guard can open the stop card and measure it too.
+ */
+export const CLAUDE_SHADOW_FAKE_MAPS = `(() => {
+  const g = window.google = window.google || {}; const m = g.maps = g.maps || {};
+  const inst = () => new Proxy(function () {}, { get: (t, p) => (p === 'then' ? undefined : p === Symbol.toPrimitive ? () => 0 : inst()), apply: () => inst(), construct: () => inst() });
+  const tolerant = (o) => new Proxy(o, { get: (t, p) => (p in t ? t[p] : p === 'then' ? undefined : inst()) });
+  let n = 0; const all = [];
+  class LatLng { constructor(a, b) { this.a = a; this.b = b; } lat() { return this.a; } lng() { return this.b; } }
+  class Data {
+    constructor() { this.f = []; this.ls = []; }
+    addGeoJson(gj) { for (const x of (gj && gj.features) || []) this.f.push({ p: x.properties || {}, getProperty(k) { return this.p[k]; } }); return []; }
+    forEach(fn) { this.f.slice().forEach(fn); } remove(x) { this.f = this.f.filter((y) => y !== x); } setStyle(s) { this.s = s; }
+    addListener(ev, fn) { if (ev === 'click') this.ls.push(fn); return { remove: () => { this.ls = this.ls.filter((y) => y !== fn); } }; }
+  }
+  class Map {
+    constructor(el) {
+      n += 1; this.el = el; this.c = new LatLng(34, -84); this.z = 10; this.data = new Data();
+      if (el && el.setAttribute) { el.setAttribute('data-guard-map', String(n)); const d = document.createElement('div'); d.className = 'gm-style'; d.style.cssText = 'width:100%;height:100%'; el.appendChild(d); }
+      all.push(this); return tolerant(this);
+    }
+    fitBounds() {} setOptions() {} getDiv() { return this.el; } getZoom() { return this.z; } setZoom(z) { this.z = z; } getCenter() { return this.c; }
+    setCenter(c) { if (c) this.c = new LatLng(typeof c.lat === 'function' ? c.lat() : c.lat, typeof c.lng === 'function' ? c.lng() : c.lng); }
+    addListener() { return { remove() {} }; }
+  }
+  const known = { Map, LatLng, Data, SymbolPath: { CIRCLE: 0, FORWARD_CLOSED_ARROW: 1, FORWARD_OPEN_ARROW: 2, BACKWARD_CLOSED_ARROW: 3, BACKWARD_OPEN_ARROW: 4 },
+    LatLngBounds: class { extend() { return this; } isEmpty() { return true; } },
+    Size: class { constructor(w, h) { this.width = w; this.height = h; } }, Point: class { constructor(x, y) { this.x = x; this.y = y; } },
+    event: { trigger() {}, addListener() { return { remove() {} }; }, addListenerOnce() { return { remove() {} }; }, removeListener() {}, clearInstanceListeners() {} } };
+  const ib = m.__ib__;
+  const ns = new Proxy(Object.assign(m, known), { get: (t, p) => (p === 'then' ? undefined : p in t ? t[p] : (typeof p === 'string' && /^[A-Z]/.test(p) ? class { constructor() { return inst(); } } : inst())) });
+  g.maps = ns; ns.importLibrary = async () => ns;
+  window.__guardMapCount = () => n;
+  window.__guardTapStop = () => {
+    const mp = all.find((x) => x.el && x.el.isConnected && x.el.offsetParent);
+    const f = mp && mp.data.f.find((x) => x.p.kind === 'stop' && x.p.stopId === 1);
+    if (!f) return false;
+    mp.data.ls.forEach((fn) => fn({ feature: f }));
+    return true;
+  };
+  if (typeof ib === 'function') ib();
+})();`;
+
+/** Is this request Google's Maps script? (A predicate, so a guard can route and unroute exactly it.) */
+export const isGoogleMapsScript = (url) => { try { return new URL(String(url)).hostname === 'maps.googleapis.com'; } catch { return false; } };

@@ -37,6 +37,16 @@
 //      streets"): src/lib/google-maps-loader.js may be reached, is the ONLY file that may import
 //      @googlemaps/js-api-loader, and is pinned by hash (MAPS_LOADER_SHA256). The map it loads draws
 //      its own tiles; the screen's files are still held to every rule above.
+//      AND THE NAMESPACE IT HANDS BACK IS FENCED (review of that exception, same day): the google.maps
+//      calls that fetch a URL or bill a service (loadGeoJson, KmlLayer, GroundOverlay, ImageMapType,
+//      Geocoder, Directions/DistanceMatrix/Places, importLibrary, an icon given as a URL, any `url:`)
+//      fail in shadow files — the map may only DRAW what apiFetch brought back. The same review closed
+//      holes older than the map: a function path must END at claude-shadow* (no `/../`, `%2e` or
+//      backslash after it, which the browser would resolve to another function with the session
+//      token attached); ownerDocument / defaultView / getRootNode reach the page as surely as
+//      `document` does; `new Image()`, `.src =` and innerHTML load URLs without JSX; a
+//      protocol-relative '//host' is a foreign host; and shadow files may not import
+//      lib/session.js — the screen needs no token, only lib/api.js reads it.
 //   6. THE RUNTIME NET. A second adversarial review showed what reading code cannot promise:
 //      `global['fe' + 'tch']`, an indirect eval or a helper appending to a checked path all
 //      spell a request no pattern sees. So every shadow function calls lockEgress()
@@ -148,6 +158,15 @@ export const MAPS_LOADER = 'src/lib/google-maps-loader.js';
 export const MAPS_LOADER_SHA256 = 'e69f5de98c9d091247eb9f0ee3d4dc081deed0a9a0fe2f0faa8374945f21c9a2';
 export const BROWSER_PACKAGES = ['react', 'react/jsx-runtime', 'lucide-react'];
 export const SCREEN_ENDPOINT_PREFIX = '/.netlify/functions/claude-shadow';
+// A function path the screen may name: claude-shadow* and nothing after the name but a query or
+// hash. `claude-shadow/../nuvizz-manual-scan` starts with the prefix and is NOT this — the
+// browser's URL parser resolves it to /.netlify/functions/nuvizz-manual-scan, and apiFetch then
+// attaches the dispatcher's session token (review, 2026-09-25).
+const FN_NAME_OK = /^claude-shadow[\w-]*(?:[?#][^"'`\s]*)?$/;
+const PATH_TRICK = /\.\.|%2e|%2f|%5c|\\/i;
+export function screenPathOk(fnPart) {
+  return FN_NAME_OK.test(fnPart) && !PATH_TRICK.test(fnPart) && !fnPart.includes('${');
+}
 
 export const EXEMPTIONS = [{
   file: 'netlify/functions/lib/firestore.mts',
@@ -537,6 +556,19 @@ export async function checkShadowIsolation(root = DEFAULT_ROOT) {
       const windows = (code.match(/\bwindow\b/g) || []).length;
       const confirms = (code.match(/\bwindow\.confirm\s*\(/g) || []).length;
       if (windows !== confirms) v('browser-global', file, 'window is used other than as window.confirm(…)');
+      // The page reached through an element is still the page: e.target.ownerDocument.defaultView is
+      // window by another name, with fetch on it.
+      if (/\bownerDocument\b|\bdefaultView\b|\bgetRootNode\b|\bcontentWindow\b|\bcontentDocument\b/.test(code)) v('browser-global', file, 'ownerDocument / defaultView / getRootNode / contentWindow — the page reached through an element is still the page');
+      // Loading a URL without JSX: new Image(), an element's .src / .href assigned, raw HTML.
+      if (/\bnew\s+(?:Image|Audio|Option)\b/.test(code) || /\.(?:src|href|action|formAction|srcset|srcSet|poster|data|innerHTML|outerHTML)\s*=(?!=)/.test(code) || /\b(?:innerHTML|outerHTML|insertAdjacentHTML)\b/.test(code)) {
+        v('browser-element', file, 'new Image() / Audio, an assigned .src / .href / .data, or raw HTML — each loads a URL the JSX rules cannot see');
+      }
+      // The Google namespace the reviewed loader hands back may DRAW, not FETCH: every google.maps
+      // entry point that loads a URL or bills a service is refused, as is an icon given as a URL.
+      if (/\b(?:loadGeoJson|KmlLayer|GroundOverlay|ImageMapType|StyledMapType|StreetViewPanorama|StreetViewService|importLibrary|Geocoder|DirectionsService|DistanceMatrixService|ElevationService|PlacesService|MaxZoomService|setIcon)\b/.test(code) || /\burl\s*:/.test(code) || /\bicon\s*:(?!\s*\{)/.test(code)) {
+        v('browser-maps', file, 'a google.maps call that loads a URL or bills a service (loadGeoJson, KmlLayer, GroundOverlay, ImageMapType, Geocoder, Directions, Places, importLibrary, an icon URL, `url:`) — the map may only draw what apiFetch brought back');
+      }
+      if (/(["'`])\/\/[^\s"'`]/.test(code)) v('browser-host', file, "a protocol-relative '//host' string — a foreign host by another spelling");
       // JSX attributes (`src=`, not the `action:` key of a JSON body), the elements that load a URL,
       // CSS url(), and the React calls that would build an element the JSX rules cannot see.
       if (/\b(?:src|href|action|formAction|srcSet|poster|data|xlinkHref)\s*=\s*[{"']/.test(code) || /<\s*(?:img|iframe|script|form|object|embed|link|a|video|audio|source|track|image|use)\b/.test(code) || /\burl\s*\(/.test(code) || /\b(?:createElement|cloneElement|dangerouslySetInnerHTML)\b/.test(code)) {
@@ -546,10 +578,13 @@ export async function checkShadowIsolation(root = DEFAULT_ROOT) {
         if (!sameModule(resolveLocal(file, imp.source), 'src/lib/api.js')) continue;
         if (imp.namespace || imp.defaultName || imp.named.length !== 1 || imp.named[0] !== 'apiFetch' || /\bapiFetch\s+as\b/.test(code)) v('browser-endpoint', file, 'lib/api.js must be imported exactly as `import { apiFetch } from …` — no alias, default or namespace');
       }
+      for (const imp of importsOf(code)) {
+        if (sameModule(resolveLocal(file, imp.source), 'src/lib/session.js')) v('browser-endpoint', file, 'imports lib/session.js — the screen needs no token; only lib/api.js reads the session');
+      }
       if (/NUVIZZ_|nuvizz\\?\.com/i.test(code)) v('nuvizz-host', file, 'names NuVizz');
       // Every function path named must be the shadow's own, however it is assembled.
       for (const m of code.matchAll(/\/(?:\.netlify\/functions|api)\/([^"'`\s]*)/g)) {
-        if (!m[1].startsWith('claude-shadow') || m[1].includes('${')) v('browser-endpoint', file, `names /${m[0].slice(1, 60)} — the shadow screen may call only claude-shadow*`);
+        if (!screenPathOk(m[1])) v('browser-endpoint', file, `names /${m[0].slice(1, 60)} — the shadow screen may call only claude-shadow*, and nothing after its name but a query`);
       }
       // Every apiFetch() goes to a constant that IS the literal claude-shadow path.
       const consts = new Map([...code.matchAll(/\bconst\s+([\w$]+)\s*=\s*(["'])([^"'`]*)\2\s*;/g)].map((m) => [m[1], m[3]]));
@@ -558,7 +593,7 @@ export async function checkShadowIsolation(root = DEFAULT_ROOT) {
         const arg = c[1].trim();
         const lit = arg.match(/^(["'])([^"'`]*)\1$/);
         const url = lit ? lit[2] : consts.get(arg);
-        if (!url || !url.startsWith(SCREEN_ENDPOINT_PREFIX)) v('browser-endpoint', file, `apiFetch(${arg.slice(0, 40)}) is not a literal claude-shadow path`);
+        if (!url || !url.startsWith(`${SCREEN_ENDPOINT_PREFIX}`) || !screenPathOk(url.slice('/.netlify/functions/'.length))) v('browser-endpoint', file, `apiFetch(${arg.slice(0, 40)}) is not a literal claude-shadow path`);
       }
       const uses = (code.match(/\bapiFetch\b/g) || []).length;
       const importsApi = importsOf(code).some((i) => i.named.includes('apiFetch')) ? 1 : 0;
