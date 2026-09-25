@@ -353,3 +353,37 @@ test('the 24-hour ceiling is an env var the API cannot move: spent out, a queued
   assert.ok(job.usd <= 1 + 1e-9, `spent ${job.usd}`);
   if (job.ended === 'max-usd') assert.match(job.endNote, /24-hour ceiling/);
 });
+
+test('Firestore throttling after a paid round does not fail the job: it stays running, and the next tick resumes without paying again', async () => {
+  const st = store(seedDay());
+  const c = clock();
+  const m = model([
+    reply([{ type: 'tool_use', id: 't1', name: 'evaluate_plan', input: PLAN }]),
+    reply([{ type: 'tool_use', id: 't2', name: 'submit_plan', input: { ...PLAN, loads: PLAN.loads.map((l) => ({ ...l, why: 'w' })), summary: 's' } }]),
+  ]);
+  const d = deps(st, m, c);
+  await enqueueBacktests([D], 'disp', d);
+  const id = jp(st);
+  // The job-doc write after round 1 is throttled (the round record itself landed first).
+  let throttled = 0;
+  const flaky = { ...d, shadowPatch: async (p, f) => { if (p === id && f.rounds === 1 && !throttled++) throw new Error(`updateDocFields ${p} failed: 429 {"error":{"code":429}}`); return d.shadowPatch(p, f); } };
+  const first = await workerTick(flaky);
+  assert.equal(first.transient, 1, JSON.stringify(first));
+  assert.equal(st.docs.get(id).status, 'running', 'not failed');
+  assert.equal(m.calls.length, 1);
+  const second = await workerTick(d);
+  assert.equal(second.done, true, JSON.stringify(second));
+  assert.equal(m.calls.length, 2, 'round 1 was not paid for again');
+  assert.equal(st.docs.get(id).transientErrors, 0);
+});
+
+test('five throttles in a row do fail the job, so a lasting outage cannot hold the queue forever', async () => {
+  const st = store(seedDay());
+  const d = deps(st, model([]), clock());
+  await enqueueBacktests([D], 'disp', d);
+  const id = jp(st);
+  const down = { ...d, getDoc: async (p) => { if (p.startsWith('nuvizz_load_roster/')) throw new Error('getDoc x failed: 503 unavailable'); return d.getDoc(p); } };
+  for (let i = 1; i <= 4; i++) { const r = await workerTick(down); assert.equal(r.transient, i); assert.equal(st.docs.get(id).status, 'queued'); }
+  await workerTick(down);
+  assert.equal(st.docs.get(id).status, 'failed');
+});

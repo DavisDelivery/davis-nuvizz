@@ -145,6 +145,15 @@ export function spentSince(jobs: any[], sinceMs: number): number {
 }
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// Firestore throttling (429), a 5xx, a dropped connection or a request deadline — the store's
+// retries were spent, but the job itself is fine and resumes from its round records next tick.
+const TRANSIENT_LIMIT = 5;
+function transientFailure(e: any): boolean {
+  const msg = String(e?.message || e);
+  return /\bfailed: (?:429|500|502|503|504)\b/.test(msg) || /ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|no answer within/i.test(msg)
+    || e?.name === 'TimeoutError' || (e?.name === 'TypeError' && /\bfailed\b/.test(msg));
+}
+
 // ── reading one day ─────────────────────────────────────────────────────────
 
 async function inPool<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Promise<R[]> {
@@ -187,7 +196,7 @@ export async function readBacktestDay(date: string, rs: RouterSettings, deps: Bt
 
 // ── the queue ───────────────────────────────────────────────────────────────
 
-const JOB_MASK = ['kind', 'date', 'status', 'cancelRequested', 'createdAt', 'by', 'startedAt', 'finishedAt', 'updatedAt', 'rounds', 'usd', 'ended', 'endNote', 'error', 'settings', 'stats', 'headline'];
+const JOB_MASK = ['kind', 'date', 'status', 'cancelRequested', 'transientErrors', 'createdAt', 'by', 'startedAt', 'finishedAt', 'updatedAt', 'rounds', 'usd', 'ended', 'endNote', 'error', 'settings', 'stats', 'headline'];
 
 export async function listJobs(deps: BtDeps = LIVE): Promise<any[]> {
   const docs = await deps.listDocs(BT_JOBS, { mask: JOB_MASK });
@@ -358,7 +367,7 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
         for (let i = persisted; i < st.rounds.length; i++) await deps.shadowSet(`${jobPath(id)}/rounds/${roundId(st.rounds[i].n)}`, st.rounds[i] as any);
         persisted = st.rounds.length;
         await deps.shadowPatch(jobPath(id), {
-          updatedAt: at(), rounds: st.rounds.length, usd: st.usd, ended: st.ended, endNote: st.endNote,
+          updatedAt: at(), rounds: st.rounds.length, usd: st.usd, ended: st.ended, endNote: st.endNote, transientErrors: 0,
           bestCleanRound: st.bestCleanRound, bestCleanJson: st.bestClean ? JSON.stringify(st.bestClean) : null,
           finalJson: st.final ? JSON.stringify(st.final) : null,
         });
@@ -375,6 +384,17 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
   } catch (e: any) {
     const msg = String(e?.message || e).slice(0, 500);
     if (!owned) return { ok: false, job: id, error: msg, left: 'another invocation owns this job; its status was not touched' };
+    // A THROTTLE IS NOT A VERDICT. The writes already retried for ~15 s (store.mts); if Firestore
+    // is still refusing, the job stays 'running' and the next tick resumes it from its round
+    // records — nothing paid for is lost. Only a run of them in a row fails it, so a lasting
+    // outage cannot hold the queue forever.
+    if (transientFailure(e)) {
+      const n = (typeof job.transientErrors === 'number' ? job.transientErrors : 0) + 1;
+      if (n < TRANSIENT_LIMIT) {
+        await deps.shadowPatch(jobPath(id), { transientErrors: n, lastError: msg, lastErrorAt: at(), updatedAt: at() }).catch(() => {});
+        return { ok: false, job: id, error: msg, transient: n };
+      }
+    }
     if (!(await wasCancelled(id, deps))) await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at(), updatedAt: at(), error: msg }).catch(() => {});
     return { ok: false, job: id, error: msg };
   }
