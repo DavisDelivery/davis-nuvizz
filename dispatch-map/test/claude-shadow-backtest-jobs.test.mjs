@@ -10,6 +10,7 @@ import {
   enqueueBacktests, workerTick, cancelJob, backtestView, backtestResult, saveRouterSettings,
   routerSettingsFrom, validateRouterChange, routerRefusal, ROUTER_DEFAULTS, ROUTER_SETTINGS_PATH, jobPath, resultPath,
 } from '../netlify/functions/lib/claude-shadow/backtest.mts';
+import { restoreState } from '../netlify/functions/lib/claude-shadow/plan-loop.mts';
 
 const D = '2026-09-23';
 const ENV = { ANTHROPIC_API_KEY: 'k', FIREBASE_SA: 'x' };
@@ -23,7 +24,13 @@ function store(seed = {}) {
   return {
     docs, writes,
     getDoc: async (p) => (docs.has(p) ? structuredClone(docs.get(p)) : null),
-    listDocs: async (coll) => children(coll).map((d) => structuredClone(d)),
+    // Honours a field mask the way Firestore does: a listed doc carries ONLY the masked fields. A
+    // fake that returned whole docs hid a resume that read the plan off a masked listing.
+    listDocs: async (coll, opts) => children(coll).map((d) => {
+      const c = structuredClone(d);
+      if (!opts?.mask) return c;
+      return Object.fromEntries(Object.entries(c).filter(([k]) => k === '_id' || opts.mask.includes(k)));
+    }),
     shadowSet: async (p, d) => { assert.ok(p.startsWith('claude_shadow_'), `write outside the shadow: ${p}`); writes.push(p); docs.set(p, structuredClone(d)); return true; },
     shadowPatch: async (p, d) => { assert.ok(p.startsWith('claude_shadow_')); writes.push(p); docs.set(p, { ...(docs.get(p) || {}), ...structuredClone(d) }); return true; },
     shadowCreate: async (p, d) => { assert.ok(p.startsWith('claude_shadow_')); if (docs.has(p)) return false; writes.push(p); docs.set(p, structuredClone(d)); return true; },
@@ -49,7 +56,8 @@ function seedDay() {
 
 const usage = { input_tokens: 2000, output_tokens: 1000 };
 const reply = (content) => ({ ok: true, httpStatus: 200, timedOut: false, ms: 5, error: null, body: { model: 'claude-opus-5-5', stop_reason: 'tool_use', content, usage } });
-const PLAN = { loads: [{ load: 'L1', stops: [1, 3] }, { load: 'L2', stops: [2, 4] }], unplanned: [] };
+// Stop ids are numbered by PLACE (zone, then position): the two northern stops are 1-2, the southern 3-4.
+const PLAN = { loads: [{ load: 'L1', stops: [1, 2] }, { load: 'L2', stops: [3, 4] }], unplanned: [] };
 function model(script) {
   const calls = [];
   let i = 0;
@@ -67,6 +75,7 @@ test('the router refuses — and spends nothing — with the switch off, with no
   assert.match(routerRefusal({ ANTHROPIC_API_KEY: 'k' }, false), /Firestore is not usable/);
   assert.match(routerRefusal({ ANTHROPIC_API_KEY: 'k', FIRESTORE_DATABASE: 'uat-mirror' }, true), /uat-mirror database/, 'UAT copies production\u2019s key; it must not spend it');
   assert.equal(routerRefusal({ ANTHROPIC_API_KEY: 'k' }, true), null);
+  assert.match(routerRefusal({ ANTHROPIC_API_KEY: 'k', CLAUDE_SHADOW_MODEL: 'claude-unpriced-9' }, true), /no price row/, 'a model whose spend cannot be counted is never run');
   const st = store(seedDay());
   const m = model([reply([])]);
   const out = await workerTick(deps(st, m, clock(), { CLAUDE_SHADOW: 'off', ANTHROPIC_API_KEY: 'k' }));
@@ -209,4 +218,101 @@ test('a deploy between ticks cannot change what a resumed run replays: the promp
   assert.equal(m.calls.length, 2);
   assert.equal(m.calls[1].system[0].text, 'OLD BUILD SYSTEM TEXT', 'the resumed round is sent the text the run started with');
   assert.equal(m.calls[1].messages[0].content[0].text, 'OLD BUILD BRIEFING');
+});
+
+test('a clean plan found in an EARLIER tick survives the resume: a run that then ends at its round cap is scored from it, not failed', async () => {
+  const st = store({ ...seedDay(), [ROUTER_SETTINGS_PATH]: { maxRounds: 2 } });
+  const c = clock();
+  const OVER = { loads: [{ load: 'L1', stops: [1, 2, 3, 4] }, { load: 'L2', stops: [] }], unplanned: [] };
+  const m = model([
+    reply([{ type: 'tool_use', id: 't1', name: 'evaluate_plan', input: PLAN }]),
+    reply([{ type: 'tool_use', id: 't2', name: 'evaluate_plan', input: { ...OVER, loads: [{ load: 'L1', stops: [1, 2, 3] }, { load: 'L9', stops: [4] }] } }]),
+  ]);
+  const slow = async (req) => { c.tick(5 * 60 * 1000); return m.call(req); };
+  const d = { ...deps(st, m, c), call: slow };
+  await enqueueBacktests([D], 'disp', d);
+  assert.equal((await workerTick(d)).continuing, true);
+  const out = await workerTick(d);
+  assert.equal(out.done, true, JSON.stringify(out));
+  assert.equal(m.calls.length, 2);
+  const res = st.docs.get(resultPath(D));
+  assert.equal(res.submitted, false);
+  assert.match(res.planFrom, /round 1/);
+});
+
+test('a job already holding an accepted plan is never paid for again, even when a stale tick picks it up as running', async () => {
+  const st = store(seedDay());
+  const c = clock();
+  const m = model([reply([{ type: 'tool_use', id: 't1', name: 'submit_plan', input: { ...PLAN, loads: PLAN.loads.map((l) => ({ ...l, why: 'w' })), summary: 's' } }])]);
+  const d = deps(st, m, c);
+  await enqueueBacktests([D], 'disp', d);
+  assert.equal((await workerTick(d)).done, true);
+  const jp = [...st.docs.keys()].find((p) => /^claude_shadow_jobs\/bt__[^/]+$/.test(p));
+  st.docs.set(jp, { ...st.docs.get(jp), status: 'running' });     // an overlapping tick's stale view
+  const again = await workerTick(d);
+  assert.equal(m.calls.length, 1, 'no second paid round');
+  assert.equal(again.done, true);
+  assert.equal(st.docs.get(resultPath(D)).submitted, true);
+});
+
+test('the state rebuilt from stored rounds is the state the live run had', async () => {
+  const st = store(seedDay());
+  const c = clock();
+  const m = model([
+    reply([{ type: 'tool_use', id: 't1', name: 'evaluate_plan', input: PLAN }]),
+    reply([{ type: 'tool_use', id: 't2', name: 'submit_plan', input: { ...PLAN, loads: PLAN.loads.map((l) => ({ ...l, why: 'w' })), summary: 's' } }]),
+  ]);
+  const d = deps(st, m, c);
+  await enqueueBacktests([D], 'disp', d);
+  await workerTick(d);
+  const rounds = [...st.docs.entries()].filter(([p]) => /\/rounds\/r\d+$/.test(p)).map(([, r]) => r);
+  const back = restoreState(rounds);
+  assert.equal(back.ended, 'submitted');
+  assert.deepEqual(back.final.loads.map((l) => l.stops), PLAN.loads.map((l) => l.stops));
+  assert.equal(back.bestCleanRound, 2);
+  assert.equal(back.usd, st.docs.get(jp(st)).usd);
+});
+const jp = (st) => [...st.docs.keys()].find((p) => /^claude_shadow_jobs\/bt__[^/]+$/.test(p));
+
+test('Stop pressed while the worker is still building the day is not undone by the "running" write — nothing is paid for', async () => {
+  const st = store(seedDay());
+  const c = clock();
+  const m = model([reply([{ type: 'tool_use', id: 't1', name: 'evaluate_plan', input: PLAN }])]);
+  const d = deps(st, m, c);
+  await enqueueBacktests([D], 'disp', d);
+  const id = jp(st).split('/')[1];
+  let pressed = false;
+  const getDoc = async (p) => {
+    // The dispatcher presses Stop in the middle of the day's reads.
+    if (!pressed && p.startsWith('customer_notes/')) { pressed = true; await cancelJob(id, 'disp', d); }
+    return d.getDoc(p);
+  };
+  const out = await workerTick({ ...d, getDoc });
+  assert.ok(pressed);
+  assert.equal(m.calls.length, 0, JSON.stringify(out));
+  assert.equal(st.docs.get(jp(st)).status, 'cancelled');
+  assert.equal((await workerTick(d)).idle, true, 'and no later tick picks it up');
+});
+
+test('a tick that overlaps the owner and trips on one read leaves the job alone; the owner’s own failure still marks it failed', async () => {
+  const st = store(seedDay());
+  const c = clock();
+  const m = model([reply([{ type: 'tool_use', id: 't1', name: 'evaluate_plan', input: PLAN }])]);
+  const slow = async (req) => { c.tick(5 * 60 * 1000); return m.call(req); };
+  const d = { ...deps(st, m, c), call: slow };
+  await enqueueBacktests([D], 'disp', d);
+  await workerTick(d);                                        // the owner: built the day, paid round 1
+  assert.equal(st.docs.get(jp(st)).status, 'running');
+  // An overlapping tick: its read of the rounds throws once.
+  const flaky = { ...d, listDocs: async (coll, o) => { if (coll.endsWith('/rounds')) throw new Error('Firestore 503'); return d.listDocs(coll, o); } };
+  const out = await workerTick(flaky);
+  assert.equal(out.ok, false);
+  assert.equal(st.docs.get(jp(st)).status, 'running', 'the live job is not marked failed by a tick that did nothing');
+  // The owner building a day that cannot be read does fail it.
+  const st2 = store(seedDay());
+  const d2 = deps(st2, model([]), clock());
+  await enqueueBacktests([D], 'disp', d2);
+  const broken = { ...d2, getDoc: async (p) => { if (p.startsWith('nuvizz_load_roster/')) throw new Error('boom'); return d2.getDoc(p); } };
+  await workerTick(broken);
+  assert.equal(st2.docs.get(jp(st2)).status, 'failed');
 });

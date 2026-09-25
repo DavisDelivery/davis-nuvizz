@@ -69,6 +69,98 @@ export interface CallResult {
   error: string | null;
 }
 
+// The HTTP status each in-band SSE error type stands for: a streamed request can answer 200 and
+// then fail with an error event (the streaming form of a 429 / 529), and the caller must see it as
+// the failure it is.
+export const STREAM_ERROR_STATUSES: Record<string, number> = {
+  invalid_request_error: 400, authentication_error: 401, permission_error: 403, not_found_error: 404,
+  request_too_large: 413, rate_limit_error: 429, api_error: 500, overloaded_error: 529,
+};
+
+/**
+ * Fold a Messages SSE stream back into the message a non-streamed call returns, so the rest of
+ * the code — and the history replayed next round — cannot tell the two apart. Every block is
+ * rebuilt from its start event plus its deltas IN ORDER; a thinking block's signature arrives as
+ * signature_delta and is kept whole, because a replayed block without it is refused.
+ *
+ * A stream that ends without message_stop is NOT a message: whatever arrived is discarded and the
+ * call is a failure with no status (it may have been billed; the caller charges it as unread).
+ */
+export async function readMessageStream(resp: { body: any }): Promise<{ message: any | null; status: number | null; error: string | null }> {
+  const reader = resp.body?.getReader?.();
+  if (!reader) return { message: null, status: null, error: 'streamed response had no body' };
+  const dec = new TextDecoder();
+  let buf = '';
+  let message: any = null;
+  const partial = new Map<number, string>();
+  let done = false;
+  const handle = (ev: any): string | null => {
+    switch (ev?.type) {
+      case 'message_start':
+        message = { ...ev.message, content: [] };
+        return null;
+      case 'content_block_start':
+        if (!message) return 'content before message_start';
+        message.content[ev.index] = { ...ev.content_block };
+        if (ev.content_block?.type === 'tool_use' || ev.content_block?.type === 'server_tool_use') partial.set(ev.index, '');
+        return null;
+      case 'content_block_delta': {
+        const b = message?.content?.[ev.index];
+        if (!b) return `delta for a block that never started (${ev.index})`;
+        const d = ev.delta || {};
+        if (d.type === 'text_delta') b.text = (b.text ?? '') + d.text;
+        else if (d.type === 'thinking_delta') b.thinking = (b.thinking ?? '') + d.thinking;
+        else if (d.type === 'signature_delta') b.signature = (b.signature ?? '') + d.signature;
+        else if (d.type === 'input_json_delta') partial.set(ev.index, (partial.get(ev.index) ?? '') + d.partial_json);
+        else if (d.type === 'citations_delta') (b.citations ??= []).push(d.citation);
+        return null;
+      }
+      case 'content_block_stop': {
+        const b = message?.content?.[ev.index];
+        if (b && partial.has(ev.index)) {
+          const raw = partial.get(ev.index) || '';
+          try { b.input = raw ? JSON.parse(raw) : {}; } catch { return `tool input for block ${ev.index} was not JSON`; }
+          partial.delete(ev.index);
+        }
+        return null;
+      }
+      case 'message_delta':
+        if (!message) return 'message_delta before message_start';
+        Object.assign(message, ev.delta || {});
+        for (const [k, v] of Object.entries(ev.usage || {})) if (v !== null && v !== undefined) (message.usage ??= {})[k] = v;
+        return null;
+      case 'message_stop':
+        done = true;
+        return null;
+      case 'error':
+        return `${ev.error?.type || 'error'}: ${ev.error?.message || ''}`.trim();
+      default:
+        return null;                         // ping, and any event type added later
+    }
+  };
+  let failure: string | null = null;
+  let failureStatus: number | null = null;
+  const takeLine = (line: string) => {
+    if (failure || !line.startsWith('data:')) return;
+    let ev: any;
+    try { ev = JSON.parse(line.slice(5).trim()); } catch { return; }
+    const err = handle(ev);
+    if (err) { failure = err; failureStatus = ev?.type === 'error' ? (STREAM_ERROR_STATUSES[ev.error?.type] ?? 500) : null; }
+  };
+  for (;;) {
+    const { value, done: end } = await reader.read();
+    if (value) buf += dec.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) { takeLine(buf.slice(0, nl).replace(/\r$/, '')); buf = buf.slice(nl + 1); }
+    if (end || failure) break;
+  }
+  if (!failure && buf) takeLine(buf.replace(/\r$/, ''));
+  if (failure) { try { await reader.cancel(); } catch { /* already closed */ } return { message: null, status: failureStatus, error: `stream: ${failure}` }; }
+  if (!done || !message) return { message: null, status: null, error: 'the stream ended before message_stop' };
+  if (message.content.some((b: any) => b == null)) return { message: null, status: null, error: 'the stream skipped a content block' };
+  return { message, status: 200, error: null };
+}
+
 /**
  * One POST to the Messages API. Never throws: a network failure, a timeout and a non-2xx all
  * come back as ok:false with the reason, so the caller always has something true to record.
@@ -89,6 +181,11 @@ export async function callMessages(
       body: JSON.stringify(request),
       signal: ac.signal,
     });
+    if (resp.ok && request.stream === true) {
+      const r = await readMessageStream(resp);
+      if (r.message) return { ok: true, httpStatus: resp.status, timedOut: false, ms: now() - t0, body: r.message, error: null };
+      return { ok: false, httpStatus: r.status, timedOut: false, ms: now() - t0, body: null, error: r.error };
+    }
     const text = await resp.text();
     let body: any = null;
     try { body = JSON.parse(text); } catch { /* reported below */ }

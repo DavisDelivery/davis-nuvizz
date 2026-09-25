@@ -35,6 +35,7 @@
 // vendor's 08:00–20:00 default (routing-time-windows.mts), so they would test nothing.
 import { solveRoute, haversineMiles, travelMinutesForMiles } from '../routing-engine-solver.mts';
 import { zoneId } from '../zones.mts';
+import { DEFAULT_SERVICE_MIN } from '../routing-types.mts';
 import { employeeClassMap, CLASS_OVERRIDE } from '../driver-class.mts';
 import { learnDay, buildCapacityModel, keyOf, tidy, num, skidSpots, HISTORY_STOP_MASK, LEARN_TENANT } from './learn-core.mts';
 import { withOverrides } from './settings-core.mts';
@@ -93,13 +94,19 @@ export interface BtLoad {
   cap: number; capSource: string; capNote: string | null;
   dispatch: number[];                 // stop ids, in the order they were driven (see orderSource)
   orderSource: 'driven' | 'planned' | 'stop number';
+  maxMin: number;                     // the load's day: drive + on-site minutes may not pass it
+  maxMinNote: string | null;
 }
 export interface BtProblem {
   date: string; loosePerSkid: number; capRule: CapRule;
   depot: { lat: number; lng: number };
+  serviceMin: number;                 // on-site minutes a stop (the engine's DEFAULT_SERVICE_MIN)
+  shiftMin: number;                   // a truck's day (the engine's typical_shift_hours × 60)
   loads: BtLoad[]; stops: BtStop[];
   excluded: { noCoords: { n: string; route: string }[]; duplicate: string[] };
   counts: any;                        // learnDay's census for the day
+  roster: string;                     // learnDay: 'read' | 'none' — was the day's load roster there?
+  stampGate: string;                  // learnDay: 'applied' | 'off' — did delivery stamps decide the day?
   capModel: { days: number; first: string | null; last: string | null };
   approximations: string[];
 }
@@ -117,6 +124,7 @@ export interface BtInput {
   notes: Map<string, any>;            // customer_notes by match key (current state)
   depot: { lat: number; lng: number };
   at: string;
+  cfg: any;                           // the engine config: the estimator and typical_shift_hours
 }
 
 /** Your cap / the learned cap for this driver and route, combined by the rule; else the profile. */
@@ -158,11 +166,16 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
     const seq = ord.driven ?? ord.stops.map((s: any) => s.n);
     const orderSource: BtLoad['orderSource'] = ord.driven ? 'driven' : ord.planned ? 'planned' : 'stop number';
     const ids: number[] = [];
-    let spotsRan = 0;
+    let spotsRan = 0, reserved = 0, reservedStops = 0;
     for (const n of seq) {
       if (idOf.has(n)) { duplicate.push(n); continue; }
       const r = byNbr.get(n);
-      if (!r || !usableCoords(r.lat, r.lng)) { noCoords.push({ n, route: trip.route }); continue; }
+      if (!r || !usableCoords(r.lat, r.lng)) {
+        noCoords.push({ n, route: trip.route });
+        // It rode on this truck all the same: its room is held back, not handed to Claude.
+        if (r) { reserved += skidSpots(num(r.cartons) ?? 0, num(r.volume) ?? 0, input.loosePerSkid); reservedStops++; }
+        continue;
+      }
       const skids = num(r.cartons) ?? 0, loose = num(r.volume) ?? 0;
       const lat = Number(r.lat), lng = Number(r.lng);
       const note = r.customerMatchKey ? input.notes.get(String(r.customerMatchKey)) : null;
@@ -185,19 +198,54 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
     const clsSource: BtLoad['clsSource'] = fromRoster ? 'roster' : pinned ? 'pin' : 'default';
     const base = capFor(dRows.get(keyOf(trip.driver)), rRows.get(keyOf(trip.route)), input.capRule, cls);
     let cap = r1(base.cap), capNote: string | null = null;
-    if (spotsRan > cap + 1e-9) { capNote = `raised from ${cap} to ${r1(spotsRan)} — dispatch put that much on this truck on ${input.date}`; cap = r1(spotsRan); }
-    loads.push({ id: `L${loads.length + 1}`, route: trip.route, driver: trip.driver, cls, clsSource, cap, capSource: base.source, capNote, dispatch: ids, orderSource });
+    if (reserved > 0) {
+      const left = r1(Math.max(0, cap - reserved));
+      capNote = `${r1(reserved)} of ${cap} held back for ${reservedStops} stop${reservedStops === 1 ? '' : 's'} on it with no location`;
+      cap = left;
+    }
+    if (spotsRan > cap + 1e-9) {
+      // History keys a trip on route + driver, so two trips under one route name read as one truck.
+      const how = trip.shared === true
+        ? 'over more than one trip: the roster lists more loads under this route name than history has trips'
+        : 'on one truck or over more than one trip (history cannot tell which)';
+      capNote = `${capNote ? capNote + '; ' : ''}raised from ${cap} to ${r1(spotsRan)} — dispatch delivered that much on ${trip.route} / ${trip.driver} on ${input.date}, ${how}`;
+      cap = r1(spotsRan);
+    }
+    loads.push({ id: `L${loads.length + 1}`, route: trip.route, driver: trip.driver, cls, clsSource, cap, capSource: base.source, capNote, dispatch: ids, orderSource, maxMin: 0, maxMinNote: null });
   });
 
+  // NUMBERED BY PLACE, NOT BY LOAD. Ids handed out in the order the trips were read ran in one
+  // block per dispatch load, in delivered order — the answer, written into the question. Renumber
+  // by zone, then position, so neighbours sit together and nothing about dispatch's loads shows.
+  const order = stops.slice().sort((a, b) => a.zone.localeCompare(b.zone) || b.lat - a.lat || a.lng - b.lng || a.n.localeCompare(b.n));
+  const newId = new Map(order.map((s, i) => [s.id, i + 1]));
+  for (const s of order) s.id = newId.get(s.id)!;
+  for (const l of loads) l.dispatch = l.dispatch.map((id) => newId.get(id)!);
+
+  // THE DAY'S LENGTH. Skid spots alone let a plan fold two trucks into one that no driver could
+  // finish. Every load gets the engine's typical shift — raised, like a cap, to what dispatch's own
+  // truck took that day on the same estimate, so the dispatcher's plan is never the one refused.
+  const serviceMin = DEFAULT_SERVICE_MIN;
+  const shiftMin = Math.round(Number(input.cfg?.typical_shift_hours) * 60) || 600;
+  const at = { depot: input.depot, stops: order } as BtProblem;
+  for (const l of loads) {
+    const own = tourCost(at, l.dispatch, input.cfg).driveMin + serviceMin * l.dispatch.length;
+    l.maxMin = shiftMin;
+    if (own > shiftMin) { l.maxMin = own; l.maxMinNote = `raised from ${shiftMin} to ${own} min — dispatch’s own truck took that long on ${input.date} on the same estimate`; }
+  }
+
   return {
-    date: input.date, loosePerSkid: input.loosePerSkid, capRule: input.capRule, depot: input.depot,
-    loads, stops, excluded: { noCoords, duplicate }, counts: day.counts,
+    date: input.date, loosePerSkid: input.loosePerSkid, capRule: input.capRule, depot: input.depot, serviceMin, shiftMin,
+    loads, stops: order, excluded: { noCoords, duplicate }, counts: day.counts, roster: day.roster, stampGate: day.stampGate,
     capModel: { days: model?.days?.count ?? 0, first: model?.days?.first ?? null, last: model?.days?.last ?? null },
     approximations: [
       'Truck class is each driver’s CURRENT MarginIQ vehicle type; history does not record the truck that ran.',
       'Equipment limits (no 53′, box only, green/red marks) are the CURRENT customer notes, applied to both sides.',
       'Delivery windows are not a constraint: most stored windows are the vendor’s 08:00–20:00 default.',
-      'Miles and minutes are the learned engine’s estimate (straight line × road factor, tiered speeds), open tour from Buford, no service time — the same for every column.',
+      'Miles and drive minutes are the learned engine’s estimate (straight line × road factor, tiered speeds), open tour from Buford — the same for every column.',
+      ...(day.stampGate === 'off' ? ['Fewer than half this day’s delivered stops carried a delivery stamp on the day, so every delivered stop counted — some may have gone out on a neighbouring day.'] : []),
+      ...(day.roster === 'none' ? ['This day’s load roster was not captured, so two loads run under one route name cannot be told apart from one.'] : []),
+      `A truck’s day is drive minutes plus a flat ${DEFAULT_SERVICE_MIN} min on site a stop (the engine’s default, not each customer’s learned time), against the engine’s typical shift of ${shiftMin / 60} h — or longer where dispatch’s own truck took longer.`,
     ],
   };
 }
@@ -207,10 +255,11 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
 export interface LoadMetrics {
   id: string; stops: number; spots: number; cap: number; util: number | null; weight: number;
   miles: number; driveMin: number; over: boolean; blocked: number; order: number[];
+  routeMin: number; maxMin: number; overTime: boolean;
 }
 export interface PlanMetrics {
   loads: LoadMetrics[];
-  totals: { trucks: number; stops: number; spots: number; capUsedTrucks: number; util: number | null; miles: number; driveMin: number; overCap: number; blocked: number; unplanned: number };
+  totals: { trucks: number; stops: number; spots: number; capUsedTrucks: number; util: number | null; miles: number; driveMin: number; overCap: number; blocked: number; unplanned: number; overTime: number };
 }
 
 export interface Sequencer { order(loadId: string, ids: number[]): number[] }
@@ -225,10 +274,15 @@ export function makeSequencer(problem: BtProblem, cfg: any): Sequencer {
       const key = ids.slice().sort((a, b) => a - b).join(',');
       const hit = memo.get(key);
       if (hit) return hit.slice();
+      // A COUNTED clock, not the wall: the solver's restarts are already seeded from the load key,
+      // and only its time cap made the same stops order differently on a busier machine — so what
+      // Claude was shown mid-run could differ from what was stored. Each check of the clock is one
+      // step; solver_ms_cap steps is ample for the searches to finish, and the same on every run.
+      let steps = 0;
       const res = solveRoute({
         loadKey: `${problem.date}:${key}`,
         stops: ids.map((id) => { const s = byId.get(id)!; return { id: String(id), lat: s.lat, lng: s.lng, zone: s.zone }; }),
-        depot: problem.depot, referenceZoneSeq: null, cfg,
+        depot: problem.depot, referenceZoneSeq: null, cfg, now: () => steps++,
       });
       const out = res.order.map((s: any) => Number(s.id));
       memo.set(key, out);
@@ -264,9 +318,12 @@ export function measurePlan(problem: BtProblem, assign: Map<string, number[]>, c
     let spots = 0, weight = 0, blocked = 0;
     for (const id of ids) { const s = byId.get(id)!; spots += s.spots; weight += s.weight; if (s.blocksTractor && load.cls === 'tractor') blocked++; }
     const { miles, driveMin } = tourCost(problem, order, cfg);
+    const routeMin = driveMin + (problem.serviceMin ?? DEFAULT_SERVICE_MIN) * ids.length;
+    const maxMin = typeof load.maxMin === 'number' && load.maxMin > 0 ? load.maxMin : Infinity;
     loads.push({
       id: load.id, stops: ids.length, spots: r1(spots), cap: load.cap, util: load.cap > 0 ? Math.round((spots / load.cap) * 1000) / 10 : null,
       weight, miles, driveMin, over: spots > load.cap + 1e-9, blocked, order,
+      routeMin, maxMin: Number.isFinite(maxMin) ? maxMin : 0, overTime: routeMin > maxMin,
     });
   }
   const sum = (f: (l: LoadMetrics) => number) => loads.reduce((a, l) => a + f(l), 0);
@@ -279,6 +336,7 @@ export function measurePlan(problem: BtProblem, assign: Map<string, number[]>, c
       util: capUsedTrucks > 0 ? Math.round((spots / capUsedTrucks) * 1000) / 10 : null,
       miles: r1(sum((l) => l.miles)), driveMin: Math.round(sum((l) => l.driveMin)),
       overCap: loads.filter((l) => l.over).length, blocked: sum((l) => l.blocked), unplanned,
+      overTime: loads.filter((l) => l.overTime).length,
     },
   };
 }
@@ -305,20 +363,20 @@ export function coLoad(a: Map<string, number[]>, b: Map<string, number[]>): { re
 export const BT_SYSTEM = [
   'You are the route planner for Davis Delivery Service, a freight carrier running box trucks and 53-foot tractor-trailers out of its Buford, Georgia terminal.',
   'You are given one day of delivery stops and the trucks (loads) available that day. Assign every stop to exactly one load so the day is delivered with as few road miles and drive minutes as possible, using as few trucks as sensibly possible.',
-  'HARD RULES (a plan that breaks one is rejected): every stop on exactly one load — the ONLY stop that may be listed unplanned instead is a no-tractor stop no box-truck load has room for, with a reason, and the evaluator refuses any other; a load’s skid spots never exceed its cap (skid spots = skids + loose pieces ÷ the loose-per-spot ratio, already computed per stop as "spots"); a stop flagged no-tractor never rides on a tractor load.',
+  'HARD RULES (a plan that breaks one is rejected): every stop on exactly one load — the ONLY stop that may be listed unplanned instead is a no-tractor stop no box-truck load has room for, with a reason, and the evaluator refuses any other; a load’s skid spots never exceed its cap (skid spots = skids + loose pieces ÷ the loose-per-spot ratio, already computed per stop as "spots"); a stop flagged no-tractor never rides on a tractor load; a load’s day — its drive minutes plus the on-site minutes of every stop on it — never passes that load’s day limit.',
   'SOFT GOALS: keep a customer’s orders (same customer and address) on one load; make each load a compact, contiguous area so the truck is not criss-crossing; balance the work sensibly; route names hint at the area a load usually serves, but you may use any truck anywhere.',
   'Leaving a stop unplanned is a failure on a day like this: every stop was delivered. The evaluator refuses it for any stop except a no-tractor stop that no box truck has room for.',
   'Each load’s stop order is set for you by a sequencing engine, and miles and minutes are measured as an open tour from the terminal with no return leg. You decide which stops ride on which load.',
-  'Work method: call evaluate_plan with a COMPLETE assignment (all loads, all stops). It returns each load’s stops, skid spots against its cap, estimated miles and drive minutes, and every hard-rule violation. Revise and evaluate again until there are no violations and you cannot reduce miles further without breaking a rule. Then call submit_plan with that assignment and a short reason per load. Keep prose short; the tools carry the plan.',
+  'Work method: call evaluate_plan with a COMPLETE assignment (all loads, all stops). It returns each load’s stops, skid spots against its cap, estimated miles, drive minutes and day minutes against its day limit, and every hard-rule violation. Revise and evaluate again until there are no violations and you cannot reduce miles further without breaking a rule. Then call submit_plan with that assignment and a short reason per load. Keep prose short; the tools carry the plan.',
 ].join('\n\n');
 
 export function btBriefing(p: BtProblem): string {
   const lines: string[] = [];
   lines.push(`DAY ${p.date}. Terminal (start of every load): ${p.depot.lat.toFixed(5)}, ${p.depot.lng.toFixed(5)}. Loose pieces per skid spot: ${p.loosePerSkid}.`);
-  lines.push(`${p.loads.length} loads available, ${p.stops.length} stops.`);
+  lines.push(`${p.loads.length} loads available, ${p.stops.length} stops. Every stop takes ${p.serviceMin} min on site; a load's day = its drive minutes + ${p.serviceMin} min per stop, and may not pass its day limit.`);
   lines.push('');
-  lines.push('LOADS: id | route name | driver | truck | cap (skid spots)');
-  for (const l of p.loads) lines.push(`${l.id} | ${l.route} | ${l.driver} | ${l.cls === 'tractor' ? 'tractor 53ft' : 'box truck'} | ${l.cap}`);
+  lines.push('LOADS: id | route name | driver | truck | cap (skid spots) | day limit (min)');
+  for (const l of p.loads) lines.push(`${l.id} | ${l.route} | ${l.driver} | ${l.cls === 'tractor' ? 'tractor 53ft' : 'box truck'} | ${l.cap} | ${l.maxMin}`);
   lines.push('');
   lines.push('STOPS: id | lat,lng | zip | city | customer | skids | loose | spots | lbs | flags');
   for (const s of p.stops) {
@@ -437,6 +495,7 @@ export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequ
   for (const l of m.loads) {
     if (l.over) hard.push(`${l.id} is over its cap: ${l.spots} of ${l.cap} skid spots`);
     if (l.blocked) hard.push(`${l.id} is a tractor carrying ${l.blocked} no-tractor stop(s)`);
+    if (l.overTime) hard.push(`${l.id} runs ${l.routeMin} min (drive + ${p.serviceMin ?? DEFAULT_SERVICE_MIN} min a stop on site) past its ${l.maxMin}-minute day`);
   }
   // SOFT: a customer's orders split across loads.
   const custLoads = new Map<string, Set<string>>();
@@ -449,8 +508,8 @@ export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequ
     hardViolations: hard.slice(0, MAX_LISTED),
     hardViolationCount: hard.length,
     totals: { loadsUsed: m.totals.trucks, loadsAvailable: p.loads.length, stopsPlanned: m.totals.stops, unplanned: unplanned.length, miles: m.totals.miles, driveMin: m.totals.driveMin, spots: m.totals.spots },
-    loads: m.loads.map((l) => [l.id, l.stops, l.spots, l.cap, l.miles, l.driveMin]),
-    loadColumns: ['load', 'stops', 'spots', 'cap', 'miles', 'driveMin'],
+    loads: m.loads.map((l) => [l.id, l.stops, l.spots, l.cap, l.miles, l.driveMin, l.routeMin, l.maxMin]),
+    loadColumns: ['load', 'stops', 'spots', 'cap', 'miles', 'driveMin', 'dayMin', 'dayLimitMin'],
     customerSplits: splits.slice(0, 20),
     customerSplitCount: splits.length,
   };
@@ -525,5 +584,8 @@ export function compareBacktest(p: BtProblem, claudePlan: any, cfg: any, rates: 
       why: (claudePlan?.loads || []).find((e: any) => e.load === l.id)?.why ?? null,
     })),
     unplanned: claudePlan?.unplanned || [],
+    // How the "as driven" column got its order, per truck: delivery stamps, the planned order, or
+    // (neither known) stop number — so the screen can say when "as driven" is not quite that.
+    orderSources: p.loads.reduce((a: Record<string, number>, l) => { a[l.orderSource] = (a[l.orderSource] || 0) + 1; return a; }, {}),
   };
 }

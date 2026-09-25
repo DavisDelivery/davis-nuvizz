@@ -50,7 +50,7 @@ function input(o = {}) {
   return {
     date: D, rows: day(), roster: null, stamp: 'x', learnDaysBefore: [], caps: null, loosePerSkid: 10, capRule: 'tighter',
     employees: [{ vehicleType: 'tractor', fullName: 'Ben Paintsil' }],
-    notes: new Map(), depot: DEPOT, at: '2026-09-25T00:00:00Z', ...o,
+    notes: new Map(), depot: DEPOT, at: '2026-09-25T00:00:00Z', cfg: CFG, ...o,
   };
 }
 
@@ -216,6 +216,46 @@ test('the briefing never carries the answer: no stop is tied to the load dispatc
   assert.ok(BT_SYSTEM.length > 500);
 });
 
+test('folding two trucks into one is refused when no driver could finish that day: drive + 15 min a stop against the shift, raised to what dispatch’s own truck took', () => {
+  const cfg = { ...CFG, typical_shift_hours: 2 };
+  const caps = { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 40 }, DULUTH: { name: 'DULUTH', cap: 40 } } };
+  const p = buildBacktestProblem(input({ cfg, caps }));
+  const seqr = makeSequencer(p, cfg);
+  assert.equal(p.serviceMin, 15);
+  assert.equal(p.shiftMin, 120);
+  // Dispatch's own trucks never break their own day.
+  const own = evaluateAssignment(p, { loads: p.loads.map((l) => ({ load: l.id, stops: l.dispatch })), unplanned: [] }, cfg, seqr);
+  assert.ok(!own.summary.hardViolations.some((v) => /past its/.test(v)), own.summary.hardViolations.join('; '));
+  for (const l of p.loads) if (l.maxMin > 120) assert.match(l.maxMinNote, /raised from 120 to \d+ min/);
+  // Every stop on the box truck fits its skid cap but not its day.
+  const box = p.loads.find((l) => l.cls !== 'tractor');
+  const one = evaluateAssignment(p, { loads: [{ load: box.id, stops: p.stops.map((s) => s.id) }], unplanned: [] }, cfg, seqr);
+  assert.ok(!one.summary.hardViolations.some((v) => /over its cap/.test(v)), 'room on the truck is not the problem');
+  assert.match(one.summary.hardViolations.join(' '), new RegExp(`${box.id} runs \\d+ min .* past its \\d+-minute day`));
+  assert.match(btBriefing(p), /day limit \(min\)/);
+});
+
+test('stop numbers say nothing about dispatch: the same stops carried on different trucks get the same numbers', () => {
+  const a = buildBacktestProblem(input());
+  const rows = day();
+  // Move two stops between trucks: dispatch's grouping changes, the places do not.
+  const as = (r, route, driver) => ({ ...r, routeName: route, loadNbr: route, driverName: driver, driverUserName: driver });
+  const swapped = rows.map((r, i) => (i === 2 ? as(r, 'DULUTH', 'Aaron Mitchell') : i === 6 ? as(r, 'GAINESVILLE', 'Ben  Paintsil') : r));
+  const b = buildBacktestProblem(input({ rows: swapped }));
+  const numbering = (p) => Object.fromEntries(p.stops.map((s) => [s.n, s.id]));
+  assert.notDeepEqual(a.loads.map((l) => l.dispatch.slice().sort()), b.loads.map((l) => l.dispatch.slice().sort()), 'the loads really differ');
+  assert.deepEqual(numbering(b), numbering(a));
+  assert.deepEqual(p1n(a), [...Array(a.stops.length)].map((_, i) => i + 1), 'ids are 1..N in table order');
+});
+const p1n = (p) => p.stops.map((s) => s.id);
+
+test('a stop with no location still rode on its truck: its room is held back from the cap, and the load says so', () => {
+  const p = buildBacktestProblem(input());
+  const d = p.loads.find((l) => l.route === 'DULUTH');
+  assert.equal(d.cap, 11.5, 'box truck 14 less the 2.5 spots of the unlocated stop');
+  assert.match(d.capNote, /2\.5 of 14 held back for 1 stop on it with no location/);
+});
+
 test('the shadow’s trailer-blocker list and profile skid counts are the engine’s — a copy that drifts fails here', () => {
   assert.deepEqual([...TRAILER_BLOCKER_KEYS].sort(), [...ENGINE_BLOCKERS].sort());
   const byClass = Object.fromEntries(DEFAULT_TRUCK_PROFILES.map((t) => [/TRACTOR/.test(t.truckClass) ? 'tractor' : 'box_truck', t.maxSkids]));
@@ -229,4 +269,30 @@ test('coordinates: null, blank, 0,0 and out-of-range are not a place', () => {
   assert.equal(usableCoords(0, 0), false);
   assert.equal(usableCoords(91, 0), false);
   assert.equal(usableCoords('34.1', '-83.9'), true);
+});
+
+test('the sequencer does not depend on the machine: the same stops come back in the same order, however slow the clock', () => {
+  seq = 0;
+  // 30 stops scattered over the north metro on one truck: enough that the search has work to do.
+  let x = 7;
+  const rnd = () => ((x = (x * 48271) % 2147483647) / 2147483647);
+  const rows = Array.from({ length: 30 }, () => row('HALL', 'Ann Lee', { lat: 34.0 + rnd() * 0.5, lng: -84.3 + rnd() * 0.6 }));
+  const p = buildBacktestProblem({ ...input(), rows });
+  const ids = p.stops.map((s) => s.id);
+  const a = makeSequencer(p, CFG).order('L1', ids);
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + (skew += 5000);         // a machine so slow every clock read is 5 s later
+  try {
+    const b = makeSequencer(p, CFG).order('L1', ids);
+    assert.deepEqual(b, a);
+  } finally { Date.now = realNow; }
+});
+
+test('what the day could not tell is written on the result: no roster captured, and whether delivery stamps decided the day', () => {
+  const p = buildBacktestProblem(input());
+  assert.equal(p.roster, 'none');
+  assert.ok(['applied', 'off'].includes(p.stampGate));
+  assert.ok(p.approximations.some((a) => /load roster was not captured/.test(a)));
+  assert.ok(p.approximations.some((a) => /15 min on site/.test(a)));
 });

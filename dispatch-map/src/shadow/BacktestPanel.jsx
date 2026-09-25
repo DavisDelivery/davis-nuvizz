@@ -83,31 +83,37 @@ function useBacktests() {
   }, []);
 
   const queue = useCallback(async (dates, maxUsd) => {
-    if (!dates.length) return;
-    const ceiling = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd * dates.length)} at the model (${usd(maxUsd)} a day), usually much less.` : '';
-    if (!window.confirm(`Backtest ${dates.length} day${dates.length === 1 ? '' : 's'} with Claude?${ceiling} The worker runs them one at a time, a few minutes each.`)) return;
+    if (!dates.length) return false;
+    const ceiling = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd * dates.length)} at the model (${usd(maxUsd)} a day — no round starts that could pass it), usually much less.` : '';
+    if (!window.confirm(`Backtest ${dates.length} day${dates.length === 1 ? '' : 's'} with Claude?${ceiling} The worker runs them one at a time, a few minutes each.`)) return false;
     setBusy(true); setMsg(null);
+    let queued = false;
     try {
       const { r, j } = await post({ action: 'backtest', dates, confirm: true });
       if (!j) setMsg(`HTTP ${r.status} — no readable answer; reload to see what was queued.`);
       else if (!r.ok || !j.ok) setMsg(`Not queued: ${j.error || (j.errors || []).join('; ') || `HTTP ${r.status}`}`);
-      else setMsg(`Queued ${j.queued.length} day${j.queued.length === 1 ? '' : 's'}${j.skipped.length ? `; ${j.skipped.length} already queued or running` : ''}. The first starts within about three minutes.`);
+      else { queued = true; setMsg(`Queued ${j.queued.length} day${j.queued.length === 1 ? '' : 's'}${j.skipped.length ? `; ${j.skipped.length} already queued or running` : ''}. The first starts within about three minutes.`); }
       await load();
     } catch (e) { setMsg(`Whether anything was queued is unknown: ${String(e?.message || e)}`); }
     finally { setBusy(false); }
+    return queued;
   }, [post, load]);
 
   const cancel = useCallback(async (jobId) => {
     if (!window.confirm('Stop this backtest? A round already at the model still finishes and is billed.')) return;
-    const { r, j } = await post({ action: 'backtest-cancel', jobId });
-    setMsg(r.ok && j?.ok ? 'Stopped.' : `Not stopped: ${j?.error || `HTTP ${r.status}`}`);
-    await load();
+    try {
+      const { r, j } = await post({ action: 'backtest-cancel', jobId });
+      setMsg(r.ok && j?.ok ? 'Stopped.' : `Not stopped: ${j?.error || `HTTP ${r.status}`}`);
+    } catch (e) { setMsg(`Whether it stopped is unknown — the request failed (${String(e?.message || e)}). Press Refresh, then Stop again if it is still running.`); }
+    await load().catch(() => {});
   }, [post, load]);
 
   const saveSettings = useCallback(async (change) => {
-    const { r, j } = await post({ action: 'router-settings', change });
-    if (!r.ok || !j?.ok) return { ok: false, error: (j?.errors || [j?.error || `HTTP ${r.status}`]).join('; ') };
-    await load();
+    try {
+      const { r, j } = await post({ action: 'router-settings', change });
+      if (!r.ok || !j?.ok) return { ok: false, error: (j?.errors || [j?.error || `HTTP ${r.status}`]).join('; ') };
+    } catch (e) { return { ok: false, error: `the request failed (${String(e?.message || e)}); whether it saved is unknown — press Refresh` }; }
+    await load().catch(() => {});
     return { ok: true };
   }, [post, load]);
 
@@ -122,7 +128,20 @@ function useBacktests() {
 
 // ── totals across every day backtested ──────────────────────────────────────
 
-function totalsOf(days) {
+// Dollars are re-priced here at the rates in settings NOW, from each day's miles and minutes — so
+// every day is on one rate, and entering a rate prices days that finished before it existed.
+const priced = (col, rates) => (rates.perMile == null && rates.perDriveHour == null ? null
+  : (rates.perMile ?? 0) * (col?.miles || 0) + (rates.perDriveHour ?? 0) * ((col?.driveMin || 0) / 60));
+
+// One day's result with its dollars re-priced at today's rates (see `priced`).
+function withRates(r, rates) {
+  if (!r?.columns) return r;
+  const c = { driven: priced(r.columns.driven, rates), reseq: priced(r.columns.reseq, rates), claude: priced(r.columns.claude, rates) };
+  const cost = c.claude === null ? null : { abs: Math.round((c.claude - c.driven) * 100) / 100, pct: c.driven > 0 ? ((c.claude - c.driven) / c.driven) * 100 : null };
+  return { ...r, costs: c.claude === null ? { driven: null, reseq: null, claude: null } : c, vsDriven: { ...(r.vsDriven || {}), cost } };
+}
+
+function totalsOf(days, rates) {
   const done = days.map((d) => d.result).filter((r) => r?.columns);
   if (!done.length) return null;
   const sum = (col, k) => done.reduce((a, r) => a + (r.columns[col]?.[k] || 0), 0);
@@ -130,8 +149,8 @@ function totalsOf(days) {
   const min = { driven: sum('driven', 'driveMin'), reseq: sum('reseq', 'driveMin'), claude: sum('claude', 'driveMin') };
   const trucks = { driven: sum('driven', 'trucks'), claude: sum('claude', 'trucks') };
   const pct = (a, b) => (b > 0 ? ((a - b) / b) * 100 : null);
-  const costs = done.every((r) => typeof r.costs?.claude === 'number' && typeof r.costs?.driven === 'number')
-    ? { driven: done.reduce((a, r) => a + r.costs.driven, 0), claude: done.reduce((a, r) => a + r.costs.claude, 0) } : null;
+  const costs = priced(null, rates) === null ? null
+    : { driven: done.reduce((a, r) => a + priced(r.columns.driven, rates), 0), claude: done.reduce((a, r) => a + priced(r.columns.claude, rates), 0) };
   return {
     days: done.length,
     miles, min, trucks, costs,
@@ -139,13 +158,13 @@ function totalsOf(days) {
     minDelta: { abs: min.claude - min.driven, pct: pct(min.claude, min.driven) },
     seqMilesDelta: { abs: miles.reseq - miles.driven, pct: pct(miles.reseq, miles.driven) },
     costDelta: costs ? { abs: costs.claude - costs.driven, pct: pct(costs.claude, costs.driven) } : null,
-    spent: done.reduce((a, r) => a + (r.usd || 0), 0),
+    unplanned: done.reduce((a, r) => a + (r.columns.claude?.unplanned || 0), 0),
     moved: done.reduce((a, r) => a + (r.agreement?.stopsMoved || 0), 0),
     stops: done.reduce((a, r) => a + (r.stats?.stops || 0), 0),
   };
 }
 
-function Totals({ t, phone }) {
+function Totals({ t, phone, spend }) {
   if (!t) return <p className="text-xs text-slate-500">No day has been backtested yet. Pick days below and press Backtest.</p>;
   const Item = ({ label, children }) => (
     <div className={`rounded-lg bg-slate-50 border px-3 py-2 ${phone ? '' : 'min-w-[150px]'}`}>
@@ -158,10 +177,11 @@ function Totals({ t, phone }) {
       <Item label={`Road miles, ${t.days} day${t.days === 1 ? '' : 's'}`}><Delta d={t.milesDelta} unit=" mi" /></Item>
       <Item label="Drive time"><Delta d={{ abs: t.minDelta.abs / 60, pct: t.minDelta.pct }} unit=" h" /></Item>
       <Item label="Trucks used"><TruckDelta n={t.trucks.claude - t.trucks.driven} /></Item>
-      <Item label="Cost (your rates)">{t.costDelta ? <Delta d={t.costDelta} money /> : <span className="text-slate-400 text-xs">enter $/mile or $/drive-hour in settings</span>}</Item>
+      <Item label="Cost (today’s rates)">{t.costDelta ? <Delta d={t.costDelta} money /> : <span className="text-slate-400 text-xs">enter $/mile or $/drive-hour in settings</span>}</Item>
       <Item label="Stops moved to another truck">{int(t.moved)} of {int(t.stops)}</Item>
       <Item label="Stop order alone (same loads)"><Delta d={t.seqMilesDelta} unit=" mi" /></Item>
-      <Item label="Model spend">{usd(t.spent)}</Item>
+      <Item label={`Model spend, ${spend?.runs ?? 0} run${spend?.runs === 1 ? '' : 's'}`}>{usd(spend?.usd)}</Item>
+      {t.unplanned > 0 && <Item label="Stops Claude left unplanned"><span className="text-rose-700 font-semibold">{int(t.unplanned)} — their miles are not in Claude’s column</span></Item>}
     </div>
   );
 }
@@ -173,7 +193,12 @@ function RouterSettings({ v, onSave }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(null);
   const [note, setNote] = useState(null);
-  useEffect(() => { if (open) setForm({ capRule: s.capRule, costPerMile: s.costPerMile ?? '', costPerDriveHour: s.costPerDriveHour ?? '', effort: s.effort, maxRounds: String(s.maxRounds), maxUsd: String(s.maxUsd) }); }, [open, s]);
+  // Filled from the saved settings when the form OPENS — not on every poll, which hands back a new
+  // settings object every 20 s while a job runs and would wipe what is being typed.
+  const openForm = () => {
+    setForm({ capRule: s.capRule, costPerMile: s.costPerMile ?? '', costPerDriveHour: s.costPerDriveHour ?? '', effort: s.effort, maxRounds: String(s.maxRounds), maxUsd: String(s.maxUsd) });
+    setOpen(true);
+  };
   const save = async () => {
     const change = {
       capRule: form.capRule, effort: form.effort, maxRounds: form.maxRounds, maxUsd: form.maxUsd,
@@ -188,7 +213,7 @@ function RouterSettings({ v, onSave }) {
   return (
     <div>
       <div className="flex flex-wrap items-center gap-x-2">
-        <button onClick={() => setOpen((o) => !o)} className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 min-h-[44px] shrink-0">
+        <button onClick={() => (open ? setOpen(false) : openForm())} className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 min-h-[44px] shrink-0">
           <Settings2 size={13} /> Router settings {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
         <span className="text-xs text-slate-400">cap rule {s.capRule} · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}</span>
@@ -235,6 +260,7 @@ function RouterSettings({ v, onSave }) {
 
 function Scorecard({ r, phone }) {
   const c = r.columns;
+  if (!c?.driven || !c?.reseq || !c?.claude) return <div className="text-xs text-slate-500">This result has no scorecard.</div>;
   const rows = [
     ['Trucks used', (x) => int(x.trucks)],
     ['Road miles (est.)', (x) => one(x.miles)],
@@ -243,6 +269,7 @@ function Scorecard({ r, phone }) {
     ['Avg truck fill', (x) => (typeof x.util === 'number' ? `${x.util}%` : '—')],
     ['Loads over cap', (x) => int(x.overCap)],
     ['No-tractor stops on a tractor', (x) => int(x.blocked)],
+    ['Loads past their day', (x) => int(x.overTime)],
     ['Stops left unplanned', (x) => int(x.unplanned)],
   ];
   const costRow = r.costs && typeof r.costs.driven === 'number';
@@ -279,7 +306,7 @@ function Scorecard({ r, phone }) {
           </tr>
         ))}
         {costRow && (
-          <tr className="border-t border-slate-100"><td className="py-1.5 pr-3 text-slate-600">Cost (your rates)</td>
+          <tr className="border-t border-slate-100"><td className="py-1.5 pr-3 text-slate-600">Cost (today’s rates)</td>
             <td className="py-1.5 pr-3 text-right">{usd(r.costs.driven)}</td><td className="py-1.5 pr-3 text-right">{usd(r.costs.reseq)}</td><td className="py-1.5 pr-3 text-right font-semibold text-indigo-800">{usd(r.costs.claude)}</td></tr>
         )}
       </tbody>
@@ -289,7 +316,7 @@ function Scorecard({ r, phone }) {
 
 function LoadRows({ r, phone }) {
   const [open, setOpen] = useState(null);
-  const loads = [...r.loads].sort((a, b) => (b.driven?.miles || 0) - (a.driven?.miles || 0));
+  const loads = [...(Array.isArray(r.loads) ? r.loads : [])].sort((a, b) => (b.driven?.miles || 0) - (a.driven?.miles || 0));
   const cell = (m, k, f = one) => (m ? f(m[k]) : '—');
   if (phone) {
     return (
@@ -307,6 +334,7 @@ function LoadRows({ r, phone }) {
                 <div className="text-indigo-800">Claude: {cell(l.claude, 'stops', int)} stops · {cell(l.claude, 'spots')} spots · {cell(l.claude, 'miles')} mi · {hrs(l.claude?.driveMin)}{!l.claude ? ' (truck not used)' : ''}</div>
                 {l.why && <div className="italic">“{l.why}”</div>}
                 <div className="text-slate-400">cap: {l.capSource}{l.capNote ? ` — ${l.capNote}` : ''}</div>
+                {l.orderSource && l.orderSource !== 'driven' && <div className="text-slate-400">“as driven” order: {l.orderSource === 'planned' ? 'the planned order (not every stop had a delivery time)' : 'stop number (no delivery times or plan)'}</div>}
               </div>
             )}
           </div>
@@ -342,13 +370,14 @@ function LoadRows({ r, phone }) {
           ))}
         </tbody>
       </table>
-      <p className="text-[11px] text-slate-400 mt-1">* the learned cap was below what dispatch put on that truck that day, so the cap was raised to what ran (hover a cap for its source).</p>
+      <p className="text-[11px] text-slate-400 mt-1">* the cap was adjusted for this day — raised to what dispatch delivered on that route and driver, and/or less room held for stops with no map point (hover a cap for why).</p>
     </div>
   );
 }
 
-function DayDetail({ date, loadResult, phone, onClose }) {
-  const [r, setR] = useState(null);
+function DayDetail({ date, loadResult, phone, onClose, rates }) {
+  const [raw, setR] = useState(null);
+  const r = raw ? withRates(raw, rates) : null;
   const [err, setErr] = useState(null);
   useEffect(() => { let live = true; setR(null); setErr(null); loadResult(date).then((x) => live && setR(x)).catch((e) => live && setErr(String(e?.message || e))); return () => { live = false; }; }, [date, loadResult]);
   return (
@@ -378,7 +407,8 @@ function DayDetail({ date, loadResult, phone, onClose }) {
               {(r.approximations || []).map((a) => <li key={a}>{a}</li>)}
               <li>“Dispatch — as driven” keeps each truck’s stops in the order they were delivered; “re-sequenced” keeps dispatch’s trucks and lets the engine order the stops; Claude chooses the trucks and the engine orders the stops. All three use the same miles and minutes estimate.</li>
               <li>Capacity for the day was learned from {r.stats?.capModelDays ?? 0} earlier days only, at {r.loosePerSkid} loose pieces per skid spot; cap rule: {r.capRule}.</li>
-              <li>{r.stats?.excludedNoCoords || 0} stop{r.stats?.excludedNoCoords === 1 ? '' : 's'} had no map point and were left out of every column.</li>
+              <li>{r.stats?.excludedNoCoords || 0} stop{r.stats?.excludedNoCoords === 1 ? '' : 's'} had no map point and were left out of every column (their room on the truck was held back).</li>
+              {r.orderSources && <li>“As driven” order came from delivery times on {int(r.orderSources.driven || 0)} truck{r.orderSources.driven === 1 ? '' : 's'}{r.orderSources.planned ? `, the planned order on ${r.orderSources.planned}` : ''}{r.orderSources['stop number'] ? `, stop number on ${r.orderSources['stop number']} (no times or plan)` : ''}.</li>}
             </ul>
           </details>
         </>
@@ -395,7 +425,10 @@ function statusOf(day, jobsByDate) {
     if (job.status === 'queued') return { k: 'queued', text: 'queued', job };
     return { k: 'running', text: `running · round ${job.rounds || 0} · ${usd(job.usd || 0)}`, job };
   }
-  if (day.result) return { k: 'done', text: day.result.submitted ? 'done' : 'done (not submitted)', job };
+  if (day.result) {
+    const u = day.result.columns?.claude?.unplanned || 0;
+    return { k: 'done', text: `${day.result.submitted ? 'done' : 'done (not submitted)'}${u ? ` · ${u} unplanned` : ''}`, job };
+  }
   if (job && job.status === 'failed') return { k: 'failed', text: `failed: ${String(job.error || job.endNote || '').slice(0, 80)}`, job };
   if (job && job.status === 'cancelled') return { k: 'cancelled', text: 'stopped', job };
   return { k: 'none', text: 'not run', job: null };
@@ -421,7 +454,8 @@ export default function BacktestPanel({ phone }) {
     return m;
   }, [v]);
   const days = v?.days || [];
-  const totals = useMemo(() => totalsOf(days), [days]);
+  const rates = { perMile: v?.settings?.costPerMile ?? null, perDriveHour: v?.settings?.costPerDriveHour ?? null };
+  const totals = useMemo(() => totalsOf(days, rates), [days, rates.perMile, rates.perDriveHour]);
   const shown = showAll ? days : days.slice(0, phone ? 10 : 20);
   const toggle = (d) => setPicked((p) => { const n = new Set(p); if (n.has(d)) n.delete(d); else n.add(d); return n; });
   const pickRecent = (n) => setPicked(new Set(days.filter((d) => statusOf(d, jobsByDate).k === 'none').slice(0, n).map((d) => d.date)));
@@ -442,12 +476,12 @@ export default function BacktestPanel({ phone }) {
           {v.refused && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">Backtests cannot run here: {v.refused}.</div>}
           <div>
             <div className="text-xs font-semibold text-slate-700 mb-1 inline-flex items-center gap-1"><TrendingDown size={13} /> Across every day backtested — Claude against dispatch as driven</div>
-            <Totals t={totals} phone={phone} />
+            <Totals t={totals} phone={phone} spend={v.spend} />
           </div>
           <RouterSettings v={v} onSave={b.saveSettings} />
-          {openDay && <DayDetail date={openDay} loadResult={b.loadResult} phone={phone} onClose={() => setOpenDay(null)} />}
+          {openDay && <DayDetail key={`${openDay}|${days.find((d) => d.date === openDay)?.result?.at || ''}`} date={openDay} loadResult={b.loadResult} phone={phone} rates={rates} onClose={() => setOpenDay(null)} />}
           <div className="flex flex-wrap items-center gap-2">
-            <button disabled={!picked.size || b.busy || !!v.refused} onClick={() => { b.queue([...picked], v.settings.maxUsd); setPicked(new Set()); }}
+            <button disabled={!picked.size || b.busy || !!v.refused} onClick={async () => { if (await b.queue([...picked], v.settings.maxUsd)) setPicked(new Set()); }}
               className="rounded-lg bg-indigo-700 text-white px-3 text-xs font-semibold min-h-[44px] disabled:opacity-50 inline-flex items-center gap-1">
               <Play size={13} /> Backtest {picked.size || ''} day{picked.size === 1 ? '' : 's'}{picked.size ? ` (at most ${usd(picked.size * v.settings.maxUsd)})` : ''}
             </button>
@@ -457,13 +491,13 @@ export default function BacktestPanel({ phone }) {
           {b.msg && <p className="text-xs text-slate-700">{b.msg}</p>}
           <div className={phone ? 'space-y-2' : ''}>
             {!phone && (
-              <div className="grid grid-cols-[40px_104px_minmax(0,1fr)_128px_96px_84px_64px] lg:grid-cols-[40px_118px_minmax(0,1fr)_128px_104px_96px_84px_96px_64px] gap-2 text-[11px] text-slate-500 px-1 pb-1 border-b">
-                <span /><span>Day</span><span>Status</span><span /><span className="text-right">Miles</span><span className="hidden lg:block text-right">Drive time</span><span className="text-right">Trucks</span><span className="hidden lg:block text-right">Cost</span><span className="text-right">Spend</span>
+              <div className="grid grid-cols-[40px_104px_minmax(0,1fr)_128px_96px_84px_64px] xl:grid-cols-[40px_118px_minmax(0,1fr)_128px_104px_96px_84px_96px_64px] gap-2 text-[11px] text-slate-500 px-1 pb-1 border-b">
+                <span /><span>Day</span><span>Status</span><span /><span className="text-right">Miles</span><span className="hidden xl:block text-right">Drive time</span><span className="text-right">Trucks</span><span className="hidden xl:block text-right">Cost</span><span className="text-right">Spend</span>
               </div>
             )}
             {shown.map((d) => {
               const st = statusOf(d, jobsByDate);
-              const r = d.result;
+              const r = withRates(d.result, rates);
               const canPick = st.k === 'none' || st.k === 'failed' || st.k === 'cancelled' || st.k === 'done';
               const open = () => r && setOpenDay(d.date);
               const chip = { none: 'text-slate-400', queued: 'text-amber-700', running: 'text-indigo-700', done: 'text-emerald-700', failed: 'text-rose-700', cancelled: 'text-slate-500' }[st.k];
@@ -487,7 +521,7 @@ export default function BacktestPanel({ phone }) {
                 );
               }
               return (
-                <div key={d.date} className="grid grid-cols-[40px_104px_minmax(0,1fr)_128px_96px_84px_64px] lg:grid-cols-[40px_118px_minmax(0,1fr)_128px_104px_96px_84px_96px_64px] gap-2 items-center text-xs px-1 border-b border-slate-100 min-h-[44px]">
+                <div key={d.date} className="grid grid-cols-[40px_104px_minmax(0,1fr)_128px_96px_84px_64px] xl:grid-cols-[40px_118px_minmax(0,1fr)_128px_104px_96px_84px_96px_64px] gap-2 items-center text-xs px-1 border-b border-slate-100 min-h-[44px]">
                   <input type="checkbox" className="w-5 h-5 justify-self-center" disabled={!canPick} checked={picked.has(d.date)} onChange={() => toggle(d.date)} aria-label={`Pick ${d.date}`} />
                   <span className="font-medium text-slate-800">{fmtDay(d.date)}</span>
                   <span className={`${chip} truncate`} title={st.text}>{st.text}</span>
@@ -496,9 +530,9 @@ export default function BacktestPanel({ phone }) {
                     {r && <button onClick={open} className="rounded-lg border border-indigo-200 bg-white px-2 text-indigo-700 font-semibold min-h-[44px] min-w-[52px]">Open</button>}
                   </span>
                   <span className="text-right">{r?.vsDriven ? <Delta d={r.vsDriven.miles} unit="" /> : ''}</span>
-                  <span className="hidden lg:block text-right">{r?.vsDriven?.driveMin ? <Delta d={{ abs: r.vsDriven.driveMin.abs / 60, pct: r.vsDriven.driveMin.pct }} unit=" h" /> : ''}</span>
+                  <span className="hidden xl:block text-right">{r?.vsDriven?.driveMin ? <Delta d={{ abs: r.vsDriven.driveMin.abs / 60, pct: r.vsDriven.driveMin.pct }} unit=" h" /> : ''}</span>
                   <span className="text-right">{r?.vsDriven ? <TruckDelta n={r.vsDriven.trucks} /> : ''}</span>
-                  <span className="hidden lg:block text-right">{r?.vsDriven?.cost ? <Delta d={r.vsDriven.cost} pct={false} money /> : ''}</span>
+                  <span className="hidden xl:block text-right">{r?.vsDriven?.cost ? <Delta d={r.vsDriven.cost} pct={false} money /> : ''}</span>
                   <span className="text-right text-slate-500">{r ? usd(r.usd) : st.job?.usd ? usd(st.job.usd) : ''}</span>
                 </div>
               );

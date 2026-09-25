@@ -62,9 +62,10 @@ test('the request sets effort explicitly, uses auto tool choice with strict tool
   assert.deepEqual(req.output_config, { effort: 'high' });
   assert.deepEqual(req.tool_choice, { type: 'auto' }, 'forced tool use is a 400 on this model');
   assert.ok(req.tools.every((t) => t.strict === true));
-  assert.deepEqual(req.system[0].cache_control, { type: 'ephemeral' });
-  assert.deepEqual(req.messages[0].content[0].cache_control, { type: 'ephemeral' });
-  assert.deepEqual(req.cache_control, { type: 'ephemeral' });
+  assert.deepEqual(req.system[0].cache_control, { type: 'ephemeral', ttl: '1h' });
+  assert.deepEqual(req.messages[0].content[0].cache_control, { type: 'ephemeral', ttl: '1h' });
+  assert.deepEqual(req.cache_control, { type: 'ephemeral', ttl: '1h' }, 'the same TTL on every marker, or the API refuses the ordering');
+  assert.equal(req.stream, true, 'streamed, so a long round is not cut off waiting for headers');
   assert.equal(req.thinking, undefined, 'thinking cannot be disabled on this model; the loop never sends a thinking config that could 400');
 });
 
@@ -211,4 +212,25 @@ test('a call that timed out after it was sent is charged a HIGH-side estimate, n
   // The next round is then refused by the cap once the estimates add up.
   const three = [1, 2, 3].reduce((s) => applyResponse(problem(), s, { ...SETTINGS, maxUsd: 2 }, to, 'x'), emptyState());
   assert.equal(mayStartRound(three, { ...SETTINGS, maxUsd: 2 }).ok, false);
+});
+
+test('the cap is a ceiling: round 1 is checked too, at the most it could cost; a model with no price starts nothing', () => {
+  // 32000 output tokens alone can cost $0.64: a $0.50 cap may not start even the first round.
+  const g = mayStartRound(emptyState(), { ...SETTINGS, maxUsd: 0.5 }, problem());
+  assert.equal(g.ok, false);
+  assert.equal(g.reason, 'max-usd');
+  assert.match(g.note, /the most the next round could cost/);
+  assert.equal(mayStartRound(emptyState(), SETTINGS, problem()).ok, true);
+  const unpriced = mayStartRound(emptyState(), { ...SETTINGS, model: 'claude-unpriced-1' }, problem());
+  assert.equal(unpriced.ok, false);
+  assert.equal(unpriced.reason, 'budget');
+});
+
+test('a round served by a model with no price ends the run after it — its spend could not be counted', () => {
+  const r = { ...reply([THINK, toolUse('t1', 'evaluate_plan', GOOD)]) };
+  r.body = { ...r.body, model: 'claude-somebody-else' };
+  const st = applyResponse(problem(), emptyState(), SETTINGS, r, 'x');
+  assert.equal(st.ended, 'budget');
+  assert.match(st.endNote, /no price row/);
+  assert.equal(st.rounds[0].usd, null);
 });

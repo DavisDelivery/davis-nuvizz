@@ -127,7 +127,7 @@ export const SHARED_IMPORTS = {
   'netlify/functions/lib/routing-engine-solver.mts': ['solveRoute', 'haversineMiles', 'travelMinutesForMiles'],
   'netlify/functions/lib/zones.mts': ['zoneId'],
   'netlify/functions/lib/driver-class.mts': ['employeeClassMap', 'CLASS_OVERRIDE'],
-  'netlify/functions/lib/routing-types.mts': ['DEPOT'],
+  'netlify/functions/lib/routing-types.mts': ['DEPOT', 'DEFAULT_SERVICE_MIN'],
   'netlify/functions/lib/routing-engine-config.mts': ['effectiveEngineConfig', 'engineConfigPath'],
 };
 

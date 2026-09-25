@@ -69,10 +69,11 @@ const day = (i) => {
   const d = new Date(Date.UTC(2026, 8, 23 - i));
   return d.toISOString().slice(0, 10);
 };
-const cols = (m, t) => ({ trucks: t, stops: 612, spots: 1043.6, capUsedTrucks: 1240.5, util: 84.1, miles: m, driveMin: Math.round(m * 1.9), overCap: 0, blocked: 0, unplanned: 0 });
+const cols = (m, t, unplanned = 0) => ({ trucks: t, stops: 612 - unplanned, spots: 1043.6, capUsedTrucks: 1240.5, util: 84.1, miles: m, driveMin: Math.round(m * 1.9), overCap: 0, blocked: 0, unplanned, overTime: 0 });
 const result = (i, driven, claude) => ({
   date: day(i), at: '2026-09-25T14:03:00.000Z', jobId: `bt__${day(i)}__x`, submitted: i !== 2, usd: 2.4817, rounds: 6, ended: 'submitted', model: 'claude-opus-5-5',
-  columns: { driven: cols(driven, 51), reseq: cols(driven * 0.94, 51), claude: cols(claude, 48) },
+  // Day 2 is the longest status a row can carry: not submitted, with stops left unplanned.
+  columns: { driven: cols(driven, 51), reseq: cols(driven * 0.94, 51), claude: cols(claude, 48, i === 2 ? 3 : 0) },
   costs: { driven: driven * 2.1, reseq: driven * 0.94 * 2.1, claude: claude * 2.1 },
   vsDriven: { miles: { abs: claude - driven, pct: Math.round(((claude - driven) / driven) * 1000) / 10 }, driveMin: { abs: -412, pct: -9.8 }, trucks: -3, cost: { abs: (claude - driven) * 2.1, pct: -11.2 } },
   sequencingOnly: { miles: { abs: -0.06 * driven, pct: -6 } }, assignmentOnly: { miles: { abs: claude - 0.94 * driven, pct: -5.4 }, trucks: -3 },
@@ -84,7 +85,8 @@ export const CLAUDE_SHADOW_BACKTESTS = {
   settings: { capRule: 'tighter', costPerMile: 2.1, costPerDriveHour: 38.5, effort: 'high', maxRounds: 8, maxUsd: 5, maxTokens: 32000 },
   defaults: { capRule: 'tighter', costPerMile: null, costPerDriveHour: null, effort: 'high', maxRounds: 8, maxUsd: 5, maxTokens: 32000 },
   bounds: { maxRounds: [2, 20], maxUsd: [0.5, 50], maxTokens: [8000, 64000], costPerMile: [0, 50], costPerDriveHour: [0, 500] },
-  efforts: ['low', 'medium', 'high', 'xhigh', 'max'], capRules: ['tighter', 'driver', 'route'],
+  efforts: ['low', 'medium', 'high'], capRules: ['tighter', 'driver', 'route'],
+  spend: { usd: 1284.37, runs: 312 },
   days: Array.from({ length: 24 }, (_, i) => ({ date: day(i), result: i === 0 ? result(0, 4381.6, 3902.2) : i === 2 ? result(2, 3977.1, 4012.8) : i === 5 ? result(5, 4120.4, 3688.9) : null })),
   jobs: [
     { _id: `bt__${day(3)}__run`, kind: 'backtest', date: day(3), status: 'running', createdAt: '2026-09-25T14:10:00Z', rounds: 4, usd: 1.9312 },

@@ -25,7 +25,7 @@
 // MONEY IS COUNTED FROM THE RESPONSE. Every round's `usage` is priced by usageCost (anthropic.mts)
 // and summed; the loop will not START a round that the run's cap cannot cover at the last round's
 // cost, and it stops at the round cap. Both stops are recorded as the reason the run ended.
-import { usageCost, type CallResult } from './anthropic.mts';
+import { usageCost, PRICES_PER_MTOK, type CallResult } from './anthropic.mts';
 
 export interface ToolDef { name: string; description: string; strict: true; input_schema: Record<string, any> }
 
@@ -67,6 +67,11 @@ export interface RoundRecord {
   usage: any | null;
   usd: number | null;
   costBasis: string | null;
+  // What the round DECIDED, so a resumed run is rebuilt from its rounds alone (restoreState):
+  cleanPlanJson?: string | null;   // the last plan this round evaluated with no HARD violation
+  finalPlanJson?: string | null;   // the plan this round submitted and the rules accepted
+  endedWith?: EndReason;           // 'refused' / 'api-error' / 'submitted' — ended by this round
+  endNote?: string | null;
 }
 
 export type EndReason = 'submitted' | 'max-rounds' | 'max-usd' | 'refused' | 'api-error' | 'budget' | null;
@@ -87,6 +92,24 @@ export function emptyState(): LoopState {
   return { rounds: [], usd: 0, ended: null, endNote: null, final: null, finalSummary: null, bestClean: null, bestCleanSummary: null, bestCleanRound: null };
 }
 
+/**
+ * Rebuild a run's state from its stored rounds alone — the same state applyResponse built live.
+ * The rounds are the record: each is written before the job doc is touched, so nothing a later
+ * write loses (a masked read, a crash between two writes) can make a resumed run forget a clean
+ * plan it paid for, or pay for more rounds after a plan was already accepted.
+ */
+export function restoreState(records: RoundRecord[]): LoopState {
+  const st = emptyState();
+  st.rounds = records.filter((r) => typeof r?.n === 'number').slice().sort((a, b) => a.n - b.n);
+  for (const r of st.rounds) {
+    if (typeof r.usd === 'number') st.usd = Math.round((st.usd + r.usd) * 1e6) / 1e6;
+    if (r.cleanPlanJson) { const c = JSON.parse(r.cleanPlanJson); st.bestClean = c.plan; st.bestCleanSummary = c.summary; st.bestCleanRound = r.n; }
+    if (r.finalPlanJson) { const f = JSON.parse(r.finalPlanJson); st.final = f.plan; st.finalSummary = f.summary; }
+    if (r.endedWith) { st.ended = r.endedWith; st.endNote = r.endNote ?? null; }
+  }
+  return st;
+}
+
 export const NUDGE_NO_TOOL = 'You answered without calling a tool. Call evaluate_plan with a complete assignment, or submit_plan when the last evaluation had no hard violations.';
 export const NUDGE_MAX_TOKENS = 'Your last answer hit the output limit before a tool call finished. Call evaluate_plan again with a complete assignment; keep your reasoning brief.';
 
@@ -94,7 +117,7 @@ export const NUDGE_MAX_TOKENS = 'Your last answer hit the output limit before a 
 export function messagesFor(problem: Problem, state: LoopState): any[] {
   const msgs: any[] = [{
     role: 'user',
-    content: [{ type: 'text', text: problem.briefing, cache_control: { type: 'ephemeral' } }],
+    content: [{ type: 'text', text: problem.briefing, cache_control: CACHE }],
   }];
   for (const r of state.rounds) {
     if (!r.assistantJson) continue;           // a failed call added nothing to the conversation
@@ -104,15 +127,25 @@ export function messagesFor(problem: Problem, state: LoopState): any[] {
   return msgs;
 }
 
+// ONE HOUR, on all three markers (they must match: a longer TTL may not follow a shorter one).
+// Rounds start more than 5 minutes apart whenever one runs long or crosses a worker tick, and a
+// 5-minute entry would be re-written at 1.25× each time; the reference puts a 5–60 minute gap on
+// the 1-hour TTL.
+const CACHE = { type: 'ephemeral', ttl: '1h' } as const;
+
 export function buildRequest(problem: Problem, state: LoopState, s: LoopSettings): Record<string, any> {
   return {
     model: s.model,
     max_tokens: s.maxTokens,
+    // Streamed: an unstreamed round sends no headers until it is done, and Node's HTTP client
+    // gives up on headers at ~300 s — well inside a round's budget. The door folds the stream back
+    // into the same message, so nothing downstream changes.
+    stream: true,
     // Thinking is always on for this model; effort is the one control, set explicitly.
     output_config: { effort: s.effort },
     // Top-level: cache the growing history round to round (the prefix grows by one round each time).
-    cache_control: { type: 'ephemeral' },
-    system: [{ type: 'text', text: problem.system, cache_control: { type: 'ephemeral' } }],
+    cache_control: CACHE,
+    system: [{ type: 'text', text: problem.system, cache_control: CACHE }],
     tools: problem.tools,
     tool_choice: { type: 'auto' },
     messages: messagesFor(problem, state),
@@ -120,17 +153,37 @@ export function buildRequest(problem: Problem, state: LoopState, s: LoopSettings
 }
 
 /** Whether the run may start another round, and if not, why. Pure. */
-export function mayStartRound(state: LoopState, s: LoopSettings): { ok: boolean; reason: EndReason; note: string | null } {
+export function mayStartRound(state: LoopState, s: LoopSettings, problem?: Problem): { ok: boolean; reason: EndReason; note: string | null } {
   if (state.ended) return { ok: false, reason: state.ended, note: state.endNote };
   if (state.rounds.length >= s.maxRounds) return { ok: false, reason: 'max-rounds', note: `stopped at the round cap (${s.maxRounds})` };
-  // Do not start a round the cap cannot cover at the last round's price: the check is BEFORE the
-  // spend, because a round cannot be stopped halfway once it is billed.
-  const last = [...state.rounds].reverse().find((r) => typeof r.usd === 'number');
-  const next = last?.usd ?? 0;
+  // Do not start a round the cap cannot cover at its WORST: the check is BEFORE the spend, because
+  // a round cannot be stopped halfway once it is billed — and round 1 is checked like any other.
+  // Priced at the most it could cost, the cap is a ceiling, not an estimate.
+  let next: number;
+  let basis: string;
+  if (problem) {
+    const worst = worstRoundUsd(problem, state, s);
+    if (worst === null) return { ok: false, reason: 'budget', note: `no price for ${s.model}: spend could not be counted, so no round is started` };
+    next = worst; basis = 'the most the next round could cost';
+  } else {
+    next = [...state.rounds].reverse().find((r) => typeof r.usd === 'number')?.usd ?? 0; basis = 'the last round cost';
+  }
   if (state.usd + next > s.maxUsd) {
-    return { ok: false, reason: 'max-usd', note: `stopped before round ${state.rounds.length + 1}: $${state.usd.toFixed(2)} spent, the last round cost $${next.toFixed(2)}, the cap is $${s.maxUsd.toFixed(2)}` };
+    return { ok: false, reason: 'max-usd', note: `stopped before round ${state.rounds.length + 1}: $${state.usd.toFixed(2)} spent, ${basis} $${next.toFixed(2)}, the cap is $${s.maxUsd.toFixed(2)}` };
   }
   return { ok: true, reason: null, note: null };
+}
+
+/**
+ * The most the next round could cost: the whole request at the dearest input rate (~2 characters
+ * a token, well under the real ratio, so an overcount) plus every output token it may write.
+ * null when the model has no price row — then nothing can be promised, and nothing is started.
+ */
+export function worstRoundUsd(problem: Problem, state: LoopState, s: LoopSettings): number | null {
+  const r = PRICES_PER_MTOK[s.model];
+  if (!r) return null;
+  const input = Math.ceil(JSON.stringify(buildRequest(problem, state, s)).length / 2);
+  return Math.round(((input * Math.max(r.input, r.cacheWrite5m, r.cacheWrite1h) + s.maxTokens * r.output) / 1e6) * 1e6) / 1e6;
 }
 
 /**
@@ -167,8 +220,12 @@ export function applyResponse(problem: Problem, state: LoopState, s: LoopSetting
     servedModel,
     assistantJson: null, replyJson: null, tools: [],
     usage: body?.usage ?? null, usd: cost?.usd ?? null, costBasis: cost?.basis ?? null,
+    cleanPlanJson: null, finalPlanJson: null, endedWith: null, endNote: null,
   };
   if (typeof round.usd === 'number') next.usd = Math.round((state.usd + round.usd) * 1e6) / 1e6;
+  // Served by a model with no price row: this round's tokens are real but its dollars cannot be
+  // counted, so the cap no longer means anything. The round is kept; the run stops after it.
+  const unpriced = call.ok && body?.usage && round.usd === null;
 
   if (!call.ok) {
     next.rounds.push(round);
@@ -177,6 +234,7 @@ export function applyResponse(problem: Problem, state: LoopState, s: LoopSetting
     // and the next attempt starts from the same history.
     const permanent = call.httpStatus !== null && call.httpStatus >= 400 && call.httpStatus < 500 && call.httpStatus !== 429;
     if (permanent) { next.ended = 'api-error'; next.endNote = `the API refused the request (HTTP ${call.httpStatus}): ${call.error}`; }
+    round.endedWith = next.ended; round.endNote = next.endNote;
     return next;
   }
 
@@ -185,6 +243,7 @@ export function applyResponse(problem: Problem, state: LoopState, s: LoopSetting
     next.rounds.push(round);
     next.ended = 'refused';
     next.endNote = `the model declined (${body?.stop_details?.category ?? 'no category'}): ${body?.stop_details?.explanation ?? ''}`.trim();
+    round.endedWith = next.ended; round.endNote = next.endNote;
     return next;
   }
 
@@ -207,7 +266,7 @@ export function applyResponse(problem: Problem, state: LoopState, s: LoopSetting
       continue;
     }
     round.tools.push({ name, ok: res.ok });
-    if (res.ok) { next.bestClean = res.plan; next.bestCleanSummary = res.summary; next.bestCleanRound = n; }
+    if (res.ok) { next.bestClean = res.plan; next.bestCleanSummary = res.summary; next.bestCleanRound = n; round.cleanPlanJson = JSON.stringify({ plan: res.plan, summary: res.summary }); }
     if (name === 'submit_plan' && res.ok) {
       submitted = res;
       reply.push({ type: 'tool_result', tool_use_id: u.id, content: 'Accepted. The plan is recorded.' });
@@ -223,12 +282,19 @@ export function applyResponse(problem: Problem, state: LoopState, s: LoopSetting
     next.finalSummary = submitted.summary;
     next.ended = 'submitted';
     next.endNote = null;
+    round.finalPlanJson = JSON.stringify({ plan: submitted.plan, summary: submitted.summary });
+    round.endedWith = 'submitted';
     round.replyJson = JSON.stringify(reply);
     next.rounds.push(round);
     return next;
   }
   if (!uses.length) reply.push({ type: 'text', text: round.stopReason === 'max_tokens' ? NUDGE_MAX_TOKENS : NUDGE_NO_TOOL });
   round.replyJson = JSON.stringify(reply);
+  if (unpriced) {
+    next.ended = 'budget';
+    next.endNote = `served by ${servedModel || s.model}, which has no price row: spend can no longer be counted against the cap, so the run stops here`;
+    round.endedWith = next.ended; round.endNote = next.endNote;
+  }
   next.rounds.push(round);
   return next;
 }
@@ -252,7 +318,7 @@ export async function runRounds(problem: Problem, state: LoopState, s: LoopSetti
   const t0 = deps.now();
   let st = state;
   for (;;) {
-    const gate = mayStartRound(st, s);
+    const gate = mayStartRound(st, s, problem);
     if (!gate.ok) {
       if (!st.ended) { st = { ...st, ended: gate.reason, endNote: gate.note }; await deps.checkpoint(st); }
       return st;

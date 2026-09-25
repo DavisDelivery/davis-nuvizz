@@ -19,7 +19,7 @@
 //   claude_shadow_settings/davis__router      the router's settings (cap rule, cost rates, limits)
 import { getDoc, listDocs, isFirestoreEnabled } from '../firestore.mts';
 import { shadowSet, shadowPatch, shadowCreate } from './store.mts';
-import { callMessages } from './anthropic.mts';
+import { callMessages, PRICES_PER_MTOK } from './anthropic.mts';
 import { claudeShadowEnabled, shadowModel, anthropicKeyConfigured } from './config.mts';
 import { learnRefusal, loosePerSkidFrom } from './learn.mts';
 import { readSettings } from './settings.mts';
@@ -28,12 +28,14 @@ import {
   BT_TENANT, BT_JOBS, BT_RESULTS, BT_STOP_MASK, LEARN_DAY_MASK, CAP_RULES,
   buildBacktestProblem, btLoopProblem, compareBacktest, type BtProblem, type CapRule,
 } from './backtest-core.mts';
-import { emptyState, runRounds, type LoopState, type LoopSettings, type RoundRecord } from './plan-loop.mts';
+import { restoreState, runRounds, type LoopState, type LoopSettings, type RoundRecord } from './plan-loop.mts';
 import { effectiveEngineConfig, engineConfigPath } from '../routing-engine-config.mts';
 import { DEPOT } from '../routing-types.mts';
 
 export const ROUTER_SETTINGS_PATH = `claude_shadow_settings/${BT_TENANT}__router`;
-export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+// Not xhigh / max: those want max_tokens of 64K or more or they stop mid-thought, and every one of
+// those tokens counts against the cap. 'high' is the most this router asks for.
+export const EFFORTS = ['low', 'medium', 'high'] as const;
 
 // THE ROUTER'S SETTINGS, with stated defaults. Cost rates have NO default: nothing in the code or
 // the data says what a mile or a driver-hour costs Davis, and a guessed rate would print a guessed
@@ -115,6 +117,8 @@ export function routerRefusal(env: Record<string, any>, firestoreOn: boolean = i
   const r = learnRefusal(env, firestoreOn);
   if (r) return r;
   if (!anthropicKeyConfigured(env)) return 'ANTHROPIC_API_KEY is not set';
+  const model = shadowModel(env).model;
+  if (!PRICES_PER_MTOK[model]) return `${model} has no price row, so the per-day $ cap cannot be enforced`;
   return null;
 }
 
@@ -153,14 +157,14 @@ export async function readBacktestDay(date: string, rs: RouterSettings, deps: Bt
     date, rows, roster, stamp: sealed[0].stamp,
     learnDaysBefore: (learnDays || []).filter((d: any) => String(d?.date || '') < date),
     caps: settings.caps, loosePerSkid: loosePerSkidFrom(settings.settings).value, capRule: rs.capRule,
-    employees, notes, depot: { lat: DEPOT.lat, lng: DEPOT.lng }, at: deps.now().toISOString(),
+    employees, notes, depot: { lat: DEPOT.lat, lng: DEPOT.lng }, at: deps.now().toISOString(), cfg,
   });
   return { problem, cfg };
 }
 
 // ── the queue ───────────────────────────────────────────────────────────────
 
-const JOB_MASK = ['kind', 'date', 'status', 'createdAt', 'by', 'startedAt', 'finishedAt', 'updatedAt', 'rounds', 'usd', 'ended', 'endNote', 'error', 'settings', 'stats', 'headline'];
+const JOB_MASK = ['kind', 'date', 'status', 'cancelRequested', 'createdAt', 'by', 'startedAt', 'finishedAt', 'updatedAt', 'rounds', 'usd', 'ended', 'endNote', 'error', 'settings', 'stats', 'headline'];
 
 export async function listJobs(deps: BtDeps = LIVE): Promise<any[]> {
   const docs = await deps.listDocs(BT_JOBS, { mask: JOB_MASK });
@@ -202,7 +206,8 @@ export async function cancelJob(id: string, by: string | null, deps: BtDeps = LI
   if (!job) return { status: 404, body: { ok: false, error: 'no such job' } };
   if (!ACTIVE.has(job.status)) return { status: 409, body: { ok: false, error: `the job is already ${job.status}` } };
   const at = deps.now().toISOString();
-  await deps.shadowPatch(jobPath(id), { status: 'cancelled', finishedAt: at, updatedAt: at, endNote: `cancelled by ${by || 'unknown'} — a round already at the model still finishes and is billed` });
+  // cancelRequested is written by NOTHING else, so no later status write can undo a Stop.
+  await deps.shadowPatch(jobPath(id), { status: 'cancelled', cancelRequested: true, finishedAt: at, updatedAt: at, endNote: `cancelled by ${by || 'unknown'} — a round already at the model still finishes and is billed` });
   return { status: 200, body: { ok: true } };
 }
 
@@ -217,16 +222,10 @@ export const CLAIM_STALE_MS = 16 * 60 * 1000;
 
 const roundId = (n: number) => `r${String(n).padStart(2, '0')}`;
 
-async function loadState(id: string, job: any, deps: BtDeps): Promise<LoopState> {
+async function loadState(id: string, deps: BtDeps): Promise<LoopState> {
   const docs = await deps.listDocs(`${jobPath(id)}/rounds`);
-  const rounds: RoundRecord[] = (docs || []).map((d: any) => ({ ...d, _id: undefined }))
-    .filter((r: any) => typeof r.n === 'number').sort((a: any, b: any) => a.n - b.n);
-  const st = emptyState();
-  st.rounds = rounds;
-  st.usd = Math.round(rounds.reduce((a, r) => a + (typeof r.usd === 'number' ? r.usd : 0), 0) * 1e6) / 1e6;
-  st.bestClean = job?.bestCleanJson ? JSON.parse(job.bestCleanJson) : null;
-  st.bestCleanRound = typeof job?.bestCleanRound === 'number' ? job.bestCleanRound : null;
-  return st;
+  const rounds: RoundRecord[] = (docs || []).map((d: any) => { const { _id, ...r } = d; void _id; return r as RoundRecord; });
+  return restoreState(rounds);
 }
 
 /** Create-only claim on round n; takes over a claim whose invocation died. */
@@ -242,9 +241,14 @@ async function claimRound(id: string, n: number, deps: BtDeps): Promise<boolean>
   return false;
 }
 
+const stopped = (job: any) => job?.cancelRequested === true || job?.status === 'cancelled';
+
 async function wasCancelled(id: string, deps: BtDeps): Promise<boolean> {
   const fresh = await deps.getDoc(jobPath(id)).catch(() => null);
-  return fresh?.status === 'cancelled';
+  if (!stopped(fresh)) return false;
+  // A Stop that landed while the day was being built was overwritten by the 'running' write; put it back.
+  if (fresh.status !== 'cancelled') await deps.shadowPatch(jobPath(id), { status: 'cancelled', updatedAt: deps.now().toISOString() }).catch(() => {});
+  return true;
 }
 
 /** The prompt stored with the job, if it reads; a malformed one falls back to today's code. */
@@ -262,14 +266,21 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
   const refused = routerRefusal(deps.env, deps.firestoreOn());
   if (refused) return { ok: true, idle: true, refused };
   const jobs = await listJobs(deps);
-  const job = jobs.find((j) => j.status === 'running') || jobs.find((j) => j.status === 'queued');
+  const live = jobs.filter((j) => !j.cancelRequested);
+  const job = live.find((j) => j.status === 'running') || live.find((j) => j.status === 'queued');
   if (!job) return { ok: true, idle: true };
   const id = String(job._id);
   const at = () => deps.now().toISOString();
+  // Only the invocation that DID something with this job — built its day, or claimed a round —
+  // may mark it failed. A tick that overlaps the owner (every 3 minutes, against rounds of up to
+  // 10) and trips on one transient read would otherwise fail a job the owner is still paying for,
+  // and a re-queue would pay for the day twice.
+  let owned = false;
   try {
     // THE PROBLEM IS BUILT ONCE and stored: a resumed run must show Claude the same day it saw.
     let stored = await deps.getDoc(`${jobPath(id)}/data/problem`);
     if (!stored) {
+      owned = true;
       const rs = routerSettingsFrom({ ...(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null)), ...(job.settings || {}) });
       const { problem, cfg } = await readBacktestDay(job.date, rs, deps);
       if (!problem.stops.length) {
@@ -297,15 +308,16 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
       model: s.model || shadowModel(deps.env).model, effort: s.effort || ROUTER_DEFAULTS.effort,
       maxTokens: s.maxTokens || ROUTER_DEFAULTS.maxTokens, maxRounds: s.maxRounds || ROUTER_DEFAULTS.maxRounds, maxUsd: s.maxUsd || ROUTER_DEFAULTS.maxUsd,
     };
-    let state = await loadState(id, job, deps);
+    let state = await loadState(id, deps);
     let persisted = state.rounds.length;
     const apiKey = String(deps.env?.ANTHROPIC_API_KEY || '');
     state = await runRounds(loopProblem, state, settings, {
       call: (req) => deps.call(req, { apiKey, timeoutMs: ROUND_TIMEOUT_MS }),
       claim: async (n) => {
-        const fresh = await deps.getDoc(jobPath(id));   // a job cancelled mid-run stops at the next round
-        if (fresh?.status === 'cancelled') return false;
-        return claimRound(id, n, deps);
+        if (await wasCancelled(id, deps)) return false;   // a job stopped mid-run stops at the next round
+        const got = await claimRound(id, n, deps);
+        if (got) owned = true;
+        return got;
       },
       checkpoint: async (st) => {
         for (let i = persisted; i < st.rounds.length; i++) await deps.shadowSet(`${jobPath(id)}/rounds/${roundId(st.rounds[i].n)}`, st.rounds[i] as any);
@@ -323,6 +335,7 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
     return await finishJob(id, job, problem, cfg, state, deps);
   } catch (e: any) {
     const msg = String(e?.message || e).slice(0, 500);
+    if (!owned) return { ok: false, job: id, error: msg, left: 'another invocation owns this job; its status was not touched' };
     if (!(await wasCancelled(id, deps))) await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at(), updatedAt: at(), error: msg }).catch(() => {});
     return { ok: false, job: id, error: msg };
   }
@@ -348,7 +361,7 @@ export async function finishJob(id: string, job: any, problem: BtProblem, cfg: a
     model: job?.settings?.model ?? null, effort: job?.settings?.effort ?? null, capRule: problem.capRule, loosePerSkid: problem.loosePerSkid,
     rounds: state.rounds.length, usd: state.usd, ended: state.ended, endNote: state.endNote,
     rates: { perMile: rs.costPerMile, perDriveHour: rs.costPerDriveHour },
-    stats: { stops: problem.stops.length, loads: problem.loads.length, excludedNoCoords: problem.excluded.noCoords.length, capModelDays: problem.capModel.days, counts: problem.counts },
+    stats: { stops: problem.stops.length, loads: problem.loads.length, excludedNoCoords: problem.excluded.noCoords.length, capModelDays: problem.capModel.days, counts: problem.counts, roster: problem.roster ?? null, stampGate: problem.stampGate ?? null },
     approximations: problem.approximations,
     ...cmp,
     nuvizzCalls: 0,
@@ -373,6 +386,8 @@ export async function backtestView(deps: BtDeps = LIVE) {
     ok: true,
     days: days.map((d) => ({ date: d, result: byDate.get(d) || null })),
     jobs: jobs.slice(-60).reverse(),
+    // EVERY run's spend — failed, stopped and re-run days included — not just each day's latest result.
+    spend: { usd: Math.round(jobs.reduce((a: number, j: any) => a + (typeof j.usd === 'number' ? j.usd : 0), 0) * 100) / 100, runs: jobs.length },
     settings: routerSettingsFrom(rsDoc), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
     refused: routerRefusal(deps.env, deps.firestoreOn()),
     enabled: claudeShadowEnabled(deps.env),
