@@ -51,7 +51,9 @@ const SCREENS = [
   { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
-  { key: 'claudeshadow', label: 'Claude shadow', nav: /claude shadow/i, inMore: true },
+  // Routing's third tab since v1.68.2: Routing, then the Build | Engine | Shadow toggle. The
+  // label is the screen's own heading, which is this guard's proof of arrival.
+  { key: 'claudeshadow', label: 'Claude shadow', nav: /routing/i, sub: /^shadow$/i },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i, inMore: true },
 ];
 
@@ -118,6 +120,18 @@ for (const device of DESKTOPS) {
       }, screen.nav.source);
       if (!clicked) return false;
       await page.waitForTimeout(1100);
+      // A sub-tab (Routing's Build | Engine | Shadow), clicked the same way.
+      if (screen.sub) {
+        const sub = await page.evaluate((src) => {
+          const re = new RegExp(src, 'i');
+          const b = [...document.querySelectorAll('button')].find((x) => re.test((x.innerText || '').trim()));
+          if (!b) return false;
+          b.click();
+          return true;
+        }, screen.sub.source);
+        if (!sub) return false;
+        await page.waitForTimeout(1100);
+      }
       // Proof of arrival: the screen's own heading is on the page.
       return page.evaluate((label) => document.body.innerText.includes(label), screen.label);
     })();

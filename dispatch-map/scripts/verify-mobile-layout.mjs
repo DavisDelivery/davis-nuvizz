@@ -167,7 +167,10 @@ const SCREENS = [
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
   // Seeded with a recorded test call AND a rejected model value, so the longest rows on the
   // screen (the cost basis line, the ignored-value note) are the ones measured at 360.
-  { key: 'claudeshadow', label: 'Claude shadow', nav: /claude shadow/i, inMore: true },
+  // ROUTING'S THIRD TAB since v1.68.2 (Chad: "add a 3rd that is called shadow"), reached the way a
+  // phone reaches it: Routing, then the app-bar gear's "Shadow view". The Build | Engine | Shadow
+  // row it lands under is measured with it.
+  { key: 'claudeshadow', label: 'Routing — Shadow (Claude shadow)', nav: /routing/i, gear: /shadow view/i, arrive: 'Claude shadow' },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i },
   // Both open as overlays rather than swapping `tab`, which is why they were missed.
   { key: 'messages', label: 'Messages', nav: /^messages/i },
@@ -963,6 +966,20 @@ async function gotoScreen(page, screen) {
     await item.click();
     await page.waitForTimeout(900);
   }
+  // A screen one level down, behind the Routing app-bar gear (the phone has no Build | Engine |
+  // Shadow row on Build). It must PROVE it arrived: a gear item that quietly failed would leave
+  // the guard measuring the Build screen under the Shadow screen's name.
+  if (screen.gear) {
+    const gear = page.locator('button[aria-label="Panel settings"]:visible').first();
+    if (!(await gear.isVisible().catch(() => false))) return false;
+    await gear.click();
+    await page.waitForTimeout(300);
+    const act = page.getByRole('button', { name: screen.gear }).first();
+    if (!(await act.isVisible().catch(() => false))) return false;
+    await act.click();
+    await page.waitForTimeout(900);
+  }
+  if (screen.arrive && !(await page.getByRole('heading', { name: screen.arrive }).first().isVisible().catch(() => false))) return false;
   return true;
 }
 
