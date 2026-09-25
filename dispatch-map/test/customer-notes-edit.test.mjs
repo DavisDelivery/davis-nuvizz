@@ -413,8 +413,9 @@ test('THE VEHICLE MARK CANNOT BE MOVED FROM HERE WITHOUT LEAVING A TRACE', () =>
   // five exits — and a sixth exit added without clearing it must move this number.
   // SIX since v1.62.0: an ADDRESS search is a new search too, and carries the editor away for the
   // same reason an order search does — a dock's hours typed onto whatever the next answer shows.
-  assert.equal((CODE.match(/setEditWas\(null\)/g) || []).length, 6,
-    'a new order search, a new address search, cancel, a failed read, the no-database path and a successful save');
+  // SEVEN since v1.69.0: a DRIVER'S WEEK is a new answer as well, and takes the editor with it.
+  assert.equal((CODE.match(/setEditWas\(null\)/g) || []).length, 7,
+    'a new order search, a new address search, a driver\'s week, cancel, a failed read, the no-database path and a successful save');
 });
 
 test('MORE ADDRESSES THAN DOCKS IS SAID OUT LOUD, not silently shortened', () => {

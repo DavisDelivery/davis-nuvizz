@@ -9,8 +9,10 @@
 // same search, how many are kept, what a damaged stored value turns into — are tested rather
 // than hoped.
 
+import { weekOf, weekLabel } from './load-lookup.js';
+
 export const RECENT_MAX = 8;
-export const RECENT_KINDS = ['order', 'customer', 'place'];
+export const RECENT_KINDS = ['order', 'customer', 'place', 'driver'];
 const PLACE_KEYS = ['addr', 'city', 'state', 'zip'];
 
 const squash = (s) => String(s ?? '').trim().replace(/\s+/g, ' ');
@@ -37,6 +39,13 @@ export function recentKey(e) {
     if (!p.addr && !p.city && !p.zip) return null;
     return `place|${PLACE_KEYS.map((k) => p[k].toLowerCase()).join('|')}`;
   }
+  if (e.kind === 'driver') {
+    // A driver's week is one search per PERSON per WEEK: Colin this week and Colin last week are
+    // two questions, and Colin typed as "colin 2" is the same man (the key is already folded).
+    const key = squash(e.key).toUpperCase();
+    const week = weekOf(squash(e.week))?.from;
+    return key && week ? `driver|${key}|${week}` : null;
+  }
   const t = squash(e.term).toLowerCase();
   return t ? `${e.kind}|${t}` : null;
 }
@@ -52,6 +61,7 @@ export function placeLabel(place) {
 
 /** What kind of search it was, in the word a rep would use. */
 export function recentKindLabel(e) {
+  if (e?.kind === 'driver') return 'Driver\u2019s week';
   if (e?.kind === 'order') return 'Order';
   if (e?.kind === 'customer') return 'Customer';
   if (e?.kind === 'place') {
@@ -66,8 +76,15 @@ export function recentKindLabel(e) {
  * the answer called it when it said (a customer's full business name reads better than the four
  * letters typed to find it). Null for anything not worth keeping.
  */
-export function recentEntry({ kind, term, place, label, at } = {}) {
+export function recentEntry({ kind, term, place, label, at, key, week } = {}) {
   const when = at && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : new Date().toISOString();
+  if (kind === 'driver') {
+    const wk = weekOf(squash(week));
+    const e = { kind, term: squash(term), key: squash(key).toUpperCase(), week: wk?.from || '', at: when };
+    if (!recentKey(e) || !e.term) return null;
+    // Labelled with the week it looked at, because re-running it answers THAT week, not this one.
+    return { ...e, label: `${e.term} \u00b7 ${weekLabel(wk)}` };
+  }
   if (kind === 'place') {
     const p = cleanPlace(place);
     const e = { kind, place: p, label: squash(label) || placeLabel(p), at: when };
