@@ -379,3 +379,28 @@ test('THE REAL REPO passes: the Claude shadow planner reaches only reviewed modu
   assert.ok(r.browserEntries.includes('src/shadow/ClaudeShadowScreen.jsx'));
   assert.ok(!r.serverFiles.some((f) => /nuvizz/i.test(f.split('/').pop())), 'no nuvizz* module in the server graph');
 });
+
+// ── the one reviewed exception: Google streets for the Claude-vs-dispatch map (Chad, 2026-09-25) ──
+
+const MAPS_LOADER_SRC = readFileSync(join(DEFAULT_ROOT, 'src/lib/google-maps-loader.js'), 'utf8');
+const MAP_SCREEN = `import React from 'react'; import { loadGoogleMaps } from '../lib/google-maps-loader.js';
+  export default function S() { loadGoogleMaps(); return <div />; }`;
+
+test('MAPS: the screen may reach the reviewed Google Maps loader — the real file, byte for byte, passes', async () => {
+  const r = await check({ 'src/lib/google-maps-loader.js': MAPS_LOADER_SRC, [SCREEN]: MAP_SCREEN });
+  assert.deepEqual(r.violations, []);
+  assert.ok(r.browserFiles.includes('src/lib/google-maps-loader.js'));
+});
+
+test('MAPS: a shadow file importing @googlemaps/js-api-loader directly FAILS — only the reviewed loader may', async () => {
+  const r = await check({ [SCREEN]: `import React from 'react'; import { Loader } from '@googlemaps/js-api-loader'; export default function S() { new Loader({}); return <div />; }` });
+  assert.deepEqual(rules(r), ['browser-package']);
+  assert.match(r.violations[0].detail || r.violations[0].message || JSON.stringify(r.violations[0]), /only through src\/lib\/google-maps-loader\.js/);
+});
+
+test('MAPS: the loader changed by one line FAILS on its hash — a change there is a change someone re-reads', async () => {
+  const edited = MAPS_LOADER_SRC.replace("version: 'weekly'", "version: 'weekly', libraries: ['places']");
+  assert.notEqual(edited, MAPS_LOADER_SRC);
+  const r = await check({ 'src/lib/google-maps-loader.js': edited, [SCREEN]: MAP_SCREEN });
+  assert.deepEqual(rules(r), ['maps-loader']);
+});

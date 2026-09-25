@@ -33,6 +33,10 @@
 //      and lucide-react, never names fetch, window (but window.confirm), document, eval or an
 //      element that loads a URL, and every apiFetch() it makes is to a constant that is the
 //      literal claude-shadow function path.
+//      ONE REVIEWED EXCEPTION (Chad, 2026-09-25, choosing the Claude-vs-dispatch map: "Google
+//      streets"): src/lib/google-maps-loader.js may be reached, is the ONLY file that may import
+//      @googlemaps/js-api-loader, and is pinned by hash (MAPS_LOADER_SHA256). The map it loads draws
+//      its own tiles; the screen's files are still held to every rule above.
 //   6. THE RUNTIME NET. A second adversarial review showed what reading code cannot promise:
 //      `global['fe' + 'tch']`, an indirect eval or a helper appending to a checked path all
 //      spell a request no pattern sees. So every shadow function calls lockEgress()
@@ -137,7 +141,11 @@ export const STORE_FIRESTORE_IMPORTS = [...STORE_WRITERS, 'assertSafePath'];
 export const STORE_EXPORT_RE = /^(shadow[A-Z]\w*|assertShadowPath|ShadowPathError)$/;
 
 // Rule 5.
-export const BROWSER_FILES = ['src/lib/api.js', 'src/lib/session.js'];
+export const BROWSER_FILES = ['src/lib/api.js', 'src/lib/session.js', 'src/lib/google-maps-loader.js'];
+// A package the screen may reach ONLY through one named, reviewed file — never import directly.
+export const BROWSER_PACKAGE_OWNERS = { '@googlemaps/js-api-loader': 'src/lib/google-maps-loader.js' };
+export const MAPS_LOADER = 'src/lib/google-maps-loader.js';
+export const MAPS_LOADER_SHA256 = 'e69f5de98c9d091247eb9f0ee3d4dc081deed0a9a0fe2f0faa8374945f21c9a2';
 export const BROWSER_PACKAGES = ['react', 'react/jsx-runtime', 'lucide-react'];
 export const SCREEN_ENDPOINT_PREFIX = '/.netlify/functions/claude-shadow';
 
@@ -511,9 +519,13 @@ export async function checkShadowIsolation(root = DEFAULT_ROOT) {
       for (const imp of imports) {
         if (!imp.external) continue;
         if (imp.path.startsWith('.') || imp.path.startsWith('/')) v('unresolved', file, `local import ${imp.path} could not be resolved`);
-        else if (!BROWSER_PACKAGES.includes(imp.path)) v('browser-package', file, `package "${imp.path}" — the shadow screen may use only ${BROWSER_PACKAGES.join(', ')}`);
+        else if (!BROWSER_PACKAGES.includes(imp.path) && BROWSER_PACKAGE_OWNERS[imp.path] !== file) v('browser-package', file, `package "${imp.path}" — the shadow screen may use only ${BROWSER_PACKAGES.join(', ')}${BROWSER_PACKAGE_OWNERS[imp.path] ? ` (${imp.path} only through ${BROWSER_PACKAGE_OWNERS[imp.path]})` : ''}`);
       }
       const code = await stripped(root, file);
+      if (file === MAPS_LOADER) {
+        const got = sha256(code);
+        if (got !== MAPS_LOADER_SHA256) v('maps-loader', file, `the reviewed Google Maps loader changed (sha256 ${got}). Re-read the whole file, then set MAPS_LOADER_SHA256 in scripts/check-shadow-isolation.mjs to that value.`);
+      }
       const dyn = nonLiteralDynamic(code);
       if (dyn.length) v('dynamic', file, `import/require with a non-literal argument (${dyn[0]})`);
       if (!inShadow) continue;

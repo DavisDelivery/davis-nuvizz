@@ -15,8 +15,9 @@
 // saves or stages freight; the only money it can spend is at the model, capped per day, and every
 // button that spends asks first and says the ceiling.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Route, Play, X, Settings2, ChevronDown, ChevronRight, TrendingDown, History } from 'lucide-react';
+import { Route, Play, X, Settings2, ChevronDown, ChevronRight, TrendingDown, History, MapPinned } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
+import BacktestMap from './BacktestMap.jsx';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 const BACKTESTS_URL = '/.netlify/functions/claude-shadow?view=backtests';
@@ -379,6 +380,8 @@ function LoadRows({ r, phone }) {
 function DayDetail({ date, loadResult, phone, onClose, rates }) {
   const [raw, setR] = useState(null);
   const r = raw ? withRates(raw, rates) : null;
+  // The map is opened on purpose: each opening is a billed Google map load (two, side by side).
+  const [showMap, setShowMap] = useState(false);
   const [err, setErr] = useState(null);
   useEffect(() => { let live = true; setR(null); setErr(null); loadResult(date).then((x) => live && setR(x)).catch((e) => live && setErr(String(e?.message || e))); return () => { live = false; }; }, [date, loadResult]);
   return (
@@ -399,6 +402,11 @@ function DayDetail({ date, loadResult, phone, onClose, rates }) {
             <span className="text-slate-600">of which stop order alone: <Delta d={r.sequencingOnly?.miles} unit=" mi" /> · truck assignment: <Delta d={r.assignmentOnly?.miles} unit=" mi" /></span>
             <span className="text-slate-600">{int(r.agreement?.stopsMoved)} stops moved to another truck · stops riding together agree {typeof r.agreement?.coLoadRecall === 'number' ? `${r.agreement.coLoadRecall}%` : '—'}</span>
           </div>
+          <button onClick={() => setShowMap((x) => !x)} aria-expanded={showMap}
+            className={`rounded-lg border px-3 text-xs font-semibold min-h-[44px] inline-flex items-center gap-1 ${showMap ? 'bg-indigo-700 text-white border-indigo-700' : 'bg-white text-indigo-700 border-indigo-200'}`}>
+            <MapPinned size={13} /> {showMap ? 'Hide the map' : 'Map: Claude vs dispatch'}
+          </button>
+          {showMap && <BacktestMap date={date} phone={phone} />}
           <Scorecard r={r} phone={phone} />
           {r.unplanned?.length > 0 && <div className="text-xs text-rose-700">Claude left {r.unplanned.length} stop{r.unplanned.length === 1 ? '' : 's'} unplanned: {r.unplanned.slice(0, 8).map((u) => `#${u.stop} (${u.reason})`).join('; ')}</div>}
           <LoadRows r={r} phone={phone} />

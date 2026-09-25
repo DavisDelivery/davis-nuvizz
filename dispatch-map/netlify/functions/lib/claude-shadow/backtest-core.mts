@@ -642,3 +642,26 @@ export function compareBacktest(p: BtProblem, claudePlan: any, cfg: any, rates: 
     orderSources: p.loads.reduce((a: Record<string, number>, l) => { a[l.orderSource] = (a[l.orderSource] || 0) + 1; return a; }, {}),
   };
 }
+
+// ── the map ──────────────────────────────────────────────────────────────────
+
+/**
+ * What the Shadow tab's map draws for one backtested day: every stop where it is, and each plan as
+ * load -> stops in the order that plan runs them. Built from the problem STORED with the job (the
+ * very stops and numbering Claude planned) and the stored result's per-load orders, so the map can
+ * only ever show what was measured — never a re-derivation that could drift from it.
+ */
+export function backtestMapPayload(p: BtProblem, r: any) {
+  const orders = (col: 'driven' | 'reseq' | 'claude') => Object.fromEntries(
+    (Array.isArray(r?.loads) ? r.loads : [])
+      .filter((l: any) => Array.isArray(l?.[col]?.order) && l[col].order.length)
+      .map((l: any) => [String(l.id), l[col].order.map(Number)]),
+  );
+  return {
+    date: p.date, at: r?.at ?? null, depot: p.depot,
+    stops: p.stops.map((s) => ({ id: s.id, n: s.n, lat: s.lat, lng: s.lng, city: s.city, zip: s.zip, name: s.name, spots: s.spots, lbs: s.weight, noTractor: s.blocksTractor })),
+    loads: p.loads.map((l) => ({ id: l.id, route: l.route, driver: l.driver, cls: l.cls })),
+    plans: { driven: orders('driven'), reseq: orders('reseq'), claude: orders('claude') },
+  };
+}
+
