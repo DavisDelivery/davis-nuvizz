@@ -253,3 +253,27 @@ test('cost is not invented', () => {
   assert.equal(driverWeek([row('1')], 'COLIN').totals.cost, null);
   assert.match(COST_NOT_RECORDED, /no record of what a load costs/);
 });
+
+test('Chad: "should specify out for delivery and ones actually not closed out from previous days"', () => {
+  const rows = [row('1', { date: '2026-09-25', normalizedStatus: 'OUT_FOR_DEL', deliveredDTTM: null })];
+  const today = driverWeek(rows.map((r) => ({ ...r, routeName: 'COLIN 1' })), 'COLIN', { today: '2026-09-25' });
+  assert.deepEqual([today.loads[0].outForDelivery, today.loads[0].open], [1, 0], 'today: still out');
+  assert.equal(today.loads[0].rows[0].outcome, 'out');
+  const past = driverWeek(rows, 'COLIN', { today: '2026-09-26' });
+  assert.deepEqual([past.loads[0].outForDelivery, past.loads[0].open], [0, 1], 'a day later: never closed out');
+  assert.equal(past.totals.outForDelivery, 0);
+});
+
+test('the period buttons — a running period ends today, a finished one on its own last day', async () => {
+  const { periodRange, datesBetween } = await import('../src/lib/load-lookup.js');
+  const t = '2026-09-25';
+  assert.deepEqual(periodRange('today', t), { from: t, to: t });
+  assert.deepEqual(periodRange('this-week', t), { from: '2026-09-21', to: t });
+  assert.deepEqual(periodRange('last-week', t), { from: '2026-09-14', to: '2026-09-20' });
+  assert.deepEqual(periodRange('this-month', t), { from: '2026-09-01', to: t });
+  assert.deepEqual(periodRange('this-year', t), { from: '2026-01-01', to: t });
+  assert.deepEqual(periodRange('last-year', t), { from: '2025-01-01', to: '2025-12-31' });
+  assert.deepEqual(periodRange('range', t, { from: '2026-09-20', to: '2026-09-01' }), { from: '2026-09-01', to: '2026-09-20' });
+  assert.equal(periodRange('range', t, {}), null);
+  assert.equal(datesBetween('2026-09-01', '2026-09-30').length, 30);
+});

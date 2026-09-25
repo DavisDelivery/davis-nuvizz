@@ -89,7 +89,10 @@ export function installFirestoreFake(seed = {}, onOther, opts = {}) {
       if (url.includes(':runQuery') && !onOther) {
         const q = JSON.parse(String(init.body || '{}')).structuredQuery || {};
         log.queries.push(q);
-        const coll = q.from?.[0]?.collectionId || '';
+        // A PARENT-SCOPED query (…/documents/<parent>:runQuery) reads that document's
+        // subcollection only; no parent is the root, exactly as before.
+        const pm = /\/documents\/(.+):runQuery/.exec(url);
+        const coll = (pm ? `${decodeURIComponent(pm[1])}/` : '') + (q.from?.[0]?.collectionId || '');
         const rows = [...store.entries()]
           .filter(([k]) => k.startsWith(`${coll}/`) && k.slice(coll.length + 1).split('/').length === 1)
           .filter(([, v]) => {
@@ -98,6 +101,7 @@ export function installFirestoreFake(seed = {}, onOther, opts = {}) {
               const field = v?.[f.field.fieldPath];
               if (f.op === 'ARRAY_CONTAINS') return Array.isArray(field) && field.includes(f.value.stringValue);
               if (f.op === 'EQUAL') return field === decVal(f.value);
+              if (f.op === 'IN') return (decVal(f.value) || []).includes(field);
               return false;
             }
             const c = q.where?.compositeFilter;

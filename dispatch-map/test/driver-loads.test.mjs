@@ -303,3 +303,40 @@ test('explain=1 says WHOSE orders are unpriced and how many loads could carry a 
   } finally { fake.restore(); }
 });
 
+
+// ── THE PERIOD BUTTONS (v1.70.0) ─────────────────────────────────────────────
+const driversDoc = (date, name, loads) => ({ [`history_days/${T}__${date}/drivers/${name.replace(/\s+/g, '_')}`]: { driverName: name, driverUserName: name, loadNbrs: loads, date } });
+
+test('A MONTH READS DRIVERS FIRST — the lists, then only his orders; never 800 orders a day for thirty days', async () => {
+  const D1 = '2026-09-01'; const D2 = '2026-09-10';
+  const fake = installFirestoreFake({
+    ...sealed(D1, [st('007160001', D1), st('007160002', D1, { driverName: 'ENOCK AKYEA', driverUserName: 'ENOCK AKYEA', routeName: 'NOR 2', loadNbr: 'NOR 2' })]),
+    ...driversDoc(D1, 'COLIN', ['COLIN 1']), ...driversDoc(D1, 'ENOCK AKYEA', ['NOR 2']),
+    ...sealed(D2, [st('007160003', D2)]),
+    ...driversDoc(D2, 'COLIN', ['COLIN 1']),
+  });
+  process.env.LOAD_MILES = 'off';
+  try {
+    const choose = await call('from=2026-09-01&to=2026-09-30');
+    assert.equal(choose.body.mode, 'driver-week-choose');
+    assert.deepEqual(choose.body.drivers.map((d) => `${d.key}:${d.loads}`), ['COLIN:2', 'ENOCK_AKYEA:1']);
+    assert.ok(!fake.log.lists.some((p) => p.startsWith('history_days/') && p.endsWith('/stops')), 'no whole sealed day was read to list the drivers');
+    const { body } = await call('from=2026-09-01&to=2026-09-30&key=COLIN');
+    assert.deepEqual(body.loads.map((l) => `${l.date}|${l.name}|${l.orders}`), [`${D1}|COLIN 1|1`, `${D2}|COLIN 1|1`]);
+    assert.equal(fake.log.queries.length, 2, 'one scoped query per day he ran');
+    assert.deepEqual(fake.log.queries[0].where.fieldFilter.value.arrayValue.values.map((v) => v.stringValue), ['COLIN']);
+    assert.equal(fake.log.other.length, 0);
+  } finally { delete process.env.LOAD_MILES; fake.restore(); }
+});
+
+test('from/to is the range asked; no dates is today; week= still answers; explain refuses a month', async () => {
+  const fake = installFirestoreFake(SEED);
+  try {
+    const r = await call('from=2026-09-16&to=2026-09-14');
+    assert.deepEqual([r.body.week.from, r.body.week.to], ['2026-09-14', '2026-09-16'], 'typed backwards, read forwards');
+    assert.equal((await call('')).body.week.dates.length, 1);
+    assert.equal((await call('week=2026-09-17')).body.week.dates.length, 7);
+    assert.equal((await call('from=2026-09-01&to=2026-09-30&explain=1')).status, 400);
+    assert.equal((await call('from=bad&to=2026-09-01')).status, 400);
+  } finally { fake.restore(); }
+});

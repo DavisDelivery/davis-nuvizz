@@ -597,7 +597,7 @@ const PROBES = {
     {
       name: 'the week\'s drivers to choose',
       open: async (page) => {
-        const btn = page.getByRole('button', { name: /^show the week$/i }).first();
+        const btn = page.getByRole('button', { name: /^show loads$/i }).first();
         if (!(await btn.isVisible().catch(() => false))) return false;
         await btn.click();
         await page.waitForTimeout(900);
@@ -610,7 +610,7 @@ const PROBES = {
         const box = page.getByLabel(/^driver name$/i).first();
         if (!(await box.isVisible().catch(() => false))) return false;
         await box.fill('robert');
-        await page.getByRole('button', { name: /^show the week$/i }).first().click();
+        await page.getByRole('button', { name: /^show loads$/i }).first().click();
         await page.waitForTimeout(900);
         return page.getByRole('button', { name: /^map & stops/i }).first().isVisible().catch(() => false);
       },
@@ -621,7 +621,7 @@ const PROBES = {
         const box = page.getByLabel(/^driver name$/i).first();
         if (!(await box.isVisible().catch(() => false))) return false;
         await box.fill('robert');
-        await page.getByRole('button', { name: /^show the week$/i }).first().click();
+        await page.getByRole('button', { name: /^show loads$/i }).first().click();
         await page.waitForTimeout(900);
         const open = page.getByRole('button', { name: /^map & stops/i }).first();
         if (!(await open.isVisible().catch(() => false))) return false;

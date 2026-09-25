@@ -14,7 +14,7 @@ const SCREEN = CODE.slice(CODE.indexOf('function StopLookupScreen() {'), CODE.in
 
 test('it is PART OF STOP LOOKUP — Chad: "i want this to be part of the stops lookup tab"', () => {
   assert.match(PANEL, /<form aria-label="A driver's week of loads"/, 'the panel\'s third form');
-  assert.match(PANEL, /\{busy === 'driver' \? 'Reading the week…' : 'Show the week'\}/);
+  assert.match(PANEL, /\{busy === 'driver' \? 'Reading…' : 'Show loads'\}/);
   assert.match(SCREEN, /apiFetch\(`\/\.netlify\/functions\/driver-loads\?\$\{p\.toString\(\)\}`\)/);
   assert.match(SCREEN, /data\?\.mode === 'driver-week-choose' && \(\s*<DriverWeekChooser/);
   assert.match(SCREEN, /data\?\.mode === 'driver-week' && \(\s*<DriverWeekResults/);
@@ -40,10 +40,10 @@ test('THE MAP IS BEHIND THE DROP-DOWN — created only in an opened load, one op
 });
 
 test('the WEEK is not remembered and the name is; a recent driver\'s week reruns that week', () => {
-  assert.match(SCREEN, /const \[drvDay, setDrvDay\] = useState\(today\);/);
+  assert.match(SCREEN, /const \[drvSel, setDrvSel\] = useState\(\{ period: 'today' \}\);/);
   assert.match(SCREEN, /localStorage\.getItem\(STOP_LOOKUP_DRIVER\)/);
-  assert.match(SCREEN, /remember\(recentEntry\(\{ kind: 'driver', term: j\.driver\?\.label, key: j\.driver\?\.key, week: j\.week\?\.from \}\)\)/);
-  assert.match(SCREEN, /if \(e\.kind === 'driver'\) \{\s*setDrvName\(e\.term\); setDrvDay\(e\.week\);/);
+  assert.match(SCREEN, /remember\(recentEntry\(\{ kind: 'driver', term: j\.driver\?\.label, key: j\.driver\?\.key, from: j\.week\?\.from, to: j\.week\?\.to \}\)\)/);
+  assert.match(SCREEN, /setDrvName\(e\.term\); setDrvSel\(sel\);/);
 });
 
 test('COST IS NEVER A NUMBER on this screen, and every blank says why', () => {
@@ -65,3 +65,13 @@ test('the layout guards measure the chooser, the week and an opened load with th
   const fx = readFileSync(new URL('../scripts/lib/driver-week-fixture.mjs', import.meta.url), 'utf8');
   assert.match(fx, /driverWeek\(rows, key/, 'built by the real load builder, not typed');
 });
+
+test('ONE SET OF DATE BUTTONS for the address search and the driver lookup, defaulting to Today', () => {
+  const bar = CODE.slice(CODE.indexOf('function PlaceDateBar('), CODE.indexOf('function placeSelOf('));
+  assert.match(bar, /PERIODS\.map\(/, 'the buttons are the one shared list');
+  const panel = CODE.slice(CODE.indexOf('function StopSearchPanel('), CODE.indexOf('function StopRecentLookups('));
+  assert.equal((panel.match(/<PlaceDateBar /g) || []).length, 2, 'both searches draw the same control');
+  assert.match(SCREEN, /const \[placeSel, setPlaceSel\] = useState\(\{ period: 'today' \}\);/);
+  assert.match(SCREEN, /const \[drvSel, setDrvSel\] = useState\(\{ period: 'today' \}\);/);
+});
+

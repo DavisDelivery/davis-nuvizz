@@ -16,6 +16,14 @@ export const RECENT_KINDS = ['order', 'customer', 'place', 'driver'];
 const PLACE_KEYS = ['addr', 'city', 'state', 'zip'];
 
 const squash = (s) => String(s ?? '').trim().replace(/\s+/g, ' ');
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** A driver entry's dates: its own from/to, or the Monday-to-Sunday of an older entry's `week`. */
+function driverRange(e) {
+  const f = squash(e?.from); const t = squash(e?.to);
+  if (DAY.test(f) && DAY.test(t)) return f <= t ? { from: f, to: t } : { from: t, to: f };
+  const wk = weekOf(squash(e?.week));
+  return wk ? { from: wk.from, to: wk.to } : null;
+}
 
 /** A place as it is kept: the four boxes, trimmed, state upper-cased. */
 function cleanPlace(p) {
@@ -40,11 +48,12 @@ export function recentKey(e) {
     return `place|${PLACE_KEYS.map((k) => p[k].toLowerCase()).join('|')}`;
   }
   if (e.kind === 'driver') {
-    // A driver's week is one search per PERSON per WEEK: Colin this week and Colin last week are
-    // two questions, and Colin typed as "colin 2" is the same man (the key is already folded).
+    // One search per PERSON per RANGE: Colin this week and Colin last month are two questions, and
+    // "colin 2" is the same man (the key is already folded). An entry saved before the period
+    // buttons carried a `week` (its Monday) and still reads as that week.
     const key = squash(e.key).toUpperCase();
-    const week = weekOf(squash(e.week))?.from;
-    return key && week ? `driver|${key}|${week}` : null;
+    const r = driverRange(e);
+    return key && r ? `driver|${key}|${r.from}|${r.to}` : null;
   }
   const t = squash(e.term).toLowerCase();
   return t ? `${e.kind}|${t}` : null;
@@ -61,7 +70,7 @@ export function placeLabel(place) {
 
 /** What kind of search it was, in the word a rep would use. */
 export function recentKindLabel(e) {
-  if (e?.kind === 'driver') return 'Driver\u2019s week';
+  if (e?.kind === 'driver') return 'Driver\u2019s loads';
   if (e?.kind === 'order') return 'Order';
   if (e?.kind === 'customer') return 'Customer';
   if (e?.kind === 'place') {
@@ -76,14 +85,14 @@ export function recentKindLabel(e) {
  * the answer called it when it said (a customer's full business name reads better than the four
  * letters typed to find it). Null for anything not worth keeping.
  */
-export function recentEntry({ kind, term, place, label, at, key, week } = {}) {
+export function recentEntry({ kind, term, place, label, at, key, week, from, to } = {}) {
   const when = at && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : new Date().toISOString();
   if (kind === 'driver') {
-    const wk = weekOf(squash(week));
-    const e = { kind, term: squash(term), key: squash(key).toUpperCase(), week: wk?.from || '', at: when };
+    const r = driverRange({ week, from, to });
+    const e = { kind, term: squash(term), key: squash(key).toUpperCase(), from: r?.from || '', to: r?.to || '', at: when };
     if (!recentKey(e) || !e.term) return null;
-    // Labelled with the week it looked at, because re-running it answers THAT week, not this one.
-    return { ...e, label: `${e.term} \u00b7 ${weekLabel(wk)}` };
+    // Labelled with the dates it looked at, because re-running it answers THOSE dates, not today.
+    return { ...e, label: `${e.term} \u00b7 ${weekLabel(r)}` };
   }
   if (kind === 'place') {
     const p = cleanPlace(place);
