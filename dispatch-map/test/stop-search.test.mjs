@@ -375,9 +375,10 @@ test('THE SCREEN: both searches on screen at once, ALL as the unremembered defau
   assert.match(panel, /'Find stops'/);
   // Dates start on ALL and are NOT written to localStorage — a remembered day would narrow
   // tomorrow's search without anybody choosing to.
-  assert.match(CODE, /const \[placeSel, setPlaceSel\] = useState\(\{ kind: 'all' \}\);/);
+  // TODAY since v1.70.0 — Chad: "i want it to default to today". Still never remembered.
+  assert.match(CODE, /const \[placeSel, setPlaceSel\] = useState\(\{ period: 'today' \}\);/);
   assert.doesNotMatch(CODE, /localStorage\.setItem\([^)]*placeSel/);
-  assert.match(CODE, /apiFetch\(`\/\.netlify\/functions\/stop-lookup\?\$\{placeParams\(f, selNow\)\}`\)/);
+  assert.match(CODE, /apiFetch\(`\/\.netlify\/functions\/stop-lookup\?\$\{placeParams\(f, placeSelOf\(selNow, todayInET\(\)\)\)\}`\)/);
   // TWO VIEWS: the answer renders the phone cards and the desktop table, off one component.
   const results = CODE.slice(CODE.indexOf('function PlaceResults'), CODE.indexOf('const STOP_LOOKUP_PLACE'));
   assert.match(results, /<CustomerDayCards key=\{day\.date\}/);

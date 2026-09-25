@@ -93,17 +93,17 @@ test('"yesterday" is a calendar word on Davis\'s clock, not 24 hours', () => {
   assert.equal(recentAgo('garbage', now), '');
 });
 
-test('a driver\'s week is one search per man per week — and it reruns THAT week, not this one', () => {
+test('a driver lookup is one search per man per range — and it reruns THOSE dates, not today', () => {
   let list = [];
-  list = addRecent(list, recentEntry({ kind: 'driver', term: 'COLIN', key: 'colin', week: '2026-09-23', at: AT }));
-  list = addRecent(list, recentEntry({ kind: 'driver', term: 'COLIN', key: 'COLIN', week: '2026-09-25', at: AT }));   // same week
-  list = addRecent(list, recentEntry({ kind: 'driver', term: 'COLIN', key: 'COLIN', week: '2026-09-14', at: AT }));   // last week
+  list = addRecent(list, recentEntry({ kind: 'driver', term: 'COLIN', key: 'colin', from: '2026-09-21', to: '2026-09-25', at: AT }));
+  list = addRecent(list, recentEntry({ kind: 'driver', term: 'COLIN', key: 'COLIN', from: '2026-09-25', to: '2026-09-21', at: AT }));  // same, typed backwards
+  list = addRecent(list, recentEntry({ kind: 'driver', term: 'COLIN', key: 'COLIN', from: '2026-09-01', to: '2026-09-25', at: AT }));  // this month
   assert.equal(list.length, 2);
-  assert.deepEqual(list.map((e) => e.label), ['COLIN \u00b7 Sep 14 \u2013 20', 'COLIN \u00b7 Sep 21 \u2013 27']);
-  assert.equal(list[1].week, '2026-09-21', 'kept as the Monday, whatever day was picked');
-  assert.equal(recentKindLabel(list[0]), 'Driver\u2019s week');
-  assert.equal(recentEntry({ kind: 'driver', term: 'COLIN', key: '', week: '2026-09-21' }), null, 'no driver, no search');
-  assert.equal(recentEntry({ kind: 'driver', term: 'COLIN', key: 'COLIN', week: 'last week' }), null, 'no week, no search');
-  const back = parseRecent(JSON.stringify([{ kind: 'driver', term: 'COLIN', key: 'COLIN', week: '2026-09-21', at: AT }, { kind: 'driver', term: 'X', key: 'X', at: AT }]));
-  assert.deepEqual(back.map((e) => e.label), ['COLIN \u00b7 Sep 21 \u2013 27'], 'a damaged driver row is dropped, never the screen');
+  assert.deepEqual(list.map((e) => e.label), ['COLIN \u00b7 Sep 1 \u2013 25', 'COLIN \u00b7 Sep 21 \u2013 25']);
+  assert.equal(recentKindLabel(list[0]), 'Driver\u2019s loads');
+  assert.equal(recentEntry({ kind: 'driver', term: 'COLIN', key: '', from: '2026-09-21', to: '2026-09-21' }), null, 'no driver, no search');
+  assert.equal(recentEntry({ kind: 'driver', term: 'COLIN', key: 'COLIN', from: 'last week' }), null, 'no dates, no search');
+  // An entry saved by v1.69.0 carried the week's Monday; it still reruns that week.
+  const back = parseRecent(JSON.stringify([{ kind: 'driver', term: 'COLIN', key: 'COLIN', week: '2026-09-14', at: AT }, { kind: 'driver', term: 'X', key: 'X', at: AT }]));
+  assert.deepEqual(back.map((e) => [e.label, e.from, e.to]), [['COLIN \u00b7 Sep 14 \u2013 20', '2026-09-14', '2026-09-20']]);
 });

@@ -366,10 +366,15 @@ export async function listDocs(collectionPath: string, opts?: { mask?: string[] 
 // SA-JWT auth + value codec. Single-field filters only in our usage (single
 // tenant), so Firestore's automatic single-field indexes cover it — no composite
 // index config required. Returns plain objects (with _id) like listDocs.
-export async function runQuery(structuredQuery: any): Promise<any[]> {
+/**
+ * `parent` (ADDITIVE, v1.70.0) scopes the query to one document's subcollection — a single day's
+ * `stops` rather than a collection group. Omitted, the query runs at the root exactly as before.
+ */
+export async function runQuery(structuredQuery: any, parent: string = ''): Promise<any[]> {
+  if (parent) assertSafePath(parent);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents:runQuery`;
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents${parent ? `/${parent}` : ''}:runQuery`;
   const resp = await fsFetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

@@ -33,17 +33,18 @@
 // Gated at DISPATCHER, one step above the rest of Stop lookup: this adds up a driver's week of
 // order prices, which is a revenue picture, not the facts on one stop card.
 
-import { isFirestoreEnabled, getDoc, setDoc, readStops, etDayString } from './lib/firestore.mts';
-import { getManifest, listStops, histDocId } from './lib/history-store.mts';
+import { isFirestoreEnabled, getDoc, setDoc, readStops, etDayString, listDocs, runQuery } from './lib/firestore.mts';
+import { getManifest, listStops, histDocId, dayPath } from './lib/history-store.mts';
 import { readRouteClasses } from './lib/travel-store.mts';
 import { driverAliases } from './lib/marginiq.mts';
 import { fetchWithTimeout } from './lib/async-util.mts';
 import { requireUser, jsonResponse } from './lib/require-user.mts';
 import { LOAD_STOP_FIELDS } from './lib/board-fields.mts';
 import { dropCancelledEnabled } from '../../src/lib/stop-cancelled.js';
+import { applyAliases, driverKeyOf } from '../../src/lib/driver-territory.js';
 import { shipperOf } from '../../src/lib/label-shippers.js';
 import {
-  weekOf, driversOfWeek, resolveDriver, driverWeek, routeChunks, pathFingerprint, orderPrice, finishedAt,
+  weekOf, datesBetween, driversOfWeek, resolveDriver, driverWeek, routeChunks, pathFingerprint, orderPrice, finishedAt,
   loadOf, YARD, COST_NOT_RECORDED,
 } from '../../src/lib/load-lookup.js';
 
@@ -56,6 +57,11 @@ const GOOGLE_TIMEOUT_MS = 8000;
 /** A whole week of one driver is ~6 loads; this is the ceiling one request may spend on Google. */
 export const MAX_GOOGLE_CALLS = 24;
 const READ_CONC = 4;
+const READ_CONC_LONG = 24;
+/** Up to two weeks, whole days are read; longer, the driver-first path. */
+export const WHOLE_DAY_MAX = 14;
+/** The widest range one request answers — a year and a little. */
+export const MAX_DAYS = 400;
 
 /**
  * THE WAY BACK (CLAUDE.md, "ship it so it can be put back"). Default ON; an explicit off-word
@@ -144,6 +150,36 @@ async function readDay(date: string, today: string): Promise<{ date: string; sou
   }
 }
 
+/**
+ * A DAY FOR A LONG RANGE: a sealed day's DRIVERS list (~70 small documents, written at the seal),
+ * one stand-in row per load; a day not sealed is read whole off the board, as the short path does.
+ */
+async function readDayDrivers(date: string, today: string): Promise<any> {
+  if (date > today) return { date, source: 'future', rows: [] };
+  try {
+    const m = await getManifest(TENANT, date);
+    if (!(m && (m.complete || m.verified) && !m.no_board)) return readDay(date, today);
+    const docs = await listDocs(`${dayPath(TENANT, date)}/drivers`);
+    const rows = docs.flatMap((d: any) => (Array.isArray(d.loadNbrs) ? d.loadNbrs : []).map((ln: string) => ({
+      __fromDrivers: true, __names: [d.driverName, d.driverUserName].filter(Boolean),
+      date, driverName: d.driverName ?? null, driverUserName: d.driverUserName ?? null, loadNbr: ln, routeName: ln,
+    })));
+    return { date, source: 'sealed', rows };
+  } catch (e: any) {
+    return { date, source: 'unread', rows: [], error: String(e?.message || e).slice(0, 160) };
+  }
+}
+
+/** One sealed day's orders for these driver names only — a query, masked, not the whole day. */
+async function readDriverStops(date: string, names: string[]): Promise<any[]> {
+  const docs = await runQuery({
+    from: [{ collectionId: 'stops' }],
+    where: { fieldFilter: { field: { fieldPath: 'driverName' }, op: 'IN', value: { arrayValue: { values: names.slice(0, 30).map((n) => ({ stringValue: n })) } } } },
+    select: { fields: LOAD_STOP_FIELDS.map((f) => ({ fieldPath: f })) },
+  }, dayPath(TENANT, date));
+  return docs.map(({ _id, last_scanned_at, ...r }: any) => r);
+}
+
 /** Counts only — what the week's records hold. The free diagnostic, and it names nobody. */
 export function explainWeek(days: any[]) {
   return days.map((d) => {
@@ -191,15 +227,34 @@ export default async (req: Request): Promise<Response> => {
 
   const url = new URL(req.url);
   const today = etDayString();
-  const asked = String(url.searchParams.get('week') || '').trim() || today;
-  if (!DAY_RE.test(asked)) return jsonResponse({ ok: false, nuvizzCalls: 0, error: 'week must be a day, YYYY-MM-DD' }, 400);
-  const week = weekOf(asked)!;
+  // THE RANGE: ?from=&to= from the period buttons (v1.70.0); ?week= is the v1.69.0 shape, still
+  // answered so a Recent-lookups entry saved before the buttons keeps working.
+  const qFrom = String(url.searchParams.get('from') || '').trim();
+  const qTo = String(url.searchParams.get('to') || '').trim();
+  const qWeek = String(url.searchParams.get('week') || '').trim();
+  let range: { from: string; to: string } | null;
+  if (qFrom || qTo) range = DAY_RE.test(qFrom) && DAY_RE.test(qTo) ? (qFrom <= qTo ? { from: qFrom, to: qTo } : { from: qTo, to: qFrom }) : null;
+  else if (qWeek) range = DAY_RE.test(qWeek) ? { from: weekOf(qWeek)!.from, to: weekOf(qWeek)!.to } : null;
+  else range = { from: today, to: today };
+  if (!range) return jsonResponse({ ok: false, nuvizzCalls: 0, error: 'from and to must be days, YYYY-MM-DD' }, 400);
+  const dates = datesBetween(range.from, range.to, MAX_DAYS);
+  const week = { from: dates[0] || range.from, to: range.to, dates, clipped: dates[0] !== range.from ? MAX_DAYS : null };
   const dropCancelled = dropCancelledEnabled();
+  // SHORT RANGES READ WHOLE DAYS (the v1.69.0 path, unchanged). A month or a year cannot: ~800
+  // orders a day × 365 is past this function's 26 seconds. There, a sealed day is read as its
+  // small drivers list first, and only the chosen driver's own orders are fetched afterwards.
+  const long = dates.length > WHOLE_DAY_MAX;
 
-  const days = await inPool(week.dates, READ_CONC, (d) => readDay(d, today));
-  const ledger = days.map((d) => ({ date: d.date, source: d.source, orders: d.rows.length, ...(d.error ? { error: d.error } : {}) }));
+  if (url.searchParams.get('explain') === '1' && long) {
+    return jsonResponse({ ok: false, nuvizzCalls: 0, error: `explain reads every order of every day — ask for ${WHOLE_DAY_MAX} days or fewer` }, 400);
+  }
+
+  const days = long
+    ? await inPool(dates, READ_CONC_LONG, (d) => readDayDrivers(d, today))
+    : await inPool(dates, READ_CONC, (d) => readDay(d, today));
+  const ledger = days.map((d: any) => ({ date: d.date, source: d.source, orders: d.rows.length, ...(d.error ? { error: d.error } : {}) }));
   const unread = ledger.filter((d) => d.source === 'unread');
-  const rows = days.flatMap((d) => d.rows);
+  let rows: any[] = days.flatMap((d: any) => d.rows);
   const base = { ok: true, nuvizzCalls: 0, week, today, days: ledger, complete: unread.length === 0 };
 
   if (url.searchParams.get('explain') === '1') {
@@ -222,12 +277,31 @@ export default async (req: Request): Promise<Response> => {
   }
   const key = pick.match.key;
 
+  if (long) {
+    // The sealed days' rows so far are one stand-in per LOAD from the drivers list. Swap each day
+    // this driver ran for his real orders; the board days were read whole and stay as they are.
+    const mineByDay = new Map<string, Set<string>>();
+    for (const r of applyAliases(rows.filter((x: any) => x.__fromDrivers), aliases)) {
+      if (driverKeyOf(r) !== key) continue;
+      const set = mineByDay.get(r.date) || new Set<string>();
+      for (const n of r.__names) set.add(n);
+      mineByDay.set(r.date, set);
+    }
+    const fetched = await inPool([...mineByDay.entries()], READ_CONC_LONG, async ([d, names]) => {
+      try { return { d, rows: await readDriverStops(d, [...names]) }; }
+      catch (e: any) { return { d, rows: [], error: String(e?.message || e).slice(0, 160) }; }
+    });
+    for (const f of fetched) if (f.error) { const l = ledger.find((x) => x.date === f.d); if (l) { (l as any).source = 'unread'; (l as any).error = f.error; } }
+    base.complete = ledger.every((d) => d.source !== 'unread');
+    rows = [...rows.filter((x: any) => !x.__fromDrivers), ...fetched.flatMap((f) => f.rows.map((r: any) => ({ ...r, date: f.d })))];
+  }
+
   // TRACTOR OR BOX, per day — only for the days this driver ran.
   const hisDays = [...new Set(rows.filter((r) => loadOf(r)).map((r) => r.date))];
   const classes: Record<string, any> = {};
   await Promise.all(hisDays.map(async (d) => { classes[d] = await readRouteClasses(TENANT, d).catch(() => ({})); }));
 
-  const first = driverWeek(rows, key, { aliases, classes, dropCancelled });
+  const first = driverWeek(rows, key, { aliases, classes, dropCancelled, today });
 
   // ROAD MILES — the cache first, then Google, within this request's ceiling.
   const milesOn = loadMilesEnabled();
@@ -262,7 +336,7 @@ export default async (req: Request): Promise<Response> => {
     });
   }
 
-  const week2 = driverWeek(rows, key, { aliases, classes, miles, dropCancelled });
+  const week2 = driverWeek(rows, key, { aliases, classes, miles, dropCancelled, today });
   return jsonResponse({
     ...base, googleCalls, mode: 'driver-week',
     driver: week2.driver, loads: week2.loads, totals: week2.totals, cancelledOff: week2.cancelledOff,
