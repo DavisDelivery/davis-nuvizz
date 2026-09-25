@@ -532,22 +532,19 @@ const PROBES = {
         return page.getByText(/history_pros/i).first().isVisible().catch(() => false);
       },
     },
-    // ── ADDRESS / CITY SEARCH (v1.62.0) ─────────────────────────────────────────
-    // The second form on this screen — four fields and three date pills — and an answer with stat
-    // tiles, month bars, a wrapping address list, the postal-city banner, the amber "days not
-    // searched" note and day cards. None of it exists until the Address tab is chosen and a search
-    // runs. LAST in this list on purpose: the tab choice is remembered per device, and every probe
-    // above opens the order box.
+    // ── ADDRESS / CITY SEARCH (v1.62.0; its own form beside the order box since v1.63.0) ──
+    // Four fields and three date settings, and an answer with stat tiles, month bars, a wrapping
+    // address list, the postal-city banner, the amber "days not searched" note and day cards.
+    // The form is always on screen now — stacked under the order box on a phone — but none of
+    // the answer exists until a search runs.
     {
       name: 'an address searched',
       open: async (page) => {
-        const tab = page.getByRole('tab', { name: /address or city/i }).first();
-        if (!(await tab.isVisible().catch(() => false))) return false;
-        await tab.click();
-        await page.waitForTimeout(300);
-        await page.getByLabel(/street address/i).first().fill('1100 Northside Dr');
+        const street = page.getByLabel(/street address/i).first();
+        if (!(await street.isVisible().catch(() => false))) return false;
+        await street.fill('1100 Northside Dr');
         await page.getByLabel(/^city$/i).first().fill('Atlanta');
-        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.getByRole('button', { name: /^find stops$/i }).first().click();
         await page.waitForTimeout(900);
         return page.getByText(/every stop at/i).first().isVisible().catch(() => false);
       },
@@ -556,20 +553,37 @@ const PROBES = {
       // RANGE OPEN: two date inputs and a "to" on one line — the widest the form gets at 360px.
       name: 'an address searched over a range',
       open: async (page) => {
-        const tab = page.getByRole('tab', { name: /address or city/i }).first();
-        if (!(await tab.isVisible().catch(() => false))) return false;
-        await tab.click();
-        await page.waitForTimeout(300);
-        await page.getByLabel(/street address/i).first().fill('1100 Northside Dr');
+        const street = page.getByLabel(/street address/i).first();
+        if (!(await street.isVisible().catch(() => false))) return false;
+        await street.fill('1100 Northside Dr');
         await page.getByLabel(/^city$/i).first().fill('Atlanta');
         const range = page.getByRole('button', { name: /^range$/i }).first();
         if (!(await range.isVisible().catch(() => false))) return false;
         await range.click();
         await page.waitForTimeout(300);
-        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.getByRole('button', { name: /^find stops$/i }).first().click();
         await page.waitForTimeout(900);
         const dates = await page.getByLabel(/first day to search/i).first().isVisible().catch(() => false);
         return dates && page.getByText(/every stop at/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // RECENT LOOKUPS (v1.63.0). The list only exists once something has been searched, so at
+      // rest the guard measures its empty box and nothing else. Search, clear the box, and the
+      // landing shows the list a rep actually comes back to.
+      name: 'recent lookups listed',
+      open: async (page) => {
+        const box = page.getByLabel(/find a customer by name/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('earthly alternative');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        const clear = page.getByRole('button', { name: /clear the order search/i }).first();
+        if (!(await clear.isVisible().catch(() => false))) return false;
+        await clear.click();
+        await page.waitForTimeout(400);
+        // PROVES ITS STATE: the search just run is listed, by the name the answer gave it.
+        return page.getByRole('button', { name: /earthly alternative/i }).first().isVisible().catch(() => false);
       },
     },
   ],

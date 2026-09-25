@@ -45,7 +45,8 @@ test('the heading stays the literal the layout guards navigate by', () => {
   // verify-desktop-layout.mjs, verify-mobile-layout.mjs and verify-tablet-layout.mjs all
   // prove arrival with document.body.innerText.includes('Stop lookup'). Rename the heading
   // and a screen that opens perfectly fails as "could not be opened".
-  assert.match(APP, /<h1 className="text-xl font-bold text-slate-900">Stop lookup<\/h1>/);
+  // The RULE is the literal heading; its styling is free to change (it did, in v1.63.0).
+  assert.match(APP, /<h1 className="[^"]*">Stop lookup<\/h1>/);
 });
 
 test('ONE RULE decides customer-vs-PRO, and the client reads it from the shared module', () => {
@@ -224,7 +225,10 @@ test('THE BUTTON SAYS ITS PRICE, is offered only after a COMPLETE miss, and call
 test('a NuVizz answer is LABELLED as one, on the screen and in the drawer, and the header chip counts it', () => {
   assert.match(APP, /Answered by NuVizz — 1 call, on request\./, 'the banner over a prompted order');
   assert.match(APP, /Straight from NuVizz — one call, asked for just now\./, 'the drawer says which kind of record it is');
-  assert.match(APP, /data\?\.nuvizzCalls === 1[\s\S]{0,200}1 NuVizz call — on request/, 'the chip reads the answer, not a slogan');
+  // The chip reads the ANSWER's own count, not a slogan (v1.63.0 moved it into LookupCallsPill).
+  assert.match(APP, /<LookupCallsPill calls=\{data\?\.nuvizzCalls\} \/>/, 'the chip is handed the answer\'s count');
+  const pill = APP.slice(APP.indexOf('function LookupCallsPill'), APP.indexOf('function LookupSectionHead'));
+  assert.match(pill, /const spent = calls === 1;[\s\S]{0,900}1 NuVizz call — on request/, 'and says 1 only when the answer did');
 });
 
 test('a customer miss prints the honest sentence — a name cannot be prompted', () => {
@@ -232,7 +236,9 @@ test('a customer miss prints the honest sentence — a name cannot be prompted',
 });
 
 test('every new search clears the last NuVizz sentence — one order\'s answer must not hang over the next', () => {
-  assert.match(APP, /setLoading\(true\); setErr\(null\); setPromptMsg\(null\);/);
+  // Both searches — the order box and the address form — clear it as they start.
+  assert.match(APP, /setLoading\(true\); setBusy\('order'\); setErr\(null\); setPromptMsg\(null\);/);
+  assert.match(APP, /setLoading\(true\); setBusy\('place'\); setErr\(null\); setPromptMsg\(null\);/);
 });
 
 test('the phone and tablet guards drive THE MISS — the state that carries the button', () => {

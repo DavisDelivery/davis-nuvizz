@@ -17,7 +17,7 @@ import {
   MapPin, RefreshCw, X, Filter, Flag, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
-  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
+  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Building2, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
   ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import {
@@ -85,6 +85,7 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUE
 // ADDRESS / CITY SEARCH (v1.62.0) — the same module the endpoint and the nightly digest writer use,
 // so the screen can never build a query the server reads differently.
 import { placeParams, placeQuery, placeQueryUsable } from './lib/stop-search.js';
+import { addRecent, parseRecent, recentAgo, recentEntry, recentKindLabel, recentKey } from './lib/stop-lookup-recent.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -177,7 +178,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.67.1';
+const APP_VERSION = '1.68.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -231,6 +232,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.68.0', 'STOP LOOKUP, REDESIGNED: BOTH SEARCHES ON ONE PANEL, NO TABS. Chad, on v1.62.0: “terrible UI design why would you put on two tabs when there is tons of blank screen I don’t love any of this ui feels like an amateur wrote it i don’t like the design or astehtics” — and, after the screenshots: “Merge it.” The order-or-customer search and the address, city or ZIP search now sit side by side in one panel on a desktop (two halves at 1024px, the address half the wider from 1280px, the two rows of boxes held level whichever description wraps), each its own form so Enter runs the search the cursor is in; on a phone they stack with the order box first, and after a search the page scrolls to the answer. One set of sizes for every box and button (44px boxes, 15px text, the brand blue for each half’s one button, Look up and Find stops), a single All dates / One day / Range switch instead of three loose buttons, and a small status dot in place of the green 0 NuVizz calls box. The two cards of instructions under the search are gone. In their place, RECENT LOOKUPS: the searches run on that device, newest first, one tap to run again; the same search typed twice in different case is kept once, eight are kept, and a damaged stored list costs the list, never the screen. Unchanged: an address search still covers All dates unless a day or range is picked, and the pick is still not remembered; the answers under the panel look as they did. NOT IN THIS: the held “days not in history” follow-up, which still waits on Chad. 8 new tests (the recent-list rules, each broken on purpose and seen to fail); the phone and tablet guards drive both forms without a tab and measure the recent list.'],
   ['1.67.1', 'SHP IS PUREMAXX. Chad: “Shp is puremaxx.” The Print labels screen now names the SHP shipper Puremaxx, on its chip, on the list heading and in the line under the chips, the same way AVRT reads Averitt and ESTES reads Estes. Only the name changes: which orders are Puremaxx’s is still read off the order number (SHP…), exactly as before, and every other prefix (MILLER, MCC, RA and the rest) still shows as itself until somebody says whose it is. The board carries no ship-from name to check it against (the orders’ ship-from block is empty on the board), so the name is Chad’s word, written the way he typed it with a capital P; say so if Puremaxx is styled differently.'],
   ['1.67.0', 'PRINT LABELS BY SHIPPER AND DAY. Chad: “i want for me to be able to pick a shipper and a day like averitts or estes or shp and when all those orders come up for that day be able to print labels one by one for their orders or bulk print them.” A NEW SCREEN, Print labels, under More on a desktop and in the phone menu: pick the delivery day (Today, Tomorrow or any date), pick a shipper, and every one of that shipper’s deliveries on that day’s board is listed with its own Print button, a tick box for Print selected, and Print all. HOW IT KNOWS THE SHIPPER, read off the code and then off production’s own board for Sep 24 (Firestore only, zero NuVizz calls): no field on an order says whose freight it is, so the order NUMBER is the shipper. That day’s 837 orders were 710 plain Uline numbers, 80 ESTES-…, 29 AVRT-… (Averitt), 5 SHP…, 7 RA… pickups and a handful of MILLER, PRIMARY and TRENZ. So the chips are built from the day itself, with counts: AVRT is named Averitt, ESTES Estes, plain numbers Uline, and every other prefix shows as itself rather than under a name nobody checked. The shippers whose freight has no barcode we can scan come first, busiest first; Uline, whose freight already carries Uline’s own labels, comes after. PICKUPS ARE NOT LISTED (their freight is not on our dock), and the screen says how many were left out. THE LABEL IS THE STOP CARD’S LABEL: the same builder and viewer as the v1.66.0 Label button, so the board’s current skid, loose and weight (what the load-out app caps at), a dispatcher’s address fix laid over the ship-to, the phone the card would dial, and for orders created in New Order or Bulk add the saved reference, notes and ship-from. A saved label or customer note that could not be READ is said above the list, never printed around silently, because a missed address fix would put the old address on the freight. ONE BY ONE: each order says what it will print (2 skids · 1 loose, 3 pages; No count, one page prints, for an order that sent none), and once Print is pressed in the viewer the row says Print pressed 2:27 PM on that device, never printed, because the app cannot see the printer. A find box takes the number off the pallet (0538243875 finds ESTES-0538243875), a name or a city. BULK: Print all carries its page count on the button, and a batch over 200 pages asks once before it builds (Uline on a heavy day is well over a thousand sheets). The day is not remembered, so yesterday’s list never opens under this morning’s freight; the shipper is. New endpoint labels-by-shipper: the day’s board read to 21 fields, then the chosen shipper’s saved labels and customer notes; Firestore only, zero NuVizz calls, a 26-second budget. NOT CHANGED: the Delivery Ticket, the stop card’s Label button, New Order, Bulk add and the Route Workbench; the shared print viewer only gained a way to say Print was pressed. 19 new tests, every rule broken on purpose and seen to fail; three probes each on the phone and tablet guards, and the screen on the desktop guard.'],
   ['1.66.0', 'PRINT A DAVIS LABEL FROM ANY ORDER\u2019S CARD, AND SEE A TRUCK\u2019S PLATE ON HOVER WHEN THE LABELS ARE OFF. Chad: add a Print label action to the order panel, and hover-to-show labels for when driver labels are toggled off. LABEL ON THE ORDER PANEL: the stop card\u2019s action row (Text \u00b7 Call \u00b7 Navigate \u00b7 Ticket) gains Label, on the Map and in Routing, desktop and phone \u2014 any order on the board, whenever. The page is built from the board\u2019s CURRENT numbers, so a label printed today carries today\u2019s skids and loose (the count the load-out app caps at) and the ship-to as the card shows it, a dispatcher\u2019s address fix included; the label saved when the order was created in New Order or Bulk add, if there is one, fills in only the reference, the delivery notes and the ship-from. One Firestore read, ZERO NuVizz calls, and the same viewer and Print button as the Delivery Ticket. The Delivery Ticket itself is not changed. HOVER PLATES: with \u201cHide driver labels\u201d on (v1.65.1), resting the mouse on a truck shows that truck\u2019s plate \u2014 the same two lines the labels draw \u2014 and moving off takes it away. Mouse and trackpad only: on a phone a tap never sends the \u201cmouse left\u201d that would hide it, and a tap already opens the driver\u2019s card. Map tab only; the Route Workbench is not touched.'],
@@ -37802,28 +37804,31 @@ function CustomerHeader({ v, today, stacked }) {
 function PlaceDateBar({ sel, setSel, today, stacked }) {
   // The board reaches three days ahead (the scan's write horizon), so a day on it is searchable.
   const horizon = rangeAddDays(today, 3);
-  const pill = (on) => `${RANGE_PILL(on)}${stacked ? ' flex-1' : ''}`;
-  const field = `${RANGE_FIELD} min-w-0${stacked ? ' flex-1' : ''}`;
+  // ONE CONTROL, THREE SETTINGS — a segmented track, not three loose buttons, so it reads as the
+  // single choice it is. On a desktop the track is exactly the height of the boxes beside it
+  // (36 + 2×4 = 44); on a phone each segment keeps the 40px thumb floor.
+  const seg = (on) => `${stacked ? 'flex-1 min-h-[40px]' : 'h-9'} rounded-md px-3 text-sm font-medium whitespace-nowrap transition-colors ${
+    on ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-600 hover:text-slate-900'}`;
+  const field = `${LOOKUP_DATE}${stacked ? ' flex-1' : ''}`;
   return (
-    <div className={stacked ? 'space-y-2' : 'flex flex-wrap items-center gap-1.5'}>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {!stacked && <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mr-0.5">Dates</span>}
-        <button type="button" onClick={() => setSel({ kind: 'all' })} className={pill(sel.kind === 'all')}>All dates</button>
-        <button type="button" onClick={() => setSel({ kind: 'day', date: sel.date || today })} className={pill(sel.kind === 'day')}>One day</button>
-        <button type="button" onClick={() => setSel({ kind: 'range', from: sel.from || rangeAddDays(today, -29), to: sel.to || today })}
-          className={pill(sel.kind === 'range')}>Range</button>
+    <div className={stacked ? 'space-y-2' : 'flex flex-wrap items-center gap-2 min-w-0'}>
+      <div role="group" aria-label="Dates to search" className={`${stacked ? 'flex' : 'inline-flex'} items-center gap-1 rounded-lg bg-slate-100 p-1`}>
+        <button type="button" aria-pressed={sel.kind === 'all'} onClick={() => setSel({ kind: 'all' })} className={seg(sel.kind === 'all')}>All dates</button>
+        <button type="button" aria-pressed={sel.kind === 'day'} onClick={() => setSel({ kind: 'day', date: sel.date || today })} className={seg(sel.kind === 'day')}>One day</button>
+        <button type="button" aria-pressed={sel.kind === 'range'} onClick={() => setSel({ kind: 'range', from: sel.from || rangeAddDays(today, -29), to: sel.to || today })}
+          className={seg(sel.kind === 'range')}>Range</button>
       </div>
       {sel.kind === 'day' && (
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
           <input type="date" aria-label="The day to search" value={sel.date || ''} max={horizon}
             onChange={(e) => e.target.value && setSel({ kind: 'day', date: e.target.value })} className={field} />
         </div>
       )}
       {sel.kind === 'range' && (
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
           <input type="date" aria-label="First day to search" value={sel.from || ''} max={horizon}
             onChange={(e) => e.target.value && setSel({ kind: 'range', from: e.target.value, to: sel.to || e.target.value })} className={field} />
-          <span className="text-[11px] text-slate-400 shrink-0">to</span>
+          <span className="text-sm text-slate-400 shrink-0">to</span>
           <input type="date" aria-label="Last day to search" value={sel.to || ''} max={horizon}
             onChange={(e) => e.target.value && setSel({ kind: 'range', from: sel.from || e.target.value, to: e.target.value })} className={field} />
         </div>
@@ -38042,10 +38047,206 @@ function PlaceResults({ data, stacked, onOrder, renderDetail, rowsShown, onMore,
   );
 }
 
-const STOP_LOOKUP_MODE = 'dd_stop_lookup_mode';
 const STOP_LOOKUP_PLACE = 'dd_stop_lookup_place';
+const STOP_LOOKUP_RECENT = 'dd_stop_lookup_recent';
 const EMPTY_PLACE = { addr: '', city: '', state: '', zip: '' };
-const PLACE_FIELD = 'rounded-lg border border-slate-300 px-2 min-h-[40px] text-sm bg-white min-w-0 focus:outline-none focus:border-slate-500';
+
+// ── THE SEARCH PANEL (v1.63.0) ───────────────────────────────────────────────
+// Chad, on v1.62.0's two tabs: "terrible UI design why would you put on two tabs when there is
+// tons of blank screen … feels like an amateur wrote it." Both searches now sit side by side in
+// ONE panel on a desktop — nothing is hidden behind a tab on a screen with room for both — and
+// stack on a phone. One set of sizes for every box and button on it, so the two halves read as
+// one instrument: 44px boxes, 15px text, the brand blue for the one thing each half does.
+const LOOKUP_FIELD = 'flex items-center gap-2 min-w-0 h-11 rounded-lg bg-white pl-3 pr-1 ring-1 ring-inset ring-slate-300 focus-within:ring-2 focus-within:ring-[#1e5b92] transition-shadow';
+const LOOKUP_INPUT = 'flex-1 min-w-0 h-full bg-transparent text-[15px] text-slate-900 placeholder:text-slate-400 focus:outline-none';
+const LOOKUP_BOX = 'h-11 w-full min-w-0 rounded-lg bg-white px-3 text-[15px] text-slate-900 placeholder:text-slate-400 ring-1 ring-inset ring-slate-300 focus:outline-none focus:ring-2 focus:ring-[#1e5b92] transition-shadow';
+const LOOKUP_DATE = 'h-11 min-w-0 rounded-lg bg-white px-3 text-sm text-slate-900 ring-1 ring-inset ring-slate-300 focus:outline-none focus:ring-2 focus:ring-[#1e5b92]';
+const LOOKUP_PRIMARY = 'inline-flex items-center justify-center h-11 shrink-0 rounded-lg px-5 text-sm font-semibold text-white shadow-sm bg-[#1e5b92] hover:bg-[#174b79] active:bg-[#123d63] disabled:opacity-50 disabled:hover:bg-[#1e5b92] disabled:shadow-none disabled:cursor-not-allowed transition whitespace-nowrap';
+// Each half of the panel on a desktop: stacked with gaps below 1024px, a subgrid above it.
+// The explicit minmax(0,1fr) column matters: without it the half's one implicit track sizes to
+// its widest box's min-content, and at 1024px the order half grew underneath the address half.
+const LOOKUP_HALF = 'p-6 space-y-4 lg:space-y-0 lg:row-span-3 lg:grid lg:grid-rows-subgrid lg:grid-cols-[minmax(0,1fr)] lg:gap-y-4 min-w-0';
+const LOOKUP_GHOST = 'inline-flex items-center justify-center h-11 shrink-0 rounded-lg px-3 text-sm font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors';
+// Inside a box, beside the input rather than over it: two controls sharing pixels is what the
+// phone guard fails, and a clear button laid over a field is exactly that.
+const LOOKUP_CLEAR = 'grid h-10 w-9 shrink-0 place-items-center rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100';
+
+const LOOKUP_ORDER_HINT = 'Leading zeros are optional. A carrier PRO such as AVRT-0170416694, or a piece number such as 007157687-1, finds its order too.';
+
+/** THE PRICE OF WHAT IS ON SCREEN, read off the answer — not a slogan. Every Firestore answer
+ *  says 0; the one prompted answer says 1 and that it was asked for. A dot and a word, not a
+ *  green box: it is a fact to be able to check, not the headline of the page. */
+function LookupCallsPill({ calls }) {
+  const spent = calls === 1;
+  return (
+    <span
+      title={spent ? 'This answer came from NuVizz, because it was asked for — one call.' : 'Everything on this screen is read from our own records. Nothing here spends a NuVizz call.'}
+      className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${
+        spent ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-white text-slate-600 ring-slate-200'}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${spent ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+      {spent ? '1 NuVizz call — on request' : '0 NuVizz calls'}
+    </span>
+  );
+}
+
+/** One half of the panel: what it searches, and in one sentence what comes back. */
+function LookupSectionHead({ icon, title, children }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#1e5b92]/10 text-[#1e5b92]">{icon}</span>
+      <div className="min-w-0">
+        <h2 className="text-[15px] font-semibold leading-tight text-slate-900">{title}</h2>
+        <p className="mt-1 text-[13px] leading-snug text-slate-500">{children}</p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * BOTH SEARCHES, ONE PANEL. Left: the order box — a PRO, a stop number or a customer name, told
+ * apart by the shared classifyQuery rule, exactly as before. Right: an address, a city or a ZIP,
+ * with the dates. Each half is its own <form>, so Enter runs the search the cursor is in and
+ * never the other one.
+ *
+ * TWO VIEWS. Desktop: side by side from 1024px — halves at 1024, and from 1280 the address half
+ * the wider, because it holds four boxes and the dates. Phone: stacked, the order box first — the screen's original job and
+ * the one a rep reaches for most — and every control at the 40px thumb floor.
+ */
+function StopSearchPanel({ stacked, busy, q, setQ, onOrder, onClearOrder, place, setPlace, placeSel, onPlaceSel, onPlace, onClearPlace, today }) {
+  const placeOk = placeQueryUsable(placeQuery(place));
+  const hasPlace = !!(place.addr || place.city || place.state || place.zip);
+  const setField = (k) => (e) => { const v = e.target.value; setPlace((p) => ({ ...p, [k]: v })); };
+  return (
+    // ONE SHARED ROW GRID ACROSS BOTH HALVES (subgrid) from 1024px: the headings share a row, the
+    // boxes share a row, the last line shares a row — so the two sets of boxes sit at one height
+    // whichever description happens to wrap at this width. Without it, one extra line of text on
+    // one side put the two rows of inputs 16px apart, which is exactly the look Chad called amateur.
+    <div className={`rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 ${stacked
+      ? 'divide-y divide-slate-200'
+      : 'grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:grid-rows-[auto_auto_1fr] divide-y lg:divide-y-0 lg:divide-x divide-slate-200'}`}>
+      <form aria-label="Search by order or customer" className={stacked ? 'p-4 space-y-3' : LOOKUP_HALF}
+        onSubmit={(e) => { e.preventDefault(); if (!busy && q.trim()) onOrder(); }}>
+        <LookupSectionHead icon={<Package size={18} />} title="Order or customer">
+          A PRO or stop number opens that order&rsquo;s full history. A customer name shows their deliveries, drivers and receiving hours.
+        </LookupSectionHead>
+        <div className="self-start space-y-2">
+        <div className="flex items-center gap-2">
+          <div className={`${LOOKUP_FIELD} flex-1`}>
+            <Search size={16} className="text-slate-400 shrink-0" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              // Short on a phone: at 360px the box holds about eighteen characters beside its button.
+              placeholder={stacked ? 'PRO or customer' : 'PRO or customer name'}
+              aria-label="Find a customer by name, or a stop by PRO or stop number"
+              // DESKTOP ONLY. On a laptop the cursor belongs in the box. On a phone autoFocus
+              // throws the keyboard up over half the screen the moment the tab opens — and this
+              // app already fights iOS's visual viewport for the shell's own position (see the
+              // `position: fixed` block in Shell). Two views, two answers.
+              autoFocus={!stacked}
+              className={LOOKUP_INPUT}
+            />
+            {q && <button type="button" onClick={onClearOrder} aria-label="Clear the order search" className={LOOKUP_CLEAR}><X size={16} /></button>}
+          </div>
+          <button type="submit" disabled={!q.trim() || !!busy} className={LOOKUP_PRIMARY}>
+            {busy === 'order' ? 'Looking…' : 'Look up'}
+          </button>
+        </div>
+        {/* WHAT THE BOX FORGIVES, read off stopIdVariants in src/lib/stop-lookup.js — the three
+            spellings of one order that are all real in this database. Drawn in one of two places
+            so it always sits where the eye expects it: under the box wherever the address half
+            runs to two rows of boxes (phone, 1024), and level with the dates from 1280, where
+            the address boxes fit one row and the box row would otherwise open a gap. */}
+        <p className="xl:hidden text-xs leading-relaxed text-slate-500">{LOOKUP_ORDER_HINT}</p>
+        </div>
+        {!stacked && <p className="hidden xl:block self-start text-xs leading-relaxed text-slate-500">{LOOKUP_ORDER_HINT}</p>}
+      </form>
+
+      <form aria-label="Search by address, city or ZIP" className={stacked ? 'p-4 space-y-3' : LOOKUP_HALF}
+        onSubmit={(e) => { e.preventDefault(); if (!busy && placeOk) onPlace(); }}>
+        <LookupSectionHead icon={<MapPin size={18} />} title="Address, city or ZIP">
+          Every stop at an address, or in a city or ZIP. The house number must match exactly; Dr/Drive, Ste/Suite and NW spellings don&rsquo;t matter.
+        </LookupSectionHead>
+        {/* THE FOUR BOXES. One row from 1280px; below that the street takes its own line, because
+            a street squeezed to 200px shows "1100 Northsi" and nothing a rep can check. */}
+        <div className={stacked ? 'space-y-2' : 'self-start grid gap-2 grid-cols-[minmax(0,1fr)_4.5rem_6.5rem] xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)_4.5rem_6.5rem]'}>
+          <div className={`${LOOKUP_FIELD}${stacked ? '' : ' col-span-3 xl:col-span-1'}`}>
+            <MapPin size={16} className="text-slate-400 shrink-0" />
+            <input value={place.addr} onChange={setField('addr')} placeholder={stacked ? 'Street, e.g. 1100 Northside Dr' : 'Street address, e.g. 1100 Northside Dr'}
+              aria-label="Street address" className={LOOKUP_INPUT} />
+          </div>
+          {stacked ? (
+            <div className="grid gap-2 grid-cols-[minmax(0,1fr)_4rem_5.5rem]">
+              <input value={place.city} onChange={setField('city')} placeholder="City" aria-label="City" className={LOOKUP_BOX} />
+              <input value={place.state} onChange={setField('state')} placeholder="ST" aria-label="State" maxLength={2} className={`${LOOKUP_BOX} uppercase`} />
+              <input value={place.zip} onChange={setField('zip')} placeholder="ZIP" aria-label="ZIP" inputMode="numeric" maxLength={10} className={LOOKUP_BOX} />
+            </div>
+          ) : (<>
+            <input value={place.city} onChange={setField('city')} placeholder="City" aria-label="City" className={LOOKUP_BOX} />
+            <input value={place.state} onChange={setField('state')} placeholder="ST" aria-label="State" maxLength={2} className={`${LOOKUP_BOX} uppercase`} />
+            <input value={place.zip} onChange={setField('zip')} placeholder="ZIP" aria-label="ZIP" inputMode="numeric" maxLength={10} className={LOOKUP_BOX} />
+          </>)}
+        </div>
+        <div className={stacked ? 'space-y-3' : 'self-start flex flex-wrap items-center gap-3'}>
+          <PlaceDateBar sel={placeSel} setSel={onPlaceSel} today={today} stacked={stacked} />
+          <div className={stacked ? 'flex items-center gap-2' : 'ml-auto flex items-center gap-2'}>
+            {hasPlace && <button type="button" onClick={onClearPlace} className={LOOKUP_GHOST}>Clear</button>}
+            <button type="submit" disabled={!placeOk || !!busy} className={`${LOOKUP_PRIMARY}${stacked ? ' flex-1' : ''}`}>
+              {busy === 'place' ? 'Searching…' : 'Find stops'}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/**
+ * RECENT LOOKUPS — what stood under the search box as two cards of instructions. The rules for
+ * what is kept live in src/lib/stop-lookup-recent.js; this only draws them. Per device, and
+ * said so on screen, so nobody wonders where a colleague's searches went.
+ */
+function StopRecentLookups({ items, onPick, onClear, stacked, nowMs }) {
+  const iconFor = (e) => (e.kind === 'order' ? <Package size={16} /> : e.kind === 'customer' ? <Building2 size={16} /> : <MapPin size={16} />);
+  return (
+    <section aria-label="Recent lookups" className="space-y-3">
+      <div className="flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-slate-900">Recent lookups</h2>
+          {items.length > 0 && <p className="text-xs text-slate-500">On this device, newest first. Select one to run it again.</p>}
+        </div>
+        {items.length > 0 && (
+          <button type="button" onClick={onClear} className="shrink-0 min-h-[40px] rounded-md px-2 text-xs font-medium text-slate-500 hover:text-slate-900">Clear list</button>
+        )}
+      </div>
+      {items.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-300 px-6 py-10 text-center">
+          <Clock size={20} className="mx-auto text-slate-400" />
+          <div className="mt-2 text-sm font-medium text-slate-700">Nothing looked up on this device yet</div>
+          <div className="mt-1 text-xs text-slate-500">Each search you run is kept here, so a customer who calls back is one click away.</div>
+        </div>
+      ) : (
+        <div className={stacked
+          ? 'rounded-xl bg-white shadow-sm ring-1 ring-slate-200 divide-y divide-slate-100 overflow-hidden'
+          : 'grid gap-3 grid-cols-2 xl:grid-cols-4'}>
+          {items.map((e) => (
+            <button key={recentKey(e)} type="button" onClick={() => onPick(e)}
+              className={stacked
+                ? 'w-full flex items-center gap-3 px-4 py-3 min-h-[56px] text-left active:bg-slate-50'
+                : 'group flex items-center gap-3 min-w-0 rounded-xl bg-white p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-[#1e5b92]/40 hover:shadow-md transition'}>
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-[#1e5b92]/10 group-hover:text-[#1e5b92] transition-colors">{iconFor(e)}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold text-slate-900">{e.label}</span>
+                <span className="block truncate text-xs text-slate-500">{recentKindLabel(e)} · {recentAgo(e.at, nowMs)}</span>
+              </span>
+              <ChevronRight size={16} className="shrink-0 text-slate-300 group-hover:text-[#1e5b92] transition-colors" />
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 
 const STOP_LOOKUP_LAST = 'dd_stop_lookup_last';
 const STOP_LOOKUP_RANGE = 'dd_stop_lookup_range';
@@ -38110,11 +38311,36 @@ function StopLookupScreen() {
   const [editSaving, setEditSaving] = useState(false);
   const [editErr, setEditErr] = useState(null);
   // ── ADDRESS / CITY SEARCH (v1.62.0) ─────────────────────────────────────────
-  // WHICH SEARCH, remembered per device: a rep who works addresses all day should not re-pick it
-  // on every visit. Default 'order', the screen's original job — and what the layout guards open.
-  const [searchMode, setSearchMode] = useState(() => {
-    try { return localStorage.getItem(STOP_LOOKUP_MODE) === 'place' ? 'place' : 'order'; } catch { return 'order'; }
+  // WHICH SEARCH IS RUNNING — both forms are on screen at once (v1.63.0), so "Looking…" belongs
+  // on the button that was pressed, not on both. Both stay disabled while either runs: there is
+  // one answer area, and two searches racing into it would show whichever finished last.
+  const [busy, setBusy] = useState(null);         // 'order' | 'place' | null
+  // RECENT LOOKUPS on this device — see src/lib/stop-lookup-recent.js for what is kept and why.
+  const [recent, setRecent] = useState(() => {
+    try { return parseRecent(localStorage.getItem(STOP_LOOKUP_RECENT)); } catch { return []; }
   });
+  useEffect(() => {
+    try { localStorage.setItem(STOP_LOOKUP_RECENT, JSON.stringify(recent)); } catch { /* private mode — the list is a convenience */ }
+  }, [recent]);
+  const remember = useCallback((entry) => { if (entry) setRecent((list) => addRecent(list, entry)); }, []);
+  // ON A PHONE THE ANSWER STARTS BELOW BOTH FORMS — about a screen down once the address half is
+  // stacked under the order box — so a finished search brings the answer up to the top rather
+  // than leaving the rep looking at the forms they just used. Phone only: from 1024px the forms
+  // sit side by side and the answer is already in view. A tick, not an effect on `data`, because
+  // a saved note repaints `data` too and must not move the page.
+  const scrollerRef = useRef(null);
+  const panelRef = useRef(null);
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
+  const [answerTick, setAnswerTick] = useState(0);
+  useEffect(() => {
+    if (!answerTick || !isMobileRef.current) return;
+    const box = scrollerRef.current;
+    const panel = panelRef.current;
+    if (!box || !panel) return;
+    const top = panel.getBoundingClientRect().bottom - box.getBoundingClientRect().top + box.scrollTop - 8;
+    if (top > box.scrollTop) box.scrollTo({ top, behavior: 'smooth' });
+  }, [answerTick]);
   // The typed place is remembered too, for the same reason the order box is.
   const [place, setPlace] = useState(() => {
     try {
@@ -38131,7 +38357,7 @@ function StopLookupScreen() {
   const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
     if (!term) return;
-    setLoading(true); setErr(null); setPromptMsg(null);
+    setLoading(true); setBusy('order'); setErr(null); setPromptMsg(null);
     // An open editor belongs to the customer that WAS on screen. Carrying it across a new
     // search is how a dock's hours get typed onto somebody else's dock.
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
@@ -38162,6 +38388,10 @@ function StopLookupScreen() {
       if (!j.ok) throw new Error(j.error || 'lookup failed');
       setData(j);
       if (j.mode === 'customer-choose') setNameKey(null);
+      // Kept only once it ANSWERED — a search that errored is not one worth one-click repeating.
+      // A customer is labelled with the name the answer found, not the four letters typed.
+      remember(recentEntry({ kind: isName ? 'customer' : 'order', term, label: j.mode === 'customer' ? j.view?.name : null }));
+      setAnswerTick((n) => n + 1);
       // The ledger opens itself exactly when it IS the answer — nothing was found, or a read
       // failed. On a populated screen it stays folded away.
       const stopBlank = j.mode === 'stop' && (!j.dossier?.found || j.dossier?.complete === false);
@@ -38170,8 +38400,8 @@ function StopLookupScreen() {
       // ledger is where the year says which sources it deliberately did not read.
       const yearBlank = j.mode === 'customer-year' && !j.view?.counted;
       setLedgerOpen(!!(stopBlank || custBlank || yearBlank));
-    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); }
-  }, []);
+    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); setBusy(null); }
+  }, [remember]);
 
   /** Search whatever is in the box, with the current window and pinned customer. */
   const submit = useCallback((term, over = {}) => {
@@ -38417,7 +38647,7 @@ function StopLookupScreen() {
   const runPlace = useCallback(async (fields, selNow) => {
     const f = { ...EMPTY_PLACE, ...(fields || {}) };
     if (!placeQueryUsable(placeQuery(f))) { setErr('Type a street address, a city or a ZIP to search by.'); return; }
-    setLoading(true); setErr(null); setPromptMsg(null); closeOrder();
+    setLoading(true); setBusy('place'); setErr(null); setPromptMsg(null); closeOrder();
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     try { localStorage.setItem(STOP_LOOKUP_PLACE, JSON.stringify(f)); } catch { /* a remembered box is a convenience */ }
     try {
@@ -38426,10 +38656,12 @@ function StopLookupScreen() {
       if (!j.ok) throw new Error(j.error || 'search failed');
       setData(j);
       setPlaceRowsShown(PLACE_PAGE);
+      remember(recentEntry({ kind: 'place', place: f }));
+      setAnswerTick((n) => n + 1);
       // The ledger opens itself when it IS the answer: nothing matched, or days went unsearched.
       setLedgerOpen(j.mode === 'place' && !j.switchedOff && (j.coverage?.complete === false || !j.view?.matched));
-    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); }
-  }, [closeOrder]);
+    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); setBusy(null); }
+  }, [closeOrder, remember]);
 
   /** New dates on a place already on screen: search again, same place. */
   const changePlaceSel = useCallback((next) => {
@@ -38446,166 +38678,60 @@ function StopLookupScreen() {
     runPlace(next, placeSel);
   }, [place, placeSel, runPlace]);
 
-  const switchMode = useCallback((m) => {
-    setSearchMode(m);
-    try { localStorage.setItem(STOP_LOOKUP_MODE, m); } catch { /* per-device convenience */ }
-    // The answer on screen belongs to the other search; leaving it up under the new form would
-    // present a customer's deliveries as if they answered an address.
-    setData(null); setErr(null); closeOrder();
-  }, [closeOrder]);
+  /** A recent lookup, run again exactly as a rep would: the box refilled, then searched. Dates
+   *  are whatever is set NOW — for an address that is All unless a day or range was just picked,
+   *  because a remembered date would narrow a search nobody asked to narrow. */
+  const runRecent = useCallback((e) => {
+    if (!e) return;
+    if (e.kind === 'place') {
+      const f = { ...EMPTY_PLACE, ...e.place };
+      setPlace(f);
+      runPlace(f, placeSel);
+      return;
+    }
+    setQ(e.term); setNameKey(null); setYearOn(false);
+    submit(e.term, { nameKey: null, year: null });
+  }, [runPlace, placeSel, submit]);
+
+  /** Clearing a box clears the answer only when the answer is ITS answer — emptying the order box
+   *  must not wipe an address search that is still on screen beside it. */
+  const clearOrder = useCallback(() => {
+    setQ(''); setErr(null);
+    if (data && data.mode !== 'place') { setData(null); closeOrder(); }
+  }, [data, closeOrder]);
+  const clearPlace = useCallback(() => {
+    setPlace(EMPTY_PLACE); setErr(null);
+    if (data?.mode === 'place') { setData(null); closeOrder(); }
+  }, [data, closeOrder]);
 
   const d = data?.mode === 'stop' ? data.dossier : null;
 
   return (
-    <div className="flex-1 overflow-y-auto bg-slate-50">
-      <div className={`${SCREEN_DASH} p-4 sm:p-6 space-y-4`}>
+    <div ref={scrollerRef} className="flex-1 overflow-y-auto bg-slate-50">
+      <div className={`${SCREEN_DASH} px-4 py-5 sm:px-6 sm:py-8 space-y-5 sm:space-y-6`}>
         {/* THE LITERAL "Stop lookup" STAYS IN THE BODY. verify-desktop-layout.mjs proves the
             screen arrived with document.body.innerText.includes('Stop lookup') — rename it
             and a screen that opened perfectly fails as "could not be opened". */}
-        <div className="flex items-start justify-between gap-3 flex-wrap">
+        <header className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-xl font-bold text-slate-900">Stop lookup</h1>
-            <p className="text-xs text-slate-500 mt-0.5">
-              A <span className="font-semibold text-slate-600">customer name</span> for their deliveries and who ran them, a
-              {' '}<span className="font-semibold text-slate-600">PRO</span> for one order&rsquo;s whole history, or an
-              {' '}<span className="font-semibold text-slate-600">address or city</span> for every stop there.
-            </p>
+            <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900">Stop lookup</h1>
+            <p className="mt-1 text-sm text-slate-500">Search our delivery records by order, customer, address or city.</p>
           </div>
-          {/* THE PRICE OF WHAT IS ON SCREEN, read off the answer — not a slogan. Every Firestore
-              answer says 0; the one prompted answer says 1 and says it was asked for. */}
-          {data?.nuvizzCalls === 1
-            ? <span className="text-[11px] font-semibold text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 whitespace-nowrap">1 NuVizz call — on request</span>
-            : <span className="text-[11px] font-semibold text-green-800 bg-green-50 border border-green-200 rounded-lg px-2 py-1 whitespace-nowrap">0 NuVizz calls</span>}
+          <LookupCallsPill calls={data?.nuvizzCalls} />
+        </header>
+
+        <div ref={panelRef}>
+          <StopSearchPanel stacked={isMobile} busy={busy} today={today}
+            q={q} setQ={setQ} onClearOrder={clearOrder}
+            onOrder={() => { setNameKey(null); setYearOn(false); submit(q, { nameKey: null, year: null }); }}
+            place={place} setPlace={setPlace} placeSel={placeSel} onPlaceSel={changePlaceSel}
+            onPlace={() => runPlace(place, placeSel)} onClearPlace={clearPlace} />
         </div>
 
-        {/* WHICH SEARCH. Two searches, two forms — an address is four fields and a date choice, and
-            one box that guessed between "Atlanta" the city and "Atlanta" a customer name would be
-            wrong about one of them every time. */}
-        <div role="tablist" aria-label="Search by" className={`inline-flex rounded-xl border bg-white p-1 gap-1 ${isMobile ? 'w-full' : ''}`}>
-          {[['order', 'Order or customer'], ['place', 'Address or city']].map(([k, label]) => (
-            <button key={k} type="button" role="tab" aria-selected={searchMode === k} onClick={() => switchMode(k)}
-              className={`rounded-lg px-3 min-h-[40px] text-xs font-semibold whitespace-nowrap ${isMobile ? 'flex-1' : ''} ${searchMode === k ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}>
-              {label}
-            </button>
-          ))}
-        </div>
+        {err && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 break-words">{err}</div>}
 
-        {searchMode === 'place' && (
-          <form onSubmit={(e) => { e.preventDefault(); runPlace(place, placeSel); }} className="rounded-xl border bg-white p-2 space-y-2">
-            <div className={isMobile ? 'space-y-2' : 'flex items-center gap-2'}>
-              {/* FOUR BOXES THAT LOOK LIKE FOUR BOXES. The first cut left the street line bare, like
-                  the order box, beside three bordered fields — and read as two different controls. */}
-              <div className={`flex items-center gap-2 min-w-0 rounded-lg border border-slate-300 bg-white px-2 focus-within:border-slate-500 ${isMobile ? '' : 'flex-[3]'}`}>
-                <MapPin size={14} className="text-slate-400 shrink-0" />
-                <input value={place.addr} onChange={(e) => setPlace((p) => ({ ...p, addr: e.target.value }))}
-                  placeholder="Street address — 1100 Northside Dr" aria-label="Street address"
-                  autoFocus={!isMobile} className="flex-1 min-w-0 text-sm min-h-[38px] focus:outline-none bg-transparent" />
-              </div>
-              <div className={`flex items-center gap-2 min-w-0 ${isMobile ? '' : 'flex-[2]'}`}>
-                <input value={place.city} onChange={(e) => setPlace((p) => ({ ...p, city: e.target.value }))}
-                  placeholder="City" aria-label="City" className={`${PLACE_FIELD} flex-1`} />
-                <input value={place.state} onChange={(e) => setPlace((p) => ({ ...p, state: e.target.value }))}
-                  placeholder="ST" aria-label="State" maxLength={2} className={`${PLACE_FIELD} w-14 uppercase`} />
-                <input value={place.zip} onChange={(e) => setPlace((p) => ({ ...p, zip: e.target.value }))}
-                  placeholder="ZIP" aria-label="ZIP" inputMode="numeric" maxLength={10} className={`${PLACE_FIELD} w-20`} />
-              </div>
-              {!isMobile && (
-                <button type="submit" disabled={loading || !placeQueryUsable(placeQuery(place))}
-                  className="rounded-lg border px-3 min-h-[40px] text-xs font-semibold bg-slate-900 text-white disabled:opacity-40 whitespace-nowrap">
-                  {loading ? 'Looking…' : 'Look up'}
-                </button>
-              )}
-            </div>
-            <div className={isMobile ? 'space-y-2' : 'flex items-center justify-between gap-2 flex-wrap'}>
-              <PlaceDateBar sel={placeSel} setSel={changePlaceSel} today={today} stacked={isMobile} />
-              {(place.addr || place.city || place.state || place.zip) && (
-                <button type="button" onClick={() => { setPlace(EMPTY_PLACE); setData(null); setErr(null); }}
-                  className={`text-xs text-slate-500 hover:text-slate-800 px-2 min-h-[40px] ${isMobile ? 'hidden' : ''}`}>Clear</button>
-              )}
-              {isMobile && (
-                <button type="submit" disabled={loading || !placeQueryUsable(placeQuery(place))}
-                  className="w-full rounded-lg border px-3 min-h-[44px] text-sm font-semibold bg-slate-900 text-white disabled:opacity-40">
-                  {loading ? 'Looking…' : 'Look up'}
-                </button>
-              )}
-            </div>
-          </form>
-        )}
-
-        {searchMode === 'order' && (
-        <form
-          onSubmit={(e) => { e.preventDefault(); setNameKey(null); setYearOn(false); submit(q, { nameKey: null, year: null }); }}
-          className="rounded-xl border bg-white p-2 flex items-center gap-2"
-        >
-          <Search size={14} className="text-slate-400 shrink-0 ml-1" />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="EARTHLY ALTERNATIVE, or 007174397"
-            aria-label="Find a customer by name, or a stop by PRO or stop number"
-            // DESKTOP ONLY. This screen is a search box and nothing else, so on a laptop the
-            // cursor belongs in it. On a phone autoFocus throws the keyboard up over half the
-            // screen the moment the tab opens — and this app already fights iOS's visual
-            // viewport for the shell's own position (see the `position: fixed` block in Shell).
-            // Two views, two answers.
-            autoFocus={!isMobile}
-            className="flex-1 min-w-0 text-sm min-h-[40px] px-1 focus:outline-none"
-          />
-          {q && <button type="button" onClick={() => { setQ(''); setData(null); setErr(null); }} className="text-xs text-slate-500 hover:text-slate-800 px-2 min-h-[40px]">Clear</button>}
-          <button type="submit" disabled={!q.trim() || loading}
-            className="rounded-lg border px-3 min-h-[40px] text-xs font-semibold bg-slate-900 text-white disabled:opacity-40 whitespace-nowrap">
-            {loading ? 'Looking…' : 'Look up'}
-          </button>
-        </form>
-        )}
-
-        {err && <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3 break-words">{err}</div>}
-
-        {searchMode === 'place' && !data && !loading && !err && (
-          <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="rounded-lg bg-blue-100 text-blue-800 p-1.5"><MapPin size={14} /></span>
-              <div className="text-sm font-semibold text-slate-800">Every stop at an address, or in a city</div>
-            </div>
-            <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
-              <li>A <span className="font-semibold">street address</span> finds every stop we have made there — the caller does not need a PRO or a company name.</li>
-              <li>A <span className="font-semibold">city</span> or a <span className="font-semibold">ZIP</span> finds every stop in it, with the months, the busiest addresses and the drivers who ran them.</li>
-              <li><span className="font-semibold">All dates</span> unless you pick one day or a range — every day we hold, plus the live board.</li>
-              <li>The house number has to match: 110 will not find 1100. Suite, Drive/Dr and Northwest/NW spellings do not matter.</li>
-            </ul>
-          </div>
-        )}
-
-        {searchMode === 'order' && !data && !loading && !err && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="rounded-lg bg-blue-100 text-blue-800 p-1.5"><Search size={14} /></span>
-                <div className="text-sm font-semibold text-slate-800">Type a customer name</div>
-              </div>
-              <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
-                <li>How many deliveries they had <span className="font-semibold">today</span> — delivered, still out, came back.</li>
-                <li>Which driver ran each one, and how many each of them closed out.</li>
-                <li>The minute each delivered, the route it was on and which of their docks it went to.</li>
-                <li>Their receiving hours and dispatcher notes, before you promise anything.</li>
-              </ul>
-            </div>
-            <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="rounded-lg bg-slate-200 text-slate-700 p-1.5"><Package size={14} /></span>
-                <div className="text-sm font-semibold text-slate-800">Type a PRO</div>
-              </div>
-              <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
-                <li>Every day we hold that order — the sealed nightly history and today&rsquo;s live board.</li>
-                <li>Whether the freight came back, and who had it that morning rather than that evening.</li>
-                <li>Every time its address moved, and whether that was NuVizz or us.</li>
-                <li>What we sent NuVizz about it, and whether the write took.</li>
-              </ul>
-              <div className="text-[11px] text-slate-400">
-                A bare PRO finds the zero-padded one NuVizz stores, and a segmented stop number finds its order.
-              </div>
-            </div>
-          </div>
+        {!data && !loading && (
+          <StopRecentLookups items={recent} onPick={runRecent} onClear={() => setRecent([])} stacked={isMobile} nowMs={Date.now()} />
         )}
 
         {data?.mode === 'place' && (
