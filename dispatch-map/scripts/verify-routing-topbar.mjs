@@ -285,6 +285,86 @@ for (const vp of [{ name: 'laptop', width: 1440, height: 900 }, { name: 'desktop
   await ctx.close();
 }
 
+// ── THE TAB ROW KEEPS MESSAGES, AND ITS UNREAD BADGE, WITH THREE ROUTING TABS (v1.68.2) ──
+//
+// Chad: "move the claude shadow tab to here beside the build and engine buttons add a 3rd that
+// is called shadow". The third button is ~74px, and the header's tab row is the only part of it
+// that can shrink — so the first cut pushed MESSAGES off the end of the row at 1180–1366px, and
+// its unread badge went with it. On Routing that badge is the only sign a driver or customer has
+// texted. Measured on the first cut: 1180 lost 62px, 1194 47px, 1366 25px, where v1.68.1 fitted.
+// The fix lets the presence chip's TEXT give way first (it keeps its dot; the label is in its
+// tooltip) while the toggle never shrinks. This block fails the first cut and passes the fix.
+//
+// ROUTING → BUILD is the widest case: the board-status card sits in the bar there, and the
+// fixture is a real-sized day (805 stops) so the card's text is as wide as a real morning's. The
+// badge is injected in TabBtn's own markup because the unread count comes from Firestore, which
+// the guard does not have; the geometry is what is under test.
+//
+// WHAT IT DOES NOT COVER, said plainly: 1280px, 1080px and 820px, where v1.68.1 ALREADY clipped
+// the row (the "Dispatch Map" wordmark appears at 1280; the tablets are narrower than the row).
+// The fix makes all three better than v1.68.1, not whole. And a second dispatcher's longer chip
+// label is not seeded — presence is Firestore too — though it shrinks by the same rule.
+const BIG_DAY = Array.from({ length: 805 }, (_, i) => ({
+  ...STOPS[i % STOPS.length], stopNbr: `TW${10000 + i}`, pro: `TW${10000 + i}`, matchKey: `tabrow_${i}`,
+}));
+const BIG_PULL = { ...PULL, stops: BIG_DAY, count: BIG_DAY.length, scanUnplannedCount: BIG_DAY.filter((x) => x.isUnplanned).length };
+console.log('\nThe tab row — Messages and its unread badge stay on screen beside Build | Engine | Shadow\n');
+for (const width of [1180, 1194, 1366, 1440, 1920]) {
+  const ctx = await browser.newContext({ viewport: { width, height: 900 } });
+  const page = await ctx.newPage();
+  page.setDefaultTimeout(15000);
+  await page.route('**/.netlify/functions/**', (route) => {
+    const u = route.request().url();
+    const json = (b) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
+    if (u.includes('nuvizz-pull-today-stops')) return json(BIG_PULL);
+    return json({ ok: true, stops: [], rows: [], results: [], items: [], entries: [], loads: [], count: 0 });
+  });
+  for (const host of ['googleapis.com', 'gstatic.com', 'google.com']) await page.route(`**://*.${host}/**`, (r) => r.abort());
+  await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(1400);
+  await page.getByText('Routing (beta)', { exact: true }).first().click().catch(() => {});
+  await page.waitForTimeout(1800);
+  const m = await page.evaluate(() => {
+    const header = document.querySelector('header');
+    const nav = header && header.querySelector('nav');
+    if (!nav) return { error: 'no desktop header tab row' };
+    const msg = [...nav.querySelectorAll('button')].find((b) => /messages/i.test(b.innerText || ''));
+    if (!msg) return { error: 'no Messages tab in the row' };
+    const badge = document.createElement('span');
+    badge.className = 'ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center';
+    badge.textContent = '3';
+    msg.appendChild(badge);
+    const nr = nav.getBoundingClientRect(), br = badge.getBoundingClientRect();
+    const tabs = [...header.querySelectorAll('button')].filter((b) => /^(Build|Engine|Shadow)$/.test((b.innerText || '').trim()));
+    const chip = header.lastElementChild && header.lastElementChild.querySelector('button');
+    const cr = chip ? chip.getBoundingClientRect() : null;
+    const out = {
+      overflow: nav.scrollWidth - nav.clientWidth,
+      badgeShown: Math.max(0, Math.min(br.right, nr.right) - Math.max(br.left, nr.left)),
+      badgeW: br.width,
+      tabs: tabs.map((b) => { const r = b.getBoundingClientRect(); return { t: b.innerText.trim(), l: r.left, r: r.right }; }),
+      chipW: cr ? cr.width : null, chipR: cr ? cr.right : null,
+      headerH: header.getBoundingClientRect().height,
+      vw: window.innerWidth,
+    };
+    badge.remove();
+    return out;
+  });
+  const where = `${width}px, Routing → Build`;
+  if (m.error) { bad(`${where}: ${m.error}`); await ctx.close(); continue; }
+  if (m.overflow > 0) bad(`${where}: the tab row overflows by ${m.overflow}px with an unread badge on Messages — Messages is cut off`);
+  else if (m.badgeShown + 0.5 < m.badgeW) bad(`${where}: only ${Math.round(m.badgeShown)} of the ${Math.round(m.badgeW)}px unread badge is on screen`);
+  else ok(`${where}: Messages and its unread badge fit in the tab row`);
+  const names = m.tabs.map((x) => x.t).join(' | ');
+  if (names !== 'Build | Engine | Shadow') bad(`${where}: the toggle reads "${names}", not "Build | Engine | Shadow"`);
+  else if (m.tabs.some((x) => x.r > m.vw + 0.5 || x.l < 0)) bad(`${where}: part of the Build | Engine | Shadow toggle is off screen`);
+  else if (m.chipR != null && m.chipR > m.tabs[0].l + 0.5) bad(`${where}: the presence chip runs under the toggle`);
+  else ok(`${where}: Build | Engine | Shadow is whole and on screen`);
+  if (m.headerH > 48) bad(`${where}: the header is ${Math.round(m.headerH)}px tall — it wrapped or grew a scrollbar (45px on one row)`);
+  if (m.chipW != null && m.chipW < 27) bad(`${where}: the presence chip is ${Math.round(m.chipW)}px — it lost its dot`);
+  await ctx.close();
+}
+
 await browser.close();
 srv.close();
 clearTimeout(watchdog);
@@ -292,4 +372,4 @@ if (fails.length) {
   console.error(`\n\x1b[31m✗ ${fails.length} problem${fails.length === 1 ? '' : 's'} with the routing top bar\x1b[0m`);
   process.exit(1);
 }
-console.log('\n\x1b[32m✓ Routing\u2019s bar card clears Filters and the flags chip, and the Map\u2019s flag panel pushes its column down, at both desktop sizes\x1b[0m');
+console.log('\n\x1b[32m✓ Routing\u2019s bar card clears Filters and the flags chip, the Map\u2019s flag panel pushes its column down, at both desktop sizes — and the tab row keeps Messages beside Build | Engine | Shadow\x1b[0m');

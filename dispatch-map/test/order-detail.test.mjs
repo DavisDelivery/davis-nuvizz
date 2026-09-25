@@ -211,13 +211,15 @@ test('THERE IS NO OVERLAY ANY MORE — nothing on this screen covers or dims the
 test('EVERY LIST DRAWS THE PANEL ITSELF, from one shared decision about which row is open', () => {
   // One place decides; the lists only ask. A list cannot draw a panel under a row the screen
   // does not think is open, nor fail to draw one under the row it does.
-  assert.match(APP, /const renderOrderPanel = useCallback\(\(stopNbr, date\) => \{/);
+  // `opts` (v1.69.0) only chooses the panel's LAYOUT for a list in a narrow column; which row is
+  // open is still decided here and nowhere else.
+  assert.match(APP, /const renderOrderPanel = useCallback\(\(stopNbr, date, opts = \{\}\) => \{/);
   const fn = APP.slice(APP.indexOf('const renderOrderPanel = useCallback'), APP.indexOf('const renderOrderPanel = useCallback') + 900);
   assert.match(fn, /if \(!detail\) return null;/);
   assert.match(fn, /detail\.stopNbr !== String\(stopNbr/, 'matched on BOTH the order and its day');
   assert.match(fn, /detail\.date !== String\(date/);
   assert.match(fn, /<OrderDetailPanel/);
-  for (const list of ['CustomerDayTable', 'CustomerDayCards', 'StopDayTable', 'StopDayListMobile', 'CustomerRecent', 'CustomerYearScreen']) {
+  for (const list of ['CustomerDayTable', 'CustomerDayCards', 'StopDayTable', 'StopDayListMobile', 'CustomerRecent', 'CustomerYearScreen', 'DriverWeekResults']) {
     // Bounded look-ahead rather than [^>]*: `onMoreOrders={() => …}` carries a '>' of its own,
     // and a character class that trips over an arrow function is a test that fails on syntax.
     assert.match(APP, new RegExp(`<${list}[\\s\\S]{0,400}?renderDetail=\\{renderOrderPanel\\}`), `${list} must be given the panel renderer`);

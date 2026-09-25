@@ -17,12 +17,12 @@ import {
   MapPin, RefreshCw, X, Filter, Flag, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
-  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
+  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Building2, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal } from 'lucide-react';
+  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
-  query, orderBy, limit, updateDoc, deleteDoc,
+  query, orderBy, limit, updateDoc, deleteDoc, arrayUnion, arrayRemove, deleteField,
 } from 'firebase/firestore';
 
 import { db, mirrorMisconfig } from './lib/firebase.js';
@@ -71,10 +71,13 @@ import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } f
 import { formatCompletionPct } from './lib/completion-pct.js';
 import { isTvPath, tvRailRows, tvVerdict, tvFeedState, TV_RAIL_LIMIT } from './lib/tv-mode.js';
 import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent, tvImageFailure, boundsOf, snapBounds } from './lib/tv-static-map.js';
-import { driverLabelLines, driverFixStale } from './lib/driver-label.js';
+import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
+import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
+import { buildLabelsHtml } from './lib/label-html.js';
+import { filterLabelRows } from './lib/label-shippers.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
 import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
@@ -82,6 +85,8 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUE
 // ADDRESS / CITY SEARCH (v1.62.0) — the same module the endpoint and the nightly digest writer use,
 // so the screen can never build a query the server reads differently.
 import { placeParams, placeQuery, placeQueryUsable } from './lib/stop-search.js';
+import { addRecent, parseRecent, recentAgo, recentEntry, recentKindLabel, recentKey } from './lib/stop-lookup-recent.js';
+import { weekOf, weekLabel, addDays } from './lib/load-lookup.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -96,7 +101,7 @@ import {
   limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
   buildingTypeChanged, NO_TRACTOR_PLACE_MARKS,
 } from './lib/place-mark.js';
-import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES } from './lib/uline-review.js';
+import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES, noTractorWrite, noTractorTickFields, restrictionSnapshot, TICKED, canMoveTowardTractor, tractorOkWrite, ulineUntickFields, afterUlineOff } from './lib/uline-review.js';
 import {
   glyphCenter, glyphBadge, glyphMuted, glyphClusterBadge, GLYPH_INK_ON_LIME, FORKLIFT_BADGE_LIME,
 } from './lib/place-glyphs.js';
@@ -175,7 +180,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.63.0';
+const APP_VERSION = '1.69.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -229,7 +234,20 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.63.0', 'A ROUTE IN THE ROUTES PANEL OPENS IN COMPARE, EVEN WHEN NUVIZZ DATED IT THE DAY BEFORE. Chad, 2026-09-24, with ESTES APPT listed in the Routes panel and the Compare card refusing it: \u201cif its panel for routes it should load.\u201d WHY IT REFUSED, read off the stored board and rosters, not guessed: a card must know its NuVizz load or a Save is refused and strands the stops moved onto it, so it looks the route up on the SELECTED day\u2019s load roster. ESTES APPT\u2019s load (DAVIS000204757, Draft) is on 9/23\u2019s roster, because NuVizz still dates its stops 9/23; the scan carries open route stops forward onto today, so the route showed on 9/24 while its load lived on 9/23. THE FIX: when the day\u2019s roster cannot name the load and no stop carries a load id, the card looks on the roster of the day NuVizz files those stops under and takes the load that owns the name THERE \u2014 and says so: \u201cOpened ESTES APPT on NuVizz load DAVIS000204757 \u2014 NuVizz still dates this load and its stops 2026-09-23.\u201d NARROW ON PURPOSE, because route names repeat every day and the wrong same-named load is the one thing a card must never save to: every open stop must share one earlier NuVizz day; that day must have exactly one load owning the name (the screen\u2019s own rule \u2014 a cancelled twin loses, two live loads means nobody speaks); a cancelled load never speaks for live freight. Anything short of that keeps the old refusal word for word, with a clearer reason when the earlier day was checked and could not answer. IT CAN NEVER SPEND A NUVIZZ CALL: the earlier day is read with a new cacheOnly=1 on the roster endpoint, which answers from the stored copy or answers \u2018none\u2019, and wins over live=1. PROVEN IN A REAL BROWSER, both ways: a new CI guard (verify:wb-own-day) builds that exact board, clicks ESTES APPT and an ordinary route in the Routes panel, and records every roster request. On this build ESTES APPT opens on its own load, the ordinary route opens unchanged and reads no other day, and the earlier day is read once, cache-only. On main, and on this build with the switch off, ESTES APPT does not open. 11 unit tests, two mutation-checked. THE ROUTE WORKBENCH IS FROZEN AND THIS IS A WORKBENCH CHANGE, made because Chad named it; the commit carries his sentence. VITE_WB_OWN_DAY_ROSTER=off puts back the old refusal (build-time, so it is a redeploy). NOT CHANGED: the Routes panel\u2019s own Assign and Dispatch buttons still resolve the load from today\u2019s roster only, so on a route like ESTES APPT they still say its load id has not loaded \u2014 the Compare card\u2019s own driver box works, because it saves with the card.'],
+  ['1.69.1', 'A ROUTE IN THE ROUTES PANEL OPENS IN COMPARE, EVEN WHEN NUVIZZ DATED IT THE DAY BEFORE. Chad, 2026-09-24, with ESTES APPT listed in the Routes panel and the Compare card refusing it: \u201cif its panel for routes it should load.\u201d WHY IT REFUSED, read off the stored board and rosters, not guessed: a card must know its NuVizz load or a Save is refused and strands the stops moved onto it, so it looks the route up on the SELECTED day\u2019s load roster. ESTES APPT\u2019s load (DAVIS000204757, Draft) is on 9/23\u2019s roster, because NuVizz still dates its stops 9/23; the scan carries open route stops forward onto today, so the route showed on 9/24 while its load lived on 9/23. THE FIX: when the day\u2019s roster cannot name the load and no stop carries a load id, the card looks on the roster of the day NuVizz files those stops under and takes the load that owns the name THERE \u2014 and says so: \u201cOpened ESTES APPT on NuVizz load DAVIS000204757 \u2014 NuVizz still dates this load and its stops 2026-09-23.\u201d NARROW ON PURPOSE, because route names repeat every day and the wrong same-named load is the one thing a card must never save to: every open stop must share one earlier NuVizz day; that day must have exactly one load owning the name (the screen\u2019s own rule \u2014 a cancelled twin loses, two live loads means nobody speaks); a cancelled load never speaks for live freight. Anything short of that keeps the old refusal word for word, with a clearer reason when the earlier day was checked and could not answer. IT CAN NEVER SPEND A NUVIZZ CALL: the earlier day is read with a new cacheOnly=1 on the roster endpoint, which answers from the stored copy or answers \u2018none\u2019, and wins over live=1. PROVEN IN A REAL BROWSER, both ways: a new CI guard (verify:wb-own-day) builds that exact board, clicks ESTES APPT and an ordinary route in the Routes panel, and records every roster request. On this build ESTES APPT opens on its own load, the ordinary route opens unchanged and reads no other day, and the earlier day is read once, cache-only. On main, and on this build with the switch off, ESTES APPT does not open. 11 unit tests, two mutation-checked. THE ROUTE WORKBENCH IS FROZEN AND THIS IS A WORKBENCH CHANGE, made because Chad named it; the commit carries his sentence. VITE_WB_OWN_DAY_ROSTER=off puts back the old refusal (build-time, so it is a redeploy). NOT CHANGED: the Routes panel\u2019s own Assign and Dispatch buttons still resolve the load from today\u2019s roster only, so on a route like ESTES APPT they still say its load id has not loaded \u2014 the Compare card\u2019s own driver box works, because it saves with the card.'],
+  ['1.69.0', 'A DRIVER’S WEEK OF LOADS, ON STOP LOOKUP. Chad: “add a load look up so if i wanted to evaluate a weeks worth of a drivers loads … want milage of load earnings of load cost of load stops ect” — and “i want this to be part of the stops lookup tab.” The Stop lookup panel has a third search across the bottom: pick a week (Monday to Sunday, ‹ ›) and type a driver, or leave the name blank to see everyone who ran loads that week. The answer is the week in eight tiles — loads, delivered, road miles, time from first to last delivery, freight, order prices, per mile and per stop, and cost — then every load, day by day: stops and orders, delivered or not, first → last delivery, freight, road miles, order prices, per mile. “Map & stops” opens a load: a map of the yard and the stops numbered in the order they were delivered, and the orders beside it; tap one for its full record. A table on a desktop, cards on a tablet and phone. WHERE EACH NUMBER COMES FROM, AND WHAT COULD NOT BE ANSWERED. ROAD MILES were stored nowhere (NuVizz’s planned distance only arrives with the one-time enrichment, the travel cache keeps drive seconds, and Motive is read for positions, never an odometer), so they are measured: Google’s driving distance over the stops in the order they were delivered, yard to yard — one Google Routes request per load, kept, so a sealed load is measured once. LOAD_MILES=off stops every Google request. EARNINGS are the price on each order: Uline’s TOTAL-AMOUNT line, or the NuVizz Seal # where Davis records a price. An order that ran twice is priced once, on the load that delivered it; an order with no price is counted, never guessed; and a per-mile rate is printed only where every order behind it is priced. COST IS NOT IN THE SYSTEM — no driver pay, fuel or truck cost is stored anywhere this app reads — and the tile says so instead of printing a zero. Firestore only: 0 NuVizz calls. Dispatcher and up.'],
+  ['1.68.2', 'CLAUDE SHADOW IS ROUTING\u2019S THIRD TAB: BUILD | ENGINE | SHADOW. Chad: \u201ci want you to move the claude shadow tab to here beside the build and engine buttons add a 3rd that is called shadow.\u201d A MOVE, NOT A COPY. The toggle at the far right of the top bar on Routing now reads Build | Engine | Shadow, and Shadow opens the same Claude shadow screen that used to live under More \u2014 the screen itself is unchanged. Its More-menu entry and its phone-menu entry are gone, so there is one way in, not two that drift apart. ON A PHONE, the same way Engine is reached: Routing \u2192 the gear \u2192 \u201c\u21c4 Shadow view\u201d, and the Build | Engine | Shadow row sits at the top of the Engine and Shadow screens so the way back is always on screen. Opening Routing still lands on Build, as it always has. The Build Panel and the Route Workbench are not touched: the only line on the Routing screen is one more gear entry beside Engine\u2019s, phone only. The phone, tablet and desktop layout guards now reach the screen through Routing \u2192 Shadow and must see its heading before they measure it. FOUND IN REVIEW AND FIXED BEFORE MERGE, two things. (1) The third button is ~74px, and the tab row is the only part of the top bar that can shrink \u2014 so on Routing at 1180\u20131366px it pushed MESSAGES off the end of the row, and its unread badge with it; on Routing that badge is the only sign a driver or customer has texted. Measured: 1180 lost 62px, 1366 lost 25px, where v1.68.1 fitted. Now the presence chip\u2019s TEXT gives way first (it keeps its dot; the whole label is in its tooltip) and the toggle never shrinks: Messages and its badge fit at 1180, 1194, 1366, 1440 and 1920, and the widths v1.68.1 already clipped (820, 1080, 1280) are all better than they were. With room to spare nothing moves. verify-routing-topbar now fails the first cut at exactly those widths and passes this one. (2) Leaving Routing from Shadow and coming back mounted the Shadow screen for one render \u2014 one wasted status request (Firestore reads, 0 NuVizz) \u2014 before landing on Build; entering Routing now lands on Build from the first render, which also stops the same wasted request from Engine. PUT IT BACK: revert this one commit.'],
+  ['1.68.1', 'THE BUSINESS LABELS ON THE ULINE TAB’S FROM-ABOVE MAP CAN BE CLICKED. Chad: “I want to be able to click on these labels when evaluating a stop so i can see their addresses i look at labeled addresses as confirmed like in this photo where the pin is not exactly on a building.” The satellite close-up was built with Google’s place labels switched off for clicks (clickableIcons: false); every other map in the app leaves them on. Now clicking a label such as Aquakleen or Norcross Corporate Park opens Google’s own card with that business’s name and address, so a pin that lands between buildings can be checked against the addresses around it. Only that one setting on that one map changed; the pin, the zoom and the street and 3D views are as they were. Put back: revert this commit.'],
+  ['1.68.0', 'STOP LOOKUP, REDESIGNED: BOTH SEARCHES ON ONE PANEL, NO TABS. Chad, on v1.62.0: “terrible UI design why would you put on two tabs when there is tons of blank screen I don’t love any of this ui feels like an amateur wrote it i don’t like the design or astehtics” — and, after the screenshots: “Merge it.” The order-or-customer search and the address, city or ZIP search now sit side by side in one panel on a desktop (two halves at 1024px, the address half the wider from 1280px, the two rows of boxes held level whichever description wraps), each its own form so Enter runs the search the cursor is in; on a phone they stack with the order box first, and after a search the page scrolls to the answer. One set of sizes for every box and button (44px boxes, 15px text, the brand blue for each half’s one button, Look up and Find stops), a single All dates / One day / Range switch instead of three loose buttons, and a small status dot in place of the green 0 NuVizz calls box. The two cards of instructions under the search are gone. In their place, RECENT LOOKUPS: the searches run on that device, newest first, one tap to run again; the same search typed twice in different case is kept once, eight are kept, and a damaged stored list costs the list, never the screen. Unchanged: an address search still covers All dates unless a day or range is picked, and the pick is still not remembered; the answers under the panel look as they did. NOT IN THIS: the held “days not in history” follow-up, which still waits on Chad. 8 new tests (the recent-list rules, each broken on purpose and seen to fail); the phone and tablet guards drive both forms without a tab and measure the recent list.'],
+  ['1.67.1', 'SHP IS PUREMAXX. Chad: “Shp is puremaxx.” The Print labels screen now names the SHP shipper Puremaxx, on its chip, on the list heading and in the line under the chips, the same way AVRT reads Averitt and ESTES reads Estes. Only the name changes: which orders are Puremaxx’s is still read off the order number (SHP…), exactly as before, and every other prefix (MILLER, MCC, RA and the rest) still shows as itself until somebody says whose it is. The board carries no ship-from name to check it against (the orders’ ship-from block is empty on the board), so the name is Chad’s word, written the way he typed it with a capital P; say so if Puremaxx is styled differently.'],
+  ['1.67.0', 'PRINT LABELS BY SHIPPER AND DAY. Chad: “i want for me to be able to pick a shipper and a day like averitts or estes or shp and when all those orders come up for that day be able to print labels one by one for their orders or bulk print them.” A NEW SCREEN, Print labels, under More on a desktop and in the phone menu: pick the delivery day (Today, Tomorrow or any date), pick a shipper, and every one of that shipper’s deliveries on that day’s board is listed with its own Print button, a tick box for Print selected, and Print all. HOW IT KNOWS THE SHIPPER, read off the code and then off production’s own board for Sep 24 (Firestore only, zero NuVizz calls): no field on an order says whose freight it is, so the order NUMBER is the shipper. That day’s 837 orders were 710 plain Uline numbers, 80 ESTES-…, 29 AVRT-… (Averitt), 5 SHP…, 7 RA… pickups and a handful of MILLER, PRIMARY and TRENZ. So the chips are built from the day itself, with counts: AVRT is named Averitt, ESTES Estes, plain numbers Uline, and every other prefix shows as itself rather than under a name nobody checked. The shippers whose freight has no barcode we can scan come first, busiest first; Uline, whose freight already carries Uline’s own labels, comes after. PICKUPS ARE NOT LISTED (their freight is not on our dock), and the screen says how many were left out. THE LABEL IS THE STOP CARD’S LABEL: the same builder and viewer as the v1.66.0 Label button, so the board’s current skid, loose and weight (what the load-out app caps at), a dispatcher’s address fix laid over the ship-to, the phone the card would dial, and for orders created in New Order or Bulk add the saved reference, notes and ship-from. A saved label or customer note that could not be READ is said above the list, never printed around silently, because a missed address fix would put the old address on the freight. ONE BY ONE: each order says what it will print (2 skids · 1 loose, 3 pages; No count, one page prints, for an order that sent none), and once Print is pressed in the viewer the row says Print pressed 2:27 PM on that device, never printed, because the app cannot see the printer. A find box takes the number off the pallet (0538243875 finds ESTES-0538243875), a name or a city. BULK: Print all carries its page count on the button, and a batch over 200 pages asks once before it builds (Uline on a heavy day is well over a thousand sheets). The day is not remembered, so yesterday’s list never opens under this morning’s freight; the shipper is. New endpoint labels-by-shipper: the day’s board read to 21 fields, then the chosen shipper’s saved labels and customer notes; Firestore only, zero NuVizz calls, a 26-second budget. NOT CHANGED: the Delivery Ticket, the stop card’s Label button, New Order, Bulk add and the Route Workbench; the shared print viewer only gained a way to say Print was pressed. 19 new tests, every rule broken on purpose and seen to fail; three probes each on the phone and tablet guards, and the screen on the desktop guard.'],
+  ['1.66.0', 'PRINT A DAVIS LABEL FROM ANY ORDER\u2019S CARD, AND SEE A TRUCK\u2019S PLATE ON HOVER WHEN THE LABELS ARE OFF. Chad: add a Print label action to the order panel, and hover-to-show labels for when driver labels are toggled off. LABEL ON THE ORDER PANEL: the stop card\u2019s action row (Text \u00b7 Call \u00b7 Navigate \u00b7 Ticket) gains Label, on the Map and in Routing, desktop and phone \u2014 any order on the board, whenever. The page is built from the board\u2019s CURRENT numbers, so a label printed today carries today\u2019s skids and loose (the count the load-out app caps at) and the ship-to as the card shows it, a dispatcher\u2019s address fix included; the label saved when the order was created in New Order or Bulk add, if there is one, fills in only the reference, the delivery notes and the ship-from. One Firestore read, ZERO NuVizz calls, and the same viewer and Print button as the Delivery Ticket. The Delivery Ticket itself is not changed. HOVER PLATES: with \u201cHide driver labels\u201d on (v1.65.1), resting the mouse on a truck shows that truck\u2019s plate \u2014 the same two lines the labels draw \u2014 and moving off takes it away. Mouse and trackpad only: on a phone a tap never sends the \u201cmouse left\u201d that would hide it, and a tap already opens the driver\u2019s card. Map tab only; the Route Workbench is not touched.'],
+  ['1.65.1', 'HIDE THE DRIVER LABELS, KEEP THE TRUCKS. Chad: “I want a live drivers toggle like there is but one that just turns the labels off so trucks show but not truck number or drivers name.” A NEW ROW, “Hide driver labels”, DIRECTLY UNDER “Show drivers (live)” in Filters — on all three surfaces that carry the drivers switch: the desktop Map’s Filters dropdown, the wall display’s Filters card, and the phone’s filter tab. Ticked, every truck stays exactly where it is and the white name plates (“7792 · Brent D.”) come off. THE SETTING ALREADY EXISTED; ITS SWITCH WAS IN THE WRONG PLACE. Read off the code: showDriverLabels has lived in MapScreen for months, but its only control was a “Hide labels” button in the DESKTOP LEFT SIDEBAR under the legend — and the wall display has no sidebar, so on the television there was no way to turn the plates off at all. The phone was worse: plates default OFF below the mobile breakpoint and the phone never renders that sidebar, so a phone could not turn them ON. Both are fixed by the same row. The sidebar button is left where it is — it drives the same setting, so the two always agree, and removing it would be a change nobody asked for. BOTH OF THE WALL’S MAP MODES ALREADY HONOURED THE SETTING (the picture’s truck overlay and the live map’s driver-label overlay); only the control was missing. VERIFIED IN THE BUILT BUNDLE, not from the diff: on /tv, 3 trucks and 3 plates → tick → 3 trucks and 0 plates, and still 0 after a reload because it is remembered per device, so ticking it on the television changes only the television. PHRASED “HIDE” SO TICKED MEANS OFF, matching its neighbours (Hide terminal markers, Hide stem out, Hide place labels) — a panel where half the switches mean on and half mean off is a panel that gets read wrong. AND IT GREYS OUT WHEN THERE ARE NO TRUCKS TO LABEL. With live drivers off, or on a past date where the Motive feed does not apply, the switch would move and change nothing — which teaches whoever is holding the remote that the panel is broken. It stays visible, greyed, keeps the choice already made, and its hover text says why (“Turn on Show drivers (live) first”, or “only available for today’s date” — never pointing at a switch that is itself greyed). One rule in lib/driver-label.js (driverLabelsToggle) shared by all three surfaces, because the same fact drifting apart across screens is how this app has got things wrong before. 6 new tests. AN ADD, NOT A CHANGE: nothing that worked before behaves differently, so it is one commit and `git revert` is the whole way back. The dispatch Map only — the Route Workbench is not touched.'],
+  ['1.65.0', 'DAVIS DELIVERY LABELS \u2014 ITS OWN LABEL, PRINTED BY THE ORDER, SAVED WITH IT. Chad: \u201cThis is supposed to be its own label, separate entity \u2026 just something we can print by the order, but it is not a delivery ticket. It is not a manifest \u2026 just like we can print a delivery ticket.\u201d ONE LETTER PAGE PER PIECE (skids first, then loose): the service date, SHIP TO in big type, SKID 1 of 2 beside the order\u2019s skid / loose / total / weight, one barcode across the page (DD/<NuVizz stop #>/<piece>), the stop # and reference, items and delivery notes, the website QR and \u201cWE CAN DELIVER FOR YOU TOO!\u201d. It opens in the SAME viewer and Print button as the Delivery Ticket, so it prints the way a ticket prints and never opens a new window (which strands the iPad home-screen app). SAVED WITH THE ORDER: every order created from New Order, Bulk add and the Estes manifest push saves its label to its own Firestore collection (order-labels) \u2014 nothing else reads or writes it \u2014 so a label can be printed again any time; ZERO NuVizz calls. WHERE: NEW ORDER is always LIVE now (Chad: \u201ctake the beta out of here and just make it live all the time\u201d); after Create it offers Print label and Delivery ticket, and a Labels & tickets list shows every order created on a day with Label and Ticket beside each. BULK ADD: the SERVICE DATE is on the main page, out of the Pickup drop-down (Chad: \u201cit should be on main page for that upload\u201d), shown as a weekday date and locked while a batch sends; Create and the Estes push offer Print labels for the batch; Pushed to NuVizz has Select all, a tick per row, Print labels for the selected, and a Label button on every row \u2014 a clean run lands there with its batch already ticked. The \u201cA NEW load (one import)\u201d mode is not touched (Chad: \u201cthe labels shouldn\u2019t touch the new load\u201d). One order that cannot be printed (a character a barcode cannot carry, or over 99 pieces) is left out and NAMED; the rest still print. LOAD-SCAN v0.51.0 READS IT: camera and gun, matched on the EXACT stop number, one page = one piece, capped at the manifest count; two pages of one order side by side each book once; a Davis read never changes how a Uline label books; LOADSCAN_DAVIS_LABELS=off turns reading it off with no deploy. Also fixed there: a hand-added or over-the-count piece on a stop whose number has fewer than 7 digits (SHP29379) was silently refused by the server while the phone marked it synced. THE WMS reads it too (its own PR). The Delivery Ticket, the manifest print and the Route Workbench are not changed. ALSO, FOUND BY THIS PR\u2019S CI: the Claude shadow tab\u2019s settings change-log named each row by the save\u2019s millisecond, so two saves in the same millisecond collided and the second change went unlogged; each row now carries a random tail.'],
+  ['1.64.0', 'YOUR OWN TRUCK CAPS ON THE CLAUDE SHADOW TAB, OVER THE LEARNED ONES. Chad: “truck capacity should be learned from all the data we have and we should have a ui where we can customize it.” The learned capacity card now has Edit caps. Type a cap in skid spots beside any driver or route and it replaces the learned one for that driver or route; clear the box and the learned cap is back. A driver or route with no history yet (a new hire, a new route) can be given a cap too. The loose-pieces-per-skid-spot setting (10 by default, one number for every truck) is editable, and changing it rebuilds every learned number on the spot: at 5 loose to a spot, 17 skids and 30 bags is 23 spots, not 20. Each row says whether its cap is yours or learned, and who set yours and when; every change, a cleared cap included, is kept in a log. THINGS THAT WILL NOT HAPPEN: a cleared box is never saved as a cap of 0 (a truck that holds nothing) — blank means use the learned cap, and anything that is not a number from 1 to 60 is refused with the reason; two dispatchers saving different drivers at the same moment cannot erase each other, because every cap is its own record; a save that times out is read back before it is called failed, and one that cannot be confirmed says so; only the boxes you actually change are sent, so a Refresh mid-edit cannot overwrite somebody else’s save; turning a phone sideways does not lose what was typed; and if the settings cannot be read, every row says unknown instead of pretending there are no caps. NOT DECIDED YET, and the card says so: when a load’s driver and its route both have a cap, which one it is held to — that is Chad’s call, and nothing plans with these numbers yet. Nothing here touches the board, the Build Panel, the learned engine or any dispatcher setting; it writes only the shadow’s own records, and CLAUDE_SHADOW=off stops it with everything else.'],
+  ['1.63.0', 'THE CLAUDE SHADOW LEARNS TRUCK CAPACITY FROM EVERY SEALED DAY, PER DRIVER AND PER ROUTE, LOOSE PIECES INCLUDED. Chad: \u201ctruck capacity should be learned from all the data we have\u201d, learned \u201cfrom the routes they\u2019re assigned to\u201d, and \u201cif they put 17 skids on a box truck, you then can\u2019t put 30 bags of peanuts as well.\u201d The Claude shadow tab now shows what each driver and each route has actually carried out of the dock, read from the sealed history (82 days, back to June 4) at zero NuVizz calls. A truck trip is one route with one driver on one day, deliveries only, and ONLY STOPS THAT RODE THE TRUCK THAT DAY: a delivered stop counts when its delivery stamp is on that day, an unable-to-deliver when its last update is, and a stop still out for delivery when the day sealed does not count at all, because an order nobody closed keeps its route and driver and gets re-filed onto the next day (the same rule the learned engine adopted after the DAWSONVILLE/CRUMPTON replay). Pickups come back on the truck and take no outbound room; an order still scheduled at the end of the day never left. Freight is measured in skid spots, skids plus loose pieces at 10 loose to a spot, so 17 skids and 30 bags is 20 spots. The learned cap is the fuller end of what they have carried, the 95th percentile of their trips, and it needs 20 trips, because below 20 the 95th percentile is simply the single fullest trip and one mis-keyed day would set it; the typical load, the most ever and the fullest trip sit beside it so the number can be checked against a real day. A TRUCK LEARNED TWICE ITS SIZE IS PREVENTED: when the day\u2019s load roster shows more live loads under a route name than the history has trips for it, one trip absorbed two loads and is left out; when the roster cannot say (no roster that day, which is all of June, or a missing stop count), the trip is left out too rather than guessed clean. Every trip and stop left out is counted on screen by reason. The shadow also records each route\u2019s planned stop order and the order it was actually driven, for the planner to learn from. It learns every night at 4:30 AM ET after the history seals, and on Learn now, which learns as many days as fit in about 15 seconds, shows exactly what that run did, and leaves the rest for the next press or the night. Nothing here changes the board, the Build Panel, the learned engine or any setting a dispatcher uses; it writes only the shadow\u2019s own records, nothing plans with these numbers yet, and CLAUDE_SHADOW=off stops it with everything else. Customizing the numbers is the next release.'],
+  ['1.62.3', 'TRACTOR OK ON THE ULINE TAB NOW TAKES ULINE\u2019S STRAIGHT-TRUCK STAMP OFF THE CUSTOMER PROFILE. Chad: \u201csame thing if we marked it tractor ok it should remove the uline straight truck advisory stamp on the order profile.\u201d Every Tractor OK on the tab \u2014 the button, T, the full-screen bar and Change to Tractor OK \u2014 now writes what unticking \u201cUline: straight truck (advisory)\u201d by hand on the stop card writes: the flag taken out of Equipment restrictions (a remove, so nothing else on the list is touched) and the list locked as a dispatcher\u2019s. THE LOCK IS WHAT MAKES IT STICK. The scanner adds every flag it detects to an unlocked list on every scan and Uline writes \u201cstraight truck\u201d on every order, so an unlocked removal comes straight back with the next Uline order \u2014 checked by running the scanner\u2019s own rule on the written note both ways. What Uline wrote stays on record in the scanner\u2019s audit trail. WHAT IT DOES NOT CHANGE, read off the code: Tractor OK already let the router send a 53\u2032 and already kept the 9pm alert quiet, so no truck and no alert moves. What does change: the customer LEAVES THIS TAB on the next load, because Uline\u2019s stamp is what put it here. Undo puts the stamp back and the lock as it was. Once the stamp is off, the decided list no longer offers Clear on that row (it would say Uline\u2019s flag takes over again, and there is none). Customers marked Tractor OK before this change, or painted Tractor-trailer OK in Routing, show a \u201cTake Uline\u2019s stamp off the profile\u201d button in the decided list \u2014 one tap each, and the Vehicle mark\u2019s own date is left alone. Nothing is sent to NuVizz.'],
+  ['1.62.2', 'NO TRACTOR TRAILER ON THE ULINE TAB NOW TICKS IT ON THE CUSTOMER PROFILE. Chad: \u201cwhen working in the address history if i select no tractor trailer it should then select the no tractor trailer icon on the customer profile and it didn\u2019t.\u201d It did not because the tab wrote only the Vehicle mark (Box truck only), and the stop card keeps that and the Equipment restrictions chip as two separate statements on purpose (v0.99.3). EVERY No tractor trailer on the tab \u2014 the button, N, the full-screen bar, Change to\u2026 and Residential \u2014 now writes both, the chip EXACTLY as the stop card\u2019s own toggle writes it: no_tractor_trailer added to Equipment restrictions (a union, so nothing else on the list is touched) and the list locked as a dispatcher\u2019s. The lock is what makes it a person\u2019s mark \u2014 the pin draws a solid \u201cno\u201d instead of Uline\u2019s half-and-half \u2014 and without it the scanner\u2019s legacy migration could swap the tick back to the Uline advisory on the next scan. WHAT IT DOES NOT CHANGE, read off the code: the router already kept a Box truck only customer off a tractor and the 9pm trailer alert already treated one riding a tractor route as a conflict, so no truck and no alert moves \u2014 only what the profile and the pin say. Undo puts back exactly what was there, the lock included. Once the profile is ticked a person\u2019s no stands under the answer, so the decided list no longer offers Change to Tractor OK or Clear on that row: the stop card, where both marks sit, is where it is changed (the v1.60.0 rule for Tractor OK over a person\u2019s no). Customers answered No tractor trailer on the tab BEFORE this fix, or painted Box truck only in Routing, show a \u201cTick No tractor trailer on the profile\u201d button in the decided list \u2014 one tap each, and the Vehicle mark\u2019s own date is left alone. Nothing is sent to NuVizz.'],
   ['1.62.1', 'THE SHIPLIFY TEST BOX IS THE LAST THING ON AN ORDER NOW. Chad, 2026-09-24, pointing at the box: \u201cmove this to the very bottom of an order profile.\u201d It sat up with the address, between the tractor line and the order\u2019s own details, where a trial result was the first thing read on every order. It is reference material, so it now comes after Recent deliveries on the desktop sidebar and on the phone drawer, and last on the stop lookup (which has no Recent deliveries section). ONLY THE BOX MOVED. The building type (the school/church/government mark and who set it) and the red no-tractor line stay up with the address, because they are about which truck can go there \u2014 the same thing the tractor line beside them says. With a tab\u2019s Shiplify switch off the box is absent entirely, and its new section draws no empty strip. 4 new tests, one mutation-checked (put the box back above Recent deliveries and it goes red). One commit, so git revert is the whole way back.'],
   ['1.62.0', 'STOPS BY ADDRESS AND BY CITY, OVER ALL DATES UNLESS A DAY OR A RANGE IS SET. Chad: “need to be able to look up stops by address & city as there are times i may want to see every delivery done in that city so will need some date ranges as well as specific dates date ranges should default to all unless set.” WHAT THE SCREEN DID WITH AN ADDRESS BEFORE THIS: the one box sent anything with a space in it to the customer-NAME search, so “1100 Northside Dr”, “Atlanta” and “30318” all searched business names and found nothing. Stop lookup now has two tabs — Order or customer, and Address or city — and the second takes a street address, a city, a state and a ZIP, with All dates / One day / Range under them. ALL IS THE DEFAULT AND IT IS NOT REMEMBERED: every visit starts on it, because a day picked last Tuesday and silently kept would narrow this morning’s search without anybody choosing to. WHY IT NEEDED A NIGHTLY INDEX, measured off the code rather than guessed: the warehouse is stored one day per folder with nothing keyed by place, the endpoint has 26 seconds, and “all dates” as a sweep is every stop ever captured — 57,227 at the last backfill, the thing the year view already refused to do for the same reason. So when a day seals, one SEARCH DIGEST is written for it (history_search, a new post-seal hook): every stop that day reduced to the columns a search needs and a row shows. All dates is then one read per day we hold, about 110 today, instead of one per stop. ONE DOCUMENT PER DAY, NOT PER CITY, ON PURPOSE: a city-keyed index would silently miss every stop whose stored city is not spelled the way the rep typed it, and the postal city and the town a customer names are routinely different. Scanning the day means an ADDRESS search never depends on the city field, and a city search can say “this address also has stops filed under SANDY SPRINGS” instead of a bare zero. THE MATCHING RULES, and which way each errs: the house number is exact and is the house number (110 never finds 1100, and “100 Main” never finds 5100 Main St Ste 100 through its suite — a false match hands a rep the wrong building’s proof of delivery); Drive/Dr, Suite/Ste, Northwest/NW, Building/Bldg and case never decide a match; the city is exact, never a prefix, because Peachtree City and Peachtree Corners are forty miles apart and the totals for one must not absorb the other — the cities that start with what was typed are OFFERED, with counts, never added. A WHOLE ADDRESS PASTED INTO THE FIRST BOX IS TAKEN APART — “1100 Northside Dr, Atlanta, GA 30318” is a street, a city, a state and a ZIP, not a six-word street name that no stop could ever match — conservatively: without commas only a trailing ZIP and a state code that is not also a street word move (NE is north-east and CT is Court, so they never do), and a box the rep filled in by hand always wins over a pasted part. EVERY DAY WE HOLD BUT COULD NOT SEARCH IS NAMED on screen, amber, above the counts, so an index gap can never read as “we never delivered there”. Today and the board ahead come from the live board; a sealed day is never also read from the board, so nothing counts twice. The answer is the counts over EVERY match (stops, delivered, came back, not closed out), month by month, the busiest addresses (tap one to narrow), the cities and the drivers, then the newest 500 stops listed in the customer view’s own day tables with the order opening under its row. BACKFILL: history-search-rebuild builds the digest for days sealed before this shipped — ten a call, oldest first, with a dry run that says what it would build — Firestore only. STOP_SEARCH=off puts every side back at once: the nightly write, the rebuild and the search, which then says it is switched off rather than showing zero. AND A BUG IN THE CUSTOMER VIEW, found building this because the same rows render here: the shared row builder read null as zero (Number(null) is 0), and the scanner writes explicit nulls for an unplanned stop’s sequence, cartons and weight — so every such stop read “stop 0 · 0 pc · 0 plt · 0 lb”, sorted to the TOP of its day, and never reached its volume for a piece count. Null is null now, in both views; a real zero is still a zero. 45 new tests (13 end to end against the Firestore fake, every key rule mutation-checked — broken on purpose and seen to fail), two probes on each layout guard, zero NuVizz calls anywhere in it.'],
   ['1.61.0', 'THE ULINE TAB GETS THE 3D VIEW, BIGGER PICTURES, A FULL SCREEN THAT STAYS IN THE BROWSER, AND BUILDING-TYPE BUTTONS. Chad: \u201cI want my 3d view here as well also when you click full screen i want it to stay within the browser we have a lot of gray space on this page we could be using to make this maps bigger\u201d \u2014 and: \u201cgive me options to label building type like this is residential \u2026 double duty as residentials we don\u2019t allow to be planned on tractors.\u201d 3D: the Map\u2019s photorealistic 3D, aimed at the building at a 67.5\u00b0 tilt with Google\u2019s compass and tilt controls to turn it and look down the side for doors. ONE 3D view for the whole review, re-pointed per location, because Google bills 3D per view created; it stays covered until the new building has landed (the v1.60.3 rule). BIGGER: the tab drops the dashboard width cap. From above and 3D sit side by side, sized so that row ends at the bottom of the window, with the street view the full width under them \u2014 measured on a 1920\u00d71080 screen each picture is 761\u00d7476 (1.60.0\u2019s were 380 tall), on a 2560\u00d71440 screen 1081\u00d7836. Two across at most, on purpose: three across a 1080p screen were no bigger than 1.60.0\u2019s two. The name and Uline\u2019s words sit on the left and the answers and building type on the right, so the pictures start higher up the page; a narrower desktop gets one picture per row rather than slivers. FULL SCREEN FILLS THE BROWSER WINDOW, NOT THE MONITOR: Google\u2019s own full-screen buttons are off; ours keeps the name, the three answers and (on a desktop) the building type across the top, and Esc closes it. The picture is restyled, not rebuilt, so going full screen is no new Google load, and Google is told the new size so the map fills it and stays on the building. On a phone the Above / 3D / Street switch comes along into full screen and the answers sit three across, so the building keeps the screen. BUILDING TYPE on the card: Residential, School, Church, Government, None \u2014 the same field the stop card sets. READ OFF THE CODE: a Residential type on its own keeps nothing off a tractor today \u2014 the router never reads building type, and the board\u2019s no-tractor place flag covers School, Church and Government only. So the Residential chip here does the double duty in ONE write: it labels the place Residential AND saves Box truck only, which the router does obey. The chip and the line under it say so, and Undo puts both back. School, Church and Government save the label only; they already raise the red place flag when one is on a tractor route. Nothing is sent to NuVizz.'],
@@ -7390,7 +7408,7 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
 // `drawnAsImage` — the wall display renders its map as a static picture, which can show pins
 // and nothing else. The rows that only mean something to a live vector map are hidden there
 // rather than left inert; see the call site for why a dead toggle is worse than a missing one.
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null, drawnAsImage = false, tvLiveMap = null, setTvLiveMap = null }) {
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null, drawnAsImage = false, tvLiveMap = null, setTvLiveMap = null, showDriverLabels = null, setShowDriverLabels = null }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
   // Clustering is off by default now; with icons memoized, unclustered rendering is far
   // cheaper, so only warn on genuinely huge boards rather than nagging every busy day.
@@ -7436,6 +7454,22 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
       {vehicleDisabled && (
         <div className="text-[10px] text-slate-500 italic -mt-1 mb-1 leading-tight">Live drivers only available for today.</div>
       )}
+      {setShowDriverLabels && (() => {
+        // Trucks stay, plates go. Chad: "one that just turns the labels off so trucks show but
+        // not truck number or drivers name." The rule — including why it greys out when there
+        // are no trucks to label — is driverLabelsToggle in lib/driver-label.js, shared with
+        // the phone's filter tab so the two can never disagree about what the switch means.
+        const t = driverLabelsToggle({ labelsOn: showDriverLabels, driversOn: filters.showVehicleLocation, vehicleDisabled });
+        return (
+          <MapFilterToggle
+            label="Hide driver labels"
+            checked={t.hidden}
+            onChange={(v) => setShowDriverLabels(!v)}
+            disabled={t.disabled}
+            disabledHint={t.hint}
+          />
+        );
+      })()}
       {!drawnAsImage && (
         <MapFilterToggle
           label="Show clustered markers"
@@ -8439,7 +8473,7 @@ function buildBolHtml(stop, logoUrl) {
 // the supplied HTML in an iframe (so Print outputs just the document) and scales the page
 // to fit the screen. `pageW` is the doc's CSS layout width (816 portrait / 1056 landscape
 // Letter @ 96dpi). No API call.
-function PrintDocModal({ title, html, pageW = 816, onClose }) {
+function PrintDocModal({ title, html, pageW = 816, onClose, onPrint }) {
   const iframeRef = useRef(null);
   const wrapRef = useRef(null);
   const PAGE_W = pageW;
@@ -8479,7 +8513,9 @@ function PrintDocModal({ title, html, pageW = 816, onClose }) {
       .replace(/(^|\})(\s*)body\s*\{/g, '$1$2.printdoc-bridge {');
     return { scoped, body };
   }, [html]);
-  const doPrint = () => { try { window.print(); } catch { /* print blocked */ } };
+  // onPrint (optional) is told the Print button was PRESSED — the one thing this viewer can observe.
+  // Whether paper came out is the browser's dialog's business, so no caller may call that "printed".
+  const doPrint = () => { try { onPrint?.(); } catch { /* a caller's bookkeeping never blocks the print */ } try { window.print(); } catch { /* print blocked */ } };
   return (
     <div className="fixed inset-0 z-[1400] bg-slate-900/80" role="dialog" aria-modal="true" aria-label={title || 'Document'}
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
@@ -9556,7 +9592,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
         {/* Enhancement 6 — the four actions that account for nearly every tap, as
             thumb-size buttons (text links are the hardest targets on a phone). The long
             tail folds into More; every existing action stays reachable. */}
-        <div className="grid grid-cols-4 gap-1.5 mt-2.5">
+        <div className="grid grid-cols-5 gap-1.5 mt-2.5">
           {onText && (
             <button onClick={() => onText(live)} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title={textPhone ? 'Text customer' : 'Text customer — no number on file yet; add one in the compose box'}>
             <MessageSquare size={16} className="text-slate-500" /> Text{textPhone ? '' : ' (add #)'}
@@ -9573,6 +9609,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
           <button onClick={() => setShowTicket(true)} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title="Print-ready Delivery Ticket">
             <FileText size={16} className="text-slate-500" /> Ticket
           </button>
+          <StopLabelButton stop={live} note={note} phone={textPhone} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5 disabled:opacity-60" />
         </div>
         <button onClick={() => setMoreOpen((o) => !o)} className="mt-1.5 text-[11px] text-slate-500 hover:text-slate-800" aria-expanded={moreOpen}>
           More: Street View · Edit address · Correct pin · History {moreOpen ? '▴' : '▾'}
@@ -11162,6 +11199,15 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                 >
                   <Search size={12} /> Stop lookup
                 </button>
+                {/* Print labels — the dock prints Estes, Averitt and SHP freight from a phone as
+                    often as from a desk. Same order as the desktop menu. */}
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('labels')}
+                  role="menuitem"
+                >
+                  <Tag size={12} /> Print labels
+                </button>
                 <button
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('flaghistory')}
@@ -11179,14 +11225,9 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                       the v0.54.50 shape — dispatch runs on a phone. */}
                   {addrBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{addrBadge > 99 ? '99+' : addrBadge}</span>}
                 </button>
-                {/* Claude shadow — the same entry the desktop More menu has, per the note above. */}
-                <button
-                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
-                  onClick={() => onSelectMenu('claudeshadow')}
-                  role="menuitem"
-                >
-                  <Sparkles size={12} /> Claude shadow
-                </button>
+                {/* Claude shadow is not here any more: it is Routing's third tab, Build | Engine |
+                    Shadow (Chad, 2026-09-25). On a phone it is Routing → gear → Shadow view, and
+                    the row on the Engine and Shadow screens — the same way Engine is reached. */}
                 {/* UAT only — and here BECAUSE of the note above: dispatch runs on a phone,
                     and a screen added to one navigation and not the other is a screen that
                     does not exist on a phone. */}
@@ -11859,6 +11900,7 @@ function MobileFiltersTab({
   filters, setFilters, counts,
   mapFilters, setMapFilters,
   showRoutes, setShowRoutes, vehicleDisabled, boardDate, legendInventory,
+  showDriverLabels = null, setShowDriverLabels = null,
 }) {
   const setMF = (key) => (v) => setMapFilters((prev) => ({ ...prev, [key]: v }));
   // Collapsed by default, like the desktop panel — this sheet is primarily filters, and a
@@ -11901,6 +11943,25 @@ function MobileFiltersTab({
           {vehicleDisabled && (
             <div className="text-[10px] text-slate-500 italic -mt-1 leading-tight">Live drivers only available for today.</div>
           )}
+          {/* THE PHONE HAD NO WAY TO SHOW PLATES AT ALL. Labels default OFF below the mobile
+              breakpoint (see showDriverLabels in MapScreen) and the only control was a button
+              in the desktop sidebar, which a phone never renders — so this row is the first
+              time a phone can change it, in either direction. */}
+          {setShowDriverLabels && (() => {
+            // Same rule as the desktop and wall-display Filters panel (driverLabelsToggle in
+            // lib/driver-label.js), so the phone and the big screens can never disagree about
+            // what this switch means or when it greys out.
+            const t = driverLabelsToggle({ labelsOn: showDriverLabels, driversOn: mapFilters.showVehicleLocation, vehicleDisabled });
+            return (
+              <MapFilterToggle
+                label="Hide driver labels"
+                checked={t.hidden}
+                onChange={(v) => setShowDriverLabels(!v)}
+                disabled={t.disabled}
+                disabledHint={t.hint}
+              />
+            );
+          })()}
           {/* M5 — Show Routes lives in the mobile filters drawer (P3.7). */}
           <MapFilterToggle
             label="Show routes"
@@ -13406,6 +13467,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const markersRef = useRef([]);
   const driverMarkersRef = useRef([]);
   const driverLabelsRef = useRef([]);
+  // The one truck plate shown on HOVER while the labels are switched off (see the driver effect).
+  const driverHoverRef = useRef(null);
   const labelOverlayClassRef = useRef(null);
   const hoverTipRef = useRef(null); // {marker, tip} — the receiving-hours hover tooltip currently shown
   const routePolylinesRef = useRef([]);
@@ -14829,7 +14892,15 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     driverMarkersRef.current = [];
     driverLabelsRef.current.forEach((l) => l.setMap(null));
     driverLabelsRef.current = [];
+    if (driverHoverRef.current) { driverHoverRef.current.overlay.setMap(null); driverHoverRef.current = null; }
     if (!showDrivers) return;
+    // LABELS OFF, PLATE ON HOVER. Chad: hover-to-show labels for when driver labels are toggled
+    // off. The same plate the labels draw (driverLabelLines), for the one truck under the mouse
+    // and only while it is there. Only on a device that can hover: a tap on a phone fires the
+    // mouseover but never the mouseout, which would leave a plate stuck on the map — and a tap
+    // already opens the driver's card.
+    const hoverPlates = !showDriverLabels && !!labelOverlayClassRef.current
+      && (() => { try { return window.matchMedia('(hover: hover)').matches; } catch { return false; } })();
 
     const positioned = drivers.filter((d) => d.lat != null && d.lng != null);
 
@@ -14851,6 +14922,22 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         setSelectedStop(null);
         setSelectedDriver(d);
       });
+      if (hoverPlates) {
+        marker.addListener('mouseover', () => {
+          if (driverHoverRef.current) driverHoverRef.current.overlay.setMap(null);
+          const { line1, line2, stale: plateStale } = driverLabelLines(d, Date.now());
+          const overlay = new labelOverlayClassRef.current(new google.maps.LatLng(d.lat, d.lng), line1, line2, { stale: plateStale });
+          overlay.setMap(mapRef.current);
+          driverHoverRef.current = { marker, overlay };
+        });
+        marker.addListener('mouseout', () => {
+          // Only this truck's plate: a neighbouring truck's mouseover can land before this mouseout.
+          if (driverHoverRef.current && driverHoverRef.current.marker === marker) {
+            driverHoverRef.current.overlay.setMap(null);
+            driverHoverRef.current = null;
+          }
+        });
+      }
       return marker;
     });
 
@@ -15160,6 +15247,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 setCollapsed={setToolbarCollapsed}
                 stopCount={filteredStops.length}
                 vehicleDisabled={!dateIsToday}
+                showDriverLabels={showDriverLabels}
+                setShowDriverLabels={setShowDriverLabels}
                 showRoutes={showRoutes}
                 setShowRoutes={setShowRoutes}
                 boardDate={selectedDate}
@@ -15655,6 +15744,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               showRoutes={showRoutes}
               setShowRoutes={setShowRoutes}
               vehicleDisabled={!dateIsToday}
+              showDriverLabels={showDriverLabels}
+              setShowDriverLabels={setShowDriverLabels}
               boardDate={selectedDate}
               legendInventory={legendInventory}
             />
@@ -16044,6 +16135,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 setCollapsed={setToolbarCollapsed}
                 stopCount={filteredStops.length}
                 vehicleDisabled={!dateIsToday}
+                showDriverLabels={showDriverLabels}
+                setShowDriverLabels={setShowDriverLabels}
                 showRoutes={showRoutes}
                 setShowRoutes={setShowRoutes}
                 boardDate={selectedDate}
@@ -23483,7 +23576,7 @@ function EngineResultPanel({ result, kind, onDismiss }) {
   );
 }
 
-function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }) {
+function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, onOpenShadow = null }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   // Read by the Compare card's open path, which runs off refs (deps []).
   const selectedDateRef = useRef(selectedDate);
@@ -26825,6 +26918,8 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     // the map for a control used once a week. It is a gear action now; the Engine screen keeps the
     // Build/Engine row so the way back is on screen.
     ...(onOpenEngine ? [{ key: 'engine', label: '⇄ Engine view (shadow routing)', onClick: onOpenEngine }] : []),
+    // Same shape for the Claude shadow tab, Routing's third (Chad, 2026-09-25). Phone only, like Engine's.
+    ...(onOpenShadow ? [{ key: 'shadow', label: '⇄ Shadow view (Claude’s comparison plan)', onClick: onOpenShadow }] : []),
     { key: 'versionLog', label: `ⓘ Version history (v${APP_VERSION})`, onClick: () => setVersionLogOpen(true) },
     // The Shiplify trial file — desktop and phone gear alike.
     { key: 'shiplifyImport', label: '⇪ Import Shiplify results', onClick: () => setShiplifyImportOpen(true) },
@@ -29642,15 +29737,19 @@ function EngineAgreementChart({ days }) {
   );
 }
 
-// Build ⇄ Engine toggle. A segmented control (the app's standard two-way sub-mode pattern).
+// Build | Engine | Shadow toggle. A segmented control (the app's standard sub-mode pattern).
 // Rendered at the far RIGHT of the top nav row on desktop (only while on Routing), and inside
 // the Routing screen on mobile (whose app bar is a chip menu with no persistent tab row).
+//
+// SHADOW is the Claude shadow tab (src/shadow/ClaudeShadowScreen.jsx). Chad, 2026-09-25: "move
+// the claude shadow tab to here beside the build and engine buttons add a 3rd that is called
+// shadow". It was a More-menu screen of its own until then; the screen itself is unchanged.
 function RoutingSubTabs({ tab, onChange }) {
   const btn = (id, label) => (
     <button
       key={id}
       onClick={() => onChange(id)}
-      className={`px-3 py-1 text-[12px] font-semibold ${tab === id ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} ${id === 'engine' ? 'border-l border-slate-300' : ''}`}
+      className={`px-3 py-1 text-[12px] font-semibold ${tab === id ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} ${id !== 'build' ? 'border-l border-slate-300' : ''}`}
       style={tab === id ? { background: BRAND } : undefined}
     >{label}</button>
   );
@@ -29658,27 +29757,30 @@ function RoutingSubTabs({ tab, onChange }) {
     <div className="flex rounded-md border border-slate-300 overflow-hidden shrink-0">
       {btn('build', 'Build')}
       {btn('engine', 'Engine')}
+      {btn('shadow', 'Shadow')}
     </div>
   );
 }
 
-// Routing section = the beta Build screen + the Engine (shadow) tab. `routingTab`/`setRoutingTab`
-// are LIFTED to the shell so the Build/Engine toggle can live in the top nav row on desktop; the
-// in-screen sub-tab bar renders only on mobile (`showSubTabs`).
-function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTabs, presence }) {
+// Routing section = the beta Build screen + the Engine (shadow) tab + the Claude shadow tab.
+// `routingTab`/`setRoutingTab` are LIFTED to the shell so the Build/Engine/Shadow toggle can live
+// in the top nav row on desktop; the in-screen sub-tab bar renders only on mobile (`showSubTabs`).
+function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTabs, isMobile, presence }) {
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* PHONE: the row shows on the ENGINE screen only (v0.93.15). On Build it cost 59px above the
-          map for one control used once a week; Build reaches Engine from the app-bar gear, and
-          Engine keeps this row so the way back is always on screen. */}
+      {/* PHONE: the row shows on the ENGINE and SHADOW screens only (v0.93.15). On Build it cost
+          59px above the map for one control used once a week; Build reaches Engine and Shadow from
+          the app-bar gear, and both keep this row so the way back is always on screen. */}
       {showSubTabs && routingTab !== 'build' && (
         <div className="flex items-center border-b bg-white px-2 py-1.5 shrink-0">
           <RoutingSubTabs tab={routingTab} onChange={setRoutingTab} />
         </div>
       )}
       {routingTab === 'build'
-        ? <RoutingScreen debugCaptureRef={debugCaptureRef} presence={presence} onOpenEngine={showSubTabs ? () => setRoutingTab('engine') : null} />
-        : <EngineScreen />}
+        ? <RoutingScreen debugCaptureRef={debugCaptureRef} presence={presence} onOpenEngine={showSubTabs ? () => setRoutingTab('engine') : null} onOpenShadow={showSubTabs ? () => setRoutingTab('shadow') : null} />
+        : routingTab === 'shadow'
+          ? <ClaudeShadowScreen isMobile={isMobile} />
+          : <EngineScreen />}
     </div>
   );
 }
@@ -30184,15 +30286,24 @@ function Shell() {
     return unsub;
   }, []);
 
-  // Routing Build ⇄ Engine sub-tab, lifted here so the toggle can render in the top nav row
-  // (far right) on desktop while the Routing screen consumes the same state.
+  // Routing Build | Engine | Shadow sub-tab, lifted here so the toggle can render in the top nav
+  // row (far right) on desktop while the Routing screen consumes the same state. Anything stored
+  // that this build does not know opens Build.
   const [routingTab, setRoutingTab] = useState(() => {
-    try { return localStorage.getItem('routing.tab') === 'engine' ? 'engine' : 'build'; } catch { return 'build'; }
+    try { const v = localStorage.getItem('routing.tab'); return v === 'engine' || v === 'shadow' ? v : 'build'; } catch { return 'build'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.tab', routingTab); } catch {} }, [routingTab]);
   // Opening the Routing screen defaults to the BUILD tab (Chad's preference). Switching to
   // Engine while you're on the screen stays put; navigating back to Routing lands on Build again.
   useEffect(() => { if (tab === 'routing') setRoutingTab('build'); }, [tab]);
+  // …and it lands there on the FIRST render. The effect above runs after the render that already
+  // used the old sub-tab, so leaving from Shadow (or Engine) and coming back mounted that screen
+  // for one render — long enough for its load effect to fire a request nobody would see. Setting
+  // both in the same click makes the first render Build; the effect stays as the backstop.
+  const openTab = (next) => {
+    if (next === 'routing' && tab !== 'routing') setRoutingTab('build');
+    setTab(next);
+  };
 
   // Multi-dispatcher presence — published for every tab so "who's on" is honest
   // even from New Order / Quote; the Routing screen adds its staged-stop claims.
@@ -30232,8 +30343,8 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'claudeshadow', 'uatbench'];
-    setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'uatbench'];
+    openTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
   // ── THE WALL DISPLAY IS ITS OWN TREE ────────────────────────────────────────
@@ -30337,7 +30448,7 @@ function Shell() {
           <div className="flex items-center gap-1 min-w-0">
             <nav className="flex items-center gap-1 text-sm min-w-0 overflow-x-auto">
               <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
-              {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
+              {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => openTab('routing')} />}
               <TabBtn label="New Order" icon={<Package size={14} />} active={tab === 'neworder'} onClick={() => setTab('neworder')} />
               <TabBtn label="Quote" icon={<Calculator size={14} />} active={tab === 'quote'} onClick={() => setTab('quote')} />
               <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
@@ -30376,10 +30487,12 @@ function Shell() {
                 // about ONE order. No badge, ever — nothing here is a problem waiting to be
                 // noticed, it is a question waiting to be asked.
                 { id: 'stoplookup', label: 'Stop lookup', hint: 'Everything we hold about one order — 0 NuVizz calls', icon: <Search size={14} /> },
+                // Davis labels for one shipper's orders on one day, one at a time or all at once.
+                // Beside Stop lookup because both answer about orders; phone menu below too.
+                { id: 'labels', label: 'Print labels', hint: 'Davis labels by shipper and day — 0 NuVizz calls', icon: <Tag size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
-                // Claude will plan tomorrow beside the router, for comparison only. Phone menu below too.
-                { id: 'claudeshadow', label: 'Claude shadow', hint: 'Claude’s comparison plan for tomorrow — not planning yet; 0 NuVizz calls', icon: <Sparkles size={14} /> },
+                // Claude shadow moved to Routing's Build | Engine | Shadow toggle (Chad, 2026-09-25).
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
                 { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
                 // UAT ONLY, keyed on the HOSTNAME — the one fact about a deploy nobody can
@@ -30402,15 +30515,27 @@ function Shell() {
                 screens, two positions, each right on its own map. */}
           </div>
           {/* Far right of the nav row: the presence chip (who else is on) plus the Routing
-              Build/Engine toggle — the toggle shows ONLY on the Routing screen. */}
-          <div className="flex items-center gap-2">
+              Build/Engine/Shadow toggle — the toggle shows ONLY on the Routing screen.
+
+              WHEN THE BAR IS TIGHT, THE PRESENCE CHIP'S TEXT GIVES WAY FIRST — never the tab
+              row. The third toggle button (Shadow, v1.68.2) is ~74px, and the tab row is the
+              only part of this header that can shrink, so on Routing at 1180–1366px it pushed
+              MESSAGES off the end of the row, and its unread badge — on Routing the only sign a
+              driver or customer has texted — went with it. Measured: 1180 lost 62px, 1366 lost
+              25px, where v1.68.1 fitted. So this cluster shrinks first (the huge flex-shrink),
+              and it is a GRID whose first column is minmax(1.75rem, auto): the chip keeps its
+              dot and gives up only the text it must (the whole label stays in its tooltip),
+              while the toggle's column is max-content and never shrinks at all (an `auto`
+              column would: the toggle is overflow-hidden, so its minimum counts as zero). With room to spare nothing here
+              moves: the column is as wide as the chip, as before. */}
+          <div className="grid grid-flow-col grid-cols-[minmax(1.75rem,auto)] auto-cols-max items-center gap-2" style={{ flexShrink: 1e6 }}>
             <PresenceChip presence={presence} />
             {tab === 'routing' && ROUTING_FLAG && <RoutingSubTabs tab={routingTab} onChange={setRoutingTab} />}
           </div>
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'claudeshadow' ? <ClaudeShadowScreen isMobile={isMobile} /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
@@ -31666,6 +31791,527 @@ function OrderField({ label, req, value, onChange, placeholder, type = 'text', c
   );
 }
 
+// ── DAVIS DELIVERY LABELS ────────────────────────────────────────────────────
+// Chad, Sep 24 2026: "This is supposed to be its own label, separate entity … just something we
+// can print by the order, but it is not a delivery ticket. It is not a manifest … just like we
+// can print a delivery ticket, just like we can print a route." One Letter page per piece with a
+// barcode the load-out app and the WMS read (DD/<NuVizz stop #>/<piece>). The rules are
+// src/lib/order-labels.js, the page src/lib/label-html.js; it opens in PrintDocModal, the same
+// viewer and Print button as the Delivery Ticket. Each created order's label is saved to its own
+// Firestore collection (order-labels), so it can be printed again any time. ZERO NuVizz calls.
+// The Delivery Ticket, the manifest print and the "A NEW load" import are not touched.
+const labelLogoUrl = () => (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo-label.png';
+
+/** Save created orders' labels. Never throws: the order already exists, and a failed save is SAID, not hidden. */
+async function saveOrderLabels(labels) {
+  try {
+    const r = await apiFetch('/.netlify/functions/order-labels', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ labels }),
+    });
+    const d = await r.json().catch(() => ({}));
+    return d.ok ? { ok: true } : { ok: false, reason: d.reason || `HTTP ${r.status}` };
+  } catch (e) { return { ok: false, reason: e?.message || 'network error' }; }
+}
+
+/** The labels saved for one day (the day the orders were created, Eastern). */
+function useOrderLabels(date, refreshKey = 0) {
+  const [state, setState] = useState({ loading: false, labels: [], error: null, date: null });
+  useEffect(() => {
+    if (!date) return undefined;
+    let alive = true;
+    setState((x) => ({ ...x, loading: true, error: null }));
+    apiFetch(`/.netlify/functions/order-labels?date=${encodeURIComponent(date)}`)
+      .then((r) => r.json())
+      .then((d) => { if (alive) setState({ loading: false, labels: Array.isArray(d.labels) ? d.labels : [], error: d.ok ? null : (d.reason || 'load failed'), date }); })
+      .catch((e) => { if (alive) setState({ loading: false, labels: [], error: e?.message || 'load failed', date }); });
+    return () => { alive = false; };
+  }, [date, refreshKey]);
+  return state;
+}
+
+/**
+ * Print Davis labels for one or more orders. Builds the pages on the tap and opens them in the
+ * Delivery Ticket's viewer. An order whose number cannot go in a barcode, or that is over the
+ * per-order page limit, is left out and NAMED beside the button; the rest still print.
+ */
+function PrintLabelsButton({ orders, label = null, size = 'md', disabled = false }) {
+  const [doc, setDoc] = useState(null);          // { html, title } while the viewer is open
+  const [skipped, setSkipped] = useState([]);
+  const list = (orders || []).filter(Boolean);
+  if (!list.length && !label) return null;
+  const { pages } = labelPageCount(list);
+  const open = () => {
+    const r = buildLabelsHtml(list, { logoUrl: labelLogoUrl(), maxPages: MAX_LABEL_PAGES });
+    setSkipped(r.skipped);
+    if (r.pages) setDoc({ html: r.html, title: `Davis labels · ${r.printed.length} order${r.printed.length === 1 ? '' : 's'} · ${r.pages} page${r.pages === 1 ? '' : 's'}` });
+  };
+  const sm = size === 'sm';
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <button
+        type="button" onClick={open} disabled={disabled || !list.length}
+        title="Davis delivery label — one page per piece, skids first, then loose"
+        className={`inline-flex items-center gap-1.5 rounded border font-semibold border-slate-800 bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed ${sm ? 'px-2 py-1 text-[11px]' : 'px-3 py-1.5 text-[12px]'}`}
+      >
+        <Tag size={sm ? 12 : 14} /> {label || `Print label${list.length === 1 ? '' : 's'} (${pages} page${pages === 1 ? '' : 's'})`}
+      </button>
+      {skipped.length > 0 && (
+        <span className="text-[11px] text-amber-700">Not printed: {skipped.map((k) => `${k.name || k.stopNbr || 'order'} — ${k.reason}`).join('; ')}</span>
+      )}
+      {doc && <PrintDocModal title={doc.title} html={doc.html} pageW={816} onClose={() => setDoc(null)} />}
+    </span>
+  );
+}
+
+/** The Delivery Ticket for an order New Order just created, built from its saved label record. */
+function LabelTicketButton({ labelRec, size = 'md' }) {
+  const [open, setOpen] = useState(false);
+  const html = useMemo(
+    () => (open && labelRec ? buildTicketHtml(ticketStopFromLabel(labelRec), (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg') : ''),
+    [open, labelRec],
+  );
+  if (!labelRec) return null;
+  const sm = size === 'sm';
+  return (
+    <>
+      <button
+        type="button" onClick={() => setOpen(true)}
+        className={`inline-flex items-center gap-1.5 rounded border font-semibold border-slate-300 bg-white text-slate-700 hover:bg-slate-50 ${sm ? 'px-2 py-1 text-[11px]' : 'px-3 py-1.5 text-[12px]'}`}
+      >
+        <FileText size={sm ? 12 : 14} /> Delivery ticket
+      </button>
+      {open && <PrintDocModal title={`Delivery Ticket · ${labelRec.stopNbr}`} html={html} pageW={816} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+const LABEL_SOURCE_NAME = { single: 'New Order', bulk: 'Bulk add', manifest: 'Estes manifest' };
+
+/**
+ * "Label" on an order's stop card, beside "Ticket" — any order on the board, whenever. The page
+ * is built from the board's CURRENT numbers (labelOrderFromStop); the label saved when the order
+ * was created, if there is one, fills in the reference, notes and ship-from. One Firestore read,
+ * zero NuVizz calls, and the same viewer and Print button as the Delivery Ticket.
+ */
+function StopLabelButton({ stop, note, phone, className }) {
+  const [doc, setDoc] = useState(null);
+  const [state, setState] = useState(null);   // null | 'busy' | { error }
+  const open = async () => {
+    if (state === 'busy') return;
+    setState('busy');
+    let saved = null;
+    try {
+      const r = await apiFetch(`/.netlify/functions/order-labels?stop=${encodeURIComponent(stop.stopNbr)}`);
+      const d = await r.json();
+      saved = d?.label || null;
+    } catch { /* no saved label is fine — the board carries the order */ }
+    const label = labelOrderFromStop(stop, { saved, addressOverride: note?.address_override || null, phone });
+    const r = buildLabelsHtml(label ? [label] : [], { logoUrl: labelLogoUrl(), maxPages: MAX_LABEL_PAGES });
+    if (!r.pages) { setState({ error: r.skipped[0]?.reason || 'no order number to print' }); return; }
+    setState(null);
+    setDoc({ html: r.html, title: `Davis label · ${stop.stopNbr} · ${r.pages} page${r.pages === 1 ? '' : 's'}` });
+  };
+  return (
+    <>
+      <button onClick={open} disabled={state === 'busy'} className={className} title={state?.error ? `Label not printed: ${state.error}` : 'Davis delivery label — one page per piece'}>
+        <Tag size={16} className={state?.error ? 'text-amber-600' : 'text-slate-500'} /> {state === 'busy' ? '…' : state?.error ? 'Label ⚠' : 'Label'}
+      </button>
+      {doc && <PrintDocModal title={doc.title} html={doc.html} pageW={816} onClose={() => setDoc(null)} />}
+    </>
+  );
+}
+
+// ── PRINT LABELS BY SHIPPER AND DAY (v1.67.0) ────────────────────────────────
+// Chad, Sep 24 2026: "i want for me to be able to pick a shipper and a day like averitts or estes
+// or shp and when all those orders come up for that day be able to print labels one by one for
+// their orders or bulk print them". Which orders belong to which shipper, and why the order
+// number is the only thing that says: src/lib/label-shippers.js. Where they come from:
+// labels-by-shipper (the day's board, Firestore only, zero NuVizz calls). The pages: the SAME
+// label-html.js, labelOrderFromStop and viewer the stop card's Label button opens — a label
+// printed here and one printed from the card for the same order are the same label.
+const LABELS_SHIPPER = 'dd_labels_shipper';
+const labelsPrintedKey = (date) => `dd_labels_printed_${date}`;
+// A batch this big asks once before it builds: at two pages an order, Uline on a heavy day is
+// well over a thousand sheets, and a mis-tap there empties the dock printer's tray.
+const LABELS_CONFIRM_PAGES = 200;
+
+const LBL_PRIMARY = 'inline-flex items-center justify-center gap-1.5 h-10 shrink-0 rounded-lg px-4 text-sm font-semibold text-white shadow-sm bg-[#1e5b92] hover:bg-[#174b79] disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap';
+const LBL_SECONDARY = 'inline-flex items-center justify-center gap-1.5 h-10 shrink-0 rounded-lg px-3 text-sm font-medium text-slate-700 bg-white ring-1 ring-inset ring-slate-300 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap';
+const LBL_CHIP = (on) => `inline-flex items-center gap-2 h-10 rounded-lg px-3 text-sm font-medium ring-1 ring-inset transition-colors ${
+  on ? 'bg-[#1e5b92] text-white ring-[#1e5b92]' : 'bg-white text-slate-700 ring-slate-300 hover:bg-slate-50'}`;
+const LBL_FIELD = 'h-10 min-w-0 rounded-lg bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400 ring-1 ring-inset ring-slate-300 focus:outline-none focus:ring-2 focus:ring-[#1e5b92]';
+
+const labelsClock = (iso) => { try { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(iso)); } catch { return ''; } };
+
+/** This device's record of which orders had Print pressed on a day. A convenience: damaged or blocked storage reads as none. */
+function readLabelsPrinted(date) {
+  try {
+    const o = JSON.parse(localStorage.getItem(labelsPrintedKey(date)) || '{}');
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch { return {}; }
+}
+
+function LabelStateChip({ state }) {
+  const [text, cls] = {
+    delivered: ['Delivered', 'bg-emerald-50 text-emerald-700 ring-emerald-200'],
+    exception: ['Exception', 'bg-amber-50 text-amber-800 ring-amber-200'],
+    open: ['Not delivered', 'bg-slate-100 text-slate-600 ring-slate-200'],
+  }[state] || ['Not delivered', 'bg-slate-100 text-slate-600 ring-slate-200'];
+  return <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${cls}`}>{text}</span>;
+}
+
+/** "2 skids · 1 loose", counted off the pages — or the fact that there is no count to print. */
+function labelPiecesText(r) {
+  if (r.countMissing) return 'No count';
+  return [r.skids ? `${r.skids} skid${r.skids === 1 ? '' : 's'}` : '', r.loose ? `${r.loose} loose` : ''].filter(Boolean).join(' · ');
+}
+
+/** "Print pressed 10:42" — said as what was seen. The app cannot see the printer. */
+function LabelPrintedNote({ at }) {
+  if (!at) return null;
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700" title="Print was pressed for this order's labels on this device. The app cannot see whether the printer finished.">
+      <Printer size={12} /> Print pressed {labelsClock(at)}
+    </span>
+  );
+}
+
+function LabelsScreen() {
+  const viewportWidth = useViewportWidth();
+  const isMobile = viewportWidth < MOBILE_BREAKPOINT;
+  // THE TABLE NEEDS A DESKTOP. Eight columns do not fit a landscape iPad (1080–1194px): the
+  // tablet guard measured the Print buttons cut off by 33px. Below 1280px every order is a card —
+  // one column on a phone, two on a tablet — and the table starts where it fits.
+  const wide = viewportWidth >= 1280;
+  const today = todayInET();
+  // THE DAY IS NOT REMEMBERED: a day picked yesterday and silently kept would list yesterday's
+  // orders under this morning's freight. The SHIPPER is — a dock that labels Estes all week should
+  // not pick Estes every morning.
+  const [date, setDate] = useState(today);
+  const [shipper, setShipper] = useState(() => { try { return localStorage.getItem(LABELS_SHIPPER) || ''; } catch { return ''; } });
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [filter, setFilter] = useState('');
+  const [selected, setSelected] = useState(() => new Set());
+  const [printed, setPrinted] = useState(() => readLabelsPrinted(today));
+  const [doc, setDoc] = useState(null);           // { html, title, nbrs } while the viewer is open
+  const [skipped, setSkipped] = useState([]);
+  const [confirm, setConfirm] = useState(null);   // { list, what, pages } — a big batch asking first
+  const reqRef = useRef(0);
+
+  // ONE READ PER (day, shipper): the day's shippers always, the chosen shipper's orders when one
+  // is picked. A slower answer to an older pick is dropped rather than painted over a newer one.
+  useEffect(() => {
+    const id = ++reqRef.current;
+    setLoading(true); setErr(null);
+    const qs = new URLSearchParams({ date });
+    if (shipper) qs.set('shipper', shipper);
+    apiFetch(`/.netlify/functions/labels-by-shipper?${qs.toString()}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (id !== reqRef.current) return;
+        if (!j.ok) throw new Error(j.error || 'could not read the board');
+        setData(j);
+      })
+      .catch((e) => { if (id === reqRef.current) { setErr(String(e.message || e)); setData(null); } })
+      .finally(() => { if (id === reqRef.current) setLoading(false); });
+  }, [date, shipper]);
+
+  // A new day or shipper is a new list: nothing carried across is still true about it.
+  useEffect(() => {
+    setSelected(new Set()); setFilter(''); setSkipped([]); setConfirm(null);
+    setPrinted(readLabelsPrinted(date));
+  }, [date, shipper]);
+
+  const pickShipper = useCallback((key) => {
+    setShipper(key);
+    try { localStorage.setItem(LABELS_SHIPPER, key); } catch { /* a remembered shipper is a convenience */ }
+  }, []);
+
+  const rows = useMemo(() => (data?.shipper?.key === shipper ? data.rows || [] : []), [data, shipper]);
+  const shown = useMemo(() => filterLabelRows(rows, filter), [rows, filter]);
+  const chosen = useMemo(() => rows.filter((r) => selected.has(r.stopNbr)), [rows, selected]);
+  const pagesOf = (list) => list.reduce((n, r) => n + (r.pages || 0), 0);
+  const shipperName = data?.shipper?.name || (data?.shippers || []).find((x) => x.key === shipper)?.name || shipper;
+
+  const openPrint = useCallback((list, what) => {
+    const r = buildLabelsHtml(list.map((x) => x.label), { logoUrl: labelLogoUrl(), maxPages: MAX_LABEL_PAGES });
+    setSkipped(r.skipped);
+    setConfirm(null);
+    if (!r.pages) return;
+    setDoc({
+      html: r.html,
+      nbrs: r.printed.map((o) => String(o.stopNbr)),
+      title: `Davis labels · ${what} · ${r.printed.length} order${r.printed.length === 1 ? '' : 's'} · ${r.pages} page${r.pages === 1 ? '' : 's'}`,
+    });
+  }, []);
+  const askPrint = useCallback((list, what) => {
+    if (!list.length) return;
+    const pages = pagesOf(list);
+    if (pages > LABELS_CONFIRM_PAGES) { setConfirm({ list, what, pages }); return; }
+    openPrint(list, what);
+  }, [openPrint]);
+  const markPrinted = useCallback((nbrs) => {
+    const at = new Date().toISOString();
+    const next = { ...printed };
+    for (const n of nbrs || []) next[n] = at;
+    setPrinted(next);
+    try { localStorage.setItem(labelsPrintedKey(date), JSON.stringify(next)); } catch { /* this device's note only */ }
+  }, [printed, date]);
+
+  const toggle = (nbr) => setSelected((cur) => { const next = new Set(cur); if (next.has(nbr)) next.delete(nbr); else next.add(nbr); return next; });
+  const allShownOn = shown.length > 0 && shown.every((r) => selected.has(r.stopNbr));
+  const toggleAllShown = () => setSelected((cur) => {
+    const next = new Set(cur);
+    if (allShownOn) shown.forEach((r) => next.delete(r.stopNbr)); else shown.forEach((r) => next.add(r.stopNbr));
+    return next;
+  });
+  const printedCount = rows.filter((r) => printed[r.stopNbr]).length;
+
+  const dayWord = date === today ? 'today' : date === rangeAddDays(today, 1) ? 'tomorrow' : formatDateLong(date);
+  const shippers = data?.shippers || [];
+
+  const rowActions = (r) => (
+    <div className="flex flex-col items-end gap-1">
+      <button type="button" onClick={() => askPrint([r], r.stopNbr)} className={LBL_SECONDARY} aria-label={`Print labels for ${r.stopNbr}`}>
+        <Tag size={14} /> Print {r.pages} page{r.pages === 1 ? '' : 's'}
+      </button>
+      <LabelPrintedNote at={printed[r.stopNbr]} />
+    </div>
+  );
+  const shipTo = (r) => (
+    <div className="min-w-0">
+      <div className="text-sm font-semibold text-slate-900 break-words">{r.label.name || '—'}</div>
+      <div className="text-xs text-slate-500 break-words">
+        {[r.label.addr1, r.label.addr2].filter(Boolean).join(', ')}
+        {r.label.city ? ` · ${[r.label.city, r.label.state].filter(Boolean).join(', ')} ${r.label.zip || ''}` : ''}
+      </div>
+      {r.addressFixed && <div className="mt-0.5 text-[11px] font-medium text-[#1e5b92]">Address fixed by dispatch — the label prints the fix</div>}
+    </div>
+  );
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-slate-50">
+      <div className={`${SCREEN_DASH} px-4 py-5 sm:px-6 sm:py-8 space-y-5`}>
+        <header className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900">Print labels</h1>
+            <p className="mt-1 text-sm text-slate-500">Pick a delivery day and a shipper, then print one order&rsquo;s labels or all of them.</p>
+          </div>
+          <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-white px-2.5 py-1 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-200"
+            title="The orders come from the board we already hold. Nothing on this screen spends a NuVizz call.">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> 0 NuVizz calls
+          </span>
+        </header>
+
+        {/* THE TWO QUESTIONS, in the order they are asked: which day, then whose freight. */}
+        <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 divide-y divide-slate-200">
+          <div className={`${isMobile ? 'p-4 space-y-2' : 'px-6 py-4 flex flex-wrap items-center gap-3'}`}>
+            <div className="w-28 shrink-0 text-sm font-semibold text-slate-900">Delivery day</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => setDate(today)} className={LBL_CHIP(date === today)} aria-pressed={date === today}>Today</button>
+              <button type="button" onClick={() => setDate(rangeAddDays(today, 1))} className={LBL_CHIP(date === rangeAddDays(today, 1))} aria-pressed={date === rangeAddDays(today, 1)}>Tomorrow</button>
+              <input type="date" aria-label="Delivery day" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} className={LBL_FIELD} />
+              <span className="text-sm text-slate-500">{formatDateLong(date)}</span>
+            </div>
+          </div>
+          <div className={`${isMobile ? 'p-4 space-y-2' : 'px-6 py-4 flex flex-wrap items-start gap-3'}`}>
+            <div className="w-28 shrink-0 pt-2 text-sm font-semibold text-slate-900">Shipper</div>
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Shipper">
+                {shippers.map((x) => (
+                  <button key={x.key} type="button" onClick={() => pickShipper(x.key)} aria-pressed={shipper === x.key} className={LBL_CHIP(shipper === x.key)}
+                    title={x.key === 'ULINE' ? 'Uline freight already carries Uline’s own scannable labels' : `Order numbers starting ${x.key}`}>
+                    <span>{x.name}</span>
+                    <span className={`rounded-md px-1.5 text-xs tabular-nums ${shipper === x.key ? 'bg-white/20' : 'bg-slate-100 text-slate-600'}`}>{x.orders}</span>
+                  </button>
+                ))}
+                {!loading && !err && data && shippers.length === 0 && (
+                  <span className="text-sm text-slate-500">No deliveries on the board for {formatDateLong(date)}.</span>
+                )}
+              </div>
+              {data && (
+                <p className="text-xs text-slate-500">
+                  The shipper is read off the order number: AVRT is Averitt, ESTES is Estes, SHP is Puremaxx, plain numbers are Uline, and every other prefix shows as itself.
+                  {data.pickups > 0 && <> Pickups are not listed ({data.pickups} that day) — their freight is not on our dock.</>}
+                  {data.boardAt && date === today && <> Board as of {labelsClock(data.boardAt)}.</>}
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {err && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 break-words">Could not read the board: {err}</div>}
+
+        {!shipper && data && shippers.length > 0 && (
+          <div className="rounded-xl border border-dashed border-slate-300 px-6 py-10 text-center">
+            <Tag size={20} className="mx-auto text-slate-400" />
+            <div className="mt-2 text-sm font-medium text-slate-700">Pick a shipper to list its orders</div>
+            <div className="mt-1 text-xs text-slate-500">Every order for that shipper on {formatDateLong(date)} comes up, each with its own Print button.</div>
+          </div>
+        )}
+
+        {shipper && data && (
+          <section aria-label={`${shipperName} orders`} className="space-y-3">
+            {/* THE LIST'S HEADER: what it is, and the two ways to print it. */}
+            <div className={isMobile ? 'space-y-3' : 'flex flex-wrap items-center gap-3'}>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-lg font-semibold text-slate-900">{shipperName} <span className="font-normal text-slate-500">· {formatDateLong(date)}</span></h2>
+                <p className="text-sm text-slate-500">
+                  {rows.length} order{rows.length === 1 ? '' : 's'} · {pagesOf(rows)} label page{pagesOf(rows) === 1 ? '' : 's'}
+                  {printedCount > 0 && <> · Print pressed for {printedCount} on this device</>}
+                  {loading && <> · loading…</>}
+                </p>
+              </div>
+              <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Find an order, name or city" aria-label="Find an order" className={`${LBL_FIELD} ${isMobile ? 'w-full' : 'w-64'}`} />
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" onClick={() => askPrint(chosen, 'selected')} disabled={!chosen.length} className={LBL_SECONDARY}>
+                  <Printer size={14} /> Print selected{chosen.length ? ` (${chosen.length} · ${pagesOf(chosen)} pages)` : ''}
+                </button>
+                <button type="button" onClick={() => askPrint(rows, `all ${shipperName}`)} disabled={!rows.length} className={LBL_PRIMARY}>
+                  <Printer size={14} /> Print all · {pagesOf(rows)} page{pagesOf(rows) === 1 ? '' : 's'}
+                </button>
+              </div>
+            </div>
+
+            {Object.values(data.errors || {}).length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-1">
+                {Object.values(data.errors).map((m) => <div key={m}>{m}</div>)}
+              </div>
+            )}
+            {confirm && (
+              <div className={`rounded-xl border border-[#1e5b92]/30 bg-[#1e5b92]/5 px-4 py-3 ${isMobile ? 'space-y-3' : 'flex flex-wrap items-center gap-3'}`}>
+                <div className="min-w-0 flex-1 text-sm text-slate-800">
+                  This prints <span className="font-semibold">{confirm.pages} pages</span> for {confirm.list.length} orders. Print them?
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => openPrint(confirm.list, confirm.what)} className={LBL_PRIMARY}>Print {confirm.pages} pages</button>
+                  <button type="button" onClick={() => setConfirm(null)} className={LBL_SECONDARY}>Cancel</button>
+                </div>
+              </div>
+            )}
+            {skipped.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 break-words">
+                Not printed: {skipped.map((k) => `${k.name || k.stopNbr || 'order'} — ${k.reason}`).join('; ')}. Everything else printed.
+              </div>
+            )}
+
+            {!rows.length && !loading && (
+              <div className="rounded-xl border border-dashed border-slate-300 px-6 py-8 text-center text-sm text-slate-600">
+                No {shipperName} deliveries on the board for {dayWord}.
+              </div>
+            )}
+            {rows.length > 0 && !shown.length && (
+              <div className="rounded-xl border border-dashed border-slate-300 px-6 py-8 text-center text-sm text-slate-600">
+                No {shipperName} order matches &ldquo;{filter}&rdquo;.
+              </div>
+            )}
+
+            {shown.length > 0 && (wide ? (
+              <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="w-12 px-4 py-2.5">
+                        <label className="inline-flex h-10 w-10 -m-3 items-center justify-center">
+                          <input type="checkbox" checked={allShownOn} onChange={toggleAllShown} aria-label="Select every order listed" className="h-4 w-4 accent-[#1e5b92]" />
+                        </label>
+                      </th>
+                      <th className="px-3 py-2.5">Order</th>
+                      <th className="px-3 py-2.5">Ship to</th>
+                      <th className="px-3 py-2.5">Pieces</th>
+                      <th className="px-3 py-2.5">Weight</th>
+                      <th className="px-3 py-2.5">Route</th>
+                      <th className="px-3 py-2.5">Status</th>
+                      <th className="px-4 py-2.5 text-right">Labels</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {shown.map((r) => (
+                      <tr key={r.stopNbr} className={selected.has(r.stopNbr) ? 'bg-[#1e5b92]/5' : 'hover:bg-slate-50'}>
+                        <td className="px-4 py-3 align-top">
+                          <label className="inline-flex h-10 w-10 -m-3 items-center justify-center">
+                            <input type="checkbox" checked={selected.has(r.stopNbr)} onChange={() => toggle(r.stopNbr)} aria-label={`Select ${r.stopNbr}`} className="h-4 w-4 accent-[#1e5b92]" />
+                          </label>
+                        </td>
+                        <td className="px-3 py-3 align-top">
+                          <div className="font-mono text-sm font-semibold text-slate-900 whitespace-nowrap">{r.stopNbr}</div>
+                          {r.label.ref && <div className="text-xs text-slate-500 whitespace-nowrap">Ref {r.label.ref}</div>}
+                        </td>
+                        <td className="px-3 py-3 align-top">{shipTo(r)}</td>
+                        <td className="px-3 py-3 align-top">
+                          <div className={`text-sm ${r.countMissing ? 'text-amber-700 font-medium' : 'text-slate-800'}`}
+                            title={r.countMissing ? 'The order carries no skid or loose count, so one page prints — check the freight' : undefined}>
+                            {/* Breaks only BETWEEN the two counts, never inside "1 loose" — and each piece
+                                stays narrow, so the column does not push the Print buttons off a laptop. */}
+                            {r.countMissing ? labelPiecesText(r) : (<>
+                              {r.skids > 0 && <span className="whitespace-nowrap">{r.skids} skid{r.skids === 1 ? '' : 's'}{r.loose > 0 ? ' ·' : ''}</span>}
+                              {r.skids > 0 && r.loose > 0 ? ' ' : ''}
+                              {r.loose > 0 && <span className="whitespace-nowrap">{r.loose} loose</span>}
+                            </>)}
+                          </div>
+                          <div className="text-xs text-slate-500">{r.pages} page{r.pages === 1 ? '' : 's'}</div>
+                        </td>
+                        <td className="px-3 py-3 align-top text-sm text-slate-700 tabular-nums whitespace-nowrap">{r.label.weight ? `${Number(r.label.weight).toLocaleString()} lb` : '—'}</td>
+                        <td className="px-3 py-3 align-top">
+                          <div className="text-sm text-slate-800">{r.route || 'Not on a route'}</div>
+                          {r.driver && <div className="text-xs text-slate-500">{r.driver}</div>}
+                        </td>
+                        <td className="px-3 py-3 align-top"><LabelStateChip state={r.state} /></td>
+                        <td className="px-4 py-3 align-top text-right">{rowActions(r)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <label className="inline-flex min-h-[40px] items-center gap-2 text-sm text-slate-700">
+                  <input type="checkbox" checked={allShownOn} onChange={toggleAllShown} className="h-4 w-4 accent-[#1e5b92]" />
+                  Select every order listed
+                </label>
+                <div className={`grid gap-3 ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                  {shown.map((r) => (
+                    <div key={r.stopNbr} className={`rounded-xl bg-white p-4 shadow-sm ring-1 ${selected.has(r.stopNbr) ? 'ring-[#1e5b92]/60' : 'ring-slate-200'} space-y-2`}>
+                      <div className="flex items-start gap-2">
+                        <label className="inline-flex h-10 w-10 -m-2 shrink-0 items-center justify-center">
+                          <input type="checkbox" checked={selected.has(r.stopNbr)} onChange={() => toggle(r.stopNbr)} aria-label={`Select ${r.stopNbr}`} className="h-4 w-4 accent-[#1e5b92]" />
+                        </label>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-sm font-semibold text-slate-900 break-all">{r.stopNbr}</span>
+                            <LabelStateChip state={r.state} />
+                          </div>
+                          {r.label.ref && <div className="text-xs text-slate-500">Ref {r.label.ref}</div>}
+                        </div>
+                      </div>
+                      {shipTo(r)}
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600">
+                        <span className={r.countMissing ? 'font-medium text-amber-700' : ''}>{r.countMissing ? 'No count — one page prints' : labelPiecesText(r)}</span>
+                        {r.label.weight && <span>{Number(r.label.weight).toLocaleString()} lb</span>}
+                        <span>{r.route || 'Not on a route'}{r.driver ? ` · ${r.driver}` : ''}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                        <LabelPrintedNote at={printed[r.stopNbr]} />
+                        <button type="button" onClick={() => askPrint([r], r.stopNbr)} className={`${LBL_SECONDARY} ml-auto`} aria-label={`Print labels for ${r.stopNbr}`}>
+                          <Tag size={14} /> Print {r.pages} page{r.pages === 1 ? '' : 's'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </section>
+        )}
+      </div>
+      {doc && <PrintDocModal title={doc.title} html={doc.html} pageW={816} onClose={() => setDoc(null)} onPrint={() => markPrinted(doc.nbrs)} />}
+    </div>
+  );
+}
+
 // New Order opens on a Single / Bulk toggle so both ways to create an order live under one
 // tab (per the "put the bulk add tab under new order" debug request — it previously had its
 // own top-level nav tab). Neither inner screen's logic is touched; this is a thin shell that
@@ -31725,9 +32371,15 @@ function NewOrderSingleScreen() {
   const [originSaved, setOriginSaved] = useState(false);   // transient "✓ Saved" confirmation
   const [row, setRow] = useState(EMPTY_ORDER_ROW);
   const [serviceDate, setServiceDate] = useState(todayLocalYMD());
-  const [live, setLive] = useState(false);
+  // ALWAYS LIVE. Chad, Sep 24 2026: "take the beta out of here and just make it live all the
+  // time." Create sends the order to NuVizz; the server's write flag still gates every write.
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState(null); // { ok, beta?, msg }
+  const [result, setResult] = useState(null); // { ok, updated?, msg, label?, labelSaveError? }
+  // The day's created orders, read back from the saved labels — so a label or ticket can be
+  // printed again after the next order has been created, or on another day.
+  const [listDate, setListDate] = useState(() => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date()));
+  const [listRefresh, setListRefresh] = useState(0);
+  const created = useOrderLabels(listDate, listRefresh);
 
   const set = (k) => (e) => setRow((r) => ({ ...r, [k]: k === 'phone' ? fmtPhone(e.target.value) : e.target.value }));
   const setOrig = (k) => (e) => { setOriginSaved(false); setOrigin((o) => ({ ...o, [k]: e.target.value })); };
@@ -31801,24 +32453,27 @@ function NewOrderSingleScreen() {
         origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() },
         serviceDate, timeZone: 'America/New_York',
       };
-      if (!live) {
-        setResult({ ok: true, beta: true, msg: `○ Beta — would create an order for ${payloadRow.name} (nothing sent). Flip to ● LIVE to create it in NuVizz.` });
-        return;
-      }
       let res;
       try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: opIdRef.current, createdBy: 'dispatcher' }); }
       catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
       if (res.ok && res.result?.ok) {
         const nbr = res.result.entityNbr || payloadRow.stopNbr || '(number assigned by NuVizz)';
         opIdRef.current = newClientOpId();   // next order = new idempotency key
+        // The label (and the ticket New Order prints) carry the number NuVizz returned, or the
+        // Order # typed when NuVizz echoes none — the number the order is filed under. No
+        // number at all = no label, and the banner says so instead of printing a blank.
+        const label = labelOrderFromCreate(payloadRow, res.result.entityNbr || payloadRow.stopNbr, { serviceDate, ref: payloadRow.pro || '', origin: settings.origin, source: 'single' });
+        const saved = label ? await saveOrderLabels([label]) : { ok: true };
+        const labelBits = { label, labelSaveError: saved.ok ? null : saved.reason };
         if (res.result.updated) {
           // stop/sync/update is an UPSERT: the typed Order # already existed, and NuVizz
           // REPLACED that order's details. Say so loudly; keep the form so it's reviewable.
-          setResult({ ok: true, updated: true, msg: `⚠ Order ${nbr} ALREADY EXISTED — NuVizz UPDATED it (its address/details were replaced with what you entered). Verify in the portal if that wasn't intended.` });
+          setResult({ ok: true, updated: true, msg: `⚠ Order ${nbr} ALREADY EXISTED — NuVizz UPDATED it (its address/details were replaced with what you entered). Verify in the portal if that wasn't intended.`, ...labelBits });
         } else {
-          setResult({ ok: true, msg: `✓ Order created — ${nbr}. It's now UNPLANNED; plan it onto a load in Routing.` });
+          setResult({ ok: true, msg: `✓ Order created — ${nbr}. It's now UNPLANNED; plan it onto a load in Routing.`, ...labelBits });
           setRow(EMPTY_ORDER_ROW);   // ready for the next order; keep origin + date
         }
+        setListRefresh((k) => k + 1);
       } else {
         setResult({ ok: false, msg: `✗ Create failed: ${res.error || res.result?.error || 'write error'}` });
       }
@@ -31828,19 +32483,10 @@ function NewOrderSingleScreen() {
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
       <div className={`p-4 space-y-4 ${SCREEN_FORM}`}>
-        {/* Header + Beta/Live */}
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h1 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Package size={18} /> New Order</h1>
-            <p className="text-[12px] text-slate-500">Create a delivery order in NuVizz. It lands <b>unplanned</b> — plan it onto a load in Routing.</p>
-          </div>
-          <button
-            onClick={() => setLive((v) => !v)}
-            title={live ? 'LIVE — Create sends the order to NuVizz. Click for Beta (preview only).' : 'BETA — Create only previews (nothing sent). Click to go Live.'}
-            className={`inline-flex items-center gap-1 text-[12px] font-bold px-2.5 py-1.5 rounded border shrink-0 ${live ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
-          >
-            {live ? '● LIVE' : '○ Beta'}
-          </button>
+        {/* Header — always live (no Beta toggle) */}
+        <div>
+          <h1 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Package size={18} /> New Order</h1>
+          <p className="text-[12px] text-slate-500">Create a delivery order in NuVizz. It lands <b>unplanned</b> — plan it onto a load in Routing.</p>
         </div>
 
         {/* Origin (from) — pick a saved pickup location or edit for this order */}
@@ -31934,19 +32580,61 @@ function NewOrderSingleScreen() {
 
         {/* Result + submit */}
         {result && (
-          <div className={`rounded-lg px-3 py-2 text-[13px] ${result.ok ? (result.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : result.updated ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-green-50 text-green-800 border border-green-200') : 'bg-red-50 text-red-800 border border-red-200'}`}>
+          <div className={`rounded-lg px-3 py-2 text-[13px] ${result.ok ? (result.updated ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-green-50 text-green-800 border border-green-200') : 'bg-red-50 text-red-800 border border-red-200'}`}>
             {result.msg}
+            {result.ok && result.label && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <PrintLabelsButton orders={[result.label]} />
+                <LabelTicketButton labelRec={result.label} />
+              </div>
+            )}
+            {result.ok && !result.label && (
+              <div className="mt-1 text-[12px]">NuVizz sent back no order number, so no label was made — find the order in the portal before printing anything for it.</div>
+            )}
+            {result.labelSaveError && (
+              <div className="mt-1 text-[12px] text-amber-800">The label was not saved for later ({result.labelSaveError}) — print it now; it will not be in the list below.</div>
+            )}
           </div>
         )}
-        <div className="flex items-center justify-between gap-3 pb-6">
-          <span className="text-[12px] text-slate-500">{!originComplete ? 'Set the origin address first.' : !deliveryComplete ? 'Fill the required (*) delivery fields.' : live ? 'Ready — this WILL create the order in NuVizz.' : 'Beta — Create previews only.'}</span>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[12px] text-slate-500">{!originComplete ? 'Set the origin address first.' : !deliveryComplete ? 'Fill the required (*) delivery fields.' : !serviceDate ? 'Pick the service date.' : 'Ready — this will create the order in NuVizz.'}</span>
           <button
             onClick={submit} disabled={!canSubmit}
             className={`inline-flex items-center gap-1.5 px-4 py-2 rounded font-semibold text-white text-sm shrink-0 ${canSubmit ? '' : 'opacity-40 cursor-not-allowed'}`}
-            style={{ background: live ? '#dc2626' : BRAND }}
+            style={{ background: BRAND }}
           >
-            <Plus size={16} /> {busy ? 'Creating…' : live ? 'Create order (LIVE)' : 'Preview (Beta)'}
+            <Plus size={16} /> {busy ? 'Creating…' : 'Create order'}
           </button>
+        </div>
+
+        {/* Orders created on a day — reprint a label or a Delivery Ticket any time. Read back
+            from the saved labels (order-labels), zero NuVizz calls. */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2 mb-6">
+          <div className="flex items-center flex-wrap gap-2">
+            <div className="text-[13px] font-semibold text-slate-700 inline-flex items-center gap-1.5"><Tag size={14} /> Labels &amp; tickets</div>
+            <input type="date" value={listDate} onChange={(e) => e.target.value && setListDate(e.target.value)} aria-label="Created on" className="border border-slate-300 rounded px-2 py-1 text-[12px]" />
+            <span className="text-[12px] text-slate-500">{created.loading ? 'loading…' : `${created.labels.length} order${created.labels.length === 1 ? '' : 's'} created`}</span>
+            {created.labels.length > 1 && <PrintLabelsButton orders={created.labels} size="sm" label={`Print all labels (${labelPageCount(created.labels).pages} pages)`} />}
+          </div>
+          {created.error && <div className="text-[11px] text-amber-700">Labels unavailable: {created.error}</div>}
+          {created.labels.length === 0 ? (
+            !created.loading && <div className="text-[12px] text-slate-400">No orders created on this day.</div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {created.labels.map((l) => (
+                <li key={l.stopNbr} className="py-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-medium text-slate-700 truncate">{l.name || '—'} <span className="font-mono text-[12px] text-slate-500">{l.stopNbr}</span></div>
+                    <div className="text-[11px] text-slate-500 truncate">{[l.addr1, l.city, l.state].filter(Boolean).join(', ')}{LABEL_SOURCE_NAME[l.source] ? ` · ${LABEL_SOURCE_NAME[l.source]}` : ''}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <PrintLabelsButton orders={[l]} size="sm" label={`Label (${labelPageCount([l]).pages})`} />
+                    <LabelTicketButton labelRec={l} size="sm" />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </div>
@@ -32034,6 +32722,13 @@ function BulkOrderScreen() {
   const etTodayStr = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
   const [pushedDate, setPushedDate] = useState(etTodayStr);
   const [pushedLog, setPushedLog] = useState({ loading: false, records: [], error: null, date: null });
+  // Labels for the Pushed to NuVizz rows: the ones saved when each order was created (Chad: "I
+  // want to be able to select all in the bulk add to print labels or just click on specific rows
+  // to print the labels"). Rows pushed before labels were saved fall back to the push log itself.
+  const [pushedLabelRefresh, setPushedLabelRefresh] = useState(0);
+  const pushedLabels = useOrderLabels(bulkView === 'pushed' ? pushedDate : null, pushedLabelRefresh);
+  const [pushedSel, setPushedSel] = useState(() => new Set());   // selected row keys (NuVizz #)
+  useEffect(() => { setPushedSel(new Set()); }, [pushedDate]);
   const pushedReqRef = useRef(null);   // latest requested date — stale responses must not render under a newer label
   const fetchPushedLog = useCallback(async (date) => {
     if (!date) return;
@@ -32346,6 +33041,7 @@ function BulkOrderScreen() {
     setBusy(true); setResults(null); setProgress({ done: 0, total: targets.length });
     const out = [];
     const pushedLogRecords = [];   // durable cloud push-history — feeds the "Pushed to NuVizz" tab
+    const labelOrders = [];        // one Davis delivery label per created order — saved to order-labels after the run
     // Sequential — one create at a time, each with its own idempotency key, to respect the
     // NuVizz daily-call ceiling/breaker and never fire a duplicate on a mid-batch retry.
     for (let k = 0; k < targets.length; k++) {
@@ -32372,6 +33068,10 @@ function BulkOrderScreen() {
       if (!ok && !r._opId) setRows((rs) => rs.map((x) => (x === r ? { ...x, _opId: opId } : x)));
       out.push({ idx, name: payloadRow.name, ok, updated: !!res.result?.updated, nbr: res.result?.entityNbr || payloadRow.stopNbr || '', error: ok ? null : (res.error || res.result?.error || 'write error') });
       if (ok) {
+        // The label's barcode carries the NuVizz stop # (the grid's PRO/SHP, or what NuVizz
+        // returned); the grid's Order # (SO) prints beside it as the reference.
+        const lbl = labelOrderFromCreate(payloadRow, res.result?.entityNbr || refs.stopNbr, { serviceDate, ref: refs.pro || '', origin: settings.origin, source: 'bulk' });
+        if (lbl) labelOrders.push(lbl);
         pushedLogRecords.push({
           // Log the PRO (SHP) as the order ref — that's what NuVizz now shows as this order's Stop Number.
           orderRef: refs.stopNbr, nuvizzNbr: res.result?.entityNbr || refs.stopNbr,
@@ -32387,7 +33087,14 @@ function BulkOrderScreen() {
     const okIdx = new Set(out.filter((o) => o.ok).map((o) => o.idx));
     // Keep failed + incomplete rows for a retry; drop the ones that succeeded.
     setRows((rs) => { const kept = rs.filter((r, idx) => !bulkRowIsBlank(r) && !okIdx.has(idx)); return kept.length ? kept : [bulkEmptyRow()]; });
-    setResults({ created: out.filter((o) => o.ok && !o.updated).length, updated: out.filter((o) => o.ok && o.updated).length, failed: out.filter((o) => !o.ok).length, rows: out });
+    const noLabel = out.filter((o) => o.ok).length - labelOrders.length;
+    setResults({ created: out.filter((o) => o.ok && !o.updated).length, updated: out.filter((o) => o.ok && o.updated).length, failed: out.filter((o) => !o.ok).length, rows: out, labels: labelOrders, noLabel });
+    if (labelOrders.length) {
+      saveOrderLabels(labelOrders).then((r) => {
+        if (!r.ok) setResults((x) => (x ? { ...x, labelSaveError: r.reason } : x));
+        setPushedLabelRefresh((k) => k + 1);
+      });
+    }
     // Durably log what was pushed so the Pushed tab shows it by date, from any device (best-effort,
     // our own Firestore log — a hiccup never fails the create). On a clean run, jump to the receipt.
     if (pushedLogRecords.length) {
@@ -32399,7 +33106,12 @@ function BulkOrderScreen() {
       } catch { /* history is best-effort */ }
       const today = etTodayStr();
       if (pushedDate !== today) setPushedDate(today); else fetchPushedLog(today);
-      if (!out.some((o) => !o.ok)) setBulkView('pushed');
+      if (!out.some((o) => !o.ok)) {
+        // A clean run lands on the receipt with the batch it just created already ticked, so
+        // Print labels is one tap.
+        setPushedSel(new Set(labelOrders.map((l) => l.stopNbr)));
+        setBulkView('pushed');
+      }
     }
   };
 
@@ -32545,6 +33257,7 @@ function BulkOrderScreen() {
     setIntakeBusy(true); setIntakeResults(null); setIntakeProgress({ done: 0, total: targets.length });
     let sent = 0, updated = 0, failed = 0;
     const pushedLogRecords = [];   // durable cloud push-history (written after the loop)
+    const labelOrders = [];        // one Davis delivery label per pushed order — saved to order-labels after the loop
     for (let k = 0; k < targets.length; k++) {
       const r = targets[k];
       const payloadRow = {
@@ -32565,6 +33278,8 @@ function BulkOrderScreen() {
       const ok = !!(res.ok && res.result?.ok);
       if (ok) {
         sent++; if (res.result?.updated) updated++;
+        const lbl = labelOrderFromCreate(payloadRow, res.result?.entityNbr || payloadRow.stopNbr, { serviceDate, ref: payloadRow.pro || '', origin: settings.origin, source: 'manifest' });
+        if (lbl) labelOrders.push(lbl);
         pushedLogRecords.push({
           orderRef: (r.stopNbr || '').trim() || null, nuvizzNbr: res.result?.entityNbr || (r.stopNbr || '').trim() || null,
           name: r.name || '', addr1: r.addr1 || '', addr2: r.addr2 || '', city: r.city || '', state: r.state || '', zip: r.zip || '',
@@ -32592,10 +33307,13 @@ function BulkOrderScreen() {
       const today = etTodayStr();
       if (pushedDate !== today) setPushedDate(today); else fetchPushedLog(today);
     }
+    const labelSave = labelOrders.length ? await saveOrderLabels(labelOrders) : { ok: true };
+    if (labelOrders.length) setPushedLabelRefresh((k) => k + 1);
     setIntakeBusy(false); setIntakeProgress(null);
     setIntakeResults({ ok: failed === 0, msg: failed
       ? `⚠ Pushed ${sent} of ${targets.length} — ${failed} failed (kept in Held with the reason).`
-      : `✓ Pushed ${sent} order(s) to NuVizz${updated ? ` (${updated} updated existing)` : ''} — they land UNPLANNED; plan them in Routing.` });
+      : `✓ Pushed ${sent} order(s) to NuVizz${updated ? ` (${updated} updated existing)` : ''} — they land UNPLANNED; plan them in Routing.`,
+      labels: labelOrders, noLabel: sent - labelOrders.length, labelSaveError: labelSave.ok ? null : labelSave.reason });
     if (failed === 0) setIntakeTab('pushed');
   };
   const canPushIntake = originComplete && !!serviceDate && !intakeBusy
@@ -32631,12 +33349,26 @@ function BulkOrderScreen() {
         </div>
 
         {bulkView === 'orders' && (<>
-        {/* Shared pickup + service date (applies to the whole batch) */}
+        {/* SERVICE DATE — on the main page, never folded away. Chad, Sep 24 2026: "I don't want
+            the service date hidden behind a drop down on bulk add it should be on main page for
+            that upload." It is the date every order created or pushed below is sent with, and
+            the date printed on its labels. In normal flow and wrapping, so a phone moves it
+            rather than overlapping it. */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-wrap items-end gap-x-4 gap-y-1">
+          <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} disabled={busy || intakeBusy} className="max-w-[200px]" />
+          <span className="text-[12px] text-slate-600 pb-1.5">
+            {serviceDate
+              ? <><b>{formatDateLong(serviceDate)}</b> — every order created or pushed below goes to NuVizz with this date.</>
+              : <span className="text-amber-700 font-medium">Pick the service date — nothing can be created without it.</span>}
+          </span>
+        </div>
+
+        {/* Shared pickup (applies to the whole batch) */}
         <div className="bg-white border border-slate-200 rounded-lg p-3">
           <button onClick={() => setShowOrigin((v) => !v)} className="w-full flex items-center justify-between text-left">
-            <span className="text-[13px] font-semibold text-slate-700">Pickup + date <span className="font-normal text-slate-400">(applies to all rows)</span>{!originComplete && <span className="ml-2 text-[11px] font-normal text-amber-600">— required</span>}</span>
+            <span className="text-[13px] font-semibold text-slate-700">Pickup <span className="font-normal text-slate-400">(applies to all rows)</span>{!originComplete && <span className="ml-2 text-[11px] font-normal text-amber-600">— required</span>}</span>
             <span className="text-[12px] text-slate-500 inline-flex items-center gap-1">
-              {originComplete && !showOrigin ? `${origin.name} · ${origin.city}, ${origin.state} · ${serviceDate}` : ''}
+              {originComplete && !showOrigin ? `${origin.name} · ${origin.city}, ${origin.state}` : ''}
               {showOrigin ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </span>
           </button>
@@ -32659,7 +33391,6 @@ function BulkOrderScreen() {
                 <OrderField className="col-span-2" label="ZIP" req value={origin.zip} onChange={setOrig('zip')} placeholder="30518" />
               </div>
               <div className="flex items-end gap-3 flex-wrap">
-                <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} className="max-w-[200px]" />
                 <button onClick={persistOrigin} disabled={!originComplete} title={originComplete ? 'Save this pickup location for reuse' : 'Fill all pickup fields to save'} className={`text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border ${originComplete ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50' : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed'}`}><Save size={13} /> {originIsSaved ? 'Update pickup location' : 'Save pickup location'}</button>
                 {originSaved && <span className="text-[12px] font-medium text-green-700 inline-flex items-center gap-1"><FileCheck size={13} /> Saved</span>}
               </div>
@@ -32814,10 +33545,10 @@ function BulkOrderScreen() {
                 <EngineStatTile label="Orders" value={intakeRows.length} hint={!multiManifest && m.totalPros != null ? `Manifest header says ${m.totalPros} PROs` : (multiManifest ? `${merged.length} manifests` : '')} />
                 <EngineStatTile label="Mnf units" value={mnfUnits} hint="Manifest handling units (→ Pallets)" />
                 <EngineStatTile label="Weight" value={`${Number(mnfWeight || 0).toLocaleString()} lb`} />
-                <EngineStatTile label="Pickup" value={origin.name || '—'} hint="Set in the Pickup + date card above" />
+                <EngineStatTile label="Pickup" value={origin.name || '—'} hint="Set in the Pickup card above" />
               </div>
               <div className="text-[12px] text-blue-900 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
-                Enter <b>Pallets</b>, <b>Loose pcs</b>, <b>Phone</b>, <b>Dispatch notes</b> and <b>Price</b> per order (Price → NuVizz Seal #), then <b>check the rows to push</b> and hit <b>Push to NuVizz</b>. Unchecked orders stay in the <b>Held</b> queue (saved on this device). Pickup = <b>{origin.name || 'your pickup'}</b> for every order — set it in the Pickup + date card above. Expand a row (▸) to edit its address.
+                Enter <b>Pallets</b>, <b>Loose pcs</b>, <b>Phone</b>, <b>Dispatch notes</b> and <b>Price</b> per order (Price → NuVizz Seal #), then <b>check the rows to push</b> and hit <b>Push to NuVizz</b>. Unchecked orders stay in the <b>Held</b> queue (saved on this device). Pickup = <b>{origin.name || 'your pickup'}</b> for every order — set it in the Pickup card above. Expand a row (▸) to edit its address.
               </div>
               {/* MISSING ORDERS — the manifest's own header count vs what was read. Red and on
                   its own, above the amber line: "this file is short 6 orders" is not the same
@@ -32976,12 +33707,20 @@ function BulkOrderScreen() {
                 <div className="rounded-lg px-3 py-2 text-[13px] bg-blue-50 text-blue-800 border border-blue-200">⏳ Pushing {intakeProgress.done}/{intakeProgress.total}…</div>
               )}
               {intakeResults && (
-                <div className={`rounded-lg px-3 py-2 text-[13px] ${intakeResults.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : intakeResults.ok ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-amber-50 text-amber-800 border border-amber-200'}`}>{intakeResults.msg}</div>
+                <div className={`rounded-lg px-3 py-2 text-[13px] space-y-1 ${intakeResults.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : intakeResults.ok ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-amber-50 text-amber-800 border border-amber-200'}`}>
+                  <div>{intakeResults.msg}</div>
+                  {intakeResults.labels && intakeResults.labels.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2"><PrintLabelsButton orders={intakeResults.labels} /><span className="text-[11px]">Reprint any time from Bulk add → Pushed to NuVizz.</span></div>
+                  )}
+                  {intakeResults.noLabel > 0 && <div className="text-[12px] text-amber-800">{intakeResults.noLabel} order{intakeResults.noLabel === 1 ? '' : 's'} came back from NuVizz with no order number, so no label was made for {intakeResults.noLabel === 1 ? 'it' : 'them'}.</div>}
+                  {intakeResults.labelSaveError && <div className="text-[12px] text-amber-800">These labels were not saved for later ({intakeResults.labelSaveError}) — print them now.</div>}
+                </div>
               )}
               {intakeTab === 'held' && (
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-[12px] text-slate-500">
-                    {!originComplete ? 'Set the pickup + service date first.'
+                    {!originComplete ? 'Set the pickup location first.'
+                      : !serviceDate ? 'Pick the service date at the top of the page.'
                       : checkedHeld.length === 0 ? 'Check ☑ the rows to push — unchecked rows stay Held for a later push.'
                       : !canPushIntake ? 'A checked row is missing required fields — expand it (▸) and fill them.'
                       : live ? `Ready — this WILL create ${checkedHeld.length} order(s) in NuVizz. ${heldRows.length - checkedHeld.length} stay held.`
@@ -33066,6 +33805,11 @@ function BulkOrderScreen() {
             {results.beta ? results.msg : (
               <div className="space-y-1">
                 <div className="font-medium">{results.failed ? `⚠ ${results.created + results.updated} of ${results.created + results.updated + results.failed} created` : `✓ Created ${results.created}${results.updated ? ` (+${results.updated} updated existing)` : ''} order(s) — now UNPLANNED; plan them onto loads in Routing.`}</div>
+                {results.labels && results.labels.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2"><PrintLabelsButton orders={results.labels} /><span className="text-[11px]">Reprint any time from Pushed to NuVizz.</span></div>
+                )}
+                {results.noLabel > 0 && <div className="text-[12px] text-amber-800">{results.noLabel} order{results.noLabel === 1 ? '' : 's'} came back from NuVizz with no order number, so no label was made for {results.noLabel === 1 ? 'it' : 'them'}.</div>}
+                  {results.labelSaveError && <div className="text-[12px] text-amber-800">These labels were not saved for later ({results.labelSaveError}) — print them now.</div>}
                 {results.failed > 0 && (
                   <ul className="list-disc ml-5 text-[12px]">
                     {results.rows.filter((o) => !o.ok).slice(0, 12).map((o, k) => <li key={k}><b>{o.name || `Row ${o.idx + 1}`}</b>: {o.error}</li>)}
@@ -33080,7 +33824,8 @@ function BulkOrderScreen() {
         {/* Create */}
         <div className="flex items-center justify-between gap-3 pb-6">
           <span className="text-[12px] text-slate-500">
-            {!originComplete ? 'Set the pickup + service date first.'
+            {!originComplete ? 'Set the pickup location first.'
+                      : !serviceDate ? 'Pick the service date at the top of the page.'
               : readyCount === 0 && activeRows.length > 0 && pushRows.length === 0 ? `All ${activeRows.length} row(s) are queued — check ☑ at least one row to push it.`
               : readyCount === 0 ? `Fill at least one row (required * fields${asLoad ? ' — PRO / shipment # too in load mode' : ''}).`
               : asLoad && incompleteCount > 0 ? `Load mode sends the load's COMPLETE stop list — finish or remove the ${incompleteCount} incomplete row(s) first.`
@@ -33103,6 +33848,14 @@ function BulkOrderScreen() {
         {bulkView === 'pushed' && (() => {
           const recs = pushedLog.records || [];
           const isToday = pushedDate === etTodayStr();
+          // One label per row: the one saved at create time, else built from the push log.
+          const savedByNbr = new Map((pushedLabels.labels || []).map((l) => [l.stopNbr, l]));
+          const rowKey = (r, i) => r.nuvizzNbr || r.orderRef || `row${i}`;
+          const rowLabel = (r) => savedByNbr.get(r.nuvizzNbr || r.orderRef) || labelOrderFromPushLog(r);
+          const keys = recs.map(rowKey);
+          const selLabels = recs.filter((r, i) => pushedSel.has(keys[i])).map(rowLabel).filter(Boolean);
+          const allSel = recs.length > 0 && keys.every((k) => pushedSel.has(k));
+          const toggle = (k) => setPushedSel((prev) => { const next = new Set(prev); if (next.has(k)) next.delete(k); else next.add(k); return next; });
           const fmtTime = (iso) => { try { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(iso)); } catch { return ''; } };
           return (
             <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-3">
@@ -33116,10 +33869,22 @@ function BulkOrderScreen() {
                 {pushedLog.error && <span className="text-[11px] text-amber-700">History unavailable: {pushedLog.error}</span>}
                 <span className="text-[11px] text-slate-400 w-full">Every order you push from Bulk Add is logged here — pick a day to see exactly what was sent. Reads our own log only (zero NuVizz calls).</span>
               </div>
+              {recs.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 border border-slate-200 px-2 py-1.5">
+                  <label className="inline-flex items-center gap-1.5 text-[12px] text-slate-700 cursor-pointer">
+                    <input type="checkbox" checked={allSel} onChange={() => setPushedSel(allSel ? new Set() : new Set(keys))} />
+                    Select all
+                  </label>
+                  <span className="text-[12px] text-slate-500">{selLabels.length} selected</span>
+                  <PrintLabelsButton orders={selLabels} label={selLabels.length ? `Print labels for ${selLabels.length} selected (${labelPageCount(selLabels).pages} pages)` : 'Print labels — tick rows first'} disabled={!selLabels.length} />
+                  {pushedLabels.error && <span className="text-[11px] text-amber-700">Saved labels unavailable ({pushedLabels.error}) — printing from the push log.</span>}
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <table className="text-[12px] border-collapse w-full">
                   <thead>
                     <tr className="text-left text-[11px] text-slate-500 border-b border-slate-200">
+                      <th className="px-2 pb-1 font-medium w-7" aria-label="Select" />
                       <th className="px-2 pb-1 font-medium">Consignee</th>
                       <th className="px-2 pb-1 font-medium">Order #</th>
                       <th className="px-2 pb-1 font-medium">NuVizz #</th>
@@ -33128,13 +33893,15 @@ function BulkOrderScreen() {
                       <th className="px-2 pb-1 font-medium text-right">Wt</th>
                       <th className="px-2 pb-1 font-medium text-right">Price</th>
                       <th className="px-2 pb-1 font-medium whitespace-nowrap">Pushed</th>
+                      <th className="px-2 pb-1 font-medium">Label</th>
                     </tr>
                   </thead>
                   <tbody>
                     {recs.length === 0 ? (
-                      <tr><td colSpan={8} className="py-4 text-center text-slate-400">{pushedLog.loading ? 'Loading…' : `Nothing pushed on ${pushedDate}.`}</td></tr>
+                      <tr><td colSpan={10} className="py-4 text-center text-slate-400">{pushedLog.loading ? 'Loading…' : `Nothing pushed on ${pushedDate}.`}</td></tr>
                     ) : recs.map((r, i) => (
-                      <tr key={`${r.orderRef || r.nuvizzNbr || i}_${i}`} className="border-b border-slate-100 align-top">
+                      <tr key={`${r.orderRef || r.nuvizzNbr || i}_${i}`} className={`border-b border-slate-100 align-top ${pushedSel.has(keys[i]) ? 'bg-blue-50/60' : ''}`}>
+                        <td className="px-2 py-1"><input type="checkbox" checked={pushedSel.has(keys[i])} onChange={() => toggle(keys[i])} aria-label={`Select ${r.name || keys[i]}`} /></td>
                         <td className="px-2 py-1"><div className="font-medium text-slate-700">{r.name || '—'}</div>{(r.addr1 || r.addr2) && <div className="text-[11px] text-slate-500">{[r.addr1, r.addr2].filter(Boolean).join(', ')}</div>}{(r.city || r.state) && <div className="text-[11px] text-slate-400">{[r.city, r.state].filter(Boolean).join(', ')}</div>}</td>
                         <td className="px-2 py-1 text-slate-600 tabular-nums">{r.orderRef || '—'}</td>
                         <td className="px-2 py-1 tabular-nums">{r.nuvizzNbr || '—'}{r.updated && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 align-middle">updated</span>}</td>
@@ -33143,6 +33910,7 @@ function BulkOrderScreen() {
                         <td className="px-2 py-1 text-right tabular-nums">{r.weight || ''}</td>
                         <td className="px-2 py-1 text-right tabular-nums">{r.price ? `$${r.price}` : ''}</td>
                         <td className="px-2 py-1 text-slate-500 whitespace-nowrap">{fmtTime(r.pushedAt)}</td>
+                        <td className="px-2 py-1 whitespace-nowrap">{rowLabel(r) ? <PrintLabelsButton orders={[rowLabel(r)]} size="sm" label={`Label (${labelPageCount([rowLabel(r)]).pages})`} /> : <span className="text-[11px] text-slate-400">no #</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -33454,44 +34222,81 @@ function useUlineReview(nonce) {
   React.useEffect(() => { load(); }, [load, nonce]);
 
   /**
-   * THE ONE WRITE PATH. `change` is { eligibility } (a vehicle answer) or { buildingType } (a
-   * chip); with { undo: true } it is the `prev` snapshot being put back. Every press is one
-   * merged setDoc into customer_notes — the note's restrictions, hours and dock notes are never
-   * touched — and the row moves only once Firestore has ACKNOWLEDGED it.
+   * THE ONE WRITE PATH. `change` is { eligibility } (a vehicle answer), { buildingType } (a chip)
+   * or { tick: true } (the decided list's "Tick it"); with { undo: true } it is the `prev`
+   * snapshot being put back. Every press is one merged setDoc into customer_notes — hours, dock
+   * notes and every other restriction are never touched — and the row moves only once Firestore
+   * has ACKNOWLEDGED it.
+   *
+   * EVERY "NO TRACTOR TRAILER" TICKS THE PROFILE (v1.62.2) — the button, N, the full-screen bar,
+   * Change to…, Residential — because they all arrive here. Chad: "if i select no tractor trailer
+   * it should then select the no tractor trailer icon on the customer profile and it didn't."
+   * And EVERY "TRACTOR OK" TAKES ULINE'S STAMP OFF IT (v1.62.3), through the same door: "same
+   * thing if we marked it tractor ok it should remove the uline straight truck advisory stamp."
    */
   const apply = React.useCallback(async (row, change, { undo = false } = {}) => {
     if (!db || !row?.key) { setWriteErr('Firestore is not connected on this page — nothing was saved.'); return false; }
     if (inFlight.current) return false;
     inFlight.current = true;
     const stamp = serverTimestamp();
+    const fv = { arrayUnion, arrayRemove, deleteField };
     const prev = {};
-    let fields; let nextElig; let nextType; let what;
+    let fields; let nextElig; let nextType; let nextRestr; let what;
     if (undo) {
-      fields = undoWrite(row.key, change, stamp);
+      fields = undoWrite(row.key, change, stamp, fv);
       if ('eligibility' in change) nextElig = change.eligibility;
       if ('buildingType' in change) nextType = change.buildingType;
+      if ('restriction' in change) { const { op, ...snap } = change.restriction; nextRestr = snap; }
     } else if ('buildingType' in change) {
-      const w = buildingTypeWrite(row.key, change.buildingType, stamp);
+      const w = buildingTypeWrite(row.key, change.buildingType, stamp, fv);
       fields = w.fields;
       nextType = normalizeBuildingType(change.buildingType);
       prev.buildingType = row.buildingType ?? null;
       if (w.eligibility) { prev.eligibility = currentElig(row); nextElig = w.eligibility; }
+      if (w.ticks) { prev.restriction = restrictionSnapshot(row); nextRestr = TICKED; }
       const label = nextType ? (BUILDING_TYPE_LABEL[nextType] || nextType) : 'Auto (building type cleared)';
-      what = w.eligibility ? `${label} — and No tractor trailer (Box truck only)` : `${label} (building type)`;
+      what = w.eligibility ? `${label} — and No tractor trailer (Box truck only, ticked on the customer profile)` : `${label} (building type)`;
+    } else if (change.tick) {
+      // The profile chip ALONE, for a location already Box truck only — decided here before
+      // v1.62.2, or painted in Routing. The vehicle mark is not rewritten, so its stamp still
+      // says when that decision was made (v0.99.3: a stamp that tracks other edits is worse
+      // than none).
+      fields = { match_key: row.key, ...noTractorTickFields(fv), last_updated: stamp };
+      prev.restriction = restrictionSnapshot(row); nextRestr = TICKED;
+      what = 'No tractor trailer ticked on the customer profile';
+    } else if (change.ulineOff) {
+      // Uline's stamp ALONE, for a location already Tractor-trailer OK — answered before v1.62.3,
+      // or painted in Routing. The vehicle mark and its date are left as they are.
+      fields = { match_key: row.key, ...ulineUntickFields(fv), last_updated: stamp };
+      prev.restriction = { ...restrictionSnapshot(row), op: 'uline-off' }; nextRestr = afterUlineOff(row);
+      what = 'Uline’s straight-truck stamp taken off the customer profile';
     } else {
-      fields = eligibilityPayload(row.key, change.eligibility, stamp);
-      prev.eligibility = currentElig(row);
       nextElig = change.eligibility ?? null;
-      what = nextElig === 'box_only' ? 'No tractor trailer (Box truck only)' : nextElig === 'tractor' ? 'Tractor-trailer OK' : 'not set';
+      const ticks = nextElig === 'box_only';
+      const unstamps = nextElig === 'tractor';
+      fields = ticks ? noTractorWrite(row.key, stamp, fv)
+        : unstamps ? tractorOkWrite(row.key, stamp, fv)
+          : eligibilityPayload(row.key, change.eligibility, stamp);
+      prev.eligibility = currentElig(row);
+      if (ticks) { prev.restriction = restrictionSnapshot(row); nextRestr = TICKED; }
+      if (unstamps) { prev.restriction = { ...restrictionSnapshot(row), op: 'uline-off' }; nextRestr = afterUlineOff(row); }
+      what = ticks ? 'No tractor trailer — Box truck only, ticked on the customer profile'
+        : unstamps ? 'Tractor-trailer OK — Uline’s straight-truck stamp taken off the customer profile' : 'not set';
     }
     setBusyKey(row.key); setWriteErr(null);
     try {
       await setDoc(doc(db, 'customer_notes', row.key), fields, { merge: true });
-      setData((d) => (d ? { ...d, rows: sortUlineRows(d.rows.map((r) => (r.key !== row.key ? r : {
-        ...r,
-        ...(nextElig !== undefined ? { decision: decisionAfter(r, nextElig) } : {}),
-        ...(nextType !== undefined ? { buildingType: nextType } : {}),
-      }))) } : d));
+      setData((d) => (d ? { ...d, rows: sortUlineRows(d.rows.map((r) => {
+        if (r.key !== row.key) return r;
+        // The restriction moves FIRST: where a row lands after a vehicle change depends on
+        // whether a person's no now stands under it (decisionAfter reads baseDecision).
+        const base = nextRestr ? { ...r, ...nextRestr } : r;
+        return {
+          ...base,
+          ...(nextElig !== undefined ? { decision: decisionAfter(base, nextElig) } : {}),
+          ...(nextType !== undefined ? { buildingType: nextType } : {}),
+        };
+      })) } : d));
       setLast(undo ? null : { key: row.key, name: row.businessName, prev, what, decided: nextElig !== undefined });
       return true;
     } catch (e) {
@@ -33559,7 +34364,12 @@ function UlineSatellite({ google, mapsErr, pin, active = true }) {
       mapRef.current = new google.maps.Map(holder.current, {
         center: at, zoom: 19, mapTypeId: 'hybrid', tilt: 0,
         disableDefaultUI: true, zoomControl: true, scaleControl: true, fullscreenControl: false,
-        mapTypeControl: true, gestureHandling: 'greedy', clickableIcons: false,
+        // CLICKABLE LABELS (v1.68.1). Chad: "I want to be able to click on these labels when
+        // evaluating a stop so i can see their addresses i look at labeled addresses as
+        // confirmed" — a pin that lands between buildings is judged by the business labels
+        // around it, and a label's address is what says which door the pin meant. Tapping one
+        // opens Google's own card (name and address) over the map.
+        mapTypeControl: true, gestureHandling: 'greedy', clickableIcons: true,
       });
       markerRef.current = new google.maps.Marker({ map: mapRef.current, position: at });
     } else {
@@ -33931,7 +34741,7 @@ function UlineDecisionButtons({ row, u, onDone, onSkip, stacked = false, compact
       </button>
       <button type="button" disabled={busy} onClick={() => go('tractor')} style={tall}
         className={`${base} bg-green-600 border-green-700 text-white hover:bg-green-700`}
-        title="A 53′ fits. The router stops holding this location to a box truck because of Uline’s note.">
+        title="A 53′ fits. The router stops holding this location to a box truck, and Uline’s straight-truck stamp comes off the customer profile.">
         Tractor OK{keys ? <span className="ml-1.5 text-[10px] font-normal opacity-80">T</span> : ''}
       </button>
       <button type="button" disabled={busy} onClick={onSkip} style={tall}
@@ -33974,7 +34784,10 @@ function UlineDecidedList({ u, stacked = false }) {
         <div className="border-t divide-y">
           {u.done.map((r) => {
             const d = ULINE_DECIDED[r.decision];
-            const other = r.decision === 'box_only' ? 'tractor' : r.decision === 'tractor' ? 'box_only' : null;
+            // Toward a tractor (Change to Tractor OK, Clear) only while no person's "no" stands
+            // under the vehicle mark — once the profile is ticked, that is changed on the stop card.
+            const toTractor = canMoveTowardTractor(r);
+            const other = r.decision === 'box_only' ? (toTractor ? 'tractor' : null) : r.decision === 'tractor' ? 'box_only' : null;
             return (
               <div key={r.key} className={`px-3 py-2 ${stacked ? 'space-y-1.5' : 'flex items-center justify-between gap-3 flex-wrap'}`}>
                 <div className="min-w-0">
@@ -33983,15 +34796,40 @@ function UlineDecidedList({ u, stacked = false }) {
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <span title={d?.hint} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white" style={{ background: d?.color }}>{d?.label}</span>
+                  {/* Box truck only WITHOUT the profile chip: decided here before v1.62.2, or painted
+                      in Routing. One tap finishes it the way the answer now does. */}
+                  {r.decision === 'box_only' && !r.ntt && (
+                    <button type="button" onClick={() => u.apply(r, { tick: true })} disabled={u.busyKey === r.key}
+                      className="rounded-lg border border-red-300 px-2.5 text-[11px] font-semibold bg-white text-red-700 hover:bg-red-50" style={{ minHeight: 40 }}
+                      title="Tick No tractor trailer in this customer's Equipment restrictions — the Vehicle mark is already Box truck only">
+                      Tick No tractor trailer on the profile
+                    </button>
+                  )}
+                  {/* Tractor-trailer OK with Uline's stamp still on the profile: answered before
+                      v1.62.3, or painted in Routing. One tap takes it off the way the answer now does. */}
+                  {r.decision === 'tractor' && r.ulineOn !== false && (
+                    <button type="button" onClick={() => u.apply(r, { ulineOff: true })} disabled={u.busyKey === r.key}
+                      className="rounded-lg border border-green-300 px-2.5 text-[11px] font-semibold bg-white text-green-800 hover:bg-green-50" style={{ minHeight: 40 }}
+                      title="Untick Uline: straight truck (advisory) in this customer's Equipment restrictions — the Vehicle mark is already Tractor-trailer OK">
+                      Take Uline’s stamp off the profile
+                    </button>
+                  )}
+                  {r.decision === 'box_only' && !toTractor && (
+                    <span className="text-[10px] text-slate-500">{r.ntt ? 'No tractor trailer is ticked on the profile' : 'A person’s trailer restriction is on the profile'} — change it on the stop card</span>
+                  )}
                   {other && (
                     <>
                       <button type="button" onClick={() => u.decide(r, other)} disabled={u.busyKey === r.key}
                         className="rounded-lg border px-2.5 text-[11px] font-semibold bg-white hover:bg-slate-50" style={{ minHeight: 40 }}>
                         Change to {other === 'tractor' ? 'Tractor OK' : 'No tractor trailer'}
                       </button>
-                      <button type="button" onClick={() => u.decide(r, null)} disabled={u.busyKey === r.key}
-                        className="rounded-lg border px-2.5 text-[11px] font-semibold bg-white hover:bg-slate-50 text-slate-500" style={{ minHeight: 40 }}
-                        title="Back to undecided — Uline’s flag holds the location to a box truck again">Clear</button>
+                      {/* Clear says Uline's flag takes over again — untrue once the stamp is off the
+                          profile, so it is not offered then: Undo right after, or the stop card. */}
+                      {r.ulineOn !== false && (
+                        <button type="button" onClick={() => u.decide(r, null)} disabled={u.busyKey === r.key}
+                          className="rounded-lg border px-2.5 text-[11px] font-semibold bg-white hover:bg-slate-50 text-slate-500" style={{ minHeight: 40 }}
+                          title="Back to undecided — Uline’s flag holds the location to a box truck again">Clear</button>
+                      )}
                     </>
                   )}
                 </div>
@@ -37050,28 +37888,31 @@ function CustomerHeader({ v, today, stacked }) {
 function PlaceDateBar({ sel, setSel, today, stacked }) {
   // The board reaches three days ahead (the scan's write horizon), so a day on it is searchable.
   const horizon = rangeAddDays(today, 3);
-  const pill = (on) => `${RANGE_PILL(on)}${stacked ? ' flex-1' : ''}`;
-  const field = `${RANGE_FIELD} min-w-0${stacked ? ' flex-1' : ''}`;
+  // ONE CONTROL, THREE SETTINGS — a segmented track, not three loose buttons, so it reads as the
+  // single choice it is. On a desktop the track is exactly the height of the boxes beside it
+  // (36 + 2×4 = 44); on a phone each segment keeps the 40px thumb floor.
+  const seg = (on) => `${stacked ? 'flex-1 min-h-[40px]' : 'h-9'} rounded-md px-3 text-sm font-medium whitespace-nowrap transition-colors ${
+    on ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-600 hover:text-slate-900'}`;
+  const field = `${LOOKUP_DATE}${stacked ? ' flex-1' : ''}`;
   return (
-    <div className={stacked ? 'space-y-2' : 'flex flex-wrap items-center gap-1.5'}>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {!stacked && <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mr-0.5">Dates</span>}
-        <button type="button" onClick={() => setSel({ kind: 'all' })} className={pill(sel.kind === 'all')}>All dates</button>
-        <button type="button" onClick={() => setSel({ kind: 'day', date: sel.date || today })} className={pill(sel.kind === 'day')}>One day</button>
-        <button type="button" onClick={() => setSel({ kind: 'range', from: sel.from || rangeAddDays(today, -29), to: sel.to || today })}
-          className={pill(sel.kind === 'range')}>Range</button>
+    <div className={stacked ? 'space-y-2' : 'flex flex-wrap items-center gap-2 min-w-0'}>
+      <div role="group" aria-label="Dates to search" className={`${stacked ? 'flex' : 'inline-flex'} items-center gap-1 rounded-lg bg-slate-100 p-1`}>
+        <button type="button" aria-pressed={sel.kind === 'all'} onClick={() => setSel({ kind: 'all' })} className={seg(sel.kind === 'all')}>All dates</button>
+        <button type="button" aria-pressed={sel.kind === 'day'} onClick={() => setSel({ kind: 'day', date: sel.date || today })} className={seg(sel.kind === 'day')}>One day</button>
+        <button type="button" aria-pressed={sel.kind === 'range'} onClick={() => setSel({ kind: 'range', from: sel.from || rangeAddDays(today, -29), to: sel.to || today })}
+          className={seg(sel.kind === 'range')}>Range</button>
       </div>
       {sel.kind === 'day' && (
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
           <input type="date" aria-label="The day to search" value={sel.date || ''} max={horizon}
             onChange={(e) => e.target.value && setSel({ kind: 'day', date: e.target.value })} className={field} />
         </div>
       )}
       {sel.kind === 'range' && (
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
           <input type="date" aria-label="First day to search" value={sel.from || ''} max={horizon}
             onChange={(e) => e.target.value && setSel({ kind: 'range', from: e.target.value, to: sel.to || e.target.value })} className={field} />
-          <span className="text-[11px] text-slate-400 shrink-0">to</span>
+          <span className="text-sm text-slate-400 shrink-0">to</span>
           <input type="date" aria-label="Last day to search" value={sel.to || ''} max={horizon}
             onChange={(e) => e.target.value && setSel({ kind: 'range', from: sel.from || e.target.value, to: e.target.value })} className={field} />
         </div>
@@ -37290,10 +38131,674 @@ function PlaceResults({ data, stacked, onOrder, renderDetail, rowsShown, onMore,
   );
 }
 
-const STOP_LOOKUP_MODE = 'dd_stop_lookup_mode';
 const STOP_LOOKUP_PLACE = 'dd_stop_lookup_place';
+const STOP_LOOKUP_RECENT = 'dd_stop_lookup_recent';
 const EMPTY_PLACE = { addr: '', city: '', state: '', zip: '' };
-const PLACE_FIELD = 'rounded-lg border border-slate-300 px-2 min-h-[40px] text-sm bg-white min-w-0 focus:outline-none focus:border-slate-500';
+
+// ── THE SEARCH PANEL (v1.63.0) ───────────────────────────────────────────────
+// Chad, on v1.62.0's two tabs: "terrible UI design why would you put on two tabs when there is
+// tons of blank screen … feels like an amateur wrote it." Both searches now sit side by side in
+// ONE panel on a desktop — nothing is hidden behind a tab on a screen with room for both — and
+// stack on a phone. One set of sizes for every box and button on it, so the two halves read as
+// one instrument: 44px boxes, 15px text, the brand blue for the one thing each half does.
+const LOOKUP_FIELD = 'flex items-center gap-2 min-w-0 h-11 rounded-lg bg-white pl-3 pr-1 ring-1 ring-inset ring-slate-300 focus-within:ring-2 focus-within:ring-[#1e5b92] transition-shadow';
+const LOOKUP_INPUT = 'flex-1 min-w-0 h-full bg-transparent text-[15px] text-slate-900 placeholder:text-slate-400 focus:outline-none';
+const LOOKUP_BOX = 'h-11 w-full min-w-0 rounded-lg bg-white px-3 text-[15px] text-slate-900 placeholder:text-slate-400 ring-1 ring-inset ring-slate-300 focus:outline-none focus:ring-2 focus:ring-[#1e5b92] transition-shadow';
+const LOOKUP_DATE = 'h-11 min-w-0 rounded-lg bg-white px-3 text-sm text-slate-900 ring-1 ring-inset ring-slate-300 focus:outline-none focus:ring-2 focus:ring-[#1e5b92]';
+const LOOKUP_PRIMARY = 'inline-flex items-center justify-center h-11 shrink-0 rounded-lg px-5 text-sm font-semibold text-white shadow-sm bg-[#1e5b92] hover:bg-[#174b79] active:bg-[#123d63] disabled:opacity-50 disabled:hover:bg-[#1e5b92] disabled:shadow-none disabled:cursor-not-allowed transition whitespace-nowrap';
+// Each half of the panel on a desktop: stacked with gaps below 1024px, a subgrid above it.
+// The explicit minmax(0,1fr) column matters: without it the half's one implicit track sizes to
+// its widest box's min-content, and at 1024px the order half grew underneath the address half.
+const LOOKUP_HALF = 'p-6 space-y-4 lg:space-y-0 lg:row-span-3 lg:grid lg:grid-rows-subgrid lg:grid-cols-[minmax(0,1fr)] lg:gap-y-4 min-w-0';
+const LOOKUP_GHOST = 'inline-flex items-center justify-center h-11 shrink-0 rounded-lg px-3 text-sm font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors';
+// Inside a box, beside the input rather than over it: two controls sharing pixels is what the
+// phone guard fails, and a clear button laid over a field is exactly that.
+const LOOKUP_CLEAR = 'grid h-10 w-9 shrink-0 place-items-center rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100';
+
+const LOOKUP_ORDER_HINT = 'Leading zeros are optional. A carrier PRO such as AVRT-0170416694, or a piece number such as 007157687-1, finds its order too.';
+
+/** THE PRICE OF WHAT IS ON SCREEN, read off the answer — not a slogan. Every Firestore answer
+ *  says 0; the one prompted answer says 1 and that it was asked for. A dot and a word, not a
+ *  green box: it is a fact to be able to check, not the headline of the page. */
+function LookupCallsPill({ calls }) {
+  const spent = calls === 1;
+  return (
+    <span
+      title={spent ? 'This answer came from NuVizz, because it was asked for — one call.' : 'Everything on this screen is read from our own records. Nothing here spends a NuVizz call.'}
+      className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${
+        spent ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-white text-slate-600 ring-slate-200'}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${spent ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+      {spent ? '1 NuVizz call — on request' : '0 NuVizz calls'}
+    </span>
+  );
+}
+
+/** One half of the panel: what it searches, and in one sentence what comes back. */
+function LookupSectionHead({ icon, title, children }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#1e5b92]/10 text-[#1e5b92]">{icon}</span>
+      <div className="min-w-0">
+        <h2 className="text-[15px] font-semibold leading-tight text-slate-900">{title}</h2>
+        <p className="mt-1 text-[13px] leading-snug text-slate-500">{children}</p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * EVERY SEARCH, ONE PANEL. (A third, a driver's week, runs across the bottom since v1.69.0.)
+ * Left: the order box — a PRO, a stop number or a customer name, told
+ * apart by the shared classifyQuery rule, exactly as before. Right: an address, a city or a ZIP,
+ * with the dates. Each half is its own <form>, so Enter runs the search the cursor is in and
+ * never the other one.
+ *
+ * TWO VIEWS. Desktop: side by side from 1024px — halves at 1024, and from 1280 the address half
+ * the wider, because it holds four boxes and the dates. Phone: stacked, the order box first — the screen's original job and
+ * the one a rep reaches for most — and every control at the 40px thumb floor.
+ */
+function StopSearchPanel({ stacked, busy, q, setQ, onOrder, onClearOrder, place, setPlace, placeSel, onPlaceSel, onPlace, onClearPlace, today,
+  drvName, setDrvName, drvDay, setDrvDay, drvNames, drvGate, onDriver, onClearDriver }) {
+  const placeOk = placeQueryUsable(placeQuery(place));
+  const hasPlace = !!(place.addr || place.city || place.state || place.zip);
+  const setField = (k) => (e) => { const v = e.target.value; setPlace((p) => ({ ...p, [k]: v })); };
+  return (
+    // ONE SHARED ROW GRID ACROSS BOTH HALVES (subgrid) from 1024px: the headings share a row, the
+    // boxes share a row, the last line shares a row — so the two sets of boxes sit at one height
+    // whichever description happens to wrap at this width. Without it, one extra line of text on
+    // one side put the two rows of inputs 16px apart, which is exactly the look Chad called amateur.
+    <div className={`rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 ${stacked
+      ? 'divide-y divide-slate-200'
+      : 'grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:grid-rows-[auto_auto_1fr] divide-y lg:divide-y-0 lg:divide-x divide-slate-200'}`}>
+      <form aria-label="Search by order or customer" className={stacked ? 'p-4 space-y-3' : LOOKUP_HALF}
+        onSubmit={(e) => { e.preventDefault(); if (!busy && q.trim()) onOrder(); }}>
+        <LookupSectionHead icon={<Package size={18} />} title="Order or customer">
+          A PRO or stop number opens that order&rsquo;s full history. A customer name shows their deliveries, drivers and receiving hours.
+        </LookupSectionHead>
+        <div className="self-start space-y-2">
+        <div className="flex items-center gap-2">
+          <div className={`${LOOKUP_FIELD} flex-1`}>
+            <Search size={16} className="text-slate-400 shrink-0" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              // Short on a phone: at 360px the box holds about eighteen characters beside its button.
+              placeholder={stacked ? 'PRO or customer' : 'PRO or customer name'}
+              aria-label="Find a customer by name, or a stop by PRO or stop number"
+              // DESKTOP ONLY. On a laptop the cursor belongs in the box. On a phone autoFocus
+              // throws the keyboard up over half the screen the moment the tab opens — and this
+              // app already fights iOS's visual viewport for the shell's own position (see the
+              // `position: fixed` block in Shell). Two views, two answers.
+              autoFocus={!stacked}
+              className={LOOKUP_INPUT}
+            />
+            {q && <button type="button" onClick={onClearOrder} aria-label="Clear the order search" className={LOOKUP_CLEAR}><X size={16} /></button>}
+          </div>
+          <button type="submit" disabled={!q.trim() || !!busy} className={LOOKUP_PRIMARY}>
+            {busy === 'order' ? 'Looking…' : 'Look up'}
+          </button>
+        </div>
+        {/* WHAT THE BOX FORGIVES, read off stopIdVariants in src/lib/stop-lookup.js — the three
+            spellings of one order that are all real in this database. Drawn in one of two places
+            so it always sits where the eye expects it: under the box wherever the address half
+            runs to two rows of boxes (phone, 1024), and level with the dates from 1280, where
+            the address boxes fit one row and the box row would otherwise open a gap. */}
+        <p className="xl:hidden text-xs leading-relaxed text-slate-500">{LOOKUP_ORDER_HINT}</p>
+        </div>
+        {!stacked && <p className="hidden xl:block self-start text-xs leading-relaxed text-slate-500">{LOOKUP_ORDER_HINT}</p>}
+      </form>
+
+      <form aria-label="Search by address, city or ZIP" className={stacked ? 'p-4 space-y-3' : LOOKUP_HALF}
+        onSubmit={(e) => { e.preventDefault(); if (!busy && placeOk) onPlace(); }}>
+        <LookupSectionHead icon={<MapPin size={18} />} title="Address, city or ZIP">
+          Every stop at an address, or in a city or ZIP. The house number must match exactly; Dr/Drive, Ste/Suite and NW spellings don&rsquo;t matter.
+        </LookupSectionHead>
+        {/* THE FOUR BOXES. One row from 1280px; below that the street takes its own line, because
+            a street squeezed to 200px shows "1100 Northsi" and nothing a rep can check. */}
+        <div className={stacked ? 'space-y-2' : 'self-start grid gap-2 grid-cols-[minmax(0,1fr)_4.5rem_6.5rem] xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)_4.5rem_6.5rem]'}>
+          <div className={`${LOOKUP_FIELD}${stacked ? '' : ' col-span-3 xl:col-span-1'}`}>
+            <MapPin size={16} className="text-slate-400 shrink-0" />
+            <input value={place.addr} onChange={setField('addr')} placeholder={stacked ? 'Street, e.g. 1100 Northside Dr' : 'Street address, e.g. 1100 Northside Dr'}
+              aria-label="Street address" className={LOOKUP_INPUT} />
+          </div>
+          {stacked ? (
+            <div className="grid gap-2 grid-cols-[minmax(0,1fr)_4rem_5.5rem]">
+              <input value={place.city} onChange={setField('city')} placeholder="City" aria-label="City" className={LOOKUP_BOX} />
+              <input value={place.state} onChange={setField('state')} placeholder="ST" aria-label="State" maxLength={2} className={`${LOOKUP_BOX} uppercase`} />
+              <input value={place.zip} onChange={setField('zip')} placeholder="ZIP" aria-label="ZIP" inputMode="numeric" maxLength={10} className={LOOKUP_BOX} />
+            </div>
+          ) : (<>
+            <input value={place.city} onChange={setField('city')} placeholder="City" aria-label="City" className={LOOKUP_BOX} />
+            <input value={place.state} onChange={setField('state')} placeholder="ST" aria-label="State" maxLength={2} className={`${LOOKUP_BOX} uppercase`} />
+            <input value={place.zip} onChange={setField('zip')} placeholder="ZIP" aria-label="ZIP" inputMode="numeric" maxLength={10} className={LOOKUP_BOX} />
+          </>)}
+        </div>
+        <div className={stacked ? 'space-y-3' : 'self-start flex flex-wrap items-center gap-3'}>
+          <PlaceDateBar sel={placeSel} setSel={onPlaceSel} today={today} stacked={stacked} />
+          <div className={stacked ? 'flex items-center gap-2' : 'ml-auto flex items-center gap-2'}>
+            {hasPlace && <button type="button" onClick={onClearPlace} className={LOOKUP_GHOST}>Clear</button>}
+            <button type="submit" disabled={!placeOk || !!busy} className={`${LOOKUP_PRIMARY}${stacked ? ' flex-1' : ''}`}>
+              {busy === 'place' ? 'Searching…' : 'Find stops'}
+            </button>
+          </div>
+        </div>
+      </form>
+
+      {/* A DRIVER'S WEEK (v1.69.0) — the panel's third search, across the whole width on a desktop
+          under the two halves, stacked last on a phone. The `!` overrides are the parent's divide
+          rules: at 1024px it draws left borders between side-by-side halves, and this row is not
+          beside anything, so it takes the top border instead. */}
+      <form aria-label="A driver's week of loads" className={stacked ? 'p-4 space-y-3' : 'p-6 space-y-3 lg:col-span-2 lg:!border-l-0 lg:!border-t'}
+        onSubmit={(e) => { e.preventDefault(); if (!busy && !drvGate) onDriver(); }}>
+        <div className={stacked ? 'space-y-3' : 'flex flex-col gap-4 xl:flex-row xl:items-center xl:gap-8'}>
+          <div className={stacked ? '' : 'xl:w-[27rem] xl:shrink-0'}>
+            <LookupSectionHead icon={<Truck size={18} />} title={'Driver\u2019s week'}>
+              Every load one driver ran in a week: stops, freight, times, road miles and order prices, with a map of each load.
+            </LookupSectionHead>
+          </div>
+          <div className={stacked ? 'space-y-2' : 'flex flex-1 flex-wrap items-center gap-3'}>
+            <DriverWeekStepper day={drvDay} setDay={setDrvDay} today={today} stacked={stacked} />
+            <div className={`${LOOKUP_FIELD}${stacked ? '' : ' flex-1 min-w-[15rem]'}`}>
+              <Truck size={16} className="text-slate-400 shrink-0" />
+              <input value={drvName} onChange={(e) => setDrvName(e.target.value)} list="stop-lookup-drivers"
+                placeholder={stacked ? 'Driver, or blank for all' : 'Driver name, or leave blank to list everyone'}
+                aria-label="Driver name" className={LOOKUP_INPUT} />
+              {drvName && <button type="button" onClick={onClearDriver} aria-label="Clear the driver" className={LOOKUP_CLEAR}><X size={16} /></button>}
+            </div>
+            <datalist id="stop-lookup-drivers">{(drvNames || []).map((n) => <option key={n} value={n} />)}</datalist>
+            <button type="submit" disabled={!!busy || !!drvGate} className={`${LOOKUP_PRIMARY}${stacked ? ' w-full' : ''}`}>
+              {busy === 'driver' ? 'Reading the week…' : 'Show the week'}
+            </button>
+          </div>
+        </div>
+        {drvGate && <p className="text-xs text-amber-800">{drvGate}</p>}
+      </form>
+    </div>
+  );
+}
+
+/**
+ * RECENT LOOKUPS — what stood under the search box as two cards of instructions. The rules for
+ * what is kept live in src/lib/stop-lookup-recent.js; this only draws them. Per device, and
+ * said so on screen, so nobody wonders where a colleague's searches went.
+ */
+function StopRecentLookups({ items, onPick, onClear, stacked, nowMs }) {
+  const iconFor = (e) => (e.kind === 'order' ? <Package size={16} /> : e.kind === 'customer' ? <Building2 size={16} /> : e.kind === 'driver' ? <Truck size={16} /> : <MapPin size={16} />);
+  return (
+    <section aria-label="Recent lookups" className="space-y-3">
+      <div className="flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-slate-900">Recent lookups</h2>
+          {items.length > 0 && <p className="text-xs text-slate-500">On this device, newest first. Select one to run it again.</p>}
+        </div>
+        {items.length > 0 && (
+          <button type="button" onClick={onClear} className="shrink-0 min-h-[40px] rounded-md px-2 text-xs font-medium text-slate-500 hover:text-slate-900">Clear list</button>
+        )}
+      </div>
+      {items.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-300 px-6 py-10 text-center">
+          <Clock size={20} className="mx-auto text-slate-400" />
+          <div className="mt-2 text-sm font-medium text-slate-700">Nothing looked up on this device yet</div>
+          <div className="mt-1 text-xs text-slate-500">Each search you run is kept here, so a customer who calls back is one click away.</div>
+        </div>
+      ) : (
+        <div className={stacked
+          ? 'rounded-xl bg-white shadow-sm ring-1 ring-slate-200 divide-y divide-slate-100 overflow-hidden'
+          : 'grid gap-3 grid-cols-2 xl:grid-cols-4'}>
+          {items.map((e) => (
+            <button key={recentKey(e)} type="button" onClick={() => onPick(e)}
+              className={stacked
+                ? 'w-full flex items-center gap-3 px-4 py-3 min-h-[56px] text-left active:bg-slate-50'
+                : 'group flex items-center gap-3 min-w-0 rounded-xl bg-white p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-[#1e5b92]/40 hover:shadow-md transition'}>
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-[#1e5b92]/10 group-hover:text-[#1e5b92] transition-colors">{iconFor(e)}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold text-slate-900">{e.label}</span>
+                <span className="block truncate text-xs text-slate-500">{recentKindLabel(e)} · {recentAgo(e.at, nowMs)}</span>
+              </span>
+              <ChevronRight size={16} className="shrink-0 text-slate-300 group-hover:text-[#1e5b92] transition-colors" />
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ── A DRIVER'S WEEK OF LOADS (v1.69.0) ───────────────────────────────────────
+// Chad, 2026-09-25: "add a load look up so if i wanted to evaluate a weeks worth of a drivers
+// loads … and a map of the load so i can visually see it the map can be behind a drop down.
+// want milage of load earnings of load cost of load stops ect" — "i want this to be part of the
+// stops lookup tab". The rules are src/lib/load-lookup.js (pure, tested); the reads are
+// netlify/functions/driver-loads.mts. Everything below only draws what they decided.
+//
+// TWO VIEWS. Desktop from 1280px: one table for the week, a load opening into its map beside its
+// stops. Below 1280 (tablet and phone): one card per load, the map above the stops — the same
+// 1280 line the Labels table drew after the tablet guard caught its buttons clipped at 1080.
+const STOP_LOOKUP_DRIVER = 'dd_stop_lookup_driver';
+const LOAD_TABLE_MIN = 1280;
+const loadMoney = (n) => (n == null ? '—' : `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+const loadMilesText = (m) => (m == null ? '—' : `${Number(m).toLocaleString('en-US', { maximumFractionDigits: 1 })} mi`);
+const loadSpan = (min) => (min == null ? '—' : `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`);
+const loadLb = (n) => `${Math.round(Number(n) || 0).toLocaleString('en-US')} lb`;
+const loadDay = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+const LOAD_TRUCK = { tractor: 'Tractor', box: 'Box truck' };
+const LOAD_DAY_SOURCE = {
+  sealed: ['bg-emerald-500', 'Sealed record — final, it cannot change'],
+  board: ['bg-sky-500', 'Read off the board — the day is not sealed yet, so it can still change'],
+  none: ['bg-slate-300', 'No record for this day'],
+  future: ['bg-slate-200', 'Has not happened yet'],
+  unread: ['bg-red-500', 'Could not be read — this week may be short'],
+};
+
+/** "Sep 21 – 27" with the week before and after. The week after today's is not offered. */
+function DriverWeekStepper({ day, setDay, today, stacked }) {
+  const wk = weekOf(day) || weekOf(today);
+  const current = weekOf(today);
+  const atCurrent = wk.from >= current.from;
+  return (
+    <div className={`flex items-center gap-2 ${stacked ? 'w-full' : ''}`}>
+      <div className={`flex items-center h-11 rounded-lg bg-white ring-1 ring-inset ring-slate-300 ${stacked ? 'flex-1 min-w-0' : ''}`}>
+        <button type="button" onClick={() => setDay(addDays(wk.from, -7))} aria-label="The week before"
+          className="grid h-11 w-11 shrink-0 place-items-center rounded-l-lg text-slate-500 hover:text-slate-900 hover:bg-slate-50"><ChevronLeft size={18} /></button>
+        <span className={`px-1 text-center text-sm font-semibold text-slate-900 whitespace-nowrap ${stacked ? 'flex-1 min-w-0' : 'min-w-[10.5rem]'}`}>{weekLabel(wk)}</span>
+        <button type="button" onClick={() => setDay(addDays(wk.from, 7))} disabled={atCurrent} aria-label="The week after"
+          className="grid h-11 w-11 shrink-0 place-items-center rounded-r-lg text-slate-500 hover:text-slate-900 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent"><ChevronRight size={18} /></button>
+      </div>
+      {!atCurrent && <button type="button" onClick={() => setDay(today)} className={LOOKUP_GHOST}>This week</button>}
+    </div>
+  );
+}
+
+/** Which of the week's seven days were read, and from where — a dot per day. */
+function DriverWeekDays({ days }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
+      {(days || []).map((d) => {
+        const [dot, words] = LOAD_DAY_SOURCE[d.source] || LOAD_DAY_SOURCE.none;
+        return (
+          <span key={d.date} title={`${loadDay(d.date)}: ${words}`} className="inline-flex items-center gap-1 whitespace-nowrap">
+            <span className={`h-2 w-2 rounded-full ${dot}`} />{loadDay(d.date).split(',')[0]}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function LoadTile({ label, value, sub, tone = 'plain' }) {
+  const box = tone === 'muted' ? 'bg-slate-50 ring-slate-200' : 'bg-white ring-slate-200';
+  return (
+    <div className={`min-w-0 rounded-xl p-4 ring-1 ${box}`}>
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
+      <div className={`mt-1 text-xl font-semibold tabular-nums ${tone === 'muted' ? 'text-slate-500' : 'text-slate-900'}`}>{value}</div>
+      {sub && <div className="mt-0.5 text-xs leading-snug text-slate-500">{sub}</div>}
+    </div>
+  );
+}
+
+/** Why a load's miles are blank, in words — never a blank that looks like zero. */
+function loadMilesWhy(load, miles) {
+  if (load.miles?.miles != null) return load.miles.source === 'cache' ? 'measured before' : 'measured now';
+  if (miles && !miles.enabled) return 'switched off';
+  return load.miles?.reason || 'not measured';
+}
+
+/** How an order's price reads on its row. */
+function loadRowPrice(r) {
+  if (r.price != null) return loadMoney(r.price);
+  if (r.countedOn) return `priced ${loadDay(r.countedOn.date).split(',')[0]}`;
+  if (r.priceNote) return 'price unclear';
+  return 'no price';
+}
+
+const LOAD_OUTCOME = {
+  delivered: ['text-slate-700', null],
+  'not-delivered': ['text-red-700 font-semibold', 'Not delivered'],
+  // NOT "still open": on a sealed day an order nobody closed out is not open any more — it was
+  // rolled, or the driver never marked it. The words say what the record says and no more.
+  open: ['text-amber-700 font-semibold', 'Not closed out'],
+};
+
+/**
+ * THE MAP, behind the load's drop-down — Chad: "the map can be behind a drop down". Created only
+ * when opened, because every Google map made is a billed map load; one open load, one map.
+ *
+ * What it draws is what the numbers were built from: the yard, the stops numbered in the order
+ * they were DELIVERED, and a line joining them in that order back to the yard. The line is
+ * straight from stop to stop and the legend says so — it shows the sequence, not the roads.
+ * Orders that were not delivered, or never closed, sit on the map unnumbered and outside the line.
+ */
+function LoadMap({ load, yard, stacked }) {
+  const { google, error } = useGoogleMaps();
+  const [el, setEl] = useState(null);
+  const mapRef = useRef(null);
+  const boundsRef = useRef(null);
+  useEffect(() => {
+    if (!google || !el || !yard) return undefined;
+    const map = new google.maps.Map(el, {
+      ...mapBaseOptions({ mapId: MAP_ID }), center: yard, zoom: 9,
+      mapTypeControl: false, streetViewControl: false, fullscreenControl: !stacked,
+      // COOPERATIVE: this map sits inside a page that scrolls. Greedy would take the scroll
+      // wheel (and a phone's one-finger drag) away from the page the moment it passed over.
+      gestureHandling: 'cooperative',
+    });
+    mapRef.current = map;
+    const drawn = [];
+    const pin = (pos, color, label, title, size, z) => drawn.push(new google.maps.Marker({
+      position: pos, map, title, zIndex: z,
+      icon: { url: circleMarkerSvg(color, { label }), scaledSize: new google.maps.Size(size, size), anchor: new google.maps.Point(size / 2, size / 2) },
+    }));
+    const yardPt = { lat: yard.lat, lng: yard.lng };
+    const bounds = new google.maps.LatLngBounds();
+    bounds.extend(yardPt);
+    drawn.push(new google.maps.Polyline({
+      path: [yardPt, ...load.run.map((p) => ({ lat: p.lat, lng: p.lng })), yardPt],
+      map, strokeColor: BRAND, strokeOpacity: 0.8, strokeWeight: 3, zIndex: 5,
+    }));
+    pin(yardPt, '#0f172a', 'Y', yard.name || 'Yard', 26, 30);
+    for (const p of load.run) {
+      bounds.extend({ lat: p.lat, lng: p.lng });
+      pin({ lat: p.lat, lng: p.lng }, BRAND, String(p.n), `${p.n}. ${p.names.join(', ') || p.stopNbrs.join(', ')} — delivered ${stopWhen(p.at)}`, 28, 20);
+    }
+    for (const r of load.rows) {
+      if (r.stop != null || r.lat == null || r.lng == null) continue;
+      bounds.extend({ lat: r.lat, lng: r.lng });
+      const [color, mark, word] = r.outcome === 'not-delivered' ? ['#dc2626', '!', 'not delivered']
+        : r.outcome === 'open' ? ['#d97706', '?', 'not closed out'] : ['#64748b', '·', 'delivered, no time on record'];
+      pin({ lat: r.lat, lng: r.lng }, color, mark, `${r.businessName || r.stopNbr} — ${word}`, 24, 10);
+    }
+    boundsRef.current = bounds;
+    map.fitBounds(bounds, 40);
+    return () => { drawn.forEach((o) => o.setMap(null)); if (mapRef.current === map) mapRef.current = null; };
+  }, [google, el, load, yard, stacked]);
+  // Google paints grey until its box has a real size; the drop-down settles a frame after the map
+  // exists (the Engine map's lesson), so refit whenever the box changes size.
+  useEffect(() => {
+    if (!google || !el) return undefined;
+    const ro = new ResizeObserver(() => {
+      if (!mapRef.current || !el.offsetWidth || !el.offsetHeight) return;
+      google.maps.event.trigger(mapRef.current, 'resize');
+      if (boundsRef.current && !boundsRef.current.isEmpty()) mapRef.current.fitBounds(boundsRef.current, 40);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [google, el]);
+  if (error) return <div className="rounded-xl bg-slate-100 p-4 text-xs text-slate-600 ring-1 ring-slate-200">The map could not load: {error}</div>;
+  return <div ref={setEl} data-load-map={load.key} className={`w-full rounded-xl bg-slate-100 ring-1 ring-slate-200 ${stacked ? 'h-64' : 'h-[420px]'}`} />;
+}
+
+/** The load's orders: the delivered run first, numbered as the map numbers them, then the rest. */
+function LoadStopList({ rows, onOrder, renderDetail, narrow = false }) {
+  const inRun = rows.filter((r) => r.stop != null).sort((a, b) => a.stop - b.stop || String(a.at || '').localeCompare(String(b.at || '')));
+  const rest = rows.filter((r) => r.stop == null);
+  return (
+    <ol className="divide-y divide-slate-100 rounded-xl bg-white ring-1 ring-slate-200 overflow-hidden">
+      {[...inRun, ...rest].flatMap((r) => {
+        const panel = renderDetail?.(r.stopNbr, r.date, narrow ? { stacked: true } : undefined);
+        const [tone, word] = LOAD_OUTCOME[r.outcome] || LOAD_OUTCOME.open;
+        const badge = r.stop != null ? BRAND : r.outcome === 'not-delivered' ? '#dc2626' : r.outcome === 'open' ? '#d97706' : '#64748b';
+        return [(
+          <li key={`${r.stopNbr}|${r.date}`} className={`flex items-start gap-3 px-3 py-2.5 ${panel ? 'bg-blue-50' : ''}`}>
+            <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white" style={{ background: badge }}>
+              {r.stop != null ? r.stop : r.outcome === 'not-delivered' ? '!' : r.outcome === 'open' ? '?' : '·'}
+            </span>
+            <div className="min-w-0 flex-1">
+              <button type="button" onClick={() => onOrder(r.stopNbr, r.date)} aria-expanded={!!panel}
+                className="text-left text-sm font-medium text-blue-800 hover:underline break-words">{r.businessName || r.stopNbr}</button>
+              <div className="text-[11px] text-slate-500 break-words">
+                <span className="font-mono">{r.stopNbr}</span>{r.city ? ` · ${r.city}` : ''}{r.pickup ? ' · pickup' : ''}{r.attempt ? ' · redelivery' : ''}
+                {r.weight != null ? ` · ${loadLb(r.weight)}` : ''}
+              </div>
+              {r.priceNote && <div className="text-[11px] text-amber-800 break-words">{r.priceNote}</div>}
+            </div>
+            <div className="shrink-0 text-right text-[11px] leading-5">
+              <div className={tone}>{word || (r.at ? stopWhen(r.at) : 'delivered')}</div>
+              <div className={`tabular-nums ${r.price != null ? 'text-slate-800' : 'text-slate-400'}`}>{loadRowPrice(r)}</div>
+            </div>
+          </li>
+        ), panel ? <li key={`${r.stopNbr}|${r.date}:detail`} className="bg-slate-50 p-3">{panel}</li> : null];
+      })}
+    </ol>
+  );
+}
+
+/** What opens under a load: its map and its orders. */
+function LoadDetail({ load, yard, stacked, milesWhy, onOrder, renderDetail }) {
+  const left = load.runLeftOut || {};
+  const unplaced = (left.noTime || 0) + (left.noPin || 0);
+  return (
+    <div className={stacked ? 'space-y-3 p-3' : 'grid gap-4 p-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] items-start'}>
+      <div className={`space-y-2 ${stacked ? '' : 'xl:sticky xl:top-4'}`}>
+        <LoadMap load={load} yard={yard} stacked={stacked} />
+        <p className="text-[11px] leading-relaxed text-slate-500">
+          <span className="font-semibold text-slate-700">Y</span> the yard · <span className="font-semibold" style={{ color: BRAND }}>1, 2, 3</span> stops in the order they were delivered ·
+          <span className="font-semibold text-red-700"> !</span> not delivered · <span className="font-semibold text-amber-700">?</span> not closed out.
+          The line joins the stops in that order; it is not the roads driven.
+          {load.miles?.miles == null && milesWhy && <span className="font-medium text-amber-800"> Road miles for this load: {milesWhy}.</span>}
+          {unplaced > 0 && ` ${plural(unplaced, 'delivered order')} could not be placed in the run (${[left.noTime ? `${left.noTime} with no delivery time` : '', left.noPin ? `${left.noPin} with no pin` : ''].filter(Boolean).join(', ')}).`}
+        </p>
+      </div>
+      {/* Beside the map (a desktop table row) the list is the narrow column of two. */}
+      <LoadStopList rows={load.rows} onOrder={onOrder} renderDetail={renderDetail} narrow={!stacked} />
+    </div>
+  );
+}
+
+/** The week in eight numbers — and the ninth, cost, said to be missing rather than printed as zero. */
+function DriverWeekSummary({ data }) {
+  const t = data.totals;
+  const m = data.miles || {};
+  const milesSub = !m.enabled ? 'Road miles are switched off on this site'
+    : t.milesLoads === t.loads ? `All ${plural(t.loads, 'load')} measured · yard to yard`
+      : `${t.milesLoads} of ${plural(t.loads, 'load')} measured — the rest say why`;
+  const priceSub = t.price.orders
+    ? `${t.price.deliveredOrders} delivered orders · ${t.price.unpriced ? `${t.price.unpriced} with no price on file` : 'every order priced'}`
+    : 'No priced orders this week';
+  return (
+    <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
+      <LoadTile label="Loads" value={t.loads} sub={`${plural(t.days, 'day')} · ${plural(t.stops, 'stop')}`} />
+      <LoadTile label="Delivered" value={`${t.delivered} of ${t.orders}`}
+        sub={[t.notDelivered ? `${t.notDelivered} not delivered` : '', t.open ? `${t.open} not closed out` : '', t.pickups ? plural(t.pickups, 'pickup') : '', t.attempts ? plural(t.attempts, 'redelivery').replace('redeliverys', 'redeliveries') : ''].filter(Boolean).join(' · ') || 'every order delivered'} />
+      <LoadTile label="Road miles" value={loadMilesText(t.miles)} sub={milesSub} />
+      <LoadTile label="On the road" value={loadSpan(t.spanMin)} sub={t.stopsPerHour != null ? `first to last delivery · ${t.stopsPerHour} stops an hour` : 'first to last delivery'} />
+      <LoadTile label="Freight" value={loadLb(t.weight)} sub={`${plural(t.skids, 'skid')} · ${t.loose} loose`} />
+      <LoadTile label="Order prices" value={loadMoney(t.price.delivered)} sub={priceSub} />
+      <LoadTile label="Per mile · per stop" value={t.perMile != null ? `${loadMoney(t.perMile)} · ${loadMoney(t.perStop)}` : '—'}
+        sub={t.perMile != null ? `over the ${plural(t.ratedLoads, 'load')} with every order priced and miles measured` : 'needs a load with every order priced and its miles measured'} />
+      <LoadTile label="Cost" value="Not recorded" tone="muted" sub={data.cost?.text || 'No cost is recorded.'} />
+    </div>
+  );
+}
+
+/** One load as a desktop table row's cells, and as a card — the same facts in both. */
+function loadFacts(l, miles) {
+  return {
+    stops: `${l.stops}`,
+    orders: `${plural(l.orders, 'order')}${l.pickups ? ` · ${l.pickups} PU` : ''}`,
+    delivered: `${l.delivered} of ${l.orders}`,
+    exceptions: [l.notDelivered ? `${l.notDelivered} not delivered` : '', l.open ? `${l.open} not closed out` : ''].filter(Boolean).join(' · '),
+    window: l.firstAt ? `${stopWhen(l.firstAt)} → ${stopWhen(l.lastAt)}` : '—',
+    span: loadSpan(l.spanMin),
+    freight: `${loadLb(l.weight)} · ${l.skids} sk`,
+    miles: loadMilesText(l.miles?.miles),
+    milesWhy: loadMilesWhy(l, miles),
+    // The TABLE gets the short word and keeps the whole reason on hover and inside the opened
+    // load: a Google refusal spelled out in a cell widened the column and folded every other
+    // column of the week into two lines at 2280px.
+    milesShort: l.miles?.miles != null ? loadMilesWhy(l, miles) : (miles && !miles.enabled ? 'switched off' : 'not measured'),
+    price: loadMoney(l.price.delivered),
+    priceWhy: l.price.orders ? `${l.price.priced} of ${l.price.orders} priced${l.price.notDelivered ? ` · ${loadMoney(l.price.notDelivered)} undelivered` : ''}` : 'no orders priced here',
+    perMile: l.perMile != null ? loadMoney(l.perMile) : '—',
+    truck: LOAD_TRUCK[l.truck] || null,
+  };
+}
+
+function DriverWeekTable({ data, openLoad, onToggleLoad, onOrder, renderDetail }) {
+  const TH = 'px-3 py-2 font-semibold whitespace-nowrap';
+  return (
+    <div className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+          <tr>
+            <th className={`${TH} text-left`}>Day</th><th className={`${TH} text-left`}>Load</th>
+            <th className={`${TH} text-right`}>Stops</th><th className={`${TH} text-left`}>Delivered</th>
+            <th className={`${TH} text-left`}>First → last delivery</th><th className={`${TH} text-right`}>Freight</th>
+            <th className={`${TH} text-right`}>Road miles</th><th className={`${TH} text-right`}>Order prices</th>
+            <th className={`${TH} text-right`}>Per mile</th><th className={TH}><span className="sr-only">Map and stops</span></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {data.loads.flatMap((l) => {
+            const f = loadFacts(l, data.miles);
+            const open = openLoad === l.key;
+            return [(
+              <tr key={l.key} className={`align-top ${open ? 'bg-blue-50/60' : 'hover:bg-slate-50'}`}>
+                <td className="px-3 py-3 whitespace-nowrap text-slate-700">{loadDay(l.date)}</td>
+                <td className="px-3 py-3"><div className="font-semibold text-slate-900">{l.name}</div>{f.truck && <div className="text-[11px] text-slate-500">{f.truck}</div>}</td>
+                <td className="px-3 py-3 text-right tabular-nums"><div className="font-semibold">{f.stops}</div><div className="text-[11px] text-slate-500 whitespace-nowrap">{f.orders}</div></td>
+                <td className="px-3 py-3"><div className="tabular-nums">{f.delivered}</div>{f.exceptions && <div className="text-[11px] font-medium text-red-700 whitespace-nowrap">{f.exceptions}</div>}</td>
+                <td className="px-3 py-3 whitespace-nowrap"><div className="tabular-nums">{f.window}</div><div className="text-[11px] text-slate-500">{f.span}</div></td>
+                <td className="px-3 py-3 text-right whitespace-nowrap tabular-nums text-slate-700">{f.freight}</td>
+                <td className="px-3 py-3 text-right" title={f.milesWhy}><div className="tabular-nums whitespace-nowrap">{f.miles}</div><div className="text-[11px] text-slate-500 whitespace-nowrap">{f.milesShort}</div></td>
+                <td className="px-3 py-3 text-right"><div className="font-semibold tabular-nums">{f.price}</div><div className="text-[11px] text-slate-500">{f.priceWhy}</div></td>
+                <td className="px-3 py-3 text-right tabular-nums">{f.perMile}</td>
+                <td className="px-3 py-3 text-right">
+                  <button type="button" onClick={() => onToggleLoad(l.key)} aria-expanded={open}
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg px-3 h-9 text-xs font-semibold text-[#1e5b92] ring-1 ring-inset ring-[#1e5b92]/30 hover:bg-[#1e5b92]/5">
+                    Map &amp; stops {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  </button>
+                </td>
+              </tr>
+            ), open ? (
+              <tr key={`${l.key}:open`}>
+                <td colSpan={10} className="p-0 bg-slate-50">
+                  <LoadDetail load={l} yard={data.yard} stacked={false} milesWhy={f.milesWhy} onOrder={onOrder} renderDetail={renderDetail} />
+                </td>
+              </tr>
+            ) : null];
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DriverWeekCards({ data, stacked, openLoad, onToggleLoad, onOrder, renderDetail }) {
+  return (
+    <div className={stacked ? 'space-y-3' : 'grid gap-3 grid-cols-1 md:grid-cols-2 items-start'}>
+      {data.loads.map((l) => {
+        const f = loadFacts(l, data.miles);
+        const open = openLoad === l.key;
+        return (
+          <article key={l.key} className={`rounded-xl bg-white shadow-sm ring-1 ${open ? 'ring-[#1e5b92]/40 md:col-span-2' : 'ring-slate-200'}`}>
+            <div className="p-4 space-y-3">
+              {/* The name takes the room; the price column is capped and WRAPS. A shrink-0 price
+                  with its "18 of 18 priced · $70.19 undelivered" line held its full width and
+                  folded a 32-character load name into four lines at 390px. */}
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-slate-900 break-words">{l.name}</div>
+                  <div className="text-xs text-slate-500">{loadDay(l.date)}{f.truck ? ` · ${f.truck}` : ''}</div>
+                </div>
+                <div className="max-w-[45%] text-right">
+                  <div className="font-semibold tabular-nums text-slate-900">{f.price}</div>
+                  <div className="text-[11px] leading-snug text-slate-500">{f.priceWhy}</div>
+                </div>
+              </div>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                <div><dt className="text-slate-500">Stops</dt><dd className="font-medium text-slate-900">{f.stops} · {f.orders}</dd></div>
+                <div><dt className="text-slate-500">Delivered</dt><dd className="font-medium text-slate-900">{f.delivered}{f.exceptions && <span className="block text-red-700">{f.exceptions}</span>}</dd></div>
+                <div><dt className="text-slate-500">First → last</dt><dd className="font-medium text-slate-900 tabular-nums">{f.window}<span className="block font-normal text-slate-500">{f.span}</span></dd></div>
+                <div><dt className="text-slate-500">Road miles</dt><dd className="font-medium text-slate-900 tabular-nums">{f.miles}<span className="block font-normal text-slate-500">{f.milesWhy}</span></dd></div>
+                <div><dt className="text-slate-500">Freight</dt><dd className="font-medium text-slate-900 tabular-nums">{f.freight}</dd></div>
+                <div><dt className="text-slate-500">Per mile</dt><dd className="font-medium text-slate-900 tabular-nums">{f.perMile}</dd></div>
+              </dl>
+            </div>
+            <button type="button" onClick={() => onToggleLoad(l.key)} aria-expanded={open}
+              className="flex w-full items-center justify-center gap-1.5 min-h-[44px] border-t border-slate-200 text-sm font-semibold text-[#1e5b92] hover:bg-slate-50 rounded-b-xl">
+              {open ? 'Hide map & stops' : 'Map & stops'} {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            </button>
+            {open && <div className="border-t border-slate-200 bg-slate-50 rounded-b-xl"><LoadDetail load={l} yard={data.yard} stacked milesWhy={f.milesWhy} onOrder={onOrder} renderDetail={renderDetail} /></div>}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A DRIVER'S WEEK — the answer. */
+function DriverWeekResults({ data, stacked, wide, openLoad, onToggleLoad, onOrder, renderDetail }) {
+  const unread = (data.days || []).filter((d) => d.source === 'unread');
+  return (
+    <section aria-label="Driver's week" className="space-y-4">
+      <div className="rounded-2xl bg-white p-4 sm:p-6 shadow-sm ring-1 ring-slate-200 space-y-4">
+        <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+          <div className="min-w-0">
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Driver&rsquo;s week · {weekLabel(data.week)}</div>
+            <h2 className="text-lg sm:text-xl font-semibold text-slate-900 break-words">{data.driver?.label}</h2>
+          </div>
+          <DriverWeekDays days={data.days} />
+        </div>
+        {unread.length > 0 && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+            {unread.map((d) => loadDay(d.date)).join(', ')} could not be read, so this week may be short. Do not read the totals out as the whole week — try again.
+          </div>
+        )}
+        {data.loads.length > 0 ? <DriverWeekSummary data={data} /> : (
+          <div className="rounded-xl border border-dashed border-slate-300 px-6 py-8 text-center text-sm text-slate-600">
+            No loads for {data.driver?.label} {weekLabel(data.week)}. Every day that has happened was read{unread.length ? ', except the ones above' : ''}.
+          </div>
+        )}
+        <div className="space-y-1 text-[11px] leading-relaxed text-slate-500">
+          <p><span className="font-semibold text-slate-600">Road miles</span> are Google&rsquo;s driving distance over the stops in the order they were delivered, yard to yard — measured once per load and kept. They are not the truck&rsquo;s odometer.</p>
+          <p><span className="font-semibold text-slate-600">Order prices</span> are the price on each order: Uline&rsquo;s TOTAL-AMOUNT line, or the NuVizz Seal # where Davis records a price. An order that ran twice this week is priced once, on the load that delivered it. Orders with no price on file are counted, not guessed.</p>
+          {data.cancelledOff > 0 && <p>{plural(data.cancelledOff, 'cancelled order')} {data.cancelledOff === 1 ? 'is' : 'are'} not counted.</p>}
+        </div>
+      </div>
+      {data.loads.length > 0 && (wide
+        ? <DriverWeekTable data={data} openLoad={openLoad} onToggleLoad={onToggleLoad} onOrder={onOrder} renderDetail={renderDetail} />
+        : <DriverWeekCards data={data} stacked={stacked} openLoad={openLoad} onToggleLoad={onToggleLoad} onOrder={onOrder} renderDetail={renderDetail} />)}
+    </section>
+  );
+}
+
+/** No name, a name two drivers answer to, or a name nobody ran under: the week's drivers to pick. */
+function DriverWeekChooser({ data, stacked, onPick }) {
+  const typed = data.typed;
+  const hits = data.candidates || [];
+  const list = typed && hits.length ? hits : (data.drivers || []);
+  const title = !typed ? `Who ran loads ${weekLabel(data.week)}`
+    : hits.length > 1 ? `“${typed}” matches ${hits.length} drivers ${weekLabel(data.week)}`
+      : `No driver called “${typed}” ran a load ${weekLabel(data.week)}`;
+  return (
+    <section aria-label="Choose a driver" className="rounded-2xl bg-white p-4 sm:p-6 shadow-sm ring-1 ring-slate-200 space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <h2 className="text-[15px] font-semibold text-slate-900 break-words">{title}</h2>
+          <p className="mt-1 text-[13px] text-slate-500">{list.length ? 'Pick one to see their week.' : 'No load that week carries a driver in our records.'}{typed && !hits.length && list.length ? ' These drivers did:' : ''}</p>
+        </div>
+        <DriverWeekDays days={data.days} />
+      </div>
+      {list.length > 0 && (
+        <div className={stacked ? 'divide-y divide-slate-100 rounded-xl ring-1 ring-slate-200 overflow-hidden' : 'grid gap-2 grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}>
+          {list.map((d) => (
+            <button key={d.key} type="button" onClick={() => onPick(d)}
+              className={stacked
+                ? 'w-full flex items-center gap-3 px-4 py-3 min-h-[56px] text-left active:bg-slate-50'
+                : 'group flex items-center gap-3 min-w-0 rounded-xl bg-white p-3 text-left ring-1 ring-slate-200 hover:ring-[#1e5b92]/40 hover:shadow-sm transition'}>
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-[#1e5b92]/10 group-hover:text-[#1e5b92]"><Truck size={16} /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold text-slate-900">{d.label}</span>
+                <span className="block truncate text-xs text-slate-500">{plural(d.loads, 'load')} · {plural(d.days, 'day')}</span>
+              </span>
+              <ChevronRight size={16} className="shrink-0 text-slate-300" />
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 
 const STOP_LOOKUP_LAST = 'dd_stop_lookup_last';
 const STOP_LOOKUP_RANGE = 'dd_stop_lookup_range';
@@ -37358,11 +38863,36 @@ function StopLookupScreen() {
   const [editSaving, setEditSaving] = useState(false);
   const [editErr, setEditErr] = useState(null);
   // ── ADDRESS / CITY SEARCH (v1.62.0) ─────────────────────────────────────────
-  // WHICH SEARCH, remembered per device: a rep who works addresses all day should not re-pick it
-  // on every visit. Default 'order', the screen's original job — and what the layout guards open.
-  const [searchMode, setSearchMode] = useState(() => {
-    try { return localStorage.getItem(STOP_LOOKUP_MODE) === 'place' ? 'place' : 'order'; } catch { return 'order'; }
+  // WHICH SEARCH IS RUNNING — both forms are on screen at once (v1.63.0), so "Looking…" belongs
+  // on the button that was pressed, not on both. Both stay disabled while either runs: there is
+  // one answer area, and two searches racing into it would show whichever finished last.
+  const [busy, setBusy] = useState(null);         // 'order' | 'place' | null
+  // RECENT LOOKUPS on this device — see src/lib/stop-lookup-recent.js for what is kept and why.
+  const [recent, setRecent] = useState(() => {
+    try { return parseRecent(localStorage.getItem(STOP_LOOKUP_RECENT)); } catch { return []; }
   });
+  useEffect(() => {
+    try { localStorage.setItem(STOP_LOOKUP_RECENT, JSON.stringify(recent)); } catch { /* private mode — the list is a convenience */ }
+  }, [recent]);
+  const remember = useCallback((entry) => { if (entry) setRecent((list) => addRecent(list, entry)); }, []);
+  // ON A PHONE THE ANSWER STARTS BELOW BOTH FORMS — about a screen down once the address half is
+  // stacked under the order box — so a finished search brings the answer up to the top rather
+  // than leaving the rep looking at the forms they just used. Phone only: from 1024px the forms
+  // sit side by side and the answer is already in view. A tick, not an effect on `data`, because
+  // a saved note repaints `data` too and must not move the page.
+  const scrollerRef = useRef(null);
+  const panelRef = useRef(null);
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
+  const [answerTick, setAnswerTick] = useState(0);
+  useEffect(() => {
+    if (!answerTick || !isMobileRef.current) return;
+    const box = scrollerRef.current;
+    const panel = panelRef.current;
+    if (!box || !panel) return;
+    const top = panel.getBoundingClientRect().bottom - box.getBoundingClientRect().top + box.scrollTop - 8;
+    if (top > box.scrollTop) box.scrollTo({ top, behavior: 'smooth' });
+  }, [answerTick]);
   // The typed place is remembered too, for the same reason the order box is.
   const [place, setPlace] = useState(() => {
     try {
@@ -37375,11 +38905,25 @@ function StopLookupScreen() {
   // visit starts on ALL; see PlaceDateBar for why keeping last week's pick would break that.
   const [placeSel, setPlaceSel] = useState({ kind: 'all' });
   const [placeRowsShown, setPlaceRowsShown] = useState(PLACE_PAGE);
+  // ── A DRIVER'S WEEK (v1.69.0) ───────────────────────────────────────────────
+  // The NAME is remembered like the order box; the WEEK is not — every visit starts on this week,
+  // for the reason PlaceDateBar gives: a remembered week would quietly answer an old question.
+  // Gated at dispatcher, one step above this screen: it adds up a driver's order prices.
+  const driverGate = useRoleGate('dispatcher');
+  const [drvName, setDrvName] = useState(() => {
+    try { return localStorage.getItem(STOP_LOOKUP_DRIVER) || ''; } catch { return ''; }
+  });
+  const [drvDay, setDrvDay] = useState(today);
+  const [drvNames, setDrvNames] = useState([]);   // the datalist — whoever the last answer named
+  const [openLoad, setOpenLoad] = useState(null); // ONE load open at a time: each open map is a billed map load
+  // A slower answer to an older week is DROPPED, never painted over a newer one — stepping the week
+  // twice while the first read is still out must not leave last week's loads on this week's label.
+  const drvReqRef = useRef(0);
 
   const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
     if (!term) return;
-    setLoading(true); setErr(null); setPromptMsg(null);
+    setLoading(true); setBusy('order'); setErr(null); setPromptMsg(null);
     // An open editor belongs to the customer that WAS on screen. Carrying it across a new
     // search is how a dock's hours get typed onto somebody else's dock.
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
@@ -37410,6 +38954,10 @@ function StopLookupScreen() {
       if (!j.ok) throw new Error(j.error || 'lookup failed');
       setData(j);
       if (j.mode === 'customer-choose') setNameKey(null);
+      // Kept only once it ANSWERED — a search that errored is not one worth one-click repeating.
+      // A customer is labelled with the name the answer found, not the four letters typed.
+      remember(recentEntry({ kind: isName ? 'customer' : 'order', term, label: j.mode === 'customer' ? j.view?.name : null }));
+      setAnswerTick((n) => n + 1);
       // The ledger opens itself exactly when it IS the answer — nothing was found, or a read
       // failed. On a populated screen it stays folded away.
       const stopBlank = j.mode === 'stop' && (!j.dossier?.found || j.dossier?.complete === false);
@@ -37418,8 +38966,8 @@ function StopLookupScreen() {
       // ledger is where the year says which sources it deliberately did not read.
       const yearBlank = j.mode === 'customer-year' && !j.view?.counted;
       setLedgerOpen(!!(stopBlank || custBlank || yearBlank));
-    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); }
-  }, []);
+    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); setBusy(null); }
+  }, [remember]);
 
   /** Search whatever is in the box, with the current window and pinned customer. */
   const submit = useCallback((term, over = {}) => {
@@ -37475,11 +39023,13 @@ function StopLookupScreen() {
    * but one, which keeps "which row is open" in ONE place: a list cannot draw a panel under a
    * row the screen does not think is open, and cannot fail to draw one under the row it does.
    */
-  const renderOrderPanel = useCallback((stopNbr, date) => {
+  // `opts.stacked` — a list that sits in a NARROW column on a desktop (a load's stops beside its
+  // map) asks for the panel's one-column layout; three columns in 560px is a squeeze, not a view.
+  const renderOrderPanel = useCallback((stopNbr, date, opts = {}) => {
     if (!detail) return null;
     if (detail.stopNbr !== String(stopNbr ?? '').trim() || detail.date !== String(date ?? '').trim()) return null;
     return (
-      <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={isMobile}
+      <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={opts.stacked ?? isMobile}
         onClose={closeOrder} onOpenHistory={() => pick(detailData?.stop?.pro || detail.stopNbr)} />
     );
   }, [detail, detailLoading, detailErr, detailData, isMobile, closeOrder, pick]);
@@ -37665,7 +39215,7 @@ function StopLookupScreen() {
   const runPlace = useCallback(async (fields, selNow) => {
     const f = { ...EMPTY_PLACE, ...(fields || {}) };
     if (!placeQueryUsable(placeQuery(f))) { setErr('Type a street address, a city or a ZIP to search by.'); return; }
-    setLoading(true); setErr(null); setPromptMsg(null); closeOrder();
+    setLoading(true); setBusy('place'); setErr(null); setPromptMsg(null); closeOrder();
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     try { localStorage.setItem(STOP_LOOKUP_PLACE, JSON.stringify(f)); } catch { /* a remembered box is a convenience */ }
     try {
@@ -37674,10 +39224,12 @@ function StopLookupScreen() {
       if (!j.ok) throw new Error(j.error || 'search failed');
       setData(j);
       setPlaceRowsShown(PLACE_PAGE);
+      remember(recentEntry({ kind: 'place', place: f }));
+      setAnswerTick((n) => n + 1);
       // The ledger opens itself when it IS the answer: nothing matched, or days went unsearched.
       setLedgerOpen(j.mode === 'place' && !j.switchedOff && (j.coverage?.complete === false || !j.view?.matched));
-    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); }
-  }, [closeOrder]);
+    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); setBusy(null); }
+  }, [closeOrder, remember]);
 
   /** New dates on a place already on screen: search again, same place. */
   const changePlaceSel = useCallback((next) => {
@@ -37694,166 +39246,124 @@ function StopLookupScreen() {
     runPlace(next, placeSel);
   }, [place, placeSel, runPlace]);
 
-  const switchMode = useCallback((m) => {
-    setSearchMode(m);
-    try { localStorage.setItem(STOP_LOOKUP_MODE, m); } catch { /* per-device convenience */ }
-    // The answer on screen belongs to the other search; leaving it up under the new form would
-    // present a customer's deliveries as if they answered an address.
-    setData(null); setErr(null); closeOrder();
-  }, [closeOrder]);
+  /**
+   * A DRIVER'S WEEK. A typed name is resolved by the server against the week's own drivers (the
+   * territory sheet's identity rule), so "colin" and "COLIN 2" find the same man; no name, or a
+   * name two drivers answer to, comes back as a list to pick from. A pick is sent back by KEY.
+   */
+  const runDriver = useCallback(async ({ name, key, day } = {}) => {
+    if (driverGate.reason) { setErr(driverGate.reason); return; }
+    const wk = weekOf(day || today) || weekOf(today);
+    setLoading(true); setBusy('driver'); setErr(null); setPromptMsg(null); closeOrder(); setOpenLoad(null);
+    setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
+    const typed = String(name ?? '').trim();
+    try { localStorage.setItem(STOP_LOOKUP_DRIVER, typed); } catch { /* a remembered box is a convenience */ }
+    const p = new URLSearchParams({ week: wk.from });
+    if (key) p.set('key', key); else if (typed) p.set('driver', typed);
+    const req = ++drvReqRef.current;
+    try {
+      const r = await apiFetch(`/.netlify/functions/driver-loads?${p.toString()}`);
+      const j = await r.json();
+      if (req !== drvReqRef.current) return;
+      if (!j.ok) throw new Error(j.error || 'the week could not be read');
+      setData(j);
+      setDrvNames((j.drivers || []).map((d) => d.label));
+      if (j.mode === 'driver-week') {
+        setDrvName(j.driver?.label || typed);
+        remember(recentEntry({ kind: 'driver', term: j.driver?.label, key: j.driver?.key, week: j.week?.from }));
+      }
+      setAnswerTick((n) => n + 1);
+    } catch (e) {
+      if (req === drvReqRef.current) { setErr(String(e.message || e)); setData(null); }
+    } finally { if (req === drvReqRef.current) { setLoading(false); setBusy(null); } }
+  }, [driverGate.reason, today, closeOrder, remember]);
+
+  /** Step the week. A week already on screen is re-read for the same driver — the same person,
+   *  another week, which is the comparison this screen is for. */
+  const changeDriverWeek = useCallback((day) => {
+    setDrvDay(day);
+    if (data?.mode === 'driver-week') runDriver({ key: data.driver?.key, name: data.driver?.label, day });
+    else if (data?.mode === 'driver-week-choose') runDriver({ name: data.typed || '', day });
+  }, [data, runDriver]);
+
+  /** A recent lookup, run again exactly as a rep would: the box refilled, then searched. Dates
+   *  are whatever is set NOW — for an address that is All unless a day or range was just picked,
+   *  because a remembered date would narrow a search nobody asked to narrow. */
+  const runRecent = useCallback((e) => {
+    if (!e) return;
+    if (e.kind === 'driver') {
+      setDrvName(e.term); setDrvDay(e.week);
+      runDriver({ key: e.key, name: e.term, day: e.week });
+      return;
+    }
+    if (e.kind === 'place') {
+      const f = { ...EMPTY_PLACE, ...e.place };
+      setPlace(f);
+      runPlace(f, placeSel);
+      return;
+    }
+    setQ(e.term); setNameKey(null); setYearOn(false);
+    submit(e.term, { nameKey: null, year: null });
+  }, [runPlace, placeSel, submit, runDriver]);
+
+
+  /** Clearing a box clears the answer only when the answer is ITS answer — emptying the order box
+   *  must not wipe an address search that is still on screen beside it. */
+  const clearOrder = useCallback(() => {
+    setQ(''); setErr(null);
+    if (data && !['place', 'driver-week', 'driver-week-choose'].includes(data.mode)) { setData(null); closeOrder(); }
+  }, [data, closeOrder]);
+  const clearDriver = useCallback(() => {
+    setDrvName(''); setErr(null);
+    try { localStorage.setItem(STOP_LOOKUP_DRIVER, ''); } catch { /* convenience */ }
+    if (data?.mode === 'driver-week' || data?.mode === 'driver-week-choose') { setData(null); closeOrder(); setOpenLoad(null); }
+  }, [data, closeOrder]);
+  const clearPlace = useCallback(() => {
+    setPlace(EMPTY_PLACE); setErr(null);
+    if (data?.mode === 'place') { setData(null); closeOrder(); }
+  }, [data, closeOrder]);
 
   const d = data?.mode === 'stop' ? data.dossier : null;
 
   return (
-    <div className="flex-1 overflow-y-auto bg-slate-50">
-      <div className={`${SCREEN_DASH} p-4 sm:p-6 space-y-4`}>
+    <div ref={scrollerRef} className="flex-1 overflow-y-auto bg-slate-50">
+      <div className={`${SCREEN_DASH} px-4 py-5 sm:px-6 sm:py-8 space-y-5 sm:space-y-6`}>
         {/* THE LITERAL "Stop lookup" STAYS IN THE BODY. verify-desktop-layout.mjs proves the
             screen arrived with document.body.innerText.includes('Stop lookup') — rename it
             and a screen that opened perfectly fails as "could not be opened". */}
-        <div className="flex items-start justify-between gap-3 flex-wrap">
+        <header className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-xl font-bold text-slate-900">Stop lookup</h1>
-            <p className="text-xs text-slate-500 mt-0.5">
-              A <span className="font-semibold text-slate-600">customer name</span> for their deliveries and who ran them, a
-              {' '}<span className="font-semibold text-slate-600">PRO</span> for one order&rsquo;s whole history, or an
-              {' '}<span className="font-semibold text-slate-600">address or city</span> for every stop there.
-            </p>
+            <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900">Stop lookup</h1>
+            <p className="mt-1 text-sm text-slate-500">Search our delivery records by order, customer, address or city &mdash; or look at a driver&rsquo;s week of loads.</p>
           </div>
-          {/* THE PRICE OF WHAT IS ON SCREEN, read off the answer — not a slogan. Every Firestore
-              answer says 0; the one prompted answer says 1 and says it was asked for. */}
-          {data?.nuvizzCalls === 1
-            ? <span className="text-[11px] font-semibold text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 whitespace-nowrap">1 NuVizz call — on request</span>
-            : <span className="text-[11px] font-semibold text-green-800 bg-green-50 border border-green-200 rounded-lg px-2 py-1 whitespace-nowrap">0 NuVizz calls</span>}
+          <LookupCallsPill calls={data?.nuvizzCalls} />
+        </header>
+
+        <div ref={panelRef}>
+          <StopSearchPanel stacked={isMobile} busy={busy} today={today}
+            q={q} setQ={setQ} onClearOrder={clearOrder}
+            onOrder={() => { setNameKey(null); setYearOn(false); submit(q, { nameKey: null, year: null }); }}
+            place={place} setPlace={setPlace} placeSel={placeSel} onPlaceSel={changePlaceSel}
+            onPlace={() => runPlace(place, placeSel)} onClearPlace={clearPlace}
+            drvName={drvName} setDrvName={setDrvName} drvDay={drvDay} setDrvDay={changeDriverWeek} drvNames={drvNames}
+            drvGate={driverGate.reason} onDriver={() => runDriver({ name: drvName, day: drvDay })} onClearDriver={clearDriver} />
         </div>
 
-        {/* WHICH SEARCH. Two searches, two forms — an address is four fields and a date choice, and
-            one box that guessed between "Atlanta" the city and "Atlanta" a customer name would be
-            wrong about one of them every time. */}
-        <div role="tablist" aria-label="Search by" className={`inline-flex rounded-xl border bg-white p-1 gap-1 ${isMobile ? 'w-full' : ''}`}>
-          {[['order', 'Order or customer'], ['place', 'Address or city']].map(([k, label]) => (
-            <button key={k} type="button" role="tab" aria-selected={searchMode === k} onClick={() => switchMode(k)}
-              className={`rounded-lg px-3 min-h-[40px] text-xs font-semibold whitespace-nowrap ${isMobile ? 'flex-1' : ''} ${searchMode === k ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}>
-              {label}
-            </button>
-          ))}
-        </div>
+        {err && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 break-words">{err}</div>}
 
-        {searchMode === 'place' && (
-          <form onSubmit={(e) => { e.preventDefault(); runPlace(place, placeSel); }} className="rounded-xl border bg-white p-2 space-y-2">
-            <div className={isMobile ? 'space-y-2' : 'flex items-center gap-2'}>
-              {/* FOUR BOXES THAT LOOK LIKE FOUR BOXES. The first cut left the street line bare, like
-                  the order box, beside three bordered fields — and read as two different controls. */}
-              <div className={`flex items-center gap-2 min-w-0 rounded-lg border border-slate-300 bg-white px-2 focus-within:border-slate-500 ${isMobile ? '' : 'flex-[3]'}`}>
-                <MapPin size={14} className="text-slate-400 shrink-0" />
-                <input value={place.addr} onChange={(e) => setPlace((p) => ({ ...p, addr: e.target.value }))}
-                  placeholder="Street address — 1100 Northside Dr" aria-label="Street address"
-                  autoFocus={!isMobile} className="flex-1 min-w-0 text-sm min-h-[38px] focus:outline-none bg-transparent" />
-              </div>
-              <div className={`flex items-center gap-2 min-w-0 ${isMobile ? '' : 'flex-[2]'}`}>
-                <input value={place.city} onChange={(e) => setPlace((p) => ({ ...p, city: e.target.value }))}
-                  placeholder="City" aria-label="City" className={`${PLACE_FIELD} flex-1`} />
-                <input value={place.state} onChange={(e) => setPlace((p) => ({ ...p, state: e.target.value }))}
-                  placeholder="ST" aria-label="State" maxLength={2} className={`${PLACE_FIELD} w-14 uppercase`} />
-                <input value={place.zip} onChange={(e) => setPlace((p) => ({ ...p, zip: e.target.value }))}
-                  placeholder="ZIP" aria-label="ZIP" inputMode="numeric" maxLength={10} className={`${PLACE_FIELD} w-20`} />
-              </div>
-              {!isMobile && (
-                <button type="submit" disabled={loading || !placeQueryUsable(placeQuery(place))}
-                  className="rounded-lg border px-3 min-h-[40px] text-xs font-semibold bg-slate-900 text-white disabled:opacity-40 whitespace-nowrap">
-                  {loading ? 'Looking…' : 'Look up'}
-                </button>
-              )}
-            </div>
-            <div className={isMobile ? 'space-y-2' : 'flex items-center justify-between gap-2 flex-wrap'}>
-              <PlaceDateBar sel={placeSel} setSel={changePlaceSel} today={today} stacked={isMobile} />
-              {(place.addr || place.city || place.state || place.zip) && (
-                <button type="button" onClick={() => { setPlace(EMPTY_PLACE); setData(null); setErr(null); }}
-                  className={`text-xs text-slate-500 hover:text-slate-800 px-2 min-h-[40px] ${isMobile ? 'hidden' : ''}`}>Clear</button>
-              )}
-              {isMobile && (
-                <button type="submit" disabled={loading || !placeQueryUsable(placeQuery(place))}
-                  className="w-full rounded-lg border px-3 min-h-[44px] text-sm font-semibold bg-slate-900 text-white disabled:opacity-40">
-                  {loading ? 'Looking…' : 'Look up'}
-                </button>
-              )}
-            </div>
-          </form>
+        {!data && !loading && (
+          <StopRecentLookups items={recent} onPick={runRecent} onClear={() => setRecent([])} stacked={isMobile} nowMs={Date.now()} />
         )}
 
-        {searchMode === 'order' && (
-        <form
-          onSubmit={(e) => { e.preventDefault(); setNameKey(null); setYearOn(false); submit(q, { nameKey: null, year: null }); }}
-          className="rounded-xl border bg-white p-2 flex items-center gap-2"
-        >
-          <Search size={14} className="text-slate-400 shrink-0 ml-1" />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="EARTHLY ALTERNATIVE, or 007174397"
-            aria-label="Find a customer by name, or a stop by PRO or stop number"
-            // DESKTOP ONLY. This screen is a search box and nothing else, so on a laptop the
-            // cursor belongs in it. On a phone autoFocus throws the keyboard up over half the
-            // screen the moment the tab opens — and this app already fights iOS's visual
-            // viewport for the shell's own position (see the `position: fixed` block in Shell).
-            // Two views, two answers.
-            autoFocus={!isMobile}
-            className="flex-1 min-w-0 text-sm min-h-[40px] px-1 focus:outline-none"
-          />
-          {q && <button type="button" onClick={() => { setQ(''); setData(null); setErr(null); }} className="text-xs text-slate-500 hover:text-slate-800 px-2 min-h-[40px]">Clear</button>}
-          <button type="submit" disabled={!q.trim() || loading}
-            className="rounded-lg border px-3 min-h-[40px] text-xs font-semibold bg-slate-900 text-white disabled:opacity-40 whitespace-nowrap">
-            {loading ? 'Looking…' : 'Look up'}
-          </button>
-        </form>
+        {data?.mode === 'driver-week-choose' && (
+          <DriverWeekChooser data={data} stacked={isMobile}
+            onPick={(d) => { setDrvName(d.label); runDriver({ key: d.key, name: d.label, day: data.week?.from }); }} />
         )}
 
-        {err && <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3 break-words">{err}</div>}
-
-        {searchMode === 'place' && !data && !loading && !err && (
-          <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="rounded-lg bg-blue-100 text-blue-800 p-1.5"><MapPin size={14} /></span>
-              <div className="text-sm font-semibold text-slate-800">Every stop at an address, or in a city</div>
-            </div>
-            <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
-              <li>A <span className="font-semibold">street address</span> finds every stop we have made there — the caller does not need a PRO or a company name.</li>
-              <li>A <span className="font-semibold">city</span> or a <span className="font-semibold">ZIP</span> finds every stop in it, with the months, the busiest addresses and the drivers who ran them.</li>
-              <li><span className="font-semibold">All dates</span> unless you pick one day or a range — every day we hold, plus the live board.</li>
-              <li>The house number has to match: 110 will not find 1100. Suite, Drive/Dr and Northwest/NW spellings do not matter.</li>
-            </ul>
-          </div>
-        )}
-
-        {searchMode === 'order' && !data && !loading && !err && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="rounded-lg bg-blue-100 text-blue-800 p-1.5"><Search size={14} /></span>
-                <div className="text-sm font-semibold text-slate-800">Type a customer name</div>
-              </div>
-              <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
-                <li>How many deliveries they had <span className="font-semibold">today</span> — delivered, still out, came back.</li>
-                <li>Which driver ran each one, and how many each of them closed out.</li>
-                <li>The minute each delivered, the route it was on and which of their docks it went to.</li>
-                <li>Their receiving hours and dispatcher notes, before you promise anything.</li>
-              </ul>
-            </div>
-            <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="rounded-lg bg-slate-200 text-slate-700 p-1.5"><Package size={14} /></span>
-                <div className="text-sm font-semibold text-slate-800">Type a PRO</div>
-              </div>
-              <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
-                <li>Every day we hold that order — the sealed nightly history and today&rsquo;s live board.</li>
-                <li>Whether the freight came back, and who had it that morning rather than that evening.</li>
-                <li>Every time its address moved, and whether that was NuVizz or us.</li>
-                <li>What we sent NuVizz about it, and whether the write took.</li>
-              </ul>
-              <div className="text-[11px] text-slate-400">
-                A bare PRO finds the zero-padded one NuVizz stores, and a segmented stop number finds its order.
-              </div>
-            </div>
-          </div>
+        {data?.mode === 'driver-week' && (
+          <DriverWeekResults data={data} stacked={isMobile} wide={viewportWidth >= LOAD_TABLE_MIN}
+            openLoad={openLoad} onToggleLoad={(k) => { closeOrder(); setOpenLoad((cur) => (cur === k ? null : k)); }}
+            onOrder={openOrder} renderDetail={renderOrderPanel} />
         )}
 
         {data?.mode === 'place' && (

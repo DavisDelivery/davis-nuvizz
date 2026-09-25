@@ -24,6 +24,8 @@ import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
+import { labelsAnswer } from './lib/labels-fixture.mjs';
+import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
@@ -53,9 +55,11 @@ const SCREENS = [
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
   { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
+  { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
-  { key: 'claudeshadow', label: 'Claude shadow', nav: /claude shadow/i, inMore: true },
+  // Routing's third tab since v1.68.2: Routing, then the Build | Engine | Shadow toggle.
+  { key: 'claudeshadow', label: 'Routing — Shadow (Claude shadow)', nav: /routing/i, sub: /^shadow$/i, arrive: 'Claude shadow' },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i, inMore: true },
 ];
 
@@ -135,17 +139,15 @@ const PROBES = {
       // PROVES ITS STATE, like every probe here: the panel names the dock it is editing.
       return page.getByText(/editing this dock/i).first().isVisible().catch(() => false);
     } },
-    // ADDRESS / CITY SEARCH (v1.62.0), LAST: the tab choice is remembered, and every probe above
-    // opens the order box. Four fields, three date pills and the whole place answer.
+    // ADDRESS / CITY SEARCH (v1.62.0) — its own form beside the order box since v1.63.0, so no
+    // tab to pick first. Four fields, three date settings and the whole place answer.
     { name: 'an address searched', open: async (page) => {
       await closeOrderDrawer(page);
-      const tab = page.getByRole('tab', { name: /address or city/i }).first();
-      if (!(await tab.isVisible().catch(() => false))) return false;
-      await tab.click().catch(() => {});
-      await page.waitForTimeout(300);
-      await page.getByLabel(/street address/i).first().fill('1100 Northside Dr');
+      const street = page.getByLabel(/street address/i).first();
+      if (!(await street.isVisible().catch(() => false))) return false;
+      await street.fill('1100 Northside Dr');
       await page.getByLabel(/^city$/i).first().fill('Atlanta');
-      if (!(await openByName(page, /^look up$/i))) return false;
+      if (!(await openByName(page, /^find stops$/i))) return false;
       await page.waitForTimeout(500);
       return page.getByText(/every stop at/i).first().isVisible().catch(() => false);
     } },
@@ -154,6 +156,63 @@ const PROBES = {
       await page.waitForTimeout(500);
       const dates = await page.getByLabel(/first day to search/i).first().isVisible().catch(() => false);
       return dates && page.getByText(/every stop at/i).first().isVisible().catch(() => false);
+    } },
+    // RECENT LOOKUPS (v1.63.0). Every probe above left a search behind; clearing the address
+    // form takes the answer away and puts the landing back, with the list on it.
+    { name: 'recent lookups listed', open: async (page) => {
+      await closeOrderDrawer(page);
+      if (!(await openByName(page, /^clear$/i))) return false;
+      await page.waitForTimeout(400);
+      return page.getByRole('button', { name: /1100 northside dr/i }).first().isVisible().catch(() => false);
+    } },
+    // A DRIVER'S WEEK (v1.69.0): the chooser, the load cards two across at iPad width, and a load
+    // opened full width into its map box and its stops. Below 1280 the week is cards, not a table
+    // — the line the Labels table drew when this guard caught its buttons clipped at 1080.
+    { name: 'the week\'s drivers to choose', open: async (page) => {
+      await closeOrderDrawer(page);
+      if (!(await openByName(page, /^show the week$/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByText(/who ran loads/i).first().isVisible().catch(() => false);
+    } },
+    { name: 'a driver\'s week', open: async (page) => {
+      const box = page.getByLabel(/^driver name$/i).first();
+      if (!(await box.isVisible().catch(() => false))) return false;
+      await box.fill('robert');
+      if (!(await openByName(page, /^show the week$/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByRole('button', { name: /^map & stops/i }).first().isVisible().catch(() => false);
+    } },
+    { name: 'a load opened', open: async (page) => {
+      if (!(await openByName(page, /^map & stops/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByText(/stops in the order they were delivered/i).first().isVisible().catch(() => false);
+    } },
+  ],
+  // PRINT LABELS (v1.67.0): the order cards two across at iPad width, ticked, and the big-batch
+  // question — none of which exists until a shipper is picked. No reload between probes here, so
+  // each picks its own shipper rather than trusting the last one's.
+  labels: [
+    { name: 'a shipper picked', open: async (page) => {
+      if (!(await openByName(page, /^estes/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByRole('button', { name: /^print labels for estes-/i }).first().isVisible().catch(() => false);
+    } },
+    { name: 'orders ticked', open: async (page) => {
+      if (!(await openByName(page, /^estes/i))) return false;
+      await page.waitForTimeout(500);
+      const boxes = page.getByRole('checkbox', { name: /^select estes-/i });
+      if ((await boxes.count()) < 2) return false;
+      await boxes.nth(0).check();
+      await boxes.nth(1).check();
+      await page.waitForTimeout(300);
+      return page.getByRole('button', { name: /^print selected \(2/i }).first().isVisible().catch(() => false);
+    } },
+    { name: 'a big batch asks first', open: async (page) => {
+      if (!(await openByName(page, /^uline/i))) return false;
+      await page.waitForTimeout(500);
+      if (!(await openByName(page, /^print all/i))) return false;
+      await page.waitForTimeout(300);
+      return page.getByText(/this prints \d+ pages/i).first().isVisible().catch(() => false);
     } },
   ],
   addrhistory: [
@@ -263,6 +322,15 @@ async function gotoScreen(page, screen) {
   if (!(await use.isVisible().catch(() => false))) return false;
   await use.click();
   await page.waitForTimeout(900);
+  // A sub-tab (Routing's Build | Engine | Shadow). It must prove it arrived, or the guard would
+  // measure the Build screen under the Shadow screen's name.
+  if (screen.sub) {
+    const tabBtn = page.getByRole('button', { name: screen.sub }).first();
+    if (!(await tabBtn.isVisible().catch(() => false))) return false;
+    await tabBtn.click();
+    await page.waitForTimeout(900);
+  }
+  if (screen.arrive && !(await page.getByRole('heading', { name: screen.arrive }).first().isVisible().catch(() => false))) return false;
   return true;
 }
 
@@ -306,6 +374,10 @@ for (const dev of TABLETS) {
     // them would leave the guard measuring a screen the app never renders.
     // THE CLAUDE SHADOW TAB — the same worst-rows fixture the phone and desktop guards use.
     if (u.includes('claude-shadow')) return J(CLAUDE_SHADOW_STATUS);
+    // PRINT LABELS (v1.67.0) — the same built fixture the phone guard drives.
+    if (u.includes('labels-by-shipper')) return J(labelsAnswer(u));
+    // A DRIVER'S WEEK (v1.69.0) — the same built fixture the phone guard drives.
+    if (u.includes('driver-loads')) return J(driverWeekAnswer(u));
     if (u.includes('stop-lookup')) return J(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.

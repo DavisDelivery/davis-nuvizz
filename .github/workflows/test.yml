@@ -162,6 +162,10 @@ jobs:
       # once and every guard behaves differently under it — which is why the
       # check above was green while a truck photographed 4/2 on a 2-skid stop.
       - run: npm run e2e:quagga
+      # The Davis label (DD/<stop #>/<piece>) on the same fake-quagga stream: one page
+      # is one piece on its own stop, the cap holds, and LOADSCAN_DAVIS_LABELS=off
+      # (rules.davisLabels=false) books nothing.
+      - run: npm run e2e:davis
 
   # ── Does the app actually START? ───────────────────────────────────────────
   # v0.54.14 shipped a bundle that was blank on every device: state declared in

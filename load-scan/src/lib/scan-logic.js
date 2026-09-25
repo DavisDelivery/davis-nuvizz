@@ -31,10 +31,70 @@ export function isOgBarcode(raw) {
   return /^OG\d{10}$/.test(String(raw ?? '').trim().toUpperCase());
 }
 
-export function classifyBarcode(raw) {
+// ── THE DAVIS LABEL ──────────────────────────────────────────────────────────
+// Orders created in the dispatch map (New Order → Single order / Bulk add) get a
+// full-page Davis label, one page per piece, carrying ONE Code 128 barcode:
+//
+//   DD/<NuVizz stop #>/<piece seq>        e.g. DD/ESTES-0288000001/2
+//
+// Unlike the Uline label it names the order AND the piece in a single barcode,
+// so there is nothing to pair: one read is one piece, and the pairing window
+// (the source of every phantom this app has fought) never opens. It cannot be
+// mistaken for anything else on the dock — not 7 bare digits (a Uline PRO), not
+// OG+10 (a Uline piece id), not an Averitt 10-digit number.
+//
+// The stop is matched on the EXACT stop number, never the last-7-digit rule: an
+// Estes number whose last seven digits equal a Uline PRO must not land on the
+// Uline stop. Chad (Sep 24 2026): the label is "a bar code we can scan for our
+// load out app and wms app". LOADSCAN_DAVIS_LABELS=off turns reading it off.
+
+/** Parse a scanned Davis label. Splits from the RIGHT, so a stop # may itself hold '/'. */
+export function parseDavisLabel(raw) {
+  const m = /^DD\/(.+)\/(\d{1,3})$/.exec(String(raw ?? '').trim());
+  if (!m) return null;
+  const stopNbr = m[1].trim();
+  const seq = Number(m[2]);
+  if (!stopNbr || !Number.isInteger(seq) || seq < 1) return null;
+  return { stopNbr, seq };
+}
+
+/**
+ * The piece id a Davis label books under: DD-<stop key>-<seq>.
+ *
+ * The label's own text carries '/', which the scan store and the server's id
+ * rules were never built for, so the id is normalised to the same shape as the
+ * app's other synthetic ids (TYPED-…, NOOG-…). One physical page, one id: a
+ * reprint of the same page books nothing twice.
+ */
+export function davisPieceId(stopNbr, seq) {
+  const key = String(stopNbr ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return key && Number.isInteger(seq) && seq >= 1 && seq <= 999 ? `DD-${key}-${seq}` : '';
+}
+
+/** Was this piece booked off a Davis label? */
+export function isDavisPieceId(og) {
+  return /^DD-/i.test(String(og ?? ''));
+}
+
+/** The stop a Davis label belongs to on this load — exact stop # (case/space-insensitive), or null. */
+export function findDavisStop(label, stops) {
+  const want = String(label?.stopNbr ?? '').trim().toUpperCase();
+  if (!want) return null;
+  return (stops || []).find((s) => String(s?.stopNbr ?? '').trim().toUpperCase() === want) || null;
+}
+
+/**
+ * @param opts.davisLabels  false = the LOADSCAN_DAVIS_LABELS switch is off: a Davis
+ *                          label reads as 'unknown', exactly as it did before.
+ */
+export function classifyBarcode(raw, { davisLabels = true } = {}) {
   const v = String(raw ?? '').trim();
   if (isProBarcode(v)) return { kind: 'pro', value: v };
   if (isOgBarcode(v)) return { kind: 'og', value: v.toUpperCase() };
+  if (davisLabels) {
+    const d = parseDavisLabel(v);
+    if (d) return { kind: 'davis', value: v, stopNbr: d.stopNbr, seq: d.seq };
+  }
   return { kind: 'unknown', value: v };
 }
 
@@ -45,17 +105,24 @@ export function classifyBarcode(raw) {
  * them is incomplete and returns null — the caller keeps the partial and waits,
  * rather than recording half a piece.
  */
-export function pairFrame(rawValues) {
+export function pairFrame(rawValues, opts = {}) {
   let pro = null;
   let og = null;
+  let davis = null;
+  const davisAll = [];   // every distinct Davis page in the frame — two skids of one order side by side
   const unknown = [];
   for (const raw of rawValues || []) {
-    const c = classifyBarcode(raw);
+    const c = classifyBarcode(raw, opts);
     if (c.kind === 'pro' && !pro) pro = c.value;
     else if (c.kind === 'og' && !og) og = c.value;
+    else if (c.kind === 'davis') {
+      const d = { stopNbr: c.stopNbr, seq: c.seq, raw: c.value };
+      if (!davis) davis = d;
+      if (!davisAll.some((x) => x.raw === d.raw)) davisAll.push(d);
+    }
     else if (c.kind === 'unknown' && c.value) unknown.push(c.value);
   }
-  return { pro, og, unknown, complete: !!(pro && og) };
+  return { pro, og, davis, davisAll, unknown, complete: !!(pro && og) };
 }
 
 // The camera used to have its own resolver here (createScanResolver) that
@@ -70,7 +137,7 @@ export function pairFrame(rawValues) {
 // the gun: both barcodes marry in either order inside the window, and a PRO
 // alone becomes a piece when the window closes — not before.
 
-export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
+export function createPairBuffer({ windowMs = 2500, onAbandon, davisLabels = () => true } = {}) {
   let pending = { pro: null, og: null, at: 0 };
   // The pair most recently EMITTED, remembered so the frames that keep
   // arriving while the loader lowers the phone are recognised as the same
@@ -81,6 +148,15 @@ export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
   // as long as it is held; only after it leaves view for a full window does a
   // re-read become a deliberate re-scan again.
   let lastPair = { og: null, at: 0 };
+  // Davis pages have a memory of their OWN, one entry per page, because two pages of one
+  // order are routinely in view together (two skids staged side by side). A single
+  // "last emitted" slot cannot hold both: on the iPhone engine (one symbol per frame) the
+  // two pages alternate and each would push the other out, re-booking both every cycle; on
+  // the native engine (every symbol per frame) the second page would never book while the
+  // first stayed in view. Each page stays quiet while it is being seen and becomes a
+  // deliberate re-scan only after a full window out of view — the Uline rule, per page.
+  // Kept apart from lastPair so a Davis read never changes how a Uline label behaves.
+  const recentDavis = new Map();   // label text -> last time it was seen
 
   const seenPair = (og, now) => !!og && lastPair.og === og && now - lastPair.at <= windowMs;
 
@@ -107,7 +183,29 @@ export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
   return {
     /** Feed one frame's raw values. Returns a complete pair, or null. */
     push(rawValues, now = Date.now()) {
-      const frame = pairFrame(rawValues);
+      const frame = pairFrame(rawValues, { davisLabels: davisLabels() !== false });
+
+      // A DAVIS LABEL IS A WHOLE PIECE IN ONE BARCODE. It never waits in the
+      // window and never marries anything. A Uline half still pending belongs
+      // to a different label the loader has moved on from, so it is announced
+      // like any other abandoned half rather than silently dropped. The same
+      // label held under the lens stays quiet (keyed on its own text, which
+      // can never equal an OG), exactly like a completed Uline pair.
+      if (frame.davisAll.length) {
+        // A Uline half that already outlived its window is a lone PRO piece and books as
+        // one, exactly as it would have if the next read had been anything else.
+        if (expired(now)) abandon('expired', now);
+        for (const [k, t] of recentDavis) if (now - t > windowMs) recentDavis.delete(k);
+        let fresh = null;
+        for (const d of frame.davisAll) {
+          if (recentDavis.has(d.raw)) recentDavis.set(d.raw, now);   // still under the lens
+          else if (!fresh) fresh = d;
+        }
+        if (!fresh) return null;
+        if (pending.pro || pending.og) abandon('superseded', now);
+        recentDavis.set(fresh.raw, now);
+        return { pro: null, og: null, davis: { stopNbr: fresh.stopNbr, seq: fresh.seq, raw: fresh.raw } };
+      }
 
       // Both barcodes in one read is unambiguously ONE label. Anything still
       // held belonged to a different label and never completed — UNLESS the
@@ -406,8 +504,15 @@ export function stopProgress(stop, scans, handConfirms = []) {
   // First scan of an OG wins, so a piece marked damaged after the fact keeps its
   // flag rather than being overwritten by a re-read of the same label.
   const byOg = new Map();
+  const want = String(stop.stopNbr ?? '').trim().toUpperCase();
   for (const s of activeScans(scans)) {
-    if (!pros.has(normalizePro(s.pro))) continue;
+    // A Davis-label piece names its stop EXACTLY (it was resolved by stop #, see
+    // findDavisStop), so it counts on that stop and no other — the same rule the
+    // server's reconcileStops uses. Matching it by PRO would also credit a Uline
+    // stop whose 7-digit PRO happens to equal the Davis number's last 7 digits.
+    if (isDavisPieceId(s.og)) {
+      if (String(s.stopNbr ?? '').trim().toUpperCase() !== want) continue;
+    } else if (!pros.has(normalizePro(s.pro))) continue;
     const og = String(s.og).toUpperCase();
     if (!byOg.has(og)) byOg.set(og, s);
   }

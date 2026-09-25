@@ -34,6 +34,8 @@ import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
+import { labelsAnswer } from './lib/labels-fixture.mjs';
+import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { CLAUDE_SHADOW_STATUS } from './lib/claude-shadow-fixture.mjs';
 
@@ -63,6 +65,10 @@ const SCREENS = [
   { key: 'routing-loads', label: 'Routing (beta) — Routes / Loads rail', nav: /routing/i,
     prefs: { 'routing.rightPanel': 'routesLoads', 'routing.routesLoadsTab': 'loads' } },
   { key: 'neworder', label: 'New Order', nav: /new order/i },
+  // Bulk add sits behind New Order's Single / Bulk toggle (remembered in localStorage), so the
+  // guard only ever saw Single and Bulk add's phone layout shipped unmeasured — including the
+  // service-date strip that moved onto its main page in v1.65.0.
+  { key: 'neworder-bulk', label: 'New Order — Bulk add', nav: /new order/i, prefs: { 'dd_neworder_mode': 'bulk' } },
   { key: 'quote', label: 'Quote', nav: /quote/i },
   // SEEDED WITH A REAL RUN ON PURPOSE. With no stored verdict this screen is a header, a
   // mailbox card and nothing else — so the part that carries the furniture (the verdict
@@ -156,11 +162,16 @@ const SCREENS = [
     }) } },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
   { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
+  // Anchored: several screens carry a "Print labels" BUTTON; only the menu item starts with it.
+  { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
   // Seeded with a recorded test call AND a rejected model value, so the longest rows on the
   // screen (the cost basis line, the ignored-value note) are the ones measured at 360.
-  { key: 'claudeshadow', label: 'Claude shadow', nav: /claude shadow/i, inMore: true },
+  // ROUTING'S THIRD TAB since v1.68.2 (Chad: "add a 3rd that is called shadow"), reached the way a
+  // phone reaches it: Routing, then the app-bar gear's "Shadow view". The Build | Engine | Shadow
+  // row it lands under is measured with it.
+  { key: 'claudeshadow', label: 'Routing — Shadow (Claude shadow)', nav: /routing/i, gear: /shadow view/i, arrive: 'Claude shadow' },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i },
   // Both open as overlays rather than swapping `tab`, which is why they were missed.
   { key: 'messages', label: 'Messages', nav: /^messages/i },
@@ -525,22 +536,19 @@ const PROBES = {
         return page.getByText(/history_pros/i).first().isVisible().catch(() => false);
       },
     },
-    // ── ADDRESS / CITY SEARCH (v1.62.0) ─────────────────────────────────────────
-    // The second form on this screen — four fields and three date pills — and an answer with stat
-    // tiles, month bars, a wrapping address list, the postal-city banner, the amber "days not
-    // searched" note and day cards. None of it exists until the Address tab is chosen and a search
-    // runs. LAST in this list on purpose: the tab choice is remembered per device, and every probe
-    // above opens the order box.
+    // ── ADDRESS / CITY SEARCH (v1.62.0; its own form beside the order box since v1.63.0) ──
+    // Four fields and three date settings, and an answer with stat tiles, month bars, a wrapping
+    // address list, the postal-city banner, the amber "days not searched" note and day cards.
+    // The form is always on screen now — stacked under the order box on a phone — but none of
+    // the answer exists until a search runs.
     {
       name: 'an address searched',
       open: async (page) => {
-        const tab = page.getByRole('tab', { name: /address or city/i }).first();
-        if (!(await tab.isVisible().catch(() => false))) return false;
-        await tab.click();
-        await page.waitForTimeout(300);
-        await page.getByLabel(/street address/i).first().fill('1100 Northside Dr');
+        const street = page.getByLabel(/street address/i).first();
+        if (!(await street.isVisible().catch(() => false))) return false;
+        await street.fill('1100 Northside Dr');
         await page.getByLabel(/^city$/i).first().fill('Atlanta');
-        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.getByRole('button', { name: /^find stops$/i }).first().click();
         await page.waitForTimeout(900);
         return page.getByText(/every stop at/i).first().isVisible().catch(() => false);
       },
@@ -549,20 +557,124 @@ const PROBES = {
       // RANGE OPEN: two date inputs and a "to" on one line — the widest the form gets at 360px.
       name: 'an address searched over a range',
       open: async (page) => {
-        const tab = page.getByRole('tab', { name: /address or city/i }).first();
-        if (!(await tab.isVisible().catch(() => false))) return false;
-        await tab.click();
-        await page.waitForTimeout(300);
-        await page.getByLabel(/street address/i).first().fill('1100 Northside Dr');
+        const street = page.getByLabel(/street address/i).first();
+        if (!(await street.isVisible().catch(() => false))) return false;
+        await street.fill('1100 Northside Dr');
         await page.getByLabel(/^city$/i).first().fill('Atlanta');
         const range = page.getByRole('button', { name: /^range$/i }).first();
         if (!(await range.isVisible().catch(() => false))) return false;
         await range.click();
         await page.waitForTimeout(300);
-        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.getByRole('button', { name: /^find stops$/i }).first().click();
         await page.waitForTimeout(900);
         const dates = await page.getByLabel(/first day to search/i).first().isVisible().catch(() => false);
         return dates && page.getByText(/every stop at/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // RECENT LOOKUPS (v1.63.0). The list only exists once something has been searched, so at
+      // rest the guard measures its empty box and nothing else. Search, clear the box, and the
+      // landing shows the list a rep actually comes back to.
+      name: 'recent lookups listed',
+      open: async (page) => {
+        const box = page.getByLabel(/find a customer by name/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('earthly alternative');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        const clear = page.getByRole('button', { name: /clear the order search/i }).first();
+        if (!(await clear.isVisible().catch(() => false))) return false;
+        await clear.click();
+        await page.waitForTimeout(400);
+        // PROVES ITS STATE: the search just run is listed, by the name the answer gave it.
+        return page.getByRole('button', { name: /earthly alternative/i }).first().isVisible().catch(() => false);
+      },
+    },
+    // ── A DRIVER'S WEEK (v1.69.0) ── the panel's third search, stacked last on a phone. None of
+    // the answer exists until it runs: the chooser, the load cards, and a load opened into its
+    // map box and its stop rows — the tallest thing this screen draws. Built fixture:
+    // scripts/lib/driver-week-fixture.mjs, produced by the real load-lookup.js.
+    {
+      name: 'the week\'s drivers to choose',
+      open: async (page) => {
+        const btn = page.getByRole('button', { name: /^show the week$/i }).first();
+        if (!(await btn.isVisible().catch(() => false))) return false;
+        await btn.click();
+        await page.waitForTimeout(900);
+        return page.getByText(/who ran loads/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'a driver\'s week',
+      open: async (page) => {
+        const box = page.getByLabel(/^driver name$/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('robert');
+        await page.getByRole('button', { name: /^show the week$/i }).first().click();
+        await page.waitForTimeout(900);
+        return page.getByRole('button', { name: /^map & stops/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'a load opened',
+      open: async (page) => {
+        const box = page.getByLabel(/^driver name$/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('robert');
+        await page.getByRole('button', { name: /^show the week$/i }).first().click();
+        await page.waitForTimeout(900);
+        const open = page.getByRole('button', { name: /^map & stops/i }).first();
+        if (!(await open.isVisible().catch(() => false))) return false;
+        await open.click();
+        await page.waitForTimeout(600);
+        // PROVES ITS STATE: the legend under the map only exists inside an opened load.
+        return page.getByText(/stops in the order they were delivered/i).first().isVisible().catch(() => false);
+      },
+    },
+  ],
+  // ── PRINT LABELS (v1.67.0) ──────────────────────────────────────────────────
+  // At rest the screen is two rows of chips and an empty box. Everything a dock worker uses —
+  // the order cards with their Print buttons, the ticked state, the big-batch question — exists
+  // only after a tap, so each is a probe that PROVES its state rather than that it clicked.
+  labels: [
+    {
+      name: 'a shipper picked',
+      open: async (page) => {
+        const chip = page.getByRole('button', { name: /^estes/i }).first();
+        if (!(await chip.isVisible().catch(() => false))) return false;
+        await chip.click();
+        await page.waitForTimeout(700);
+        return page.getByRole('button', { name: /^print labels for estes-/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'orders ticked',
+      open: async (page) => {
+        const chip = page.getByRole('button', { name: /^estes/i }).first();
+        if (!(await chip.isVisible().catch(() => false))) return false;
+        await chip.click();
+        await page.waitForTimeout(700);
+        const boxes = page.getByRole('checkbox', { name: /^select estes-/i });
+        if ((await boxes.count()) < 2) return false;
+        await boxes.nth(0).check();
+        await boxes.nth(1).check();
+        await page.waitForTimeout(300);
+        return page.getByRole('button', { name: /^print selected \(2/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // Uline's fixture day is 260 pages — over the line where Print all asks before it builds.
+      name: 'a big batch asks first',
+      open: async (page) => {
+        const chip = page.getByRole('button', { name: /^uline/i }).first();
+        if (!(await chip.isVisible().catch(() => false))) return false;
+        await chip.click();
+        await page.waitForTimeout(700);
+        const all = page.getByRole('button', { name: /^print all/i }).first();
+        if (!(await all.isVisible().catch(() => false))) return false;
+        await all.click();
+        await page.waitForTimeout(300);
+        return page.getByText(/this prints \d+ pages/i).first().isVisible().catch(() => false);
       },
     },
   ],
@@ -850,6 +962,14 @@ function stubRoutes(page, emailHtml) {
     // them would leave the guard measuring a screen the app never renders.
     // THE CLAUDE SHADOW TAB — its worst rows (see scripts/lib/claude-shadow-fixture.mjs).
     if (u.includes('claude-shadow')) return R(CLAUDE_SHADOW_STATUS);
+    // PRINT LABELS (v1.67.0) — the day's shippers, or one shipper's orders, BUILT by the real
+    // label-shippers.js (scripts/lib/labels-fixture.mjs). Before the catch-all, which would
+    // answer it with an empty board and measure a screen with nothing on it.
+    if (u.includes('labels-by-shipper')) return R(labelsAnswer(u));
+    // A DRIVER'S WEEK (v1.69.0) — the chooser or the week, BUILT by the real load-lookup.js
+    // (scripts/lib/driver-week-fixture.mjs). Before the catch-all, which would answer it with an
+    // empty board and measure a screen with nothing on it.
+    if (u.includes('driver-loads')) return R(driverWeekAnswer(u));
     if (u.includes('stop-lookup')) return R(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.
@@ -892,6 +1012,20 @@ async function gotoScreen(page, screen) {
     await item.click();
     await page.waitForTimeout(900);
   }
+  // A screen one level down, behind the Routing app-bar gear (the phone has no Build | Engine |
+  // Shadow row on Build). It must PROVE it arrived: a gear item that quietly failed would leave
+  // the guard measuring the Build screen under the Shadow screen's name.
+  if (screen.gear) {
+    const gear = page.locator('button[aria-label="Panel settings"]:visible').first();
+    if (!(await gear.isVisible().catch(() => false))) return false;
+    await gear.click();
+    await page.waitForTimeout(300);
+    const act = page.getByRole('button', { name: screen.gear }).first();
+    if (!(await act.isVisible().catch(() => false))) return false;
+    await act.click();
+    await page.waitForTimeout(900);
+  }
+  if (screen.arrive && !(await page.getByRole('heading', { name: screen.arrive }).first().isVisible().catch(() => false))) return false;
   return true;
 }
 
@@ -929,7 +1063,7 @@ for (const device of DEVICES) {
     // a screen it did not mean to measure reads as proof of the screen it named.
     await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
     await page.evaluate((prefs) => {
-      for (const k of ['routing.rightPanel', 'routing.routesLoadsTab']) { try { localStorage.removeItem(k); } catch { /* private mode */ } }
+      for (const k of ['routing.rightPanel', 'routing.routesLoadsTab', 'dd_neworder_mode']) { try { localStorage.removeItem(k); } catch { /* private mode */ } }
       for (const [k, v] of Object.entries(prefs || {})) { try { localStorage.setItem(k, v); } catch { /* private mode */ } }
     }, screen.prefs || {});
     await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });

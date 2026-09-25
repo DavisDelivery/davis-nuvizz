@@ -112,6 +112,22 @@ export const ULINE_NOTE_FIELDS = [
  * (routing-cleanup-core.mts says so), so name + addr1 + city + zip is how a stop is joined to
  * its customer_notes document at all.
  */
+/**
+ * THE LABELS SCREEN'S PROJECTION (labels-by-shipper.mts) — narrower than lean, on purpose.
+ *
+ * What labelOrderFromStop prints (ship-to, items, skid/loose/weight, the delivery window's day),
+ * the phone the stop card would dial (`contact`), what the shipper and pickup rules read
+ * (`stopNbr`, `stopType`), what the list shows beside each order (status, route, driver), and the
+ * cancellation record dropCancelledStops reads (`raw.stopExecutionInfo`). A whole day's board is
+ * read every time a shipper is picked, so nothing rides along that a label does not print.
+ * test/labels-by-shipper.test.mjs pins that every field the label reads is here.
+ */
+export const LABEL_STOP_FIELDS = [
+  'addr1', 'addr2', 'businessName', 'cartons', 'city', 'contact', 'driverName', 'loadNbr',
+  'normalizedStatus', 'pro', 'routeName', 'scheduledFrom', 'state', 'status', 'stopDetails',
+  'stopNbr', 'stopType', 'volume', 'weight', 'zip', 'raw.stopExecutionInfo',
+];
+
 export const CUSTOMER_STOP_FIELDS = [
   'addr1', 'addr2', 'arrivalDTTM', 'bol', 'boardDate', 'businessName', 'cartons', 'city',
   'custRef', 'deliveredDTTM', 'driverName', 'driverUserName', 'isAttempt', 'isPlanned',
@@ -119,4 +135,24 @@ export const CUSTOMER_STOP_FIELDS = [
   'poRef', 'podDocs', 'primaryPro', 'pro', 'proCount', 'pros', 'requestedDate', 'routeName',
   'routeSeq', 'scheduledDate', 'scheduledFrom', 'scheduledTo', 'shipmentNbr', 'state',
   'status', 'stopNbr', 'volume', 'weight', 'zip', 'raw.stopExecutionInfo',
+];
+
+/**
+ * THE LOAD LOOKUP'S PROJECTION (driver-loads.mts) — a driver's week, read a whole day at a time.
+ *
+ * Who ran it (driver + load), where each order went and when it was finished (the pin, the stop
+ * sequence, the delivery stamp from wherever the record keeps it), the freight, and the two places
+ * an order's price lives: the order instructions Uline writes TOTAL-AMOUNT into, and NuVizz's
+ * Seal # (`raw.stop.sealNbr`), where Davis records a shipment's price. The cancellation record is
+ * the board's own drop rule. Nothing else rides along — seven whole days are read per question,
+ * and `raw` unmasked is ~5KB a stop. test/driver-loads.test.mjs pins that every field
+ * src/lib/load-lookup.js reads is here.
+ */
+export const LOAD_STOP_FIELDS = [
+  'stopNbr', 'stopType', 'businessName', 'city', 'zip', 'lat', 'lng',
+  'driverName', 'driverUserName', 'routeName', 'loadNbr', 'normalizedStatus',
+  'deliveredDTTM', 'executed.deliveredDTTM', 'raw.stopExecutionInfo.to.deliveredDTTM',
+  'routeSeq', 'loadStopSeq', 'plannedEtaDTTM', 'cartons', 'volume', 'weight', 'isAttempt',
+  'orderInstructions', 'signalSources.orderInstructions', 'raw.stop.sealNbr',
+  'raw.stopExecutionInfo.cancellation',
 ];

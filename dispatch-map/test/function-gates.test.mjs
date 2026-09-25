@@ -43,7 +43,7 @@ const hasGate = (name) => /requireUser\s*\(|requireUserForBackground\s*\(|gateSc
 const VIEWER_SET = [
   'comms-optouts', 'customer-comms-log', 'day-completion', 'driver-phone', 'eta-backtest',
   'eta-flag-check', 'eta-flag-history', 'flag-evening-status', 'flag-replay',
-  'history-capture-health', 'manifest-history', 'manifest-ocr-result', 'manifest-push-log',
+  'history-capture-health', 'manifest-history', 'manifest-ocr-result', 'manifest-push-log', 'order-labels',
   'messaging-roster', 'motive-driver-positions', 'motive-drivers', 'nuvizz-customer-history',
   'nuvizz-driver-route', 'nuvizz-loads-roster', 'nuvizz-pull-today-stops',
   'nuvizz-undelivered-report', 'nuvizz-write-log', 'route-departures', 'routing-engine-data',
@@ -53,6 +53,9 @@ const VIEWER_SET = [
   // card shows anyone who opens it. READ-ONLY by construction — the decision is written from
   // the browser to customer_notes exactly as the Routing brush and the stop card write it.
   'uline-advisory',
+  // The Labels screen: one shipper's orders on one day, each with the label it prints — the same
+  // facts the stop card's Label button reads. READ-ONLY; nothing is saved by printing.
+  'labels-by-shipper',
 ];
 const DISPATCHER_SET = [
   'ai-search', 'anthropic-routing', 'debug-capture', 'manifest-email-check', 'manifest-upload',
@@ -67,6 +70,10 @@ const DISPATCHER_SET = [
   // The UAT mirror's manual run: writes only the mirror's named database, refuses production
   // before parsing — gated like the Scan-now button, its nearest sibling.
   'uat-mirror-resume-background',
+  // The load lookup on Stop lookup: a driver's week of order prices added up — a revenue
+  // picture rather than the facts on one stop card — and it spends Google requests measuring
+  // road miles. One step above the viewer screen it lives on.
+  'driver-loads',
 ];
 const ADMIN_SET = ['routing-engine-tuning'];
 
@@ -88,6 +95,7 @@ test('the split endpoints gate their acting branch above their read — collapsi
   const SPLIT = [
     ['route-departures', 'viewer', 'dispatcher', /refit/],          // ?refit=1 republishes every ETA's basis
     ['manifest-push-log', 'viewer', 'dispatcher', /POST/],          // the POST appends to the push audit trail
+    ['order-labels', 'viewer', 'dispatcher', /POST/],               // printing a label is a read; saving one is part of creating the order
     ['nuvizz-pull-today-stops', 'viewer', 'admin', /live/],         // ?live=1 is a ~3,000-call cold probe
     // The READ names every phone number and internal address the alert channels reach, so it
     // is viewer like driver-phone and messaging-roster; the WRITE changes who finds out that

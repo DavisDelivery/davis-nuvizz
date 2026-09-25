@@ -5,7 +5,23 @@
 // (lib/claude-shadow/store.mts), and a single model call that proves the key reaches the
 // configured model with the request shape the plan loop will use.
 //
-//   GET                                   status: switch, model, key configured, last test call
+//   GET                                   status: switch, model, key configured, last test call,
+//                                         the learned truck-capacity model and the last learning run
+//   GET ?view=learn-plan                  DRY RUN of learning: which sealed days a run would read.
+//                                         Firestore reads only; writes nothing.
+//   POST {action:"settings", change}      capacity settings (lib/claude-shadow/settings.mts): loose
+//                                         pieces per skid spot, and a cap for a driver or route that
+//                                         replaces the learned one. Checked whole — one bad value refuses
+//                                         the change and writes nothing (400, every reason). Then each
+//                                         cap is its own claude_shadow_caps document, the ratio three
+//                                         masked fields, every change a log row; each item is reported
+//                                         saved / failed / unknown, and the numbers are rebuilt when they
+//                                         are not at the saved ratio.
+//   POST {action:"learn"}                 "Learn now": the nightly learning run, here and now, within
+//                                         LEARN_NOW_BUDGET_MS — as many sealed days as fit, the rest
+//                                         left for the next press or the nightly run. Returns the run
+//                                         record itself: 200, 403 (role) or 409 (refused, and why).
+//                                         Firestore reads; writes claude_shadow_* only; 0 NuVizz calls.
 //   POST {action:"probe", dry:true}       the exact request that WOULD be sent. No call.
 //   POST {action:"probe", confirm:true}   ONE Messages API call (at most ~4.9¢ at list price —
 //                                         see PROBE_INPUT_TOKEN_BOUND — and usually well under 1¢),
@@ -30,16 +46,23 @@ import { claudeShadowEnabled, shadowModel, anthropicKeyConfigured, SHADOW_PREFIX
 import { shadowSet, shadowCreate } from './lib/claude-shadow/store.mts';
 import { callMessages } from './lib/claude-shadow/anthropic.mts';
 import { buildProbeRequest, readProbeResult, probeCeilingUsd, PROBE_EFFORT, PROBE_MAX_TOKENS } from './lib/claude-shadow/probe.mts';
+import { CAPACITY_PATH, LEARN_LAST_PATH, DEFAULT_LOOSE_PER_SKID } from './lib/claude-shadow/learn-core.mts';
+import { planLearn, learnRefusal, runLearn } from './lib/claude-shadow/learn.mts';
+import { withOverrides, ratioInForce, CAP_BOUNDS, LOOSE_PER_SKID_BOUNDS } from './lib/claude-shadow/settings-core.mts';
+import { readSettings, saveSettings } from './lib/claude-shadow/settings.mts';
 
 export const PROBE_LAST_PATH = 'claude_shadow_meta/probe_last';
 export const PROBE_LOG_COLLECTION = 'claude_shadow_probes';
 // Under the 26s function timeout in netlify.toml, so a slow answer is recorded as a timeout
 // by this code rather than killed mid-flight by the platform with nothing written.
 const PROBE_TIMEOUT_MS = 22_000;
+// Learn now stops STARTING days after this, leaving room to build and write the model inside the
+// same 26s limit. A day already being read always finishes.
+const LEARN_NOW_BUDGET_MS = 15_000;
 
 const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
 
-function statusBody(lastProbe: any, lastProbeNote: string | null) {
+function statusBody(lastProbe: any, lastProbeNote: string | null, learned: any = null, learnLast: any = null) {
   const m = shadowModel();
   return {
     ok: true,
@@ -51,10 +74,13 @@ function statusBody(lastProbe: any, lastProbeNote: string | null) {
     keyConfigured: anthropicKeyConfigured(),
     prefix: SHADOW_PREFIX,
     probe: { effort: PROBE_EFFORT, maxTokens: PROBE_MAX_TOKENS, ceilingUsd: probeCeilingUsd(m.model) },
-    built: ['switches', 'write gateway', 'isolation guard', 'test call'],
+    built: ['switches', 'write gateway', 'isolation guard', 'test call', 'learned truck capacity and route order', 'capacity settings'],
     notBuilt: ['snapshot', 'plan run', 'late-manifest flag', 'grading', 'comparison screen'],
     lastProbe,
     lastProbeNote,
+    learned,
+    learnLast,
+    learnRefused: learnRefusal(),
     nuvizzCalls: 0,
   };
 }
@@ -65,13 +91,43 @@ export default async (req: Request): Promise<Response> => {
   if (req.method === 'GET') {
     const gate = await requireUser(req, { role: 'viewer' });
     if (!gate.ok) return gate.response;
-    if (!isFirestoreEnabled()) return J(statusBody(null, 'Firestore is not configured on this site — the last test call cannot be read'));
-    try {
-      const last = await getDoc(PROBE_LAST_PATH);
-      return J(statusBody(last, last ? null : 'no test call has been recorded yet'));
-    } catch (e: any) {
-      return J(statusBody(null, `could not read ${PROBE_LAST_PATH}: ${String(e?.message || e)}`));
+    if (!isFirestoreEnabled()) {
+      const off = 'Firestore is not configured on this site — cannot be read';
+      return J({ ...statusBody(null, 'Firestore is not configured on this site — the last test call cannot be read'), learnedNote: off, learnLastNote: off });
     }
+    const view = new URL(req.url).searchParams.get('view');
+    if (view === 'learn-plan') {
+      try {
+        const { stamps, ...plan } = await planLearn();
+        return J({ ok: true, dry: true, calls: 0, writes: 0, refused: learnRefusal(), ...plan });
+      } catch (e: any) {
+        return J({ ok: false, dry: true, calls: 0, writes: 0, error: String(e?.message || e) }, 502);
+      }
+    }
+    // Three independent reads; one failing must not blank the other two.
+    const read = (path: string) => getDoc(path).then((d) => ({ d, e: null as string | null }), (e) => ({ d: null, e: String(e?.message || e) }));
+    const [probe, learned, learnLast, settings] = await Promise.all([read(PROBE_LAST_PATH), read(CAPACITY_PATH), read(LEARN_LAST_PATH), readSettings()]);
+    const note = probe.e ? `could not read ${PROBE_LAST_PATH}: ${probe.e}` : probe.d ? null : 'no test call has been recorded yet';
+    const model = learned.d;
+    return J({
+      // Each driver's and route's cap RESOLVED — yours if you set one, else the learned one. When the
+      // settings cannot be read, every row says "unknown" rather than presenting "no cap of yours"
+      // as a fact, and the editor stays shut.
+      ...statusBody(probe.d, note, withOverrides(model, settings.caps, { unknown: !!settings.error }), learnLast.d),
+      learnedNote: learned.e ? `could not read ${CAPACITY_PATH}: ${learned.e}` : model ? null : 'nothing has been learned yet',
+      learnLastNote: learnLast.e ? `could not read ${LEARN_LAST_PATH}: ${learnLast.e}` : null,
+      settings: {
+        loosePerSkid: settings.settings?.loosePerSkid ?? null,
+        loosePerSkidAt: settings.settings?.loosePerSkidAt ?? null,
+        loosePerSkidBy: settings.settings?.loosePerSkidBy ?? null,
+        defaultLoosePerSkid: DEFAULT_LOOSE_PER_SKID,
+        // The numbers below were built at a different ratio than the one saved — a rebuild that has
+        // not landed yet. Said on screen, not hidden.
+        ratioPending: !settings.error && !!model && ratioInForce(settings.settings) !== model.loosePerSkid,
+        bounds: { cap: CAP_BOUNDS, loosePerSkid: LOOSE_PER_SKID_BOUNDS },
+      },
+      settingsNote: settings.error ? `could not read the capacity settings: ${settings.error} — which caps are yours is not known right now` : null,
+    });
   }
   if (req.method !== 'POST') return J({ ok: false, error: 'method not allowed' }, 405);
 
@@ -81,6 +137,18 @@ export default async (req: Request): Promise<Response> => {
 
   let body: any = {};
   try { body = await req.json(); } catch { return J({ ok: false, error: 'bad json', calls: 0 }, 400); }
+  if (body?.action === 'settings') {
+    const refused = learnRefusal();
+    if (refused) return J({ ok: false, error: `settings are off here: ${refused}`, calls: 0 }, 409);
+    const r = await saveSettings(body?.change, gate.user?.username ?? null);
+    return J({ ...r.body, calls: 0 }, r.status);
+  }
+  if (body?.action === 'learn') {
+    const refused = learnRefusal();
+    if (refused) return J({ ok: false, error: `learning is off here: ${refused}`, calls: 0 }, 409);
+    const run = await runLearn({ trigger: 'manual', by: gate.user?.username ?? null, budgetMs: LEARN_NOW_BUDGET_MS });
+    return J({ ...run, calls: 0 });
+  }
   if (body?.action !== 'probe') return J({ ok: false, error: 'unknown action', calls: 0 }, 400);
 
   const { model } = shadowModel();

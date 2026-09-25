@@ -389,7 +389,16 @@ service cloud.firestore {
     //          writeCustomerNotes()'s batch, and the vehicle mark from the
     //          Routing brush and Address history's Uline straight-truck review
     //          (vehicle_eligibility / _at / _by / last_updated, merge only —
-    //          src/lib/uline-review.js eligibilityPayload)
+    //          src/lib/uline-review.js eligibilityPayload). The review also
+    //          writes building_type / _at / _by (v1.61.0) and, on a "No tractor
+    //          trailer" answer, the stop card's own restriction tick:
+    //          equipment_restrictions ∪ no_tractor_trailer (arrayUnion) and
+    //          manual_overrides.equipment_restrictions = true (v1.62.2 —
+    //          noTractorWrite; Undo is arrayRemove / a nested deleteField);
+    //          and on a "Tractor OK" answer the stop card's own untick of
+    //          Uline's flag: equipment_restrictions − uline_straight_truck
+    //          (arrayRemove) and the same lock (v1.62.3 — tractorOkWrite;
+    //          Undo is arrayUnion / a nested deleteField)
     // DELETE IS DENIED because nothing in the browser deletes a note, and a
     // deleted note is a customer whose receiving hours revert to "none known"
     // with no trace — the flag engine then cheerfully routes a truck into a
