@@ -127,6 +127,7 @@ import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
 import { boardStatusPanel } from './lib/board-status-card.js';
 import { buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner, rosterDriverOf } from './lib/route-status.js';
+import { wbOwnDayRosterEnabled, routeOwnDay, ownDayIdentity } from './lib/wb-own-day.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { shouldAutoStageBuild } from './lib/build-autostage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
@@ -179,7 +180,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.69.0';
+const APP_VERSION = '1.69.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -233,6 +234,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.69.1', 'A ROUTE IN THE ROUTES PANEL OPENS IN COMPARE, EVEN WHEN NUVIZZ DATED IT THE DAY BEFORE. Chad, 2026-09-24, with ESTES APPT listed in the Routes panel and the Compare card refusing it: \u201cif its panel for routes it should load.\u201d WHY IT REFUSED, read off the stored board and rosters, not guessed: a card must know its NuVizz load or a Save is refused and strands the stops moved onto it, so it looks the route up on the SELECTED day\u2019s load roster. ESTES APPT\u2019s load (DAVIS000204757, Draft) is on 9/23\u2019s roster, because NuVizz still dates its stops 9/23; the scan carries open route stops forward onto today, so the route showed on 9/24 while its load lived on 9/23. THE FIX: when the day\u2019s roster cannot name the load and no stop carries a load id, the card looks on the roster of the day NuVizz files those stops under and takes the load that owns the name THERE \u2014 and says so: \u201cOpened ESTES APPT on NuVizz load DAVIS000204757 \u2014 NuVizz still dates this load and its stops 2026-09-23.\u201d NARROW ON PURPOSE, because route names repeat every day and the wrong same-named load is the one thing a card must never save to: every open stop must share one earlier NuVizz day; that day must have exactly one load owning the name (the screen\u2019s own rule \u2014 a cancelled twin loses, two live loads means nobody speaks); a cancelled load never speaks for live freight. Anything short of that keeps the old refusal word for word, with a clearer reason when the earlier day was checked and could not answer. IT CAN NEVER SPEND A NUVIZZ CALL: the earlier day is read with a new cacheOnly=1 on the roster endpoint, which answers from the stored copy or answers \u2018none\u2019, and wins over live=1. PROVEN IN A REAL BROWSER, both ways: a new CI guard (verify:wb-own-day) builds that exact board, clicks ESTES APPT and an ordinary route in the Routes panel, and records every roster request. On this build ESTES APPT opens on its own load, the ordinary route opens unchanged and reads no other day, and the earlier day is read once, cache-only. On main, and on this build with the switch off, ESTES APPT does not open. 11 unit tests, two mutation-checked. THE ROUTE WORKBENCH IS FROZEN AND THIS IS A WORKBENCH CHANGE, made because Chad named it; the commit carries his sentence. VITE_WB_OWN_DAY_ROSTER=off puts back the old refusal (build-time, so it is a redeploy). NOT CHANGED: the Routes panel\u2019s own Assign and Dispatch buttons still resolve the load from today\u2019s roster only, so on a route like ESTES APPT they still say its load id has not loaded \u2014 the Compare card\u2019s own driver box works, because it saves with the card.'],
   ['1.69.0', 'A DRIVER’S WEEK OF LOADS, ON STOP LOOKUP. Chad: “add a load look up so if i wanted to evaluate a weeks worth of a drivers loads … want milage of load earnings of load cost of load stops ect” — and “i want this to be part of the stops lookup tab.” The Stop lookup panel has a third search across the bottom: pick a week (Monday to Sunday, ‹ ›) and type a driver, or leave the name blank to see everyone who ran loads that week. The answer is the week in eight tiles — loads, delivered, road miles, time from first to last delivery, freight, order prices, per mile and per stop, and cost — then every load, day by day: stops and orders, delivered or not, first → last delivery, freight, road miles, order prices, per mile. “Map & stops” opens a load: a map of the yard and the stops numbered in the order they were delivered, and the orders beside it; tap one for its full record. A table on a desktop, cards on a tablet and phone. WHERE EACH NUMBER COMES FROM, AND WHAT COULD NOT BE ANSWERED. ROAD MILES were stored nowhere (NuVizz’s planned distance only arrives with the one-time enrichment, the travel cache keeps drive seconds, and Motive is read for positions, never an odometer), so they are measured: Google’s driving distance over the stops in the order they were delivered, yard to yard — one Google Routes request per load, kept, so a sealed load is measured once. LOAD_MILES=off stops every Google request. EARNINGS are the price on each order: Uline’s TOTAL-AMOUNT line, or the NuVizz Seal # where Davis records a price. An order that ran twice is priced once, on the load that delivered it; an order with no price is counted, never guessed; and a per-mile rate is printed only where every order behind it is priced. COST IS NOT IN THE SYSTEM — no driver pay, fuel or truck cost is stored anywhere this app reads — and the tile says so instead of printing a zero. Firestore only: 0 NuVizz calls. Dispatcher and up.'],
   ['1.68.2', 'CLAUDE SHADOW IS ROUTING\u2019S THIRD TAB: BUILD | ENGINE | SHADOW. Chad: \u201ci want you to move the claude shadow tab to here beside the build and engine buttons add a 3rd that is called shadow.\u201d A MOVE, NOT A COPY. The toggle at the far right of the top bar on Routing now reads Build | Engine | Shadow, and Shadow opens the same Claude shadow screen that used to live under More \u2014 the screen itself is unchanged. Its More-menu entry and its phone-menu entry are gone, so there is one way in, not two that drift apart. ON A PHONE, the same way Engine is reached: Routing \u2192 the gear \u2192 \u201c\u21c4 Shadow view\u201d, and the Build | Engine | Shadow row sits at the top of the Engine and Shadow screens so the way back is always on screen. Opening Routing still lands on Build, as it always has. The Build Panel and the Route Workbench are not touched: the only line on the Routing screen is one more gear entry beside Engine\u2019s, phone only. The phone, tablet and desktop layout guards now reach the screen through Routing \u2192 Shadow and must see its heading before they measure it. FOUND IN REVIEW AND FIXED BEFORE MERGE, two things. (1) The third button is ~74px, and the tab row is the only part of the top bar that can shrink \u2014 so on Routing at 1180\u20131366px it pushed MESSAGES off the end of the row, and its unread badge with it; on Routing that badge is the only sign a driver or customer has texted. Measured: 1180 lost 62px, 1366 lost 25px, where v1.68.1 fitted. Now the presence chip\u2019s TEXT gives way first (it keeps its dot; the whole label is in its tooltip) and the toggle never shrinks: Messages and its badge fit at 1180, 1194, 1366, 1440 and 1920, and the widths v1.68.1 already clipped (820, 1080, 1280) are all better than they were. With room to spare nothing moves. verify-routing-topbar now fails the first cut at exactly those widths and passes this one. (2) Leaving Routing from Shadow and coming back mounted the Shadow screen for one render \u2014 one wasted status request (Firestore reads, 0 NuVizz) \u2014 before landing on Build; entering Routing now lands on Build from the first render, which also stops the same wasted request from Engine. PUT IT BACK: revert this one commit.'],
   ['1.68.1', 'THE BUSINESS LABELS ON THE ULINE TAB’S FROM-ABOVE MAP CAN BE CLICKED. Chad: “I want to be able to click on these labels when evaluating a stop so i can see their addresses i look at labeled addresses as confirmed like in this photo where the pin is not exactly on a building.” The satellite close-up was built with Google’s place labels switched off for clicks (clickableIcons: false); every other map in the app leaves them on. Now clicking a label such as Aquakleen or Norcross Corporate Park opens Google’s own card with that business’s name and address, so a pin that lands between buildings can be checked against the addresses around it. Only that one setting on that one map changed; the pin, the zoom and the street and 3D views are as they were. Put back: revert this commit.'],
@@ -1265,6 +1267,9 @@ const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 const MOCK_MODE = import.meta.env.VITE_USE_MOCK_NUVIZZ === 'true';
 const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+// A Routes-panel route opens in Compare even when NuVizz dates its stops earlier (lib/wb-own-day.js).
+// VITE_WB_OWN_DAY_ROSTER=off puts back the old refusal. Build-time, so flipping it is a redeploy.
+const WB_OWN_DAY_ROSTER_ON = wbOwnDayRosterEnabled(import.meta.env);
 // THE WALL DISPLAY DRAWS ITS MAP AS A PICTURE — see lib/tv-static-map.js for why, and for the
 // house-shape switch. Read once at module load, like every other build-time flag here.
 // VITE_TV_STATIC_MAP=off puts the TV back on the live JS map; anything malformed leaves it ON.
@@ -23573,6 +23578,9 @@ function EngineResultPanel({ result, kind, onDismiss }) {
 
 function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, onOpenShadow = null }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
+  // Read by the Compare card's open path, which runs off refs (deps []).
+  const selectedDateRef = useRef(selectedDate);
+  selectedDateRef.current = selectedDate;
   const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, lastCompletedScanAt, ops, scanUnplannedCount } = useStops(selectedDate);
   // Stops status card (same pill as the dispatch Map, top-right of the routing map):
   // stops count + total pallets + feed freshness + NuVizz call meter. Shares the Map's
@@ -24347,6 +24355,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   // SOURCE load of a planned stop, in the same press (see lib/send-selection.js) — so the rules
   // (already open, the cap, two same-day loads sharing a name, no NuVizz identity) live here once
   // and come back as a card or a sentence. Pure over `prev` plus the board/roster refs.
+  // Rosters of EARLIER days, fetched only for a route the selected day's roster cannot name, and
+  // only from the stored copy (cacheOnly=1: an unstored day answers 'none' — a click never spends a
+  // NuVizz call). day → { at, loads }. Re-asked after five minutes, so a load captured since shows.
+  const ownDayRosterRef = useRef(new Map());
   const buildWbCard = useCallback((key, prev) => {
     if (!key) return { refusal: 'No load to open.' };
     if (prev.some((r) => r.key === key)) return { already: true };   // already open
@@ -24402,27 +24414,66 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // STEVEN and NOR, and NOR refused too rather than unplan a stop bound for the dead card.
     // Assign and Dispatch already refuse this exact state with a message; opening a Compare
     // card was the one path that let you do the work first and find out afterwards.
-    if (!loadId && !loadNbr) {
+    // A ROUTE IN THE ROUTES PANEL OPENS (Chad, 2026-09-24: "if its panel for routes it should
+    // load"). The selected day's roster has no load for it — but NuVizz may simply still date its
+    // stops earlier (ESTES APPT: stops dated 9/23, load DAVIS000204757 on 9/23's roster, route
+    // clamped onto 9/24's board). Then the load that owns the name on THAT day's roster is this
+    // route's load. openRouteInWorkbench fetched that roster (stored copy only, never a NuVizz
+    // call) before calling here. Every narrowing rule is in lib/wb-own-day.js.
+    let ownDay = null;
+    let ownDayLoad = null;
+    if (!loadId && !loadNbr && WB_OWN_DAY_ROSTER_ON && !rosterEntry0?.ambiguous) {
+      ownDay = routeOwnDay(routeStops, selectedDateRef.current);
+      const held = ownDay ? ownDayRosterRef.current.get(ownDay) : null;
+      ownDayLoad = held ? ownDayIdentity(held.loads, name || key) : null;
+    }
+    if (!loadId && !loadNbr && !ownDayLoad) {
       const shown = loadDisplayName(name, key) || String(key);
       return { refusal: rosterEntry0?.ambiguous
         ? `Two loads are named "${shown}" today, so a card can't tell which one it would save to. Rename one in the portal (or cancel the one you're not using), then refresh.`
-        : `"${shown}" has no NuVizz load number or id yet, so a Save would be refused. Open it from the Loads grid, or refresh once the day's loads have loaded.` };
+        : ownDay
+          ? `"${shown}" has no NuVizz load on today's roster, and ${ownDay} (the day NuVizz dates its stops) has no single load by that name either, so a Save would be refused. Check the load's date in the portal.`
+          : `"${shown}" has no NuVizz load number or id yet, so a Save would be refused. Open it from the Loads grid, or refresh once the day's loads have loaded.` };
     }
     // Ids already staged onto ANOTHER open card stay there (the staged move wins) — otherwise a
     // freshly-opened card re-seeds them from the board and the stop sits in BOTH cards' orders.
     const stagedElsewhere = new Set(prev.flatMap((r) => r.order));
     const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr)).filter((id) => !stagedElsewhere.has(id));
-    return { card: { key, name, loadNbr, loadId, order, collapsed: false } };
+    return {
+      card: { key, name, loadNbr: loadNbr || ownDayLoad?.loadNbr || null, loadId: loadId || ownDayLoad?.loadId || null, order, collapsed: false },
+      ...(ownDayLoad ? { ownDay, ownDayLoad } : {}),
+    };
   }, []);
+  const ownDayRosterToFetch = useCallback((key) => {
+    if (!WB_OWN_DAY_ROSTER_ON) return null;
+    const routeStops = boardStopsAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === key);
+    if (!routeStops.length || routeStops.some((s) => s.raw?.load?.loadId ?? s.loadId)) return null;
+    const e = loadRosterRef.current.get(String(key)) || loadRosterRef.current.get(String(key).toLowerCase()) || null;
+    if (e && (e.ambiguous || e.loadId || e.loadNbr)) return null;   // today's roster already answers
+    const day = routeOwnDay(routeStops, selectedDateRef.current);
+    if (!day) return null;
+    const held = ownDayRosterRef.current.get(day);
+    return held && Date.now() - held.at < 5 * 60 * 1000 ? null : day;
+  }, []);
+  const fetchOwnDayRoster = useCallback((day) => apiFetch(`/.netlify/functions/nuvizz-loads-roster?date=${encodeURIComponent(day)}&cacheOnly=1`, { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null)
+    .then((j) => { ownDayRosterRef.current.set(day, { at: Date.now(), loads: j && j.ok ? (j.loads || []) : [] }); }), []);
   const openRouteInWorkbench = useCallback((key) => {
     if (!key) return;
-    setWbRoutes((prev) => {
+    const openNow = () => setWbRoutes((prev) => {
       const r = buildWbCard(key, prev);
       if (r.already) return prev;
       if (r.refusal) { setLastAction(r.refusal); return prev; }
+      // Say which load it opened on, and why that is not today's — a card saving to a load dated
+      // yesterday must never look like an ordinary one.
+      if (r.ownDayLoad) setLastAction(`Opened "${loadDisplayName(r.card.name, key) || key}" on NuVizz load ${r.ownDayLoad.loadNbr || r.ownDayLoad.loadId} — NuVizz still dates this load and its stops ${r.ownDay}.`);
       return [...prev, r.card];
     });
-  }, [buildWbCard]);
+    const day = ownDayRosterToFetch(key);
+    if (day) { fetchOwnDayRoster(day).finally(openNow); return; }
+    openNow();
+  }, [buildWbCard, ownDayRosterToFetch, fetchOwnDayRoster]);
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
   const closeAllWb = useCallback(() => setWbRoutes([]), []);
   const toggleWbCollapse = useCallback((key) => setWbRoutes((prev) => prev.map((r) => (r.key === key ? { ...r, collapsed: !r.collapsed } : r))), []);

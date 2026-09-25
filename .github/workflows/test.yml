@@ -308,3 +308,11 @@ jobs:
       - run: npm run verify:engine-map
         env:
           SMOKE_PORT: '8813'
+      # A ROUTE IN THE ROUTES PANEL OPENS IN COMPARE. Chad, 2026-09-24: "if its panel for routes it
+      # should load." ESTES APPT refused because its load sits on the PREVIOUS day's roster (NuVizz
+      # still dated its stops the day before). Drives the real bundle with that board: the route
+      # must open on its own load, an ordinary route must open unchanged, and the earlier day must
+      # be read cacheOnly=1 — a click may never spend a NuVizz call. Fails on the code before it.
+      - run: npm run verify:wb-own-day
+        env:
+          SMOKE_PORT: '8814'
