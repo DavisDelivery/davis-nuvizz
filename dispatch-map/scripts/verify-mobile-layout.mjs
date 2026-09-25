@@ -29,6 +29,7 @@
 // Run: node scripts/verify-mobile-layout.mjs [dist]
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
@@ -178,6 +179,59 @@ const SCREENS = [
   { key: 'debug', label: 'Debug this view', nav: /debug this view/i, inMore: true },
 ];
 
+// A SECOND DISPATCHER ON (v1.71.3). Chad, v1.71.2, a phone photo of the Routing gear's menu
+// reading "…m data grid / …ispatch (assign driver +". This guard passed that screen because it
+// never ran with anybody else online: presence is Firestore, the guard has none, so the app
+// bar never carried the presence chip — and the chip is what moved the gear.
+// Measured on v1.71.2 with one peer on: gear at x 149..193, menu at x -47..193 at 390px AND
+// 360px, and the version chip (the phone's only way to another screen) at x 351..437.
+//
+// Seeded the way verify-routing-topbar seeds its unread badge: injected where PresenceChip
+// renders (right after the app bar's slot), in the compact chip's OWN classes read out of
+// App.jsx, so the stand-in cannot drift from the chip it stands in for. The label is the
+// longest one peerChipLabel makes for one peer; the chip caps it at 150px either way.
+const PEER_CHIP_CLASS = (() => {
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const at = src.indexOf('function PresenceChip(');
+  const m = at < 0 ? null : src.slice(at, at + 4000).match(/className=\{`([^`$]*)\$\{compact \? '([^']+)'/);
+  return m ? `${m[1]}${m[2]}`.replace(/\s+/g, ' ').trim() : null;
+})();
+async function seedPeerChip(page) {
+  if (!PEER_CHIP_CLASS) return false;   // unreadable → the probe reports it could not open
+  return page.evaluate((cls) => {
+    const slot = document.getElementById('phone-appbar-slot');
+    if (!slot) return false;
+    const b = document.createElement('button');
+    b.setAttribute('data-guard-peer-chip', '');
+    b.className = cls;
+    const dot = document.createElement('span');
+    dot.className = 'w-1.5 h-1.5 rounded-full shrink-0 bg-emerald-300';
+    const txt = document.createElement('span');
+    txt.className = 'truncate';
+    txt.textContent = 'Dispatcher 4F2A is on · Routing · staging 12 stops';
+    b.append(dot, txt);
+    slot.after(b);
+    return true;
+  }, PEER_CHIP_CLASS);
+}
+// The two things that photo lost, asserted by name rather than left to the sweep's generic
+// off-screen line: the whole menu inside the screen, and the version chip whole and on it.
+const gearMenuOnScreen = (page) => page.evaluate(() => {
+  const out = [];
+  const lbl = [...document.querySelectorAll('label')].find((l) => /Live dispatch/.test(l.textContent || ''));
+  const menu = lbl && lbl.closest('[data-overlay-layer]');
+  if (!menu) return ['the gear menu is not open'];
+  const m = menu.getBoundingClientRect();
+  if (m.left < 0 || m.right > innerWidth) out.push(`the gear menu spans x ${Math.round(m.left)}..${Math.round(m.right)} on a ${innerWidth}px screen`);
+  const nav = document.querySelector('button[title="Version menu"]');
+  const n = nav && nav.getBoundingClientRect();
+  if (!n || n.left < 0 || n.right > innerWidth) out.push(`the version chip (the phone's nav) spans x ${n ? `${Math.round(n.left)}..${Math.round(n.right)}` : '—'} on a ${innerWidth}px screen`);
+  else if (nav.scrollWidth > nav.clientWidth + 1) out.push(`the version chip is squeezed: its text needs ${nav.scrollWidth}px and has ${nav.clientWidth}`);
+  const chip = document.querySelector('[data-guard-peer-chip]');
+  if (chip && chip.getBoundingClientRect().width < 27) out.push(`the presence chip is ${Math.round(chip.getBoundingClientRect().width)}px — it lost its dot`);
+  return out;
+});
+
 // PROBES — the guard's biggest blind spot was that it only ever measured a screen at REST.
 // Six sub-40px controls were sitting in the note composer, the customer-# editor and the
 // notes editor, all of which only exist AFTER you open a sheet or a drawer — so the build
@@ -239,6 +293,19 @@ const PROBES = {
           return m.top >= 48 && m.bottom <= window.innerHeight && r.top >= m.top && r.bottom <= m.bottom;
         });
       },
+      check: gearMenuOnScreen,
+    },
+    {
+      // THE STATE CHAD WAS IN (v1.71.3) — see seedPeerChip above.
+      name: 'App-bar gear open, a second dispatcher on',
+      open: async (page) => {
+        if (!(await seedPeerChip(page))) return false;
+        await page.waitForTimeout(150);
+        await page.locator('button[aria-label="Panel settings"]').last().click();
+        await page.waitForTimeout(400);
+        return page.evaluate(() => [...document.querySelectorAll('label')].some((l) => /Live dispatch/.test(l.textContent || '')));
+      },
+      check: gearMenuOnScreen,
     },
   ],
   'routing-drivers': [
@@ -1077,7 +1144,7 @@ for (const device of DEVICES) {
     const probs = [];
     if (m.docW > m.vw + 1) probs.push(`content is ${m.docW}px wide in a ${m.vw}px viewport`);
     for (const w of m.wide) probs.push(`wider than the screen: ${w.w}px — ${w.el}`);
-    for (const o of m.offscreen) probs.push(`off-screen: right edge ${o.right}px — ${o.el}`);
+    for (const o of m.offscreen) probs.push(`off-screen: x ${o.left}..${o.right}px — ${o.el}`);
     for (const cl of m.clipped) probs.push(`clipped ${cl.cut}px by an overflow-hidden ancestor — ${cl.el}`);
     for (const d of m.dead) probs.push(`dead region ${d.h}px tall with nothing in it — ${d.el}`);
     for (const s of m.small) probs.push(`touch target ${s.w}×${s.h}px — ${s.el}`);
@@ -1100,10 +1167,12 @@ for (const device of DEVICES) {
       const pp = [];
       if (pm.docW > pm.vw + 1) pp.push(`content is ${pm.docW}px wide in a ${pm.vw}px viewport`);
       for (const w of pm.wide) pp.push(`wider than the screen: ${w.w}px — ${w.el}`);
-      for (const o of pm.offscreen) pp.push(`off-screen: right edge ${o.right}px — ${o.el}`);
+      for (const o of pm.offscreen) pp.push(`off-screen: x ${o.left}..${o.right}px — ${o.el}`);
       for (const cl of pm.clipped) pp.push(`clipped ${cl.cut}px — ${cl.el}`);
       for (const sm of pm.small) pp.push(`touch target ${sm.w}×${sm.h}px — ${sm.el}`);
       for (const ov of pm.overlap) pp.push(`controls overlapping by ${ov.px}px — ${ov.el}`);
+      // A probe's own assertion about the state it opened, named in its own words.
+      if (probe.check) pp.push(...(await probe.check(page).catch((e) => [`the probe's own check could not run: ${e.message}`])));
       if (pp.length === 0) ok(`${screen.label} → ${probe.name}`);
       else { bad(`${screen.label} → ${probe.name}`); for (const x of pp) console.log(`      ${x}`); }
     }

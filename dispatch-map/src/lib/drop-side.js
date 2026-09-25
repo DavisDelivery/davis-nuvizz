@@ -1,4 +1,5 @@
-// src/lib/drop-side.js — which edge a dropdown hangs from so it stays on screen. (PURE)
+// src/lib/drop-side.js — which edge a dropdown hangs from so it stays on screen, and how far
+// it slides when neither edge will do (dropRight, below). (PURE)
 //
 // Chad, on an iPad: a Status menu hanging off the LEFT edge of the screen, showing only the
 // tails of its own options — "nned / d / sit / eted / ed".
@@ -47,4 +48,43 @@ export function dropSide(trigger, panelW, viewportW, pad = 8) {
 /** The Tailwind class for a side. Kept here so a call site cannot pair 'left' with right-0. */
 export function dropSideClass(side) {
   return side === 'right' ? 'right-0' : 'left-0';
+}
+
+// THE SAME DEFECT ON A MENU THIS FILE WAS NEVER WIRED TO — AND WHY A SIDE IS NOT ENOUGH THERE.
+//
+// Chad, v1.71.2, a phone photo of the Routing gear's menu reading "…m data grid / …ispatch
+// (assign driver +": the Status menu's bug again, on the gear. MEASURED, not assumed: with a
+// second dispatcher online the presence chip takes ~146px of the phone's app bar, the gear lands
+// at x 149..193, and a 240px menu hung `right-0` from it runs to x=-47 at 390px AND at 360px.
+// Nothing had caught it because no guard ever ran with anybody else on.
+//
+// dropSide could not have saved it. At 360px that menu fits on NEITHER side of its gear —
+// right-0 ends at x=-47, left-0 at x=389 — so choosing an edge only chooses which end is lost.
+// It has to SLIDE, and only as far as it must: a menu that already fits does not move a pixel.
+
+/**
+ * dropRight(trigger, panelW, viewportW, pad) → px for the CSS `right` of a panel that hangs from
+ * its trigger's right edge (the trigger's box is the panel's containing block).
+ *
+ *   0         right-0 exactly: where it already hung. Returned whenever the panel fits there.
+ *   negative  it slides RIGHT, because at right-0 its left edge would be off the screen's left
+ *   positive  it slides LEFT, because its right edge would be past the screen's right
+ *
+ * A panel too wide for the screen and both gutters keeps its LEFT edge on screen, because that
+ * is where every label starts; callers also cap the panel to the viewport, so a real screen
+ * does not reach that case.
+ */
+export function dropRight(trigger, panelW, viewportW, pad = 8) {
+  // Only real numbers. Number(null) is 0 and 0 is finite — a ref that has not attached yet
+  // must not come back as a confident placement at the screen's left edge.
+  const ok = (v) => typeof v === 'number' && Number.isFinite(v);
+  const r = trigger ? trigger.right : undefined;
+  if (!ok(r) || !ok(panelW) || !ok(viewportW) || !ok(pad) || panelW <= 0 || viewportW <= 0) return 0;
+  const want = r - panelW;              // the panel's left edge at right-0
+  const lo = pad;                       // furthest LEFT its left edge may sit
+  const hi = viewportW - pad - panelW;  // furthest RIGHT its left edge may sit
+  if (want >= lo && want <= hi) return 0;
+  const left = hi < lo ? lo : Math.min(Math.max(want, lo), hi);
+  const right = Math.round(r - (left + panelW));
+  return right === 0 ? 0 : right;       // never -0
 }
