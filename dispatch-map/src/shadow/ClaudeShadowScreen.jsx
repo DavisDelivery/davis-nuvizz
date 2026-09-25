@@ -19,6 +19,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Sparkles, Power, Cpu, KeyRound, FlaskConical, RefreshCw, CheckCircle2, XCircle, CircleDashed, Truck, Pencil } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
+import BacktestPanel from './BacktestPanel.jsx';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 
@@ -560,7 +561,7 @@ function PlanCard({ s }) {
   return (
     <section className="rounded-xl border bg-white p-4">
       <h2 className="text-sm font-semibold text-slate-800 inline-flex items-center gap-2"><CircleDashed size={14} /> Nightly plan</h2>
-      <p className="text-xs text-slate-600 mt-1">Nothing plans yet. This tab proves the plumbing first; each piece below lands in its own release.</p>
+      <p className="text-xs text-slate-600 mt-1">The Claude router plans past days now (the backtest above). The nightly run on tomorrow’s board is the next set of pieces, each in its own release.</p>
       <ul className="mt-2 space-y-1">
         {(s.built || []).map((b) => <li key={b} className="text-xs text-emerald-700 inline-flex items-center gap-1 w-full"><CheckCircle2 size={12} /> {b}</li>)}
         {(s.notBuilt || []).map((b) => <li key={b} className="text-xs text-slate-500 inline-flex items-center gap-1 w-full"><CircleDashed size={12} /> {b}</li>)}
@@ -574,7 +575,7 @@ function Header({ onRefresh, loading }) {
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
         <h1 className="text-xl font-bold text-slate-900 inline-flex items-center gap-2"><Sparkles size={18} /> Claude shadow</h1>
-        <p className="text-xs text-slate-500 mt-0.5">Claude will plan tomorrow’s loads beside the router, for comparison only — nothing plans yet; this is the plumbing and one test call. It can never send, save or stage anything.</p>
+        <p className="text-xs text-slate-500 mt-0.5">Claude plans loads beside the router, for comparison only — tried first on past days, below. It can never send, save or stage anything.</p>
       </div>
       <button onClick={onRefresh} disabled={loading}
         className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[44px] shrink-0">Refresh</button>
@@ -589,6 +590,7 @@ function DesktopView(h) {
         <Header onRefresh={h.load} loading={h.loading} />
         {h.err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{h.err}</div>}
         {h.loading && !h.status && <div className="text-xs text-slate-500">Loading…</div>}
+        <BacktestPanel />
         {h.status && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
             <SwitchCard s={h.status} />
@@ -609,6 +611,7 @@ function PhoneView(h) {
         <Header onRefresh={h.load} loading={h.loading} />
         {h.err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{h.err}</div>}
         {h.loading && !h.status && <div className="text-xs text-slate-500">Loading…</div>}
+        <BacktestPanel phone />
         {h.status && (
           <div className="flex flex-col gap-3">
             <CapacityCard s={h.status} phone learning={h.learning} learnMsg={h.learnMsg} onLearn={h.learnNow} ed={h.ed} />
