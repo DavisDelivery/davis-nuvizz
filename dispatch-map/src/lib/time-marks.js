@@ -208,11 +208,21 @@ export function hoursTypedByDispatcher(note) {
  * @returns {{kind, text, title, openMin, closeMin}|null} — null for a dock that constrains
  *   nothing, exactly as timeMarkForDay would return null.
  */
-export function timeMarkChip(note, dayKey) {
+export function timeMarkChip(note, dayKey, opts = {}) {
   const { openMin, closeMin } = dayWindowMinutes(note, dayKey);
   const kind = classifyTimeMark(openMin, closeMin);
   const o = Number.isFinite(openMin) ? openMin : null;
   const c = Number.isFinite(closeMin) ? closeMin : null;
+  // AUTO-DETECTED HOURS SHOW TOO, MARKED AS SUCH (opts.autoHours; the Compare row passes
+  // VITE_COMPARE_AUTO_HOURS). Chad, 2026-09-25, on TITAN ELECTRIC — "11M LATE" on the row and
+  // no hours beside it: "why are titan electrics hours not displayed in the compare panel", then
+  // "yes i want the proposed fix". Its 7:00a–3:30p was read from Uline's order text, so the
+  // typed-only rule below left the row saying LATE without the window it was late against. With
+  // the option on, a window read from an order gets its chip like a typed one, and every chip
+  // whose hours were NOT typed carries `auto: true` so the row can say where the time came from.
+  // Off (or absent) is exactly the behaviour before it.
+  const typed = hoursTypedByDispatcher(note);
+  const autoMark = opts.autoHours === true && !typed ? { auto: true } : {};
   // HOURS A DISPATCHER TYPED ARE ALWAYS WORTH A ROW, however ordinary they look.
   //
   // Chad, 2026-09-22, with AMERICAS VALUE CHANNEL (11:00a-4:00p) wearing a chip on NOR 2 and
@@ -238,10 +248,10 @@ export function timeMarkChip(note, dayKey) {
   // any predicted overrun. Parsed hours are a different confidence and a much bigger
   // population, and widening to them is a decision for Chad, not a detail to slip in here.
   if (!kind) {
-    if (!hoursTypedByDispatcher(note) || (o == null && c == null)) return null;
+    if ((!typed && opts.autoHours !== true) || (o == null && c == null)) return null;
     const both = o != null && c != null;
     const text = both ? `${fmtMin(o)}–${fmtMin(c)}` : (c != null ? `closes ${fmtMin(c)}` : `opens ${fmtMin(o)}`);
-    return { kind: HOURS_ON_FILE_KEY, text, openMin: o, closeMin: c, title: `Receiving ${text} — set by a dispatcher` };
+    return { kind: HOURS_ON_FILE_KEY, text, openMin: o, closeMin: c, title: `Receiving ${text} — ${typed ? 'set by a dispatcher' : 'read from the order text'}`, ...autoMark };
   }
   // WHICH EDGE THE MARK IS ABOUT DECIDES WHICH CLOCK THE ROW PRINTS. classifyTimeMark's
   // precedence guarantees the edge it chose is the one that exists — a shuts-early or
@@ -264,5 +274,12 @@ export function timeMarkChip(note, dayKey) {
   const window = o != null && c != null ? `${fmtMin(o)}–${fmtMin(c)}`
     : o != null ? `opens ${fmtMin(o)}`
       : `closes ${fmtMin(c)}`;
-  return { kind, text, openMin: o, closeMin: c, title: `Receiving ${window}` };
+  return { kind, text, openMin: o, closeMin: c, title: `Receiving ${window}${autoMark.auto ? ' — read from the order text' : ''}`, ...autoMark };
+}
+
+/** VITE_COMPARE_AUTO_HOURS — house shape: default on, an off-word turns it off, anything
+ *  malformed leaves it on. Off puts the Compare row back to typed-only. Build-time. */
+export function compareAutoHoursEnabled(env) {
+  const v = String(env?.VITE_COMPARE_AUTO_HOURS ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
 }
