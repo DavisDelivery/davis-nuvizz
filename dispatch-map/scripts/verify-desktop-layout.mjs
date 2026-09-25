@@ -86,7 +86,7 @@ for (const device of DESKTOPS) {
   // The ONE endpoint stubbed here. Every other screen this guard measures renders its layout
   // with no data; the Claude shadow tab renders its cards only once its status has loaded, and
   // measuring its load-error box would prove nothing about the desktop layout.
-  // Two views of one function since v1.69.0: the status body, and the backtest panel's own answer.
+  // Two views of one function since v1.70.0: the status body, and the backtest panel's own answer.
   await page.route('**/.netlify/functions/claude-shadow*', (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify(claudeShadowFixtureFor(route.request().url())),
   }));

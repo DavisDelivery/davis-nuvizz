@@ -97,7 +97,7 @@ export default async (req: Request): Promise<Response> => {
       return J({ ...statusBody(null, 'Firestore is not configured on this site — the last test call cannot be read'), learnedNote: off, learnLastNote: off });
     }
     const view = new URL(req.url).searchParams.get('view');
-    // THE CLAUDE ROUTER'S BACKTESTS (v1.69.0): the sealed days, the latest result per day, the queue.
+    // THE CLAUDE ROUTER'S BACKTESTS (v1.70.0): the sealed days, the latest result per day, the queue.
     if (view === 'backtests') {
       try { return J(await backtestView()); }
       catch (e: any) { return J({ ok: false, error: String(e?.message || e), calls: 0 }, 502); }
@@ -165,7 +165,7 @@ export default async (req: Request): Promise<Response> => {
     const run = await runLearn({ trigger: 'manual', by: gate.user?.username ?? null, budgetMs: LEARN_NOW_BUDGET_MS });
     return J({ ...run, calls: 0 });
   }
-  // THE CLAUDE ROUTER (v1.69.0). Queueing a backtest spends nothing here: the scheduled worker
+  // THE CLAUDE ROUTER (v1.70.0). Queueing a backtest spends nothing here: the scheduled worker
   // (claude-shadow-worker-background.mts) runs it, capped per day by the router's max $ setting.
   if (body?.action === 'backtest') {
     const refused = routerRefusal(process.env);

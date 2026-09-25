@@ -63,7 +63,7 @@ export function experimentPath(tenant: string, label: string): string {
 // Supervisors run occasional 1-3 stop days and are never a real route-driver pool.
 export const SUPERVISOR_KEYS = new Set(['CHAD_DAVIS']);
 // Fallback truck-class pin for drivers without an employees-roster record — defined in
-// lib/driver-class.mts with employeeClassMap (v1.69.0) and re-exported here unchanged.
+// lib/driver-class.mts with employeeClassMap (v1.70.0) and re-exported here unchanged.
 export { employeeClassMap, CLASS_OVERRIDE };
 
 export function planProposalPath(tenant: string, date: string): string {
@@ -216,7 +216,7 @@ export interface PlanInputs {
   employees?: any[];                   // MarginIQ employees roster (vehicleType source); absent → class fallbacks
 }
 
-// employeeClassMap moved to lib/driver-class.mts (v1.69.0), unchanged, so the Claude shadow can
+// employeeClassMap moved to lib/driver-class.mts (v1.70.0), unchanged, so the Claude shadow can
 // share it without this module's graph. Re-exported above; test/driver-class.test.mjs pins it.
 
 // ── the ONE live/warehouse stop → AssignStop mapping ─────────────────────────

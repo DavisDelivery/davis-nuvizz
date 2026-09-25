@@ -61,7 +61,7 @@ export const CLAUDE_SHADOW_STATUS = {
   },
 };
 
-// THE CLAUDE ROUTER'S BACKTEST PANEL (v1.69.0) is fed from a DIFFERENT view of the same function,
+// THE CLAUDE ROUTER'S BACKTEST PANEL (v1.70.0) is fed from a DIFFERENT view of the same function,
 // so the guards must answer it with its own shape — the status body would render an empty panel and
 // the guard would measure nothing. Worst rows: a running job, a queued one, a failure with a long
 // reason, finished days with four-figure mileage and big swings, cost rates entered (the widest row).

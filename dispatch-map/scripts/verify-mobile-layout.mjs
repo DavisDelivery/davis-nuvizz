@@ -35,6 +35,7 @@ import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fix
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
+import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
 
@@ -589,6 +590,47 @@ const PROBES = {
         return page.getByRole('button', { name: /earthly alternative/i }).first().isVisible().catch(() => false);
       },
     },
+    // ── A DRIVER'S WEEK (v1.69.0) ── the panel's third search, stacked last on a phone. None of
+    // the answer exists until it runs: the chooser, the load cards, and a load opened into its
+    // map box and its stop rows — the tallest thing this screen draws. Built fixture:
+    // scripts/lib/driver-week-fixture.mjs, produced by the real load-lookup.js.
+    {
+      name: 'the week\'s drivers to choose',
+      open: async (page) => {
+        const btn = page.getByRole('button', { name: /^show the week$/i }).first();
+        if (!(await btn.isVisible().catch(() => false))) return false;
+        await btn.click();
+        await page.waitForTimeout(900);
+        return page.getByText(/who ran loads/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'a driver\'s week',
+      open: async (page) => {
+        const box = page.getByLabel(/^driver name$/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('robert');
+        await page.getByRole('button', { name: /^show the week$/i }).first().click();
+        await page.waitForTimeout(900);
+        return page.getByRole('button', { name: /^map & stops/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'a load opened',
+      open: async (page) => {
+        const box = page.getByLabel(/^driver name$/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('robert');
+        await page.getByRole('button', { name: /^show the week$/i }).first().click();
+        await page.waitForTimeout(900);
+        const open = page.getByRole('button', { name: /^map & stops/i }).first();
+        if (!(await open.isVisible().catch(() => false))) return false;
+        await open.click();
+        await page.waitForTimeout(600);
+        // PROVES ITS STATE: the legend under the map only exists inside an opened load.
+        return page.getByText(/stops in the order they were delivered/i).first().isVisible().catch(() => false);
+      },
+    },
   ],
   // ── PRINT LABELS (v1.67.0) ──────────────────────────────────────────────────
   // At rest the screen is two rows of chips and an empty box. Everything a dock worker uses —
@@ -924,6 +966,10 @@ function stubRoutes(page, emailHtml) {
     // label-shippers.js (scripts/lib/labels-fixture.mjs). Before the catch-all, which would
     // answer it with an empty board and measure a screen with nothing on it.
     if (u.includes('labels-by-shipper')) return R(labelsAnswer(u));
+    // A DRIVER'S WEEK (v1.69.0) — the chooser or the week, BUILT by the real load-lookup.js
+    // (scripts/lib/driver-week-fixture.mjs). Before the catch-all, which would answer it with an
+    // empty board and measure a screen with nothing on it.
+    if (u.includes('driver-loads')) return R(driverWeekAnswer(u));
     if (u.includes('stop-lookup')) return R(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.

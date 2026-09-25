@@ -25,6 +25,7 @@ import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fix
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
+import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
@@ -163,6 +164,28 @@ const PROBES = {
       if (!(await openByName(page, /^clear$/i))) return false;
       await page.waitForTimeout(400);
       return page.getByRole('button', { name: /1100 northside dr/i }).first().isVisible().catch(() => false);
+    } },
+    // A DRIVER'S WEEK (v1.69.0): the chooser, the load cards two across at iPad width, and a load
+    // opened full width into its map box and its stops. Below 1280 the week is cards, not a table
+    // — the line the Labels table drew when this guard caught its buttons clipped at 1080.
+    { name: 'the week\'s drivers to choose', open: async (page) => {
+      await closeOrderDrawer(page);
+      if (!(await openByName(page, /^show the week$/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByText(/who ran loads/i).first().isVisible().catch(() => false);
+    } },
+    { name: 'a driver\'s week', open: async (page) => {
+      const box = page.getByLabel(/^driver name$/i).first();
+      if (!(await box.isVisible().catch(() => false))) return false;
+      await box.fill('robert');
+      if (!(await openByName(page, /^show the week$/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByRole('button', { name: /^map & stops/i }).first().isVisible().catch(() => false);
+    } },
+    { name: 'a load opened', open: async (page) => {
+      if (!(await openByName(page, /^map & stops/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByText(/stops in the order they were delivered/i).first().isVisible().catch(() => false);
     } },
   ],
   // PRINT LABELS (v1.67.0): the order cards two across at iPad width, ticked, and the big-batch
@@ -353,6 +376,8 @@ for (const dev of TABLETS) {
     if (u.includes('claude-shadow')) return J(claudeShadowFixtureFor(u));
     // PRINT LABELS (v1.67.0) — the same built fixture the phone guard drives.
     if (u.includes('labels-by-shipper')) return J(labelsAnswer(u));
+    // A DRIVER'S WEEK (v1.69.0) — the same built fixture the phone guard drives.
+    if (u.includes('driver-loads')) return J(driverWeekAnswer(u));
     if (u.includes('stop-lookup')) return J(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.
