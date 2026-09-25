@@ -136,3 +136,23 @@ export const CUSTOMER_STOP_FIELDS = [
   'routeSeq', 'scheduledDate', 'scheduledFrom', 'scheduledTo', 'shipmentNbr', 'state',
   'status', 'stopNbr', 'volume', 'weight', 'zip', 'raw.stopExecutionInfo',
 ];
+
+/**
+ * THE LOAD LOOKUP'S PROJECTION (driver-loads.mts) — a driver's week, read a whole day at a time.
+ *
+ * Who ran it (driver + load), where each order went and when it was finished (the pin, the stop
+ * sequence, the delivery stamp from wherever the record keeps it), the freight, and the two places
+ * an order's price lives: the order instructions Uline writes TOTAL-AMOUNT into, and NuVizz's
+ * Seal # (`raw.stop.sealNbr`), where Davis records a shipment's price. The cancellation record is
+ * the board's own drop rule. Nothing else rides along — seven whole days are read per question,
+ * and `raw` unmasked is ~5KB a stop. test/driver-loads.test.mjs pins that every field
+ * src/lib/load-lookup.js reads is here.
+ */
+export const LOAD_STOP_FIELDS = [
+  'stopNbr', 'stopType', 'businessName', 'city', 'zip', 'lat', 'lng',
+  'driverName', 'driverUserName', 'routeName', 'loadNbr', 'normalizedStatus',
+  'deliveredDTTM', 'executed.deliveredDTTM', 'raw.stopExecutionInfo.to.deliveredDTTM',
+  'routeSeq', 'loadStopSeq', 'plannedEtaDTTM', 'cartons', 'volume', 'weight', 'isAttempt',
+  'orderInstructions', 'signalSources.orderInstructions', 'raw.stop.sealNbr',
+  'raw.stopExecutionInfo.cancellation',
+];

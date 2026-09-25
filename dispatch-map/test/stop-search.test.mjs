@@ -367,7 +367,9 @@ test('THE SCREEN: both searches on screen at once, ALL as the unremembered defau
   assert.doesNotMatch(screen.slice(0, screen.indexOf('\n}\n')), /role="tablist"/, 'no tabs on Stop lookup');
   assert.match(panel, /aria-label="Search by order or customer"/);
   assert.match(panel, /aria-label="Search by address, city or ZIP"/);
-  assert.equal((panel.match(/<form /g) || []).length, 2, 'two forms, so Enter runs the search the cursor is in');
+  // THREE since v1.69.0 — a driver's week runs across the bottom of the same panel.
+  assert.match(panel, /aria-label="A driver's week of loads"/);
+  assert.equal((panel.match(/<form /g) || []).length, 3, 'one form per search, so Enter runs the search the cursor is in');
   // The two submit buttons are named apart — the guards (and a screen reader) find each by name.
   assert.match(panel, /'Look up'/);
   assert.match(panel, /'Find stops'/);

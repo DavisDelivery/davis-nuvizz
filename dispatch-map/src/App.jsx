@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Building2, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal } from 'lucide-react';
+  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc, arrayUnion, arrayRemove, deleteField,
@@ -86,6 +86,7 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUE
 // so the screen can never build a query the server reads differently.
 import { placeParams, placeQuery, placeQueryUsable } from './lib/stop-search.js';
 import { addRecent, parseRecent, recentAgo, recentEntry, recentKindLabel, recentKey } from './lib/stop-lookup-recent.js';
+import { weekOf, weekLabel, addDays } from './lib/load-lookup.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -178,7 +179,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.68.2';
+const APP_VERSION = '1.69.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -232,6 +233,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.69.0', 'A DRIVER’S WEEK OF LOADS, ON STOP LOOKUP. Chad: “add a load look up so if i wanted to evaluate a weeks worth of a drivers loads … want milage of load earnings of load cost of load stops ect” — and “i want this to be part of the stops lookup tab.” The Stop lookup panel has a third search across the bottom: pick a week (Monday to Sunday, ‹ ›) and type a driver, or leave the name blank to see everyone who ran loads that week. The answer is the week in eight tiles — loads, delivered, road miles, time from first to last delivery, freight, order prices, per mile and per stop, and cost — then every load, day by day: stops and orders, delivered or not, first → last delivery, freight, road miles, order prices, per mile. “Map & stops” opens a load: a map of the yard and the stops numbered in the order they were delivered, and the orders beside it; tap one for its full record. A table on a desktop, cards on a tablet and phone. WHERE EACH NUMBER COMES FROM, AND WHAT COULD NOT BE ANSWERED. ROAD MILES were stored nowhere (NuVizz’s planned distance only arrives with the one-time enrichment, the travel cache keeps drive seconds, and Motive is read for positions, never an odometer), so they are measured: Google’s driving distance over the stops in the order they were delivered, yard to yard — one Google Routes request per load, kept, so a sealed load is measured once. LOAD_MILES=off stops every Google request. EARNINGS are the price on each order: Uline’s TOTAL-AMOUNT line, or the NuVizz Seal # where Davis records a price. An order that ran twice is priced once, on the load that delivered it; an order with no price is counted, never guessed; and a per-mile rate is printed only where every order behind it is priced. COST IS NOT IN THE SYSTEM — no driver pay, fuel or truck cost is stored anywhere this app reads — and the tile says so instead of printing a zero. Firestore only: 0 NuVizz calls. Dispatcher and up.'],
   ['1.68.2', 'CLAUDE SHADOW IS ROUTING\u2019S THIRD TAB: BUILD | ENGINE | SHADOW. Chad: \u201ci want you to move the claude shadow tab to here beside the build and engine buttons add a 3rd that is called shadow.\u201d A MOVE, NOT A COPY. The toggle at the far right of the top bar on Routing now reads Build | Engine | Shadow, and Shadow opens the same Claude shadow screen that used to live under More \u2014 the screen itself is unchanged. Its More-menu entry and its phone-menu entry are gone, so there is one way in, not two that drift apart. ON A PHONE, the same way Engine is reached: Routing \u2192 the gear \u2192 \u201c\u21c4 Shadow view\u201d, and the Build | Engine | Shadow row sits at the top of the Engine and Shadow screens so the way back is always on screen. Opening Routing still lands on Build, as it always has. The Build Panel and the Route Workbench are not touched: the only line on the Routing screen is one more gear entry beside Engine\u2019s, phone only. The phone, tablet and desktop layout guards now reach the screen through Routing \u2192 Shadow and must see its heading before they measure it. FOUND IN REVIEW AND FIXED BEFORE MERGE, two things. (1) The third button is ~74px, and the tab row is the only part of the top bar that can shrink \u2014 so on Routing at 1180\u20131366px it pushed MESSAGES off the end of the row, and its unread badge with it; on Routing that badge is the only sign a driver or customer has texted. Measured: 1180 lost 62px, 1366 lost 25px, where v1.68.1 fitted. Now the presence chip\u2019s TEXT gives way first (it keeps its dot; the whole label is in its tooltip) and the toggle never shrinks: Messages and its badge fit at 1180, 1194, 1366, 1440 and 1920, and the widths v1.68.1 already clipped (820, 1080, 1280) are all better than they were. With room to spare nothing moves. verify-routing-topbar now fails the first cut at exactly those widths and passes this one. (2) Leaving Routing from Shadow and coming back mounted the Shadow screen for one render \u2014 one wasted status request (Firestore reads, 0 NuVizz) \u2014 before landing on Build; entering Routing now lands on Build from the first render, which also stops the same wasted request from Engine. PUT IT BACK: revert this one commit.'],
   ['1.68.1', 'THE BUSINESS LABELS ON THE ULINE TAB’S FROM-ABOVE MAP CAN BE CLICKED. Chad: “I want to be able to click on these labels when evaluating a stop so i can see their addresses i look at labeled addresses as confirmed like in this photo where the pin is not exactly on a building.” The satellite close-up was built with Google’s place labels switched off for clicks (clickableIcons: false); every other map in the app leaves them on. Now clicking a label such as Aquakleen or Norcross Corporate Park opens Google’s own card with that business’s name and address, so a pin that lands between buildings can be checked against the addresses around it. Only that one setting on that one map changed; the pin, the zoom and the street and 3D views are as they were. Put back: revert this commit.'],
   ['1.68.0', 'STOP LOOKUP, REDESIGNED: BOTH SEARCHES ON ONE PANEL, NO TABS. Chad, on v1.62.0: “terrible UI design why would you put on two tabs when there is tons of blank screen I don’t love any of this ui feels like an amateur wrote it i don’t like the design or astehtics” — and, after the screenshots: “Merge it.” The order-or-customer search and the address, city or ZIP search now sit side by side in one panel on a desktop (two halves at 1024px, the address half the wider from 1280px, the two rows of boxes held level whichever description wraps), each its own form so Enter runs the search the cursor is in; on a phone they stack with the order box first, and after a search the page scrolls to the answer. One set of sizes for every box and button (44px boxes, 15px text, the brand blue for each half’s one button, Look up and Find stops), a single All dates / One day / Range switch instead of three loose buttons, and a small status dot in place of the green 0 NuVizz calls box. The two cards of instructions under the search are gone. In their place, RECENT LOOKUPS: the searches run on that device, newest first, one tap to run again; the same search typed twice in different case is kept once, eight are kept, and a damaged stored list costs the list, never the screen. Unchanged: an address search still covers All dates unless a day or range is picked, and the pick is still not remembered; the answers under the panel look as they did. NOT IN THIS: the held “days not in history” follow-up, which still waits on Chad. 8 new tests (the recent-list rules, each broken on purpose and seen to fail); the phone and tablet guards drive both forms without a tab and measure the recent list.'],
@@ -38134,7 +38136,8 @@ function LookupSectionHead({ icon, title, children }) {
 }
 
 /**
- * BOTH SEARCHES, ONE PANEL. Left: the order box — a PRO, a stop number or a customer name, told
+ * EVERY SEARCH, ONE PANEL. (A third, a driver's week, runs across the bottom since v1.69.0.)
+ * Left: the order box — a PRO, a stop number or a customer name, told
  * apart by the shared classifyQuery rule, exactly as before. Right: an address, a city or a ZIP,
  * with the dates. Each half is its own <form>, so Enter runs the search the cursor is in and
  * never the other one.
@@ -38143,7 +38146,8 @@ function LookupSectionHead({ icon, title, children }) {
  * the wider, because it holds four boxes and the dates. Phone: stacked, the order box first — the screen's original job and
  * the one a rep reaches for most — and every control at the 40px thumb floor.
  */
-function StopSearchPanel({ stacked, busy, q, setQ, onOrder, onClearOrder, place, setPlace, placeSel, onPlaceSel, onPlace, onClearPlace, today }) {
+function StopSearchPanel({ stacked, busy, q, setQ, onOrder, onClearOrder, place, setPlace, placeSel, onPlaceSel, onPlace, onClearPlace, today,
+  drvName, setDrvName, drvDay, setDrvDay, drvNames, drvGate, onDriver, onClearDriver }) {
   const placeOk = placeQueryUsable(placeQuery(place));
   const hasPlace = !!(place.addr || place.city || place.state || place.zip);
   const setField = (k) => (e) => { const v = e.target.value; setPlace((p) => ({ ...p, [k]: v })); };
@@ -38228,6 +38232,36 @@ function StopSearchPanel({ stacked, busy, q, setQ, onOrder, onClearOrder, place,
           </div>
         </div>
       </form>
+
+      {/* A DRIVER'S WEEK (v1.69.0) — the panel's third search, across the whole width on a desktop
+          under the two halves, stacked last on a phone. The `!` overrides are the parent's divide
+          rules: at 1024px it draws left borders between side-by-side halves, and this row is not
+          beside anything, so it takes the top border instead. */}
+      <form aria-label="A driver's week of loads" className={stacked ? 'p-4 space-y-3' : 'p-6 space-y-3 lg:col-span-2 lg:!border-l-0 lg:!border-t'}
+        onSubmit={(e) => { e.preventDefault(); if (!busy && !drvGate) onDriver(); }}>
+        <div className={stacked ? 'space-y-3' : 'flex flex-col gap-4 xl:flex-row xl:items-center xl:gap-8'}>
+          <div className={stacked ? '' : 'xl:w-[27rem] xl:shrink-0'}>
+            <LookupSectionHead icon={<Truck size={18} />} title={'Driver\u2019s week'}>
+              Every load one driver ran in a week: stops, freight, times, road miles and order prices, with a map of each load.
+            </LookupSectionHead>
+          </div>
+          <div className={stacked ? 'space-y-2' : 'flex flex-1 flex-wrap items-center gap-3'}>
+            <DriverWeekStepper day={drvDay} setDay={setDrvDay} today={today} stacked={stacked} />
+            <div className={`${LOOKUP_FIELD}${stacked ? '' : ' flex-1 min-w-[15rem]'}`}>
+              <Truck size={16} className="text-slate-400 shrink-0" />
+              <input value={drvName} onChange={(e) => setDrvName(e.target.value)} list="stop-lookup-drivers"
+                placeholder={stacked ? 'Driver, or blank for all' : 'Driver name, or leave blank to list everyone'}
+                aria-label="Driver name" className={LOOKUP_INPUT} />
+              {drvName && <button type="button" onClick={onClearDriver} aria-label="Clear the driver" className={LOOKUP_CLEAR}><X size={16} /></button>}
+            </div>
+            <datalist id="stop-lookup-drivers">{(drvNames || []).map((n) => <option key={n} value={n} />)}</datalist>
+            <button type="submit" disabled={!!busy || !!drvGate} className={`${LOOKUP_PRIMARY}${stacked ? ' w-full' : ''}`}>
+              {busy === 'driver' ? 'Reading the week…' : 'Show the week'}
+            </button>
+          </div>
+        </div>
+        {drvGate && <p className="text-xs text-amber-800">{drvGate}</p>}
+      </form>
     </div>
   );
 }
@@ -38238,7 +38272,7 @@ function StopSearchPanel({ stacked, busy, q, setQ, onOrder, onClearOrder, place,
  * said so on screen, so nobody wonders where a colleague's searches went.
  */
 function StopRecentLookups({ items, onPick, onClear, stacked, nowMs }) {
-  const iconFor = (e) => (e.kind === 'order' ? <Package size={16} /> : e.kind === 'customer' ? <Building2 size={16} /> : <MapPin size={16} />);
+  const iconFor = (e) => (e.kind === 'order' ? <Package size={16} /> : e.kind === 'customer' ? <Building2 size={16} /> : e.kind === 'driver' ? <Truck size={16} /> : <MapPin size={16} />);
   return (
     <section aria-label="Recent lookups" className="space-y-3">
       <div className="flex items-end justify-between gap-3">
@@ -38271,6 +38305,442 @@ function StopRecentLookups({ items, onPick, onClear, stacked, nowMs }) {
                 <span className="block truncate text-xs text-slate-500">{recentKindLabel(e)} · {recentAgo(e.at, nowMs)}</span>
               </span>
               <ChevronRight size={16} className="shrink-0 text-slate-300 group-hover:text-[#1e5b92] transition-colors" />
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ── A DRIVER'S WEEK OF LOADS (v1.69.0) ───────────────────────────────────────
+// Chad, 2026-09-25: "add a load look up so if i wanted to evaluate a weeks worth of a drivers
+// loads … and a map of the load so i can visually see it the map can be behind a drop down.
+// want milage of load earnings of load cost of load stops ect" — "i want this to be part of the
+// stops lookup tab". The rules are src/lib/load-lookup.js (pure, tested); the reads are
+// netlify/functions/driver-loads.mts. Everything below only draws what they decided.
+//
+// TWO VIEWS. Desktop from 1280px: one table for the week, a load opening into its map beside its
+// stops. Below 1280 (tablet and phone): one card per load, the map above the stops — the same
+// 1280 line the Labels table drew after the tablet guard caught its buttons clipped at 1080.
+const STOP_LOOKUP_DRIVER = 'dd_stop_lookup_driver';
+const LOAD_TABLE_MIN = 1280;
+const loadMoney = (n) => (n == null ? '—' : `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+const loadMilesText = (m) => (m == null ? '—' : `${Number(m).toLocaleString('en-US', { maximumFractionDigits: 1 })} mi`);
+const loadSpan = (min) => (min == null ? '—' : `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`);
+const loadLb = (n) => `${Math.round(Number(n) || 0).toLocaleString('en-US')} lb`;
+const loadDay = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+const LOAD_TRUCK = { tractor: 'Tractor', box: 'Box truck' };
+const LOAD_DAY_SOURCE = {
+  sealed: ['bg-emerald-500', 'Sealed record — final, it cannot change'],
+  board: ['bg-sky-500', 'Read off the board — the day is not sealed yet, so it can still change'],
+  none: ['bg-slate-300', 'No record for this day'],
+  future: ['bg-slate-200', 'Has not happened yet'],
+  unread: ['bg-red-500', 'Could not be read — this week may be short'],
+};
+
+/** "Sep 21 – 27" with the week before and after. The week after today's is not offered. */
+function DriverWeekStepper({ day, setDay, today, stacked }) {
+  const wk = weekOf(day) || weekOf(today);
+  const current = weekOf(today);
+  const atCurrent = wk.from >= current.from;
+  return (
+    <div className={`flex items-center gap-2 ${stacked ? 'w-full' : ''}`}>
+      <div className={`flex items-center h-11 rounded-lg bg-white ring-1 ring-inset ring-slate-300 ${stacked ? 'flex-1 min-w-0' : ''}`}>
+        <button type="button" onClick={() => setDay(addDays(wk.from, -7))} aria-label="The week before"
+          className="grid h-11 w-11 shrink-0 place-items-center rounded-l-lg text-slate-500 hover:text-slate-900 hover:bg-slate-50"><ChevronLeft size={18} /></button>
+        <span className={`px-1 text-center text-sm font-semibold text-slate-900 whitespace-nowrap ${stacked ? 'flex-1 min-w-0' : 'min-w-[10.5rem]'}`}>{weekLabel(wk)}</span>
+        <button type="button" onClick={() => setDay(addDays(wk.from, 7))} disabled={atCurrent} aria-label="The week after"
+          className="grid h-11 w-11 shrink-0 place-items-center rounded-r-lg text-slate-500 hover:text-slate-900 hover:bg-slate-50 disabled:opacity-30 disabled:hover:bg-transparent"><ChevronRight size={18} /></button>
+      </div>
+      {!atCurrent && <button type="button" onClick={() => setDay(today)} className={LOOKUP_GHOST}>This week</button>}
+    </div>
+  );
+}
+
+/** Which of the week's seven days were read, and from where — a dot per day. */
+function DriverWeekDays({ days }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
+      {(days || []).map((d) => {
+        const [dot, words] = LOAD_DAY_SOURCE[d.source] || LOAD_DAY_SOURCE.none;
+        return (
+          <span key={d.date} title={`${loadDay(d.date)}: ${words}`} className="inline-flex items-center gap-1 whitespace-nowrap">
+            <span className={`h-2 w-2 rounded-full ${dot}`} />{loadDay(d.date).split(',')[0]}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function LoadTile({ label, value, sub, tone = 'plain' }) {
+  const box = tone === 'muted' ? 'bg-slate-50 ring-slate-200' : 'bg-white ring-slate-200';
+  return (
+    <div className={`min-w-0 rounded-xl p-4 ring-1 ${box}`}>
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
+      <div className={`mt-1 text-xl font-semibold tabular-nums ${tone === 'muted' ? 'text-slate-500' : 'text-slate-900'}`}>{value}</div>
+      {sub && <div className="mt-0.5 text-xs leading-snug text-slate-500">{sub}</div>}
+    </div>
+  );
+}
+
+/** Why a load's miles are blank, in words — never a blank that looks like zero. */
+function loadMilesWhy(load, miles) {
+  if (load.miles?.miles != null) return load.miles.source === 'cache' ? 'measured before' : 'measured now';
+  if (miles && !miles.enabled) return 'switched off';
+  return load.miles?.reason || 'not measured';
+}
+
+/** How an order's price reads on its row. */
+function loadRowPrice(r) {
+  if (r.price != null) return loadMoney(r.price);
+  if (r.countedOn) return `priced ${loadDay(r.countedOn.date).split(',')[0]}`;
+  if (r.priceNote) return 'price unclear';
+  return 'no price';
+}
+
+const LOAD_OUTCOME = {
+  delivered: ['text-slate-700', null],
+  'not-delivered': ['text-red-700 font-semibold', 'Not delivered'],
+  // NOT "still open": on a sealed day an order nobody closed out is not open any more — it was
+  // rolled, or the driver never marked it. The words say what the record says and no more.
+  open: ['text-amber-700 font-semibold', 'Not closed out'],
+};
+
+/**
+ * THE MAP, behind the load's drop-down — Chad: "the map can be behind a drop down". Created only
+ * when opened, because every Google map made is a billed map load; one open load, one map.
+ *
+ * What it draws is what the numbers were built from: the yard, the stops numbered in the order
+ * they were DELIVERED, and a line joining them in that order back to the yard. The line is
+ * straight from stop to stop and the legend says so — it shows the sequence, not the roads.
+ * Orders that were not delivered, or never closed, sit on the map unnumbered and outside the line.
+ */
+function LoadMap({ load, yard, stacked }) {
+  const { google, error } = useGoogleMaps();
+  const [el, setEl] = useState(null);
+  const mapRef = useRef(null);
+  const boundsRef = useRef(null);
+  useEffect(() => {
+    if (!google || !el || !yard) return undefined;
+    const map = new google.maps.Map(el, {
+      ...mapBaseOptions({ mapId: MAP_ID }), center: yard, zoom: 9,
+      mapTypeControl: false, streetViewControl: false, fullscreenControl: !stacked,
+      // COOPERATIVE: this map sits inside a page that scrolls. Greedy would take the scroll
+      // wheel (and a phone's one-finger drag) away from the page the moment it passed over.
+      gestureHandling: 'cooperative',
+    });
+    mapRef.current = map;
+    const drawn = [];
+    const pin = (pos, color, label, title, size, z) => drawn.push(new google.maps.Marker({
+      position: pos, map, title, zIndex: z,
+      icon: { url: circleMarkerSvg(color, { label }), scaledSize: new google.maps.Size(size, size), anchor: new google.maps.Point(size / 2, size / 2) },
+    }));
+    const yardPt = { lat: yard.lat, lng: yard.lng };
+    const bounds = new google.maps.LatLngBounds();
+    bounds.extend(yardPt);
+    drawn.push(new google.maps.Polyline({
+      path: [yardPt, ...load.run.map((p) => ({ lat: p.lat, lng: p.lng })), yardPt],
+      map, strokeColor: BRAND, strokeOpacity: 0.8, strokeWeight: 3, zIndex: 5,
+    }));
+    pin(yardPt, '#0f172a', 'Y', yard.name || 'Yard', 26, 30);
+    for (const p of load.run) {
+      bounds.extend({ lat: p.lat, lng: p.lng });
+      pin({ lat: p.lat, lng: p.lng }, BRAND, String(p.n), `${p.n}. ${p.names.join(', ') || p.stopNbrs.join(', ')} — delivered ${stopWhen(p.at)}`, 28, 20);
+    }
+    for (const r of load.rows) {
+      if (r.stop != null || r.lat == null || r.lng == null) continue;
+      bounds.extend({ lat: r.lat, lng: r.lng });
+      const [color, mark, word] = r.outcome === 'not-delivered' ? ['#dc2626', '!', 'not delivered']
+        : r.outcome === 'open' ? ['#d97706', '?', 'not closed out'] : ['#64748b', '·', 'delivered, no time on record'];
+      pin({ lat: r.lat, lng: r.lng }, color, mark, `${r.businessName || r.stopNbr} — ${word}`, 24, 10);
+    }
+    boundsRef.current = bounds;
+    map.fitBounds(bounds, 40);
+    return () => { drawn.forEach((o) => o.setMap(null)); if (mapRef.current === map) mapRef.current = null; };
+  }, [google, el, load, yard, stacked]);
+  // Google paints grey until its box has a real size; the drop-down settles a frame after the map
+  // exists (the Engine map's lesson), so refit whenever the box changes size.
+  useEffect(() => {
+    if (!google || !el) return undefined;
+    const ro = new ResizeObserver(() => {
+      if (!mapRef.current || !el.offsetWidth || !el.offsetHeight) return;
+      google.maps.event.trigger(mapRef.current, 'resize');
+      if (boundsRef.current && !boundsRef.current.isEmpty()) mapRef.current.fitBounds(boundsRef.current, 40);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [google, el]);
+  if (error) return <div className="rounded-xl bg-slate-100 p-4 text-xs text-slate-600 ring-1 ring-slate-200">The map could not load: {error}</div>;
+  return <div ref={setEl} data-load-map={load.key} className={`w-full rounded-xl bg-slate-100 ring-1 ring-slate-200 ${stacked ? 'h-64' : 'h-[420px]'}`} />;
+}
+
+/** The load's orders: the delivered run first, numbered as the map numbers them, then the rest. */
+function LoadStopList({ rows, onOrder, renderDetail, narrow = false }) {
+  const inRun = rows.filter((r) => r.stop != null).sort((a, b) => a.stop - b.stop || String(a.at || '').localeCompare(String(b.at || '')));
+  const rest = rows.filter((r) => r.stop == null);
+  return (
+    <ol className="divide-y divide-slate-100 rounded-xl bg-white ring-1 ring-slate-200 overflow-hidden">
+      {[...inRun, ...rest].flatMap((r) => {
+        const panel = renderDetail?.(r.stopNbr, r.date, narrow ? { stacked: true } : undefined);
+        const [tone, word] = LOAD_OUTCOME[r.outcome] || LOAD_OUTCOME.open;
+        const badge = r.stop != null ? BRAND : r.outcome === 'not-delivered' ? '#dc2626' : r.outcome === 'open' ? '#d97706' : '#64748b';
+        return [(
+          <li key={`${r.stopNbr}|${r.date}`} className={`flex items-start gap-3 px-3 py-2.5 ${panel ? 'bg-blue-50' : ''}`}>
+            <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white" style={{ background: badge }}>
+              {r.stop != null ? r.stop : r.outcome === 'not-delivered' ? '!' : r.outcome === 'open' ? '?' : '·'}
+            </span>
+            <div className="min-w-0 flex-1">
+              <button type="button" onClick={() => onOrder(r.stopNbr, r.date)} aria-expanded={!!panel}
+                className="text-left text-sm font-medium text-blue-800 hover:underline break-words">{r.businessName || r.stopNbr}</button>
+              <div className="text-[11px] text-slate-500 break-words">
+                <span className="font-mono">{r.stopNbr}</span>{r.city ? ` · ${r.city}` : ''}{r.pickup ? ' · pickup' : ''}{r.attempt ? ' · redelivery' : ''}
+                {r.weight != null ? ` · ${loadLb(r.weight)}` : ''}
+              </div>
+              {r.priceNote && <div className="text-[11px] text-amber-800 break-words">{r.priceNote}</div>}
+            </div>
+            <div className="shrink-0 text-right text-[11px] leading-5">
+              <div className={tone}>{word || (r.at ? stopWhen(r.at) : 'delivered')}</div>
+              <div className={`tabular-nums ${r.price != null ? 'text-slate-800' : 'text-slate-400'}`}>{loadRowPrice(r)}</div>
+            </div>
+          </li>
+        ), panel ? <li key={`${r.stopNbr}|${r.date}:detail`} className="bg-slate-50 p-3">{panel}</li> : null];
+      })}
+    </ol>
+  );
+}
+
+/** What opens under a load: its map and its orders. */
+function LoadDetail({ load, yard, stacked, milesWhy, onOrder, renderDetail }) {
+  const left = load.runLeftOut || {};
+  const unplaced = (left.noTime || 0) + (left.noPin || 0);
+  return (
+    <div className={stacked ? 'space-y-3 p-3' : 'grid gap-4 p-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] items-start'}>
+      <div className={`space-y-2 ${stacked ? '' : 'xl:sticky xl:top-4'}`}>
+        <LoadMap load={load} yard={yard} stacked={stacked} />
+        <p className="text-[11px] leading-relaxed text-slate-500">
+          <span className="font-semibold text-slate-700">Y</span> the yard · <span className="font-semibold" style={{ color: BRAND }}>1, 2, 3</span> stops in the order they were delivered ·
+          <span className="font-semibold text-red-700"> !</span> not delivered · <span className="font-semibold text-amber-700">?</span> not closed out.
+          The line joins the stops in that order; it is not the roads driven.
+          {load.miles?.miles == null && milesWhy && <span className="font-medium text-amber-800"> Road miles for this load: {milesWhy}.</span>}
+          {unplaced > 0 && ` ${plural(unplaced, 'delivered order')} could not be placed in the run (${[left.noTime ? `${left.noTime} with no delivery time` : '', left.noPin ? `${left.noPin} with no pin` : ''].filter(Boolean).join(', ')}).`}
+        </p>
+      </div>
+      {/* Beside the map (a desktop table row) the list is the narrow column of two. */}
+      <LoadStopList rows={load.rows} onOrder={onOrder} renderDetail={renderDetail} narrow={!stacked} />
+    </div>
+  );
+}
+
+/** The week in eight numbers — and the ninth, cost, said to be missing rather than printed as zero. */
+function DriverWeekSummary({ data }) {
+  const t = data.totals;
+  const m = data.miles || {};
+  const milesSub = !m.enabled ? 'Road miles are switched off on this site'
+    : t.milesLoads === t.loads ? `All ${plural(t.loads, 'load')} measured · yard to yard`
+      : `${t.milesLoads} of ${plural(t.loads, 'load')} measured — the rest say why`;
+  const priceSub = t.price.orders
+    ? `${t.price.deliveredOrders} delivered orders · ${t.price.unpriced ? `${t.price.unpriced} with no price on file` : 'every order priced'}`
+    : 'No priced orders this week';
+  return (
+    <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
+      <LoadTile label="Loads" value={t.loads} sub={`${plural(t.days, 'day')} · ${plural(t.stops, 'stop')}`} />
+      <LoadTile label="Delivered" value={`${t.delivered} of ${t.orders}`}
+        sub={[t.notDelivered ? `${t.notDelivered} not delivered` : '', t.open ? `${t.open} not closed out` : '', t.pickups ? plural(t.pickups, 'pickup') : '', t.attempts ? plural(t.attempts, 'redelivery').replace('redeliverys', 'redeliveries') : ''].filter(Boolean).join(' · ') || 'every order delivered'} />
+      <LoadTile label="Road miles" value={loadMilesText(t.miles)} sub={milesSub} />
+      <LoadTile label="On the road" value={loadSpan(t.spanMin)} sub={t.stopsPerHour != null ? `first to last delivery · ${t.stopsPerHour} stops an hour` : 'first to last delivery'} />
+      <LoadTile label="Freight" value={loadLb(t.weight)} sub={`${plural(t.skids, 'skid')} · ${t.loose} loose`} />
+      <LoadTile label="Order prices" value={loadMoney(t.price.delivered)} sub={priceSub} />
+      <LoadTile label="Per mile · per stop" value={t.perMile != null ? `${loadMoney(t.perMile)} · ${loadMoney(t.perStop)}` : '—'}
+        sub={t.perMile != null ? `over the ${plural(t.ratedLoads, 'load')} with every order priced and miles measured` : 'needs a load with every order priced and its miles measured'} />
+      <LoadTile label="Cost" value="Not recorded" tone="muted" sub={data.cost?.text || 'No cost is recorded.'} />
+    </div>
+  );
+}
+
+/** One load as a desktop table row's cells, and as a card — the same facts in both. */
+function loadFacts(l, miles) {
+  return {
+    stops: `${l.stops}`,
+    orders: `${plural(l.orders, 'order')}${l.pickups ? ` · ${l.pickups} PU` : ''}`,
+    delivered: `${l.delivered} of ${l.orders}`,
+    exceptions: [l.notDelivered ? `${l.notDelivered} not delivered` : '', l.open ? `${l.open} not closed out` : ''].filter(Boolean).join(' · '),
+    window: l.firstAt ? `${stopWhen(l.firstAt)} → ${stopWhen(l.lastAt)}` : '—',
+    span: loadSpan(l.spanMin),
+    freight: `${loadLb(l.weight)} · ${l.skids} sk`,
+    miles: loadMilesText(l.miles?.miles),
+    milesWhy: loadMilesWhy(l, miles),
+    // The TABLE gets the short word and keeps the whole reason on hover and inside the opened
+    // load: a Google refusal spelled out in a cell widened the column and folded every other
+    // column of the week into two lines at 2280px.
+    milesShort: l.miles?.miles != null ? loadMilesWhy(l, miles) : (miles && !miles.enabled ? 'switched off' : 'not measured'),
+    price: loadMoney(l.price.delivered),
+    priceWhy: l.price.orders ? `${l.price.priced} of ${l.price.orders} priced${l.price.notDelivered ? ` · ${loadMoney(l.price.notDelivered)} undelivered` : ''}` : 'no orders priced here',
+    perMile: l.perMile != null ? loadMoney(l.perMile) : '—',
+    truck: LOAD_TRUCK[l.truck] || null,
+  };
+}
+
+function DriverWeekTable({ data, openLoad, onToggleLoad, onOrder, renderDetail }) {
+  const TH = 'px-3 py-2 font-semibold whitespace-nowrap';
+  return (
+    <div className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+          <tr>
+            <th className={`${TH} text-left`}>Day</th><th className={`${TH} text-left`}>Load</th>
+            <th className={`${TH} text-right`}>Stops</th><th className={`${TH} text-left`}>Delivered</th>
+            <th className={`${TH} text-left`}>First → last delivery</th><th className={`${TH} text-right`}>Freight</th>
+            <th className={`${TH} text-right`}>Road miles</th><th className={`${TH} text-right`}>Order prices</th>
+            <th className={`${TH} text-right`}>Per mile</th><th className={TH}><span className="sr-only">Map and stops</span></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {data.loads.flatMap((l) => {
+            const f = loadFacts(l, data.miles);
+            const open = openLoad === l.key;
+            return [(
+              <tr key={l.key} className={`align-top ${open ? 'bg-blue-50/60' : 'hover:bg-slate-50'}`}>
+                <td className="px-3 py-3 whitespace-nowrap text-slate-700">{loadDay(l.date)}</td>
+                <td className="px-3 py-3"><div className="font-semibold text-slate-900">{l.name}</div>{f.truck && <div className="text-[11px] text-slate-500">{f.truck}</div>}</td>
+                <td className="px-3 py-3 text-right tabular-nums"><div className="font-semibold">{f.stops}</div><div className="text-[11px] text-slate-500 whitespace-nowrap">{f.orders}</div></td>
+                <td className="px-3 py-3"><div className="tabular-nums">{f.delivered}</div>{f.exceptions && <div className="text-[11px] font-medium text-red-700 whitespace-nowrap">{f.exceptions}</div>}</td>
+                <td className="px-3 py-3 whitespace-nowrap"><div className="tabular-nums">{f.window}</div><div className="text-[11px] text-slate-500">{f.span}</div></td>
+                <td className="px-3 py-3 text-right whitespace-nowrap tabular-nums text-slate-700">{f.freight}</td>
+                <td className="px-3 py-3 text-right" title={f.milesWhy}><div className="tabular-nums whitespace-nowrap">{f.miles}</div><div className="text-[11px] text-slate-500 whitespace-nowrap">{f.milesShort}</div></td>
+                <td className="px-3 py-3 text-right"><div className="font-semibold tabular-nums">{f.price}</div><div className="text-[11px] text-slate-500">{f.priceWhy}</div></td>
+                <td className="px-3 py-3 text-right tabular-nums">{f.perMile}</td>
+                <td className="px-3 py-3 text-right">
+                  <button type="button" onClick={() => onToggleLoad(l.key)} aria-expanded={open}
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg px-3 h-9 text-xs font-semibold text-[#1e5b92] ring-1 ring-inset ring-[#1e5b92]/30 hover:bg-[#1e5b92]/5">
+                    Map &amp; stops {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  </button>
+                </td>
+              </tr>
+            ), open ? (
+              <tr key={`${l.key}:open`}>
+                <td colSpan={10} className="p-0 bg-slate-50">
+                  <LoadDetail load={l} yard={data.yard} stacked={false} milesWhy={f.milesWhy} onOrder={onOrder} renderDetail={renderDetail} />
+                </td>
+              </tr>
+            ) : null];
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DriverWeekCards({ data, stacked, openLoad, onToggleLoad, onOrder, renderDetail }) {
+  return (
+    <div className={stacked ? 'space-y-3' : 'grid gap-3 grid-cols-1 md:grid-cols-2 items-start'}>
+      {data.loads.map((l) => {
+        const f = loadFacts(l, data.miles);
+        const open = openLoad === l.key;
+        return (
+          <article key={l.key} className={`rounded-xl bg-white shadow-sm ring-1 ${open ? 'ring-[#1e5b92]/40 md:col-span-2' : 'ring-slate-200'}`}>
+            <div className="p-4 space-y-3">
+              {/* The name takes the room; the price column is capped and WRAPS. A shrink-0 price
+                  with its "18 of 18 priced · $70.19 undelivered" line held its full width and
+                  folded a 32-character load name into four lines at 390px. */}
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-slate-900 break-words">{l.name}</div>
+                  <div className="text-xs text-slate-500">{loadDay(l.date)}{f.truck ? ` · ${f.truck}` : ''}</div>
+                </div>
+                <div className="max-w-[45%] text-right">
+                  <div className="font-semibold tabular-nums text-slate-900">{f.price}</div>
+                  <div className="text-[11px] leading-snug text-slate-500">{f.priceWhy}</div>
+                </div>
+              </div>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                <div><dt className="text-slate-500">Stops</dt><dd className="font-medium text-slate-900">{f.stops} · {f.orders}</dd></div>
+                <div><dt className="text-slate-500">Delivered</dt><dd className="font-medium text-slate-900">{f.delivered}{f.exceptions && <span className="block text-red-700">{f.exceptions}</span>}</dd></div>
+                <div><dt className="text-slate-500">First → last</dt><dd className="font-medium text-slate-900 tabular-nums">{f.window}<span className="block font-normal text-slate-500">{f.span}</span></dd></div>
+                <div><dt className="text-slate-500">Road miles</dt><dd className="font-medium text-slate-900 tabular-nums">{f.miles}<span className="block font-normal text-slate-500">{f.milesWhy}</span></dd></div>
+                <div><dt className="text-slate-500">Freight</dt><dd className="font-medium text-slate-900 tabular-nums">{f.freight}</dd></div>
+                <div><dt className="text-slate-500">Per mile</dt><dd className="font-medium text-slate-900 tabular-nums">{f.perMile}</dd></div>
+              </dl>
+            </div>
+            <button type="button" onClick={() => onToggleLoad(l.key)} aria-expanded={open}
+              className="flex w-full items-center justify-center gap-1.5 min-h-[44px] border-t border-slate-200 text-sm font-semibold text-[#1e5b92] hover:bg-slate-50 rounded-b-xl">
+              {open ? 'Hide map & stops' : 'Map & stops'} {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            </button>
+            {open && <div className="border-t border-slate-200 bg-slate-50 rounded-b-xl"><LoadDetail load={l} yard={data.yard} stacked milesWhy={f.milesWhy} onOrder={onOrder} renderDetail={renderDetail} /></div>}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A DRIVER'S WEEK — the answer. */
+function DriverWeekResults({ data, stacked, wide, openLoad, onToggleLoad, onOrder, renderDetail }) {
+  const unread = (data.days || []).filter((d) => d.source === 'unread');
+  return (
+    <section aria-label="Driver's week" className="space-y-4">
+      <div className="rounded-2xl bg-white p-4 sm:p-6 shadow-sm ring-1 ring-slate-200 space-y-4">
+        <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+          <div className="min-w-0">
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Driver&rsquo;s week · {weekLabel(data.week)}</div>
+            <h2 className="text-lg sm:text-xl font-semibold text-slate-900 break-words">{data.driver?.label}</h2>
+          </div>
+          <DriverWeekDays days={data.days} />
+        </div>
+        {unread.length > 0 && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+            {unread.map((d) => loadDay(d.date)).join(', ')} could not be read, so this week may be short. Do not read the totals out as the whole week — try again.
+          </div>
+        )}
+        {data.loads.length > 0 ? <DriverWeekSummary data={data} /> : (
+          <div className="rounded-xl border border-dashed border-slate-300 px-6 py-8 text-center text-sm text-slate-600">
+            No loads for {data.driver?.label} {weekLabel(data.week)}. Every day that has happened was read{unread.length ? ', except the ones above' : ''}.
+          </div>
+        )}
+        <div className="space-y-1 text-[11px] leading-relaxed text-slate-500">
+          <p><span className="font-semibold text-slate-600">Road miles</span> are Google&rsquo;s driving distance over the stops in the order they were delivered, yard to yard — measured once per load and kept. They are not the truck&rsquo;s odometer.</p>
+          <p><span className="font-semibold text-slate-600">Order prices</span> are the price on each order: Uline&rsquo;s TOTAL-AMOUNT line, or the NuVizz Seal # where Davis records a price. An order that ran twice this week is priced once, on the load that delivered it. Orders with no price on file are counted, not guessed.</p>
+          {data.cancelledOff > 0 && <p>{plural(data.cancelledOff, 'cancelled order')} {data.cancelledOff === 1 ? 'is' : 'are'} not counted.</p>}
+        </div>
+      </div>
+      {data.loads.length > 0 && (wide
+        ? <DriverWeekTable data={data} openLoad={openLoad} onToggleLoad={onToggleLoad} onOrder={onOrder} renderDetail={renderDetail} />
+        : <DriverWeekCards data={data} stacked={stacked} openLoad={openLoad} onToggleLoad={onToggleLoad} onOrder={onOrder} renderDetail={renderDetail} />)}
+    </section>
+  );
+}
+
+/** No name, a name two drivers answer to, or a name nobody ran under: the week's drivers to pick. */
+function DriverWeekChooser({ data, stacked, onPick }) {
+  const typed = data.typed;
+  const hits = data.candidates || [];
+  const list = typed && hits.length ? hits : (data.drivers || []);
+  const title = !typed ? `Who ran loads ${weekLabel(data.week)}`
+    : hits.length > 1 ? `“${typed}” matches ${hits.length} drivers ${weekLabel(data.week)}`
+      : `No driver called “${typed}” ran a load ${weekLabel(data.week)}`;
+  return (
+    <section aria-label="Choose a driver" className="rounded-2xl bg-white p-4 sm:p-6 shadow-sm ring-1 ring-slate-200 space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <h2 className="text-[15px] font-semibold text-slate-900 break-words">{title}</h2>
+          <p className="mt-1 text-[13px] text-slate-500">{list.length ? 'Pick one to see their week.' : 'No load that week carries a driver in our records.'}{typed && !hits.length && list.length ? ' These drivers did:' : ''}</p>
+        </div>
+        <DriverWeekDays days={data.days} />
+      </div>
+      {list.length > 0 && (
+        <div className={stacked ? 'divide-y divide-slate-100 rounded-xl ring-1 ring-slate-200 overflow-hidden' : 'grid gap-2 grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}>
+          {list.map((d) => (
+            <button key={d.key} type="button" onClick={() => onPick(d)}
+              className={stacked
+                ? 'w-full flex items-center gap-3 px-4 py-3 min-h-[56px] text-left active:bg-slate-50'
+                : 'group flex items-center gap-3 min-w-0 rounded-xl bg-white p-3 text-left ring-1 ring-slate-200 hover:ring-[#1e5b92]/40 hover:shadow-sm transition'}>
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-[#1e5b92]/10 group-hover:text-[#1e5b92]"><Truck size={16} /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold text-slate-900">{d.label}</span>
+                <span className="block truncate text-xs text-slate-500">{plural(d.loads, 'load')} · {plural(d.days, 'day')}</span>
+              </span>
+              <ChevronRight size={16} className="shrink-0 text-slate-300" />
             </button>
           ))}
         </div>
@@ -38384,6 +38854,20 @@ function StopLookupScreen() {
   // visit starts on ALL; see PlaceDateBar for why keeping last week's pick would break that.
   const [placeSel, setPlaceSel] = useState({ kind: 'all' });
   const [placeRowsShown, setPlaceRowsShown] = useState(PLACE_PAGE);
+  // ── A DRIVER'S WEEK (v1.69.0) ───────────────────────────────────────────────
+  // The NAME is remembered like the order box; the WEEK is not — every visit starts on this week,
+  // for the reason PlaceDateBar gives: a remembered week would quietly answer an old question.
+  // Gated at dispatcher, one step above this screen: it adds up a driver's order prices.
+  const driverGate = useRoleGate('dispatcher');
+  const [drvName, setDrvName] = useState(() => {
+    try { return localStorage.getItem(STOP_LOOKUP_DRIVER) || ''; } catch { return ''; }
+  });
+  const [drvDay, setDrvDay] = useState(today);
+  const [drvNames, setDrvNames] = useState([]);   // the datalist — whoever the last answer named
+  const [openLoad, setOpenLoad] = useState(null); // ONE load open at a time: each open map is a billed map load
+  // A slower answer to an older week is DROPPED, never painted over a newer one — stepping the week
+  // twice while the first read is still out must not leave last week's loads on this week's label.
+  const drvReqRef = useRef(0);
 
   const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
@@ -38488,11 +38972,13 @@ function StopLookupScreen() {
    * but one, which keeps "which row is open" in ONE place: a list cannot draw a panel under a
    * row the screen does not think is open, and cannot fail to draw one under the row it does.
    */
-  const renderOrderPanel = useCallback((stopNbr, date) => {
+  // `opts.stacked` — a list that sits in a NARROW column on a desktop (a load's stops beside its
+  // map) asks for the panel's one-column layout; three columns in 560px is a squeeze, not a view.
+  const renderOrderPanel = useCallback((stopNbr, date, opts = {}) => {
     if (!detail) return null;
     if (detail.stopNbr !== String(stopNbr ?? '').trim() || detail.date !== String(date ?? '').trim()) return null;
     return (
-      <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={isMobile}
+      <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={opts.stacked ?? isMobile}
         onClose={closeOrder} onOpenHistory={() => pick(detailData?.stop?.pro || detail.stopNbr)} />
     );
   }, [detail, detailLoading, detailErr, detailData, isMobile, closeOrder, pick]);
@@ -38709,11 +39195,56 @@ function StopLookupScreen() {
     runPlace(next, placeSel);
   }, [place, placeSel, runPlace]);
 
+  /**
+   * A DRIVER'S WEEK. A typed name is resolved by the server against the week's own drivers (the
+   * territory sheet's identity rule), so "colin" and "COLIN 2" find the same man; no name, or a
+   * name two drivers answer to, comes back as a list to pick from. A pick is sent back by KEY.
+   */
+  const runDriver = useCallback(async ({ name, key, day } = {}) => {
+    if (driverGate.reason) { setErr(driverGate.reason); return; }
+    const wk = weekOf(day || today) || weekOf(today);
+    setLoading(true); setBusy('driver'); setErr(null); setPromptMsg(null); closeOrder(); setOpenLoad(null);
+    setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
+    const typed = String(name ?? '').trim();
+    try { localStorage.setItem(STOP_LOOKUP_DRIVER, typed); } catch { /* a remembered box is a convenience */ }
+    const p = new URLSearchParams({ week: wk.from });
+    if (key) p.set('key', key); else if (typed) p.set('driver', typed);
+    const req = ++drvReqRef.current;
+    try {
+      const r = await apiFetch(`/.netlify/functions/driver-loads?${p.toString()}`);
+      const j = await r.json();
+      if (req !== drvReqRef.current) return;
+      if (!j.ok) throw new Error(j.error || 'the week could not be read');
+      setData(j);
+      setDrvNames((j.drivers || []).map((d) => d.label));
+      if (j.mode === 'driver-week') {
+        setDrvName(j.driver?.label || typed);
+        remember(recentEntry({ kind: 'driver', term: j.driver?.label, key: j.driver?.key, week: j.week?.from }));
+      }
+      setAnswerTick((n) => n + 1);
+    } catch (e) {
+      if (req === drvReqRef.current) { setErr(String(e.message || e)); setData(null); }
+    } finally { if (req === drvReqRef.current) { setLoading(false); setBusy(null); } }
+  }, [driverGate.reason, today, closeOrder, remember]);
+
+  /** Step the week. A week already on screen is re-read for the same driver — the same person,
+   *  another week, which is the comparison this screen is for. */
+  const changeDriverWeek = useCallback((day) => {
+    setDrvDay(day);
+    if (data?.mode === 'driver-week') runDriver({ key: data.driver?.key, name: data.driver?.label, day });
+    else if (data?.mode === 'driver-week-choose') runDriver({ name: data.typed || '', day });
+  }, [data, runDriver]);
+
   /** A recent lookup, run again exactly as a rep would: the box refilled, then searched. Dates
    *  are whatever is set NOW — for an address that is All unless a day or range was just picked,
    *  because a remembered date would narrow a search nobody asked to narrow. */
   const runRecent = useCallback((e) => {
     if (!e) return;
+    if (e.kind === 'driver') {
+      setDrvName(e.term); setDrvDay(e.week);
+      runDriver({ key: e.key, name: e.term, day: e.week });
+      return;
+    }
     if (e.kind === 'place') {
       const f = { ...EMPTY_PLACE, ...e.place };
       setPlace(f);
@@ -38722,13 +39253,19 @@ function StopLookupScreen() {
     }
     setQ(e.term); setNameKey(null); setYearOn(false);
     submit(e.term, { nameKey: null, year: null });
-  }, [runPlace, placeSel, submit]);
+  }, [runPlace, placeSel, submit, runDriver]);
+
 
   /** Clearing a box clears the answer only when the answer is ITS answer — emptying the order box
    *  must not wipe an address search that is still on screen beside it. */
   const clearOrder = useCallback(() => {
     setQ(''); setErr(null);
-    if (data && data.mode !== 'place') { setData(null); closeOrder(); }
+    if (data && !['place', 'driver-week', 'driver-week-choose'].includes(data.mode)) { setData(null); closeOrder(); }
+  }, [data, closeOrder]);
+  const clearDriver = useCallback(() => {
+    setDrvName(''); setErr(null);
+    try { localStorage.setItem(STOP_LOOKUP_DRIVER, ''); } catch { /* convenience */ }
+    if (data?.mode === 'driver-week' || data?.mode === 'driver-week-choose') { setData(null); closeOrder(); setOpenLoad(null); }
   }, [data, closeOrder]);
   const clearPlace = useCallback(() => {
     setPlace(EMPTY_PLACE); setErr(null);
@@ -38746,7 +39283,7 @@ function StopLookupScreen() {
         <header className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900">Stop lookup</h1>
-            <p className="mt-1 text-sm text-slate-500">Search our delivery records by order, customer, address or city.</p>
+            <p className="mt-1 text-sm text-slate-500">Search our delivery records by order, customer, address or city &mdash; or look at a driver&rsquo;s week of loads.</p>
           </div>
           <LookupCallsPill calls={data?.nuvizzCalls} />
         </header>
@@ -38756,13 +39293,26 @@ function StopLookupScreen() {
             q={q} setQ={setQ} onClearOrder={clearOrder}
             onOrder={() => { setNameKey(null); setYearOn(false); submit(q, { nameKey: null, year: null }); }}
             place={place} setPlace={setPlace} placeSel={placeSel} onPlaceSel={changePlaceSel}
-            onPlace={() => runPlace(place, placeSel)} onClearPlace={clearPlace} />
+            onPlace={() => runPlace(place, placeSel)} onClearPlace={clearPlace}
+            drvName={drvName} setDrvName={setDrvName} drvDay={drvDay} setDrvDay={changeDriverWeek} drvNames={drvNames}
+            drvGate={driverGate.reason} onDriver={() => runDriver({ name: drvName, day: drvDay })} onClearDriver={clearDriver} />
         </div>
 
         {err && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 break-words">{err}</div>}
 
         {!data && !loading && (
           <StopRecentLookups items={recent} onPick={runRecent} onClear={() => setRecent([])} stacked={isMobile} nowMs={Date.now()} />
+        )}
+
+        {data?.mode === 'driver-week-choose' && (
+          <DriverWeekChooser data={data} stacked={isMobile}
+            onPick={(d) => { setDrvName(d.label); runDriver({ key: d.key, name: d.label, day: data.week?.from }); }} />
+        )}
+
+        {data?.mode === 'driver-week' && (
+          <DriverWeekResults data={data} stacked={isMobile} wide={viewportWidth >= LOAD_TABLE_MIN}
+            openLoad={openLoad} onToggleLoad={(k) => { closeOrder(); setOpenLoad((cur) => (cur === k ? null : k)); }}
+            onOrder={openOrder} renderDetail={renderOrderPanel} />
         )}
 
         {data?.mode === 'place' && (

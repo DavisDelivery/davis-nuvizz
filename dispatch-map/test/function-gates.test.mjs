@@ -70,6 +70,10 @@ const DISPATCHER_SET = [
   // The UAT mirror's manual run: writes only the mirror's named database, refuses production
   // before parsing — gated like the Scan-now button, its nearest sibling.
   'uat-mirror-resume-background',
+  // The load lookup on Stop lookup: a driver's week of order prices added up — a revenue
+  // picture rather than the facts on one stop card — and it spends Google requests measuring
+  // road miles. One step above the viewer screen it lives on.
+  'driver-loads',
 ];
 const ADMIN_SET = ['routing-engine-tuning'];
 
