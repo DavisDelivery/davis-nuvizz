@@ -270,6 +270,7 @@ function Scorecard({ r, phone }) {
     ['Loads over cap', (x) => int(x.overCap)],
     ['No-tractor stops on a tractor', (x) => int(x.blocked)],
     ['Drivers past their day', (x) => int(x.overTime)],
+    ['Loads over weight', (x) => int(x.overWeight)],
     ['Stops left unplanned', (x) => int(x.unplanned)],
   ];
   const costRow = r.costs && typeof r.costs.driven === 'number';
