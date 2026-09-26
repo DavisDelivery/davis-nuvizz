@@ -24,7 +24,7 @@
 //     carried in one trip, clamped at the class cap and floored at
 //     skid_cap_driver_min — see capsFor().
 //   • per-trip PAYLOAD cap (Phase 2.11) — a trip's total pounds may not exceed
-//     the truck class's payload RATING (box 10,000, tractor 44,000 — the same
+//     the truck class's payload RATING (box 10,000, tractor 30,000 — the same
 //     numbers truck-profiles.mts already gates the Phase 1 solver on). This is
 //     NOT the 2.1.1 ceiling returning. That ceiling was weight_p85 ×
 //     hard_cap_factor: a PERCENTILE of the driver's own history, which by

@@ -29,7 +29,7 @@ const hav = (a, b) => {
 };
 const box = (id) => ({ id, label: id, maxSkids: 14, maxWeightLbs: 10000, deckLengthIn: 312,
   capabilities: { liftgate: true, tractor: false, lengthClassFt: 26, overheadClearance: true } });
-const tractor = (id) => ({ id, label: id, maxSkids: 28, maxWeightLbs: 44000, deckLengthIn: 636,
+const tractor = (id) => ({ id, label: id, maxSkids: 28, maxWeightLbs: 30000, deckLengthIn: 636,
   capabilities: { liftgate: false, tractor: true, lengthClassFt: 53, overheadClearance: true } });
 const CLUSTERS = [{ lat: 33.95, lng: -84.55 }, { lat: 33.75, lng: -84.39 }, { lat: 34.06, lng: -84.10 }];
 const board = (n, boxOnlyCount = 0) => Array.from({ length: n }, (_, i) => {

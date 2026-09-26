@@ -1,7 +1,7 @@
 // test/routing-weight-cap.test.mjs
 //
 // Phase 2.11 — per-CLASS per-TRIP PAYLOAD caps. A 26ft straight truck at 26,000
-// lb GVWR carries ~10,000 lb; a 53ft tractor ~44,000. Those are the same ratings
+// lb GVWR carries ~10,000 lb; a 53ft tractor 30,000 (Chad, 2026-09-26). Those are the same ratings
 // truck-profiles.mts already gates the Phase 1 solver on, so the two solvers now
 // agree on what a truck may legally haul.
 //
@@ -73,7 +73,7 @@ test('a single stop heavier than the whole rating still rides — the cap never 
 
 test('class matters: the same 24,000 lb bag is ONE tractor trip but THREE box trips', () => {
   const bag = () => [stop('a', { weight: 8000, miles: 50 }), stop('b', { weight: 8000, miles: 40 }), stop('c', { weight: 8000, miles: 30 })];
-  assert.equal(splitFarFirst(bag(), classCapsFor('tractor', CFG), CFG).length, 1, '24,000 lb is under the 44,000 tractor rating');
+  assert.equal(splitFarFirst(bag(), classCapsFor('tractor', CFG), CFG).length, 1, '24,000 lb is under the 30,000 tractor rating');
   assert.equal(splitFarFirst(bag(), classCapsFor('box_truck', CFG), CFG).length, 3, '24,000 lb needs three 10,000 lb box loads');
 });
 

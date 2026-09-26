@@ -42,7 +42,7 @@ test('stopSkidEquiv: skids + loose/loose_per_skid; pallets fallback when the bre
 
 test('classCapsFor: per-class caps; unknown class reads as box; hard can never invert below soft', () => {
   assert.deepEqual(classCapsFor('box_truck', CFG), { soft: 20, hard: 22, weightLb: 10000 });
-  assert.deepEqual(classCapsFor('tractor', CFG), { soft: 31, hard: 37, weightLb: 44000 });
+  assert.deepEqual(classCapsFor('tractor', CFG), { soft: 31, hard: 37, weightLb: 30000 });
   assert.deepEqual(classCapsFor(null, CFG), { soft: 20, hard: 22, weightLb: 10000 },
     'an unrostered driver inherits the STRICTER box payload rating');
   assert.equal(classCapsFor('box_truck', { ...CFG, skid_cap_box_hard: 10 }).hard, 20, 'inverted config floors hard at soft');

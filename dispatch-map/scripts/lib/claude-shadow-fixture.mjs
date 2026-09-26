@@ -129,7 +129,7 @@ for (const k of Object.keys(claudePlan)) claudePlan[k] = claudePlan[k].filter((i
 const legsFor = (n) => Array.from({ length: n }, (_, j) => ({ mi: j === 0 ? 41.3 : 3.2 + j, min: j === 0 ? 48.5 : 6.1 + j }));
 const colFor = (ids, i, side) => (ids && ids.length ? {
   stops: ids.length, spots: ids.length * 2.5, cap: 18.1 + i, util: Math.round(((ids.length * 2.5) / (18.1 + i)) * 1000) / 10,
-  weight: ids.length * 1840, maxLbs: i === 5 ? 44000 : 10000, overWeight: ids.length * 1840 > (i === 5 ? 44000 : 10000),
+  weight: ids.length * 1840, maxLbs: i === 5 ? 30000 : 10000, overWeight: ids.length * 1840 > (i === 5 ? 30000 : 10000),
   miles: 176.7 + i * 11 - (side === 'claude' ? 40 : 0), driveMin: 214 + i * 9, routeMin: 214 + i * 9 + 15 * ids.length,
   driverMin: i === 3 && side === 'claude' ? 640 : 214 + i * 9 + 15 * ids.length, maxMin: 600, overTime: i === 3 && side === 'claude', over: ids.length * 2.5 > 18.1 + i, blocked: 0,
   ...(side === 'reseq' ? {} : { legs: legsFor(ids.length), homeMi: 38.4 + i, legsOk: true }),
@@ -140,7 +140,7 @@ export const CLAUDE_SHADOW_MAP = {
   stops: mapStops,
   loads: mapLoads.map((l, i) => ({
     ...l, clsSource: i === 1 ? 'default' : 'roster', cap: 18.1 + i, capSource: 'learned', capNote: i === 2 ? 'raised to what dispatch delivered on this route' : null,
-    maxMin: 600, maxMinNote: null, maxLbs: i === 5 ? 44000 : 10000, lbsNote: null,
+    maxMin: 600, maxMinNote: null, maxLbs: i === 5 ? 30000 : 10000, lbsNote: null,
     why: 'Canton / Ball Ground / Jasper / Ellijay run as one loop from the north end, then down 575 — one truck to the far corner, not two.',
     cols: {},
   })),

@@ -25,6 +25,10 @@ export interface TruckProfile {
 
 // Seed defaults (editable). 26ft box ≈ 12–15 skids / ~10k lb / deck ~312in;
 // 53ft trailer ≈ 24–30 skids / deck ~636in.
+// WEIGHT: Chad, 2026-09-26: “10,000 pound limit on box trucks and 30,000 on tractors is the weight limits.”
+// The 44,000 lb tractor figure that stood here before was a generic trailer payload, not Davis's
+// limit. Three other copies are kept in step with this one by tests: the engine's per-trip cap
+// (routing-engine-config.mts), the client seed (App.jsx) and the Claude backtest's limit.
 export const DEFAULT_TRUCK_PROFILES: TruckProfile[] = [
   {
     id: 'box_26', label: '26ft Box', truckClass: 'BOX_26',
@@ -35,7 +39,7 @@ export const DEFAULT_TRUCK_PROFILES: TruckProfile[] = [
   },
   {
     id: 'tractor_53', label: '53ft Trailer', truckClass: 'TRACTOR_53',
-    maxSkids: 28, maxWeightLbs: 44000, deckLengthIn: 636, deckWidthIn: 100,
+    maxSkids: 28, maxWeightLbs: 30000, deckLengthIn: 636, deckWidthIn: 100,
     palletFootprintIn: { length: 48, width: 40 },
     capabilities: { liftgate: false, tractor: true, lengthClassFt: 53, overheadClearance: true },
     driverKey: null, notes: 'Default 53ft tractor-trailer.', active: true,
