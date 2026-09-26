@@ -15,8 +15,9 @@
 // saves or stages freight; the only money it can spend is at the model, capped per day, and every
 // button that spends asks first and says the ceiling.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Route, Play, X, Settings2, ChevronDown, ChevronRight, TrendingDown, History } from 'lucide-react';
+import { Route, Play, X, Settings2, ChevronDown, ChevronRight, TrendingDown, History, MapPinned } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
+import BacktestMap from './BacktestMap.jsx';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 const BACKTESTS_URL = '/.netlify/functions/claude-shadow?view=backtests';
@@ -376,9 +377,11 @@ function LoadRows({ r, phone }) {
   );
 }
 
-function DayDetail({ date, loadResult, phone, onClose, rates }) {
+function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMap }) {
   const [raw, setR] = useState(null);
   const r = raw ? withRates(raw, rates) : null;
+  // The map is opened on purpose: each opening is a billed Google map load — one on a phone, two on
+  // a desktop — and switching plans inside it costs nothing more (BacktestMap keeps its panes).
   const [err, setErr] = useState(null);
   useEffect(() => { let live = true; setR(null); setErr(null); loadResult(date).then((x) => live && setR(x)).catch((e) => live && setErr(String(e?.message || e))); return () => { live = false; }; }, [date, loadResult]);
   return (
@@ -399,8 +402,13 @@ function DayDetail({ date, loadResult, phone, onClose, rates }) {
             <span className="text-slate-600">of which stop order alone: <Delta d={r.sequencingOnly?.miles} unit=" mi" /> · truck assignment: <Delta d={r.assignmentOnly?.miles} unit=" mi" /></span>
             <span className="text-slate-600">{int(r.agreement?.stopsMoved)} stops moved to another truck · stops riding together agree {typeof r.agreement?.coLoadRecall === 'number' ? `${r.agreement.coLoadRecall}%` : '—'}</span>
           </div>
+          <button onClick={() => setShowMap((x) => !x)} aria-expanded={showMap}
+            className={`rounded-lg border px-3 text-xs font-semibold min-h-[44px] inline-flex items-center gap-1 ${showMap ? 'bg-indigo-700 text-white border-indigo-700' : 'bg-white text-indigo-700 border-indigo-200'}`}>
+            <MapPinned size={13} /> {showMap ? 'Hide the map' : 'Map: Claude vs dispatch'}
+          </button>
+          {showMap && <BacktestMap date={date} at={r.at} phone={phone} />}
           <Scorecard r={r} phone={phone} />
-          {r.unplanned?.length > 0 && <div className="text-xs text-rose-700">Claude left {r.unplanned.length} stop{r.unplanned.length === 1 ? '' : 's'} unplanned: {r.unplanned.slice(0, 8).map((u) => `#${u.stop} (${u.reason})`).join('; ')}</div>}
+          {r.unplanned?.length > 0 && <div className="text-xs text-rose-700">Claude left {r.unplanned.length} stop{r.unplanned.length === 1 ? '' : 's'} unplanned: {r.unplanned.slice(0, 8).map((u) => `${u.n ? `#${u.n}${u.name ? ` ${u.name}` : ''}` : `backtest stop ${u.stop}`} (${u.reason})`).join('; ')}</div>}
           <LoadRows r={r} phone={phone} />
           <details className="text-[11px] text-slate-500">
             <summary className="cursor-pointer min-h-[44px] flex items-center">What this measures, and what it cannot see</summary>
@@ -435,10 +443,22 @@ function statusOf(day, jobsByDate, held = false) {
   return { k: 'none', text: 'not run', job: null };
 }
 
-export default function BacktestPanel({ phone }) {
+/**
+ * Which day is open, and whether its map is. Held ABOVE the phone/desktop switch (ClaudeShadowScreen)
+ * so turning a large phone sideways — which crosses into the desktop view — keeps the day open.
+ */
+export function useOpenDay() {
+  const [openDay, setDay] = useState(null);
+  const [showMap, setShowMap] = useState(false);
+  const setOpenDay = useCallback((d) => { setDay(d); setShowMap(false); }, []);
+  return { openDay, setOpenDay, showMap, setShowMap };
+}
+
+export default function BacktestPanel({ phone, day }) {
   const b = useBacktests();
   const [picked, setPicked] = useState(() => new Set());
-  const [openDay, setOpenDay] = useState(null);
+  const own = useOpenDay();
+  const { openDay, setOpenDay, showMap, setShowMap } = day || own;
   const [showAll, setShowAll] = useState(false);
   // A view missing a part (an older server, a guard's stub) still renders: defaults fill the gaps.
   const v = b.view ? {
@@ -480,7 +500,7 @@ export default function BacktestPanel({ phone }) {
             <Totals t={totals} phone={phone} spend={v.spend} />
           </div>
           <RouterSettings v={v} onSave={b.saveSettings} />
-          {openDay && <DayDetail key={`${openDay}|${days.find((d) => d.date === openDay)?.result?.at || ''}`} date={openDay} loadResult={b.loadResult} phone={phone} rates={rates} onClose={() => setOpenDay(null)} />}
+          {openDay && <DayDetail key={`${openDay}|${days.find((d) => d.date === openDay)?.result?.at || ''}`} date={openDay} loadResult={b.loadResult} phone={phone} rates={rates} showMap={showMap} setShowMap={setShowMap} onClose={() => setOpenDay(null)} />}
           <div className="flex flex-wrap items-center gap-2">
             <button disabled={!picked.size || b.busy || !!v.refused} onClick={async () => { if (await b.queue([...picked], v.settings.maxUsd, v.ceiling)) setPicked(new Set()); }}
               className="rounded-lg bg-indigo-700 text-white px-3 text-xs font-semibold min-h-[44px] disabled:opacity-50 inline-flex items-center gap-1">

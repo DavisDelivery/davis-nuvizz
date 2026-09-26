@@ -26,7 +26,7 @@ import { readSettings } from './settings.mts';
 import { LEARN_DAYS_COLLECTION, HISTORY_MANIFEST_MASK, sealedDaysFrom } from './learn-core.mts';
 import {
   BT_TENANT, BT_JOBS, BT_RESULTS, BT_STOP_MASK, LEARN_DAY_MASK, CAP_RULES,
-  buildBacktestProblem, btLoopProblem, compareBacktest, type BtProblem, type CapRule,
+  buildBacktestProblem, btLoopProblem, compareBacktest, backtestMapPayload, type BtProblem, type CapRule,
 } from './backtest-core.mts';
 import { restoreState, runRounds, type LoopState, type LoopSettings, type RoundRecord } from './plan-loop.mts';
 import { effectiveEngineConfig, engineConfigPath } from '../routing-engine-config.mts';
@@ -469,6 +469,18 @@ export async function backtestResult(date: string, deps: BtDeps = LIVE) {
   const r = await deps.getDoc(resultPath(date));
   if (!r) return { status: 404, body: { ok: false, error: `no backtest for ${date} yet` } };
   return { status: 200, body: { ok: true, result: r } };
+}
+
+/** The map's read: the day's stored stops with their places, and each plan's loads in order. */
+export async function backtestMap(date: string, deps: BtDeps = LIVE) {
+  if (!DATE_RE.test(String(date))) return { status: 400, body: { ok: false, error: 'bad date' } };
+  const r = await deps.getDoc(resultPath(date));
+  if (!r) return { status: 404, body: { ok: false, error: `no backtest for ${date} yet` } };
+  const stored = typeof r.jobId === 'string' && r.jobId ? await deps.getDoc(`${jobPath(r.jobId)}/data/problem`) : null;
+  if (typeof stored?.problemJson !== 'string') return { status: 404, body: { ok: false, error: `the stops stored with ${date}'s backtest are not on file — re-run the day to map it` } };
+  let problem: BtProblem;
+  try { problem = JSON.parse(stored.problemJson); } catch { return { status: 500, body: { ok: false, error: 'the stored day could not be read' } }; }
+  return { status: 200, body: { ok: true, map: backtestMapPayload(problem, r), nuvizzCalls: 0 } };
 }
 
 export async function saveRouterSettings(change: any, by: string | null, deps: BtDeps = LIVE) {

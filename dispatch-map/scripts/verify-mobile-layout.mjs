@@ -38,7 +38,7 @@ import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay } from './lib/claude-shadow-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
 
@@ -273,6 +273,14 @@ const PROBES = {
   // one claim MEASURE cannot make: it judges horizontal overflow only, and this menu drops UP from
   // the bottom of the screen, so "fully inside the viewport, Live dispatch readable without a
   // scroll" is asserted by hand.
+  // A BACKTESTED DAY, OPENED (v1.72.0): its scorecard, loads and the map button. The MAP itself is
+  // measured by verify-shadow-map.mjs — this guard runs on CI's first build, which has no Google Maps
+  // key, and there the map honestly says it could not load (that is how the first cut of this probe
+  // went red in CI while passing on a machine whose build had a key).
+  claudeshadow: [{
+    name: 'a backtested day open',
+    open: async (page) => guardOpenBacktestDay(page),
+  }],
   routing: [
     { name: 'Setup sheet open', open: async (page) => { await page.getByRole('button', { name: /^setup/i }).first().click(); await page.waitForTimeout(600); return page.getByText(/Select stops/i).first().isVisible().catch(() => false); } },
     { name: 'Grid open on Stops', open: async (page) => { await page.getByRole('button', { name: /^stops \d+/i }).first().click(); await page.waitForTimeout(600); return page.getByText(/^Stop #$/).first().isVisible().catch(() => false); } },
@@ -1028,7 +1036,7 @@ function stubRoutes(page, emailHtml) {
     // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
     // them would leave the guard measuring a screen the app never renders.
     // THE CLAUDE SHADOW TAB — its worst rows (see scripts/lib/claude-shadow-fixture.mjs).
-    if (u.includes('claude-shadow')) return R(claudeShadowFixtureFor(u));
+    if (u.includes('claude-shadow')) return R(claudeShadowFixtureFor(u, route.request().postData()));
     // PRINT LABELS (v1.67.0) — the day's shippers, or one shipper's orders, BUILT by the real
     // label-shippers.js (scripts/lib/labels-fixture.mjs). Before the catch-all, which would
     // answer it with an empty board and measure a screen with nothing on it.
@@ -1155,6 +1163,7 @@ for (const device of DEVICES) {
 
     // Then the same screen with its sheets, drawers and disclosures open.
     for (const probe of (PROBES[screen.key] || [])) {
+      if (probe.fakeMaps) await page.route(isGoogleMapsScript, (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: CLAUDE_SHADOW_FAKE_MAPS }));
       await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
       await page.waitForTimeout(1000);
       if (!(await gotoScreen(page, screen))) continue;
@@ -1175,6 +1184,7 @@ for (const device of DEVICES) {
       if (probe.check) pp.push(...(await probe.check(page).catch((e) => [`the probe's own check could not run: ${e.message}`])));
       if (pp.length === 0) ok(`${screen.label} → ${probe.name}`);
       else { bad(`${screen.label} → ${probe.name}`); for (const x of pp) console.log(`      ${x}`); }
+      if (probe.fakeMaps) await page.unroute(isGoogleMapsScript);
     }
   }
   await ctx.close();

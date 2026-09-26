@@ -50,7 +50,7 @@ import { CAPACITY_PATH, LEARN_LAST_PATH, DEFAULT_LOOSE_PER_SKID } from './lib/cl
 import { planLearn, learnRefusal, runLearn } from './lib/claude-shadow/learn.mts';
 import { withOverrides, ratioInForce, CAP_BOUNDS, LOOSE_PER_SKID_BOUNDS } from './lib/claude-shadow/settings-core.mts';
 import { readSettings, saveSettings } from './lib/claude-shadow/settings.mts';
-import { backtestView, backtestResult, enqueueBacktests, cancelJob, saveRouterSettings, routerRefusal } from './lib/claude-shadow/backtest.mts';
+import { backtestView, backtestResult, backtestMap, enqueueBacktests, cancelJob, saveRouterSettings, routerRefusal } from './lib/claude-shadow/backtest.mts';
 
 export const PROBE_LAST_PATH = 'claude_shadow_meta/probe_last';
 export const PROBE_LOG_COLLECTION = 'claude_shadow_probes';
@@ -147,6 +147,13 @@ export default async (req: Request): Promise<Response> => {
     const viewer = await requireUser(req, { role: 'viewer' });
     if (!viewer.ok) return viewer.response;
     try { const r = await backtestResult(String(body?.date || '')); return J({ ...r.body, calls: 0 }, r.status); }
+    catch (e: any) { return J({ ok: false, error: String(e?.message || e), calls: 0 }, 502); }
+  }
+  // …and the day's map: the stops stored with the backtest, where they are, and each plan's loads.
+  if (body?.action === 'backtest-map') {
+    const viewer = await requireUser(req, { role: 'viewer' });
+    if (!viewer.ok) return viewer.response;
+    try { const r = await backtestMap(String(body?.date || '')); return J({ ...r.body, calls: 0 }, r.status); }
     catch (e: any) { return J({ ok: false, error: String(e?.message || e), calls: 0 }, 502); }
   }
 

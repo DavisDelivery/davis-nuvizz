@@ -23,6 +23,7 @@
     "verify:shiplify": "node scripts/verify-shiplify.mjs dist",
     "verify:tv-map": "node scripts/verify-tv-map.mjs dist",
     "verify:engine-map": "node scripts/verify-engine-map.mjs dist",
+    "verify:shadow-map": "node scripts/verify-shadow-map.mjs dist",
     "verify:wb-own-day": "node scripts/verify-wb-own-day.mjs dist",
     "perf:routing": "node scripts/perf-routing.mjs dist",
     "verify:effect-deps": "node scripts/check-effect-deps.mjs",

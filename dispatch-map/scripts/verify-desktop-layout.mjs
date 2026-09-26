@@ -88,7 +88,7 @@ for (const device of DESKTOPS) {
   // measuring its load-error box would prove nothing about the desktop layout.
   // Two views of one function since v1.71.0: the status body, and the backtest panel's own answer.
   await page.route('**/.netlify/functions/claude-shadow*', (route) => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify(claudeShadowFixtureFor(route.request().url())),
+    status: 200, contentType: 'application/json', body: JSON.stringify(claudeShadowFixtureFor(route.request().url(), route.request().postData())),
   }));
   // Print labels renders its shipper chips only once the day has loaded; without this it would
   // measure its load-error box, which proves nothing about the desktop layout.

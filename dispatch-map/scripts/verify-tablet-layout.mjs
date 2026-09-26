@@ -27,7 +27,7 @@ import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, guardOpenBacktestDay } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -66,6 +66,12 @@ const SCREENS = [
 // AT REST IS NOT ENOUGH, and the phone guard learned this the expensive way. Every defect
 // Chad photographed needed a tap first: the Status menu is not in the DOM until it is opened.
 const PROBES = {
+  // A BACKTESTED DAY, OPENED (v1.72.0). The map itself is measured by verify-shadow-map.mjs on the
+  // keyed build — this guard runs on CI's first build, which has no Google Maps key.
+  claudeshadow: [{
+    name: 'a backtested day open',
+    open: async (page) => guardOpenBacktestDay(page),
+  }],
   routing: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
   map: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
   // The queue's sub-tabs at iPad width: a segmented bar on a 1024px tablet and a chip row on a
@@ -373,7 +379,7 @@ for (const dev of TABLETS) {
     // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
     // them would leave the guard measuring a screen the app never renders.
     // THE CLAUDE SHADOW TAB — the same worst-rows fixture the phone and desktop guards use.
-    if (u.includes('claude-shadow')) return J(claudeShadowFixtureFor(u));
+    if (u.includes('claude-shadow')) return J(claudeShadowFixtureFor(u, route.request().postData()));
     // PRINT LABELS (v1.67.0) — the same built fixture the phone guard drives.
     if (u.includes('labels-by-shipper')) return J(labelsAnswer(u));
     // A DRIVER'S WEEK (v1.69.0) — the same built fixture the phone guard drives.

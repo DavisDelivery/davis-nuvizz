@@ -379,3 +379,84 @@ test('THE REAL REPO passes: the Claude shadow planner reaches only reviewed modu
   assert.ok(r.browserEntries.includes('src/shadow/ClaudeShadowScreen.jsx'));
   assert.ok(!r.serverFiles.some((f) => /nuvizz/i.test(f.split('/').pop())), 'no nuvizz* module in the server graph');
 });
+
+// ── the one reviewed exception: Google streets for the Claude-vs-dispatch map (Chad, 2026-09-25) ──
+
+const MAPS_LOADER_SRC = readFileSync(join(DEFAULT_ROOT, 'src/lib/google-maps-loader.js'), 'utf8');
+const MAP_SCREEN = `import React from 'react'; import { loadGoogleMaps } from '../lib/google-maps-loader.js';
+  export default function S() { loadGoogleMaps(); return <div />; }`;
+
+test('MAPS: the screen may reach the reviewed Google Maps loader — the real file, byte for byte, passes', async () => {
+  const r = await check({ 'src/lib/google-maps-loader.js': MAPS_LOADER_SRC, [SCREEN]: MAP_SCREEN });
+  assert.deepEqual(r.violations, []);
+  assert.ok(r.browserFiles.includes('src/lib/google-maps-loader.js'));
+});
+
+test('MAPS: a shadow file importing @googlemaps/js-api-loader directly FAILS — only the reviewed loader may', async () => {
+  const r = await check({ [SCREEN]: `import React from 'react'; import { Loader } from '@googlemaps/js-api-loader'; export default function S() { new Loader({}); return <div />; }` });
+  assert.deepEqual(rules(r), ['browser-package']);
+  assert.match(r.violations[0].detail || r.violations[0].message || JSON.stringify(r.violations[0]), /only through src\/lib\/google-maps-loader\.js/);
+});
+
+test('MAPS: the loader changed by one line FAILS on its hash — a change there is a change someone re-reads', async () => {
+  const edited = MAPS_LOADER_SRC.replace("version: 'weekly'", "version: 'weekly', libraries: ['places']");
+  assert.notEqual(edited, MAPS_LOADER_SRC);
+  const r = await check({ 'src/lib/google-maps-loader.js': edited, [SCREEN]: MAP_SCREEN });
+  assert.deepEqual(rules(r), ['maps-loader']);
+});
+
+// ── REVIEW of the map exception (2026-09-25): every bypass the reviewers reproduced, now refused ──
+
+const screenWith = (body, imports = '') => ({ [SCREEN]: `import React from 'react'; ${imports} export default function S({ el, u }) { ${body}; return <div />; }` });
+const API = "import { apiFetch } from '../lib/api.js';";
+
+test('REVIEW MAP: claude-shadow/../<function> FAILS — the browser resolves it to that function, with the dispatcher\'s token on it', async () => {
+  for (const path of ['/.netlify/functions/claude-shadow/../nuvizz-manual-scan', '/.netlify/functions/claude-shadow/%2e%2e/nuvizz-write', '/.netlify/functions/claude-shadow/%2E%2e/nuvizz-write', '/.netlify/functions/claude-shadow\\\\..\\\\nuvizz-write', '/.netlify/functions/claude-shadow//nuvizz-write']) {
+    const viaConst = await check({ [SCREEN]: `import React from 'react'; ${API} const ENDPOINT = '${path}'; export default function S() { apiFetch(ENDPOINT, { method: 'POST' }); return <div />; }` });
+    assert.ok(has(viaConst, 'browser-endpoint'), `${path}: ${rules(viaConst).join()}`);
+  }
+  // …while the real endpoint, with or without a query, still passes.
+  const ok = await check({ [SCREEN]: `import React from 'react'; ${API} const ENDPOINT = '/.netlify/functions/claude-shadow'; const VIEW = '/.netlify/functions/claude-shadow?view=backtests'; export default function S() { apiFetch(ENDPOINT); apiFetch(VIEW); return <div />; }` });
+  assert.deepEqual(ok.violations, []);
+});
+
+test('REVIEW MAP: the page through an element — ownerDocument.defaultView, getRootNode — FAILS like document does', async () => {
+  const r1 = await check(screenWith("el.current.ownerDocument.defaultView[['fe','tch'].join('')](u)"));
+  assert.ok(has(r1, 'browser-global'), rules(r1).join());
+  const r2 = await check(screenWith('el.current.getRootNode().title = u'));
+  assert.ok(has(r2, 'browser-global'), rules(r2).join());
+});
+
+test('REVIEW MAP: a URL loaded without JSX — new Image(), .src =, innerHTML — FAILS', async () => {
+  for (const body of ['const i = new Image(); i.src = u', 'el.current.src = u', 'el.current.innerHTML = u', 'new Audio(u)']) {
+    const r = await check(screenWith(body));
+    assert.ok(has(r, 'browser-element'), `${body}: ${rules(r).join()}`);
+  }
+});
+
+test('REVIEW MAP: the Google namespace may draw but not fetch — loadGeoJson, overlays, tile URLs, icon URLs, services FAIL', async () => {
+  for (const body of [
+    "el.data.loadGeoJson(['', '.netlify', 'functions', 'nuvizz-manual-scan'].join('/'))",
+    'new el.maps.GroundOverlay(u, null)',
+    'new el.maps.ImageMapType({ getTileUrl: () => u })',
+    'new el.maps.KmlLayer({ map: el })',
+    'new el.maps.Geocoder()',
+    'el.maps.importLibrary(u)',
+    'el.data.setStyle({ icon: u })',
+    'el.data.setStyle({ icon: { url: u } })',
+    'el.marker.setIcon(u)',
+  ]) {
+    const r = await check(screenWith(body));
+    assert.ok(has(r, 'browser-maps'), `${body}: ${rules(r).join()}`);
+  }
+  // Drawing with a path icon, as the real map does, passes.
+  const ok = await check(screenWith("el.data.addGeoJson({ type: 'FeatureCollection', features: [] }); el.data.setStyle(() => ({ icon: { path: 'M 0 0 L 1 1', scale: 1 } }))"));
+  assert.deepEqual(ok.violations, []);
+});
+
+test("REVIEW MAP: a protocol-relative '//host' FAILS as a foreign host, and importing lib/session.js FAILS — the screen needs no token", async () => {
+  const proto = await check(screenWith("const x = '//evil.example/x.png'"));
+  assert.ok(has(proto, 'browser-host'), rules(proto).join());
+  const sess = await check(screenWith('sessionToken()', "import { sessionToken } from '../lib/session.js';"));
+  assert.ok(has(sess, 'browser-endpoint'), rules(sess).join());
+});
