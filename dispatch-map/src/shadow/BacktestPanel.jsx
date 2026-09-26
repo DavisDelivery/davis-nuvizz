@@ -14,10 +14,12 @@
 // Two views, per the house rule: a table on a desktop, stacked cards on a phone. Nothing here sends,
 // saves or stages freight; the only money it can spend is at the model, capped per day, and every
 // button that spends asks first and says the ceiling.
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Route, Play, X, Settings2, ChevronDown, ChevronRight, TrendingDown, History, MapPinned } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
-import BacktestMap from './BacktestMap.jsx';
+import BacktestMap, { useBacktestDay } from './BacktestMap.jsx';
+import { RoutesTable, RouteCards, RoutePanel } from './RouteCompare.jsx';
+import { routeRows, sortRoutes, routeCompare, focusPicks, toggleTruck, pickTrucks, MAX_SELECTED } from './backtest-map-core.js';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 const BACKTESTS_URL = '/.netlify/functions/claude-shadow?view=backtests';
@@ -377,13 +379,57 @@ function LoadRows({ r, phone }) {
   );
 }
 
-function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMap }) {
+function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMap, route }) {
   const [raw, setR] = useState(null);
   const r = raw ? withRates(raw, rates) : null;
-  // The map is opened on purpose: each opening is a billed Google map load — one on a phone, two on
-  // a desktop — and switching plans inside it costs nothing more (BacktestMap keeps its panes).
   const [err, setErr] = useState(null);
   useEffect(() => { let live = true; setR(null); setErr(null); loadResult(date).then((x) => live && setR(x)).catch((e) => live && setErr(String(e?.message || e))); return () => { live = false; }; }, [date, loadResult]);
+  // THE DAY IN FULL (v1.73.0): every stop, both plans and every route's numbers, read once (Firestore
+  // only) and shared by the map, the opened route and the routes list. The map itself is opened on
+  // purpose: each opening is a billed Google map load — one on a phone, two on a desktop — and
+  // switching plans or routes inside it costs nothing more (BacktestMap keeps its panes).
+  const day = useBacktestDay(date);
+  const m = day.m;
+  // The scorecard and the routes must be one run: if the day was backtested again between the two
+  // reads, say so rather than show the new run's routes under the old run's numbers.
+  const stale = !!(m && r && m.at && r.at && m.at !== r.at);
+  const { sel, setSel, focus, setFocus, q, setQ, sortBy, setSortBy } = route;
+  const [note, setNote] = useState(null);
+  // Every explicit open re-frames the maps, even of the route already open (a counter, not the id).
+  const [zoomTick, setZoomTick] = useState(0);
+  const panelRef = useRef(null);
+  const mapRef = useRef(null);
+  const rows = useMemo(() => (m && !stale ? routeRows(m) : []), [m, stale]);
+  // The search narrows the list AND what ◀ ▶ walks — one list, so "4 of 9" means the nine you see.
+  const sorted = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    const all = sortRoutes(rows, sortBy);
+    return t ? all.filter((x) => `${x.route} ${x.driver}`.toLowerCase().includes(t)) : all;
+  }, [rows, sortBy, q]);
+  const cmp = useMemo(() => (m && focus && !stale ? routeCompare(m, focus) : null), [m, focus, stale]);
+  const TOO_MANY = `Up to ${MAX_SELECTED} trucks can be coloured at once — clear one first.`;
+  const toggle = useCallback((id) => setSel((s0) => { const x = toggleTruck(s0, id); setNote(x.refused ? TOO_MANY : null); return x.next; }), [TOO_MANY, setSel]);
+  const pick = useCallback((ids) => setSel((s0) => { const x = pickTrucks(s0, ids); setNote(x.refused ? TOO_MANY : null); return x.next; }), [TOO_MANY, setSel]);
+  // Opening a route colours it and the trucks it traded with, and the maps zoom to it.
+  const openRoute = useCallback((id) => {
+    if (!m) return;
+    const c = routeCompare(m, id);
+    if (!c) return;
+    const f = focusPicks(c);
+    setSel(f.next);
+    setNote(null);
+    setFocus(id);
+    setZoomTick((n) => n + 1);
+    // With the maps open, bring the MAPS into view — they are what just zoomed to this route, and the
+    // route sits right under them; without them, the route itself. Keyboard focus goes to the route.
+    requestAnimationFrame(() => {
+      (showMap && mapRef.current ? mapRef.current : panelRef.current)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      panelRef.current?.querySelector('section[aria-label^="Route "]')?.focus({ preventScroll: true });
+    });
+  }, [m, showMap, setSel, setFocus]);
+  const at = cmp ? sorted.findIndex((x) => x.id === cmp.load.id) : -1;
+  const colourNote = cmp ? (() => { const left = focusPicks(cmp).left; return left ? `${left} more truck${left === 1 ? '' : 's'} traded with this route and ${left === 1 ? 'is' : 'are'} not coloured — ${MAX_SELECTED} colours at a time.` : null; })() : null;
+  const routesProps = { rows: sorted, total: rows.length, sel, onToggle: toggle, onOpen: openRoute, focus, q, setQ, sortBy, setSortBy, serviceMin: m?.serviceMin ?? 15 };
   return (
     <div className="rounded-xl border-2 border-indigo-200 bg-white p-3 space-y-3">
       <div className="flex items-start justify-between gap-2">
@@ -402,14 +448,33 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
             <span className="text-slate-600">of which stop order alone: <Delta d={r.sequencingOnly?.miles} unit=" mi" /> · truck assignment: <Delta d={r.assignmentOnly?.miles} unit=" mi" /></span>
             <span className="text-slate-600">{int(r.agreement?.stopsMoved)} stops moved to another truck · stops riding together agree {typeof r.agreement?.coLoadRecall === 'number' ? `${r.agreement.coLoadRecall}%` : '—'}</span>
           </div>
-          <button onClick={() => setShowMap((x) => !x)} aria-expanded={showMap}
-            className={`rounded-lg border px-3 text-xs font-semibold min-h-[44px] inline-flex items-center gap-1 ${showMap ? 'bg-indigo-700 text-white border-indigo-700' : 'bg-white text-indigo-700 border-indigo-200'}`}>
-            <MapPinned size={13} /> {showMap ? 'Hide the map' : 'Map: Claude vs dispatch'}
-          </button>
-          {showMap && <BacktestMap date={date} at={r.at} phone={phone} />}
           <Scorecard r={r} phone={phone} />
           {r.unplanned?.length > 0 && <div className="text-xs text-rose-700">Claude left {r.unplanned.length} stop{r.unplanned.length === 1 ? '' : 's'} unplanned: {r.unplanned.slice(0, 8).map((u) => `${u.n ? `#${u.n}${u.name ? ` ${u.name}` : ''}` : `backtest stop ${u.stop}`} (${u.reason})`).join('; ')}</div>}
-          <LoadRows r={r} phone={phone} />
+          {stale && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">This day was backtested again after you opened it, so its routes would not match the numbers above. Close the day and open it again.</div>}
+          <button onClick={() => setShowMap((x) => !x)} aria-expanded={showMap} disabled={!m || stale}
+            className={`rounded-lg border px-3 text-xs font-semibold min-h-[44px] inline-flex items-center gap-1 disabled:opacity-50 ${showMap ? 'bg-indigo-700 text-white border-indigo-700' : 'bg-white text-indigo-700 border-indigo-200'}`}>
+            <MapPinned size={13} /> {showMap ? (phone ? 'Hide the map' : 'Hide the maps') : phone ? 'Map: yours and Claude’s' : 'Maps: yours and Claude’s, side by side'}
+          </button>
+          <div ref={mapRef} className="scroll-mt-2">
+            {showMap && m && !stale && <BacktestMap m={m} phone={phone} sel={sel} onPick={pick} onClearPicks={() => { setSel(new Map()); setNote(null); }} focus={focus} zoomTick={zoomTick} onOpenRoute={openRoute} note={note} />}
+          </div>
+          <div ref={panelRef} className="scroll-mt-2">
+            {cmp && <RoutePanel cmp={cmp} phone={phone} sel={sel} onOpen={openRoute} onClose={() => setFocus(null)}
+              prevId={at > 0 ? sorted[at - 1].id : null} nextId={at >= 0 && at < sorted.length - 1 ? sorted[at + 1].id : null}
+              position={at >= 0 ? at + 1 : null} total={sorted.length} colourNote={colourNote} />}
+          </div>
+          {m && !stale && note && <p className="text-xs text-amber-800" role="status">{note}</p>}
+          {m && !stale && (phone ? <RouteCards {...routesProps} /> : <RoutesTable {...routesProps} />)}
+          {!m && !day.err && <div className="text-xs text-slate-500">Loading the routes…</div>}
+          {day.err && (
+            <div className="space-y-2">
+              <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 flex flex-wrap items-center justify-between gap-2">
+                <span>The day’s routes could not load: {day.err}</span>
+                <button onClick={day.retry} className="rounded-lg border border-rose-300 bg-white px-3 font-semibold min-h-[44px]">Try again</button>
+              </div>
+              <LoadRows r={r} phone={phone} />
+            </div>
+          )}
           <details className="text-[11px] text-slate-500">
             <summary className="cursor-pointer min-h-[44px] flex items-center">What this measures, and what it cannot see</summary>
             <ul className="list-disc pl-4 space-y-0.5 mt-1">
@@ -418,6 +483,7 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
               <li>Capacity for the day was learned from {r.stats?.capModelDays ?? 0} earlier days only, at {r.loosePerSkid} loose pieces per skid spot; cap rule: {r.capRule}.</li>
               <li>{r.stats?.excludedNoCoords || 0} stop{r.stats?.excludedNoCoords === 1 ? '' : 's'} had no map point and were left out of every column (their room on the truck was held back).</li>
               {r.orderSources && <li>“As driven” order came from delivery times on {int(r.orderSources.driven || 0)} truck{r.orderSources.driven === 1 ? '' : 's'}{r.orderSources.planned ? `, the planned order on ${r.orderSources.planned}` : ''}{r.orderSources['stop number'] ? `, stop number on ${r.orderSources['stop number']} (no times or plan)` : ''}.</li>}
+              <li>An “order” is one stop number; “addresses” counts the places a driver stops, so two orders for one customer at one dock are one address. Skids and loose pieces are as recorded on the day — an order with no count recorded reads 0.</li>
             </ul>
           </details>
         </>
@@ -450,15 +516,22 @@ function statusOf(day, jobsByDate, held = false) {
 export function useOpenDay() {
   const [openDay, setDay] = useState(null);
   const [showMap, setShowMap] = useState(false);
-  const setOpenDay = useCallback((d) => { setDay(d); setShowMap(false); }, []);
-  return { openDay, setOpenDay, showMap, setShowMap };
+  // The opened route, the trucks coloured, the search and the order travel with the day, so turning
+  // a phone sideways keeps the route you were looking at, not just the day.
+  const [focus, setFocus] = useState(null);
+  const [sel, setSel] = useState(() => new Map());
+  const [q, setQ] = useState('');
+  const [sortBy, setSortBy] = useState('triage');
+  const setOpenDay = useCallback((d) => { setDay(d); setShowMap(false); setFocus(null); setSel(new Map()); setQ(''); setSortBy('triage'); }, []);
+  return { openDay, setOpenDay, showMap, setShowMap, focus, setFocus, sel, setSel, q, setQ, sortBy, setSortBy };
 }
 
 export default function BacktestPanel({ phone, day }) {
   const b = useBacktests();
   const [picked, setPicked] = useState(() => new Set());
   const own = useOpenDay();
-  const { openDay, setOpenDay, showMap, setShowMap } = day || own;
+  const dayState = day || own;
+  const { openDay, setOpenDay, showMap, setShowMap } = dayState;
   const [showAll, setShowAll] = useState(false);
   // A view missing a part (an older server, a guard's stub) still renders: defaults fill the gaps.
   const v = b.view ? {
@@ -500,7 +573,7 @@ export default function BacktestPanel({ phone, day }) {
             <Totals t={totals} phone={phone} spend={v.spend} />
           </div>
           <RouterSettings v={v} onSave={b.saveSettings} />
-          {openDay && <DayDetail key={`${openDay}|${days.find((d) => d.date === openDay)?.result?.at || ''}`} date={openDay} loadResult={b.loadResult} phone={phone} rates={rates} showMap={showMap} setShowMap={setShowMap} onClose={() => setOpenDay(null)} />}
+          {openDay && <DayDetail key={`${openDay}|${days.find((d) => d.date === openDay)?.result?.at || ''}`} date={openDay} loadResult={b.loadResult} phone={phone} rates={rates} showMap={showMap} setShowMap={setShowMap} route={dayState} onClose={() => setOpenDay(null)} />}
           <div className="flex flex-wrap items-center gap-2">
             <button disabled={!picked.size || b.busy || !!v.refused} onClick={async () => { if (await b.queue([...picked], v.settings.maxUsd, v.ceiling)) setPicked(new Set()); }}
               className="rounded-lg bg-indigo-700 text-white px-3 text-xs font-semibold min-h-[44px] disabled:opacity-50 inline-flex items-center gap-1">

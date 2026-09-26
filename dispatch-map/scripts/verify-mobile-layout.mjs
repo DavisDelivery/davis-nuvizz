@@ -38,7 +38,7 @@ import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay, guardOpenFirstRoute } from './lib/claude-shadow-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
 
@@ -273,13 +273,14 @@ const PROBES = {
   // one claim MEASURE cannot make: it judges horizontal overflow only, and this menu drops UP from
   // the bottom of the screen, so "fully inside the viewport, Live dispatch readable without a
   // scroll" is asserted by hand.
-  // A BACKTESTED DAY, OPENED (v1.72.0): its scorecard, loads and the map button. The MAP itself is
-  // measured by verify-shadow-map.mjs — this guard runs on CI's first build, which has no Google Maps
-  // key, and there the map honestly says it could not load (that is how the first cut of this probe
-  // went red in CI while passing on a machine whose build had a key).
+  // A BACKTESTED DAY, OPENED, WITH ONE ROUTE OPENED (v1.72.0, v1.73.0 — Chad: "pull up one route and see
+  // the differences on a route by route basis"): the scorecard, the routes list and one route's numbers
+  // and stop lists. None of that needs Google. The MAP is measured by verify-shadow-map.mjs — this guard
+  // runs on CI's first build, which has no Google Maps key, and there the map honestly says it could not
+  // load (that is how the first cut of this probe went red in CI while passing on a machine with a key).
   claudeshadow: [{
-    name: 'a backtested day open',
-    open: async (page) => guardOpenBacktestDay(page),
+    name: 'a backtested day open, one route opened',
+    open: async (page) => (await guardOpenBacktestDay(page)) && guardOpenFirstRoute(page),
   }],
   routing: [
     { name: 'Setup sheet open', open: async (page) => { await page.getByRole('button', { name: /^setup/i }).first().click(); await page.waitForTimeout(600); return page.getByText(/Select stops/i).first().isVisible().catch(() => false); } },

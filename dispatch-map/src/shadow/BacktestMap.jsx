@@ -2,27 +2,29 @@
 //
 // Chad, 2026-09-25: "I want an interactive map to see Claude's vs my own dispatch" — and, offered a
 // plain drawn map or real streets, "Google streets". It loads Google through the one reviewed loader
-// the shadow screen may use (lib/google-maps-loader.js), reads the day through the shadow's own
-// endpoint only, and changes nothing: it is a picture of a backtest, not a board.
+// the shadow screen may use (lib/google-maps-loader.js), draws the day the shadow's own endpoint
+// returned (useBacktestDay, below), and changes nothing: it is a picture of a backtest, not a board.
 //
-// WHAT YOU DO WITH IT. Tap a truck in the list to colour it on both maps (up to eight at once) and see
-// where that driver went under dispatch and where Claude would have sent them. Tap a stop to see its
-// truck under each plan — every order at that address, not just the top marker — and pick their
-// trucks with one button. Side by side, the two maps move together. Two views: a phone gets one map
-// with a Dispatch | Claude switch; a desktop gets both, or either one larger.
+// WHAT YOU DO WITH IT. Colour trucks from the routes table (up to eight at once) and see where that
+// driver went under dispatch and where Claude would have sent them. Open a route (v1.73.0, Chad: "a
+// way to pull up one route and see the differences on a route by route basis") and both maps zoom to
+// that truck, number its stops in each plan's order and colour the trucks it traded with. Tap a stop
+// to see its truck under each plan — every order at that address, not just the top marker. Side by
+// side, the two maps move together. Two views: a phone gets one map with a Dispatch | Claude switch;
+// a desktop gets both, or either one larger.
 //
 // ONE MAP PER PANE, MADE ONCE. Each new google.maps.Map is a billed map load and starts over at the
 // whole day, so switching plans swaps what a pane DRAWS, never the pane: a phone costs one map load
 // however often it flips, a desktop two. The maps sit inside a scrolling page, so they take the
 // wheel and a one-finger drag only with Ctrl / two fingers ('cooperative') — the page keeps scrolling.
 //
-// The rules — which truck a stop is on, geometry, colour slots — live in backtest-map-core.js.
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { MapPinned, Search, X } from 'lucide-react';
+// The rules — which truck a stop is on, geometry, colour slots, routes — live in backtest-map-core.js.
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { MapPinned, X, Route } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
 import { loadGoogleMaps } from '../lib/google-maps-loader.js';
 import {
-  SELECT_COLORS, MAX_SELECTED, MUTED, PLAN_LABEL, ORDER_WORD, planGeo, boundsOf, truckRows, storiesAt, orderNote, toggleTruck, pickTrucks,
+  SELECT_COLORS, MUTED, PLAN_LABEL, ORDER_WORD, planGeo, boundsOf, focusBounds, storiesAt, orderNote,
 } from './backtest-map-core.js';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
@@ -32,27 +34,74 @@ const QUIET = [
   { featureType: 'transit', stylers: [{ visibility: 'off' }] },
 ];
 const DEPOT_SQUARE = 'M -6 -6 L 6 -6 L 6 6 L -6 6 Z';
-const TOO_MANY = `Up to ${MAX_SELECTED} trucks at a time — tap one to clear it first.`;
 
-function styleFor(g, sel, phone) {
+/**
+ * The day's stored stops, trucks, both plans and every route's numbers (the 'backtest-map' read —
+ * Firestore only, 0 NuVizz). It is a read, and reading twice changes nothing — so a server error
+ * (seen once on a cold function: HTTP 502, then 200 in 0.7 s on every try after) is asked again
+ * once, by itself, before the screen says anything; a second failure says so, and retry() asks again.
+ */
+export function useBacktestDay(date) {
+  const [m, setM] = useState(null);
+  const [err, setErr] = useState(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setM(null); setErr(null);
+    const ask = () => apiFetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'backtest-map', date }) })
+      .then(async (r) => ({ r, j: await r.json().catch(() => null) }));
+    const pause = () => new Promise((res) => { setTimeout(res, 1500); });
+    (async () => {
+      let got = null, fail = null;
+      for (let i = 0; i < 2; i++) {
+        try {
+          got = await ask();
+          if (got.r.ok && got.j?.ok && got.j.map) { fail = null; break; }
+          fail = got.j?.error || `HTTP ${got.r.status}`;
+          if (got.r.status < 500) break;       // a 4xx is an answer (no backtest, stops not on file) — do not ask again
+        } catch (e) { fail = String(e?.message || e); }
+        if (i === 0) await pause();
+        if (!live) return;
+      }
+      if (!live) return;
+      if (fail) setErr(fail); else setM(got.j.map);
+    })();
+    return () => { live = false; };
+  }, [date, attempt]);
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  return { m, err, retry };
+}
+
+function styleFor(g, sel, phone, focus) {
   const any = sel.size > 0;
   // A thumb needs a bigger target than a pointer: the phone's stops are drawn larger.
-  const r = phone ? { on: 7, off: 5 } : { on: 5.5, off: 3.5 };
+  const r = phone ? { on: 7, off: 5, num: 11 } : { on: 5.5, off: 3.5, num: 10 };
   return (f) => {
     const kind = f.getProperty('kind');
-    const slot = sel.get(f.getProperty('loadId'));
+    const loadId = f.getProperty('loadId');
+    const slot = sel.get(loadId);
     const on = slot !== undefined;
     const color = on ? SELECT_COLORS[slot] : MUTED;
     if (kind === 'depot') {
       return { icon: { path: DEPOT_SQUARE, fillColor: '#111827', fillOpacity: 1, strokeColor: '#ffffff', strokeWeight: 2, scale: 1 }, zIndex: 1000, title: 'Buford terminal', clickable: false };
     }
     // Lines never take a tap: a missed stop must not silently re-colour a truck. Trucks are picked
-    // in the list, and every stop's title names its truck.
-    if (kind === 'casing') return { strokeColor: '#ffffff', strokeOpacity: on ? 1 : 0, strokeWeight: on ? 7 : 0, zIndex: on ? 90 : 0, clickable: false };
-    if (kind === 'route') return { strokeColor: color, strokeOpacity: on ? 0.95 : any ? 0.18 : 0.5, strokeWeight: on ? 4 : 2, zIndex: on ? 100 : 1, clickable: false };
+    // in the routes table, and every stop's title names its truck.
+    const focused = focus && loadId === focus;
+    if (kind === 'casing') return { strokeColor: '#ffffff', strokeOpacity: on ? 1 : 0, strokeWeight: on ? (focused ? 9 : 7) : 0, zIndex: on ? (focused ? 190 : 90) : 0, clickable: false };
+    if (kind === 'route') return { strokeColor: color, strokeOpacity: on ? 0.95 : any ? 0.18 : 0.5, strokeWeight: on ? (focused ? 5 : 4) : 2, zIndex: on ? (focused ? 195 : 100) : 1, clickable: false };
     if (kind === 'unplanned') {
       // A hollow ring: on no truck at all, and not to be read as a grey (unpicked) one.
       return { icon: { path: g.maps.SymbolPath.CIRCLE, scale: r.on, fillColor: '#ffffff', fillOpacity: 1, strokeColor: '#111827', strokeWeight: 2.5 }, zIndex: 300, title: f.getProperty('title') };
+    }
+    if (focused) {
+      // The opened route: every stop numbered in THIS plan's order, drawn over everything else.
+      return {
+        icon: { path: g.maps.SymbolPath.CIRCLE, scale: r.num, fillColor: color, fillOpacity: 1, strokeColor: '#ffffff', strokeWeight: 2 },
+        label: { text: String(f.getProperty('seq')), color: '#ffffff', fontSize: '11px', fontWeight: '700' },
+        zIndex: 400 + Number(f.getProperty('seq') || 0),
+        title: f.getProperty('title'),
+      };
     }
     return {
       icon: { path: g.maps.SymbolPath.CIRCLE, scale: on ? r.on : r.off, fillColor: color, fillOpacity: on ? 1 : any ? 0.35 : 0.85, strokeColor: '#ffffff', strokeWeight: on ? 1.5 : 1 },
@@ -62,7 +111,7 @@ function styleFor(g, sel, phone) {
   };
 }
 
-function PlanPane({ g, m, plan, sel, phone, onStop, slot, register, height, label }) {
+function PlanPane({ g, m, plan, sel, phone, focus, onStop, slot, register, height, label }) {
   const el = useRef(null);
   const [map, setMap] = useState(null);
   const handlers = useRef({ onStop });
@@ -96,7 +145,7 @@ function PlanPane({ g, m, plan, sel, phone, onStop, slot, register, height, labe
       framed.current = m;
     }
   }, [map, m, plan]);
-  useEffect(() => { if (map) map.data.setStyle(styleFor(g, sel, phone)); }, [map, g, sel, phone, m, plan]);
+  useEffect(() => { if (map) map.data.setStyle(styleFor(g, sel, phone, focus)); }, [map, g, sel, phone, focus, m, plan]);
   return (
     <div className="min-w-0">
       {label && <div className="text-xs font-semibold text-slate-700 mb-1">{label}</div>}
@@ -118,7 +167,7 @@ function StoryRows({ story, sel }) {
   return (
     <div className="space-y-0.5">
       <div className="font-semibold text-slate-800 truncate">{s.name || s.n}</div>
-      <div className="text-slate-500">{[s.city, s.zip].filter(Boolean).join(' ')} · {s.spots} spots · {Number(s.lbs || 0).toLocaleString('en-US')} lb{s.noTractor ? ' · no-tractor' : ''} · #{s.n}</div>
+      <div className="text-slate-500">{[s.city, s.zip].filter(Boolean).join(' ')} · {s.skids ?? '—'} skids · {s.loose ?? '—'} loose · {s.spots} spots · {Number(s.lbs || 0).toLocaleString('en-US')} lb{s.noTractor ? ' · no-tractor' : ''} · #{s.n}</div>
       <div className="flex items-start gap-1.5"><Swatch side={d} sel={sel} /><span><span className="text-slate-500">Dispatch{dWord}:</span> {d ? on(d) : '—'}</span></div>
       <div className="flex items-start gap-1.5">
         {c?.unplanned
@@ -129,9 +178,11 @@ function StoryRows({ story, sel }) {
   );
 }
 
-function StopCard({ stories, sel, onPick, onClose }) {
+function StopCard({ stories, sel, onPick, onOpenRoute, onClose }) {
   if (!stories?.length) return null;
-  const trucks = new Set(stories.flatMap((x) => [x.driven?.loadId, x.claude?.loadId]).filter(Boolean));
+  const trucks = [...new Set(stories.flatMap((x) => [x.driven?.loadId, x.claude?.loadId]).filter(Boolean))];
+  const first = stories[0];
+  const opens = [first.driven, first.claude].filter((x) => x?.loadId).filter((x, i, a) => a.findIndex((y) => y.loadId === x.loadId) === i);
   return (
     <div className="rounded-lg border bg-white p-2 text-xs space-y-2">
       <div className="flex items-start justify-between gap-2">
@@ -139,40 +190,9 @@ function StopCard({ stories, sel, onPick, onClose }) {
         <button onClick={onClose} aria-label="Close the stop" className="rounded-lg border bg-white min-h-[44px] min-w-[44px] inline-flex items-center justify-center shrink-0"><X size={14} /></button>
       </div>
       {stories.map((x) => <StoryRows key={x.stop.id} story={x} sel={sel} />)}
-      {trucks.size > 0 && <button onClick={() => onPick([...trucks])} className="rounded-lg border border-indigo-200 bg-white px-3 text-indigo-700 font-semibold min-h-[44px]">{trucks.size === 1 ? 'Show this truck' : `Show ${trucks.size === 2 ? 'both' : `all ${trucks.size}`} trucks`}</button>}
-    </div>
-  );
-}
-
-function TruckList({ rows, sel, onToggle, phone }) {
-  const [q, setQ] = useState('');
-  const shown = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    return t ? rows.filter((r) => `${r.route} ${r.driver}`.toLowerCase().includes(t)) : rows;
-  }, [rows, q]);
-  return (
-    <div className="space-y-1">
-      <label className="flex items-center gap-2 rounded-lg border bg-white px-2 min-h-[44px]">
-        <Search size={13} className="text-slate-400 shrink-0" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a truck or driver" className="w-full text-xs outline-none bg-transparent min-h-[40px]" aria-label="Find a truck or driver" />
-      </label>
-      <div className={`overflow-y-auto ${phone ? 'max-h-[260px]' : 'max-h-[240px] grid grid-cols-2 xl:grid-cols-3 gap-x-2'}`}>
-        {shown.map((r) => {
-          const slot = sel.get(r.id);
-          const on = slot !== undefined;
-          const odd = r.orderSource && r.orderSource !== 'driven' ? ` · ${ORDER_WORD[r.orderSource] || r.orderSource}` : '';
-          return (
-            <button key={r.id} onClick={() => onToggle(r.id)} aria-pressed={on}
-              className={`w-full text-left flex items-center gap-2 rounded-lg px-2 min-h-[44px] text-xs ${on ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}>
-              <span className="inline-block w-3 h-3 rounded-full shrink-0 border border-white" style={{ background: on ? SELECT_COLORS[slot] : MUTED, opacity: on ? 1 : 0.5 }} />
-              <span className="min-w-0 flex-1">
-                <span className="font-semibold text-slate-800 truncate block">{r.route}</span>
-                <span className="text-[11px] text-slate-500 truncate block">{r.driver} · {r.cls === 'tractor' ? 'tractor' : 'box'}{odd}</span>
-              </span>
-              <span className="text-[11px] text-slate-600 tabular-nums shrink-0">{r.driven} → <b className={r.claude ? 'text-indigo-800' : 'text-slate-400'}>{r.claude || 'unused'}</b></span>
-            </button>
-          );
-        })}
+      <div className="flex flex-wrap gap-2">
+        {trucks.length > 0 && <button onClick={() => onPick(trucks)} className="rounded-lg border border-indigo-200 bg-white px-3 text-indigo-700 font-semibold min-h-[44px]">{trucks.length === 1 ? 'Show this truck' : `Show ${trucks.length === 2 ? 'both' : `all ${trucks.length}`} trucks`}</button>}
+        {opens.map((x) => <button key={x.loadId} onClick={() => onOpenRoute(x.loadId)} className="rounded-lg border bg-white px-3 text-slate-700 min-h-[44px] inline-flex items-center gap-1"><Route size={12} /> Open {x.route}</button>)}
       </div>
     </div>
   );
@@ -185,45 +205,13 @@ function ModeButton({ value, label, mode, setMode }) {
   );
 }
 
-export default function BacktestMap({ date, at, phone }) {
-  const [m, setM] = useState(null);
-  const [err, setErr] = useState(null);
+export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus, zoomTick = 0, onOpenRoute, note }) {
   const [g, setG] = useState(null);
   const [gErr, setGErr] = useState(null);
   const [mode, setMode] = useState(phone ? 'claude' : 'both');
-  const [sel, setSel] = useState(() => new Map());
   const [stories, setStories] = useState(null);
-  const [note, setNote] = useState(null);
   const maps = useRef({ a: null, b: null });
   const [paneTick, setPaneTick] = useState(0);
-  const [attempt, setAttempt] = useState(0);
-
-  // The day's map is a read, and reading twice changes nothing — so a server error (seen once on a
-  // cold function: HTTP 502, then 200 in 0.7 s on every try after) is asked again once, by itself,
-  // before the screen says anything. A second failure says so, with a button to try again.
-  useEffect(() => {
-    let live = true;
-    setM(null); setErr(null);
-    const ask = () => apiFetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'backtest-map', date }) })
-      .then(async (r) => ({ r, j: await r.json().catch(() => null) }));
-    const pause = () => new Promise((res) => { setTimeout(res, 1500); });
-    (async () => {
-      let got = null, fail = null;
-      for (let i = 0; i < 2; i++) {
-        try {
-          got = await ask();
-          if (got.r.ok && got.j?.ok && got.j.map) { fail = null; break; }
-          fail = got.j?.error || `HTTP ${got.r.status}`;
-          if (got.r.status < 500) break;       // a 4xx is an answer (no backtest, stops not on file) — do not ask again
-        } catch (e) { fail = String(e?.message || e); }
-        if (i === 0) await pause();
-        if (!live) return;
-      }
-      if (!live) return;
-      if (fail) setErr(fail); else setM(got.j.map);
-    })();
-    return () => { live = false; };
-  }, [date, attempt]);
 
   useEffect(() => {
     let live = true;
@@ -260,93 +248,49 @@ export default function BacktestMap({ date, at, phone }) {
     return () => { l1.remove(); l2.remove(); };
   }, [mode, paneTick]);
 
-  const rows = useMemo(() => (m ? truckRows(m) : []), [m]);
-  const oddOrder = useMemo(() => (m ? orderNote(m) : null), [m]);
-  const toggle = useCallback((id) => {
-    setSel((s) => {
-      const r = toggleTruck(s, id);
-      setNote(r.refused ? TOO_MANY : null);
-      return r.next;
-    });
-  }, []);
-  const onStop = useCallback((stopId) => setStories(m ? storiesAt(m, stopId) : null), [m]);
-  const pick = useCallback((ids) => {
-    setSel((s) => {
-      const r = pickTrucks(s, ids);
-      setNote(r.refused ? TOO_MANY : null);
-      return r.next;
-    });
-  }, []);
+  // OPENING A ROUTE ZOOMS BOTH MAPS TO THAT TRUCK — its stops under dispatch and under Claude, so
+  // the two versions of the route are framed the same way and compared at a glance.
+  useEffect(() => {
+    if (!focus || !m) return;
+    const b = focusBounds(m, focus);
+    if (!b) return;
+    for (const mp of [maps.current.a, maps.current.b]) if (mp) mp.fitBounds(b, 48);
+  }, [focus, zoomTick, m, paneTick]);
 
-  // The scorecard above was read when the day opened; if the day has been backtested again since,
-  // this map would draw the NEW run under the OLD numbers. Say so rather than draw a mismatch.
-  const stale = !!(m && at && m.at && m.at !== at);
-  const problem = err || gErr;
+  const oddOrder = m ? orderNote(m) : null;
+  const onStop = useCallback((stopId) => setStories(m ? storiesAt(m, stopId) : null), [m]);
+
   const header = (
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1"><MapPinned size={13} /> Map</span>
       {!phone && <ModeButton value="both" label="Side by side" mode={mode} setMode={setMode} />}
       <ModeButton value="driven" label="Dispatch" mode={mode} setMode={setMode} />
       <ModeButton value="claude" label="Claude" mode={mode} setMode={setMode} />
-      {sel.size > 0 && <button onClick={() => setSel(new Map())} className="rounded-lg border bg-white px-3 text-xs min-h-[44px]">Clear {sel.size} picked</button>}
+      {sel.size > 0 && <button onClick={onClearPicks} className="rounded-lg border bg-white px-3 text-xs min-h-[44px]">Clear {sel.size} coloured</button>}
     </div>
   );
-  const hint = <p className="text-[11px] text-slate-500">Grey is every truck. Pick trucks in the list (up to {MAX_SELECTED}) to colour them on both plans; tap a stop to see its truck under each. A hollow ring on Claude’s map is a stop Claude left unplanned. Lines run from Buford (black square) in each plan’s stop order; miles on the scorecard are the engine’s estimate, not these lines. Ctrl + scroll (two fingers on a phone) moves the map.</p>;
+  const hint = <p className="text-[11px] text-slate-500">Grey is every truck. Colour trucks with the dots in the routes list (up to {SELECT_COLORS.length}), or open a route to zoom both maps to it with its stops numbered. Tap a stop to see its truck under each plan. A hollow ring on Claude’s map is a stop Claude left unplanned. Lines run from Buford (black square) in each plan’s stop order; miles are the engine’s estimate, not these lines. Ctrl + scroll (two fingers on a phone) moves the map.</p>;
   const noteLine = <div role="status" aria-live="polite">{note && <p className="text-xs text-amber-800">{note}</p>}</div>;
   const orderLine = oddOrder && <p className="text-[11px] text-slate-600">{oddOrder}</p>;
 
-  if (problem) {
-    return (
-      <div className="space-y-2">{header}
-        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 flex flex-wrap items-center justify-between gap-2">
-          <span>The map could not load: {problem}</span>
-          {err && <button onClick={() => setAttempt((n) => n + 1)} className="rounded-lg border border-rose-300 bg-white px-3 font-semibold min-h-[44px]">Try again</button>}
-        </div>
-      </div>
-    );
-  }
-  if (stale) return <div className="space-y-2">{header}<div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">This day was backtested again after you opened it, so the map would not match the numbers below. Close the day and open it again.</div></div>;
+  if (gErr) return <div className="space-y-2">{header}<div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">The map could not load: {gErr}</div></div>;
   if (!m || !g) return <div className="space-y-2">{header}<div className="text-xs text-slate-500">Loading the map…</div></div>;
 
   // Fixed slots: pane a always exists; pane b (desktop only) is Claude, shown only side by side.
   const planA = mode === 'both' ? 'driven' : mode;
   const height = phone ? 420 : mode === 'both' ? 460 : 540;
-  const paneProps = { g, m, sel, phone, onStop, register, height };
-  const panes = (
-    <div className={!phone && mode === 'both' ? 'grid grid-cols-2 gap-2' : ''}>
-      <PlanPane {...paneProps} slot="a" plan={planA} label={PLAN_LABEL[planA]} />
-      {!phone && <div className={mode === 'both' ? 'min-w-0' : 'hidden'}><PlanPane {...paneProps} slot="b" plan="claude" label={PLAN_LABEL.claude} /></div>}
-    </div>
-  );
-  const card = <StopCard stories={stories} sel={sel} onPick={pick} onClose={() => setStories(null)} />;
-
-  if (phone) {
-    return (
-      <div className="space-y-2">
-        {header}
-        {orderLine}
-        {panes}
-        {noteLine}
-        {card}
-        <details className="rounded-lg border bg-white px-2" open>
-          <summary className="text-xs font-semibold text-slate-700 min-h-[44px] flex items-center cursor-pointer">Trucks ({rows.length}) — dispatch → Claude stops</summary>
-          <TruckList rows={rows} sel={sel} onToggle={toggle} phone />
-        </details>
-        {hint}
-      </div>
-    );
-  }
+  const paneProps = { g, m, sel, phone, focus, onStop, register, height };
+  const card = <StopCard stories={stories} sel={sel} onPick={onPick} onOpenRoute={onOpenRoute} onClose={() => setStories(null)} />;
   return (
     <div className="space-y-2">
       {header}
       {orderLine}
-      {panes}
-      {noteLine}
-      {stories?.length ? card : <p className="text-[11px] text-slate-500">Tap a stop on either map to see where it rode under each plan.</p>}
-      <div>
-        <div className="text-xs font-semibold text-slate-700 mb-1">Trucks ({rows.length}) — stops under dispatch → Claude</div>
-        <TruckList rows={rows} sel={sel} onToggle={toggle} />
+      <div className={!phone && mode === 'both' ? 'grid grid-cols-2 gap-2' : ''}>
+        <PlanPane {...paneProps} slot="a" plan={planA} label={PLAN_LABEL[planA]} />
+        {!phone && <div className={mode === 'both' ? 'min-w-0' : 'hidden'}><PlanPane {...paneProps} slot="b" plan="claude" label={PLAN_LABEL.claude} /></div>}
       </div>
+      {noteLine}
+      {stories?.length ? card : !phone && <p className="text-[11px] text-slate-500">Tap a stop on either map to see where it rode under each plan.</p>}
       {hint}
     </div>
   );

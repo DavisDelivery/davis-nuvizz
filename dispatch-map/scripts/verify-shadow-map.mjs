@@ -22,7 +22,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { MEASURE } from './lib/layout-measure.mjs';
-import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay, guardOpenMapAndTapStop } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay, guardOpenFirstRoute, guardOpenMapAndTapStop } from './lib/claude-shadow-fixture.mjs';
 
 const DIST = process.argv[2] || 'dist';
 const PORT = Number(process.env.SMOKE_PORT) || 8815;
@@ -99,6 +99,8 @@ for (const size of SIZES) {
   const step = async (label, fn) => { let ok = false; try { ok = await fn(); } catch { ok = false; } if (!ok) { failures += 1; console.log(`  \x1b[31m✗\x1b[0m ${where}: could not ${label}${pageErrors.length ? ` — page errors: ${pageErrors.slice(0, 2).join(' | ')}` : ''}`); } return ok; };
   if (!(await step('reach Routing → Shadow', () => toShadow(page, size.phone)))) { await ctx.close(); continue; }
   if (!(await step('open the backtested day', () => guardOpenBacktestDay(page)))) { await ctx.close(); continue; }
+  // v1.73.0: a route opened first, so the maps are measured zoomed to it with its stops numbered.
+  if (!(await step('open a route', () => guardOpenFirstRoute(page)))) { await ctx.close(); continue; }
   const noKey = await page.getByText(/VITE_GOOGLE_MAPS_API_KEY is not set/).first().isVisible().catch(() => false);
   if (!(await step('open the map and tap a stop', () => guardOpenMapAndTapStop(page)))) {
     if (noKey || await page.getByText(/VITE_GOOGLE_MAPS_API_KEY is not set/).first().isVisible().catch(() => false)) console.log('      this build has no Google Maps key — run this guard on the keyed build (test.yml builds with VITE_GOOGLE_MAPS_API_KEY=ci-test-key)');
@@ -116,8 +118,11 @@ for (const size of SIZES) {
   if (!size.mouse) for (const s of m.small || []) probs.push(`touch target ${s.w}×${s.h}px — ${s.el}`);
   for (const o of m.overlap || []) probs.push(`controls overlapping by ${o.px}px — ${o.el}`);
   if (pageErrors.length) probs.push(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`);
-  if (probs.length) { failures += 1; console.log(`  \x1b[31m✗\x1b[0m ${where}: the map open, a stop tapped (${maps} map${maps === 1 ? '' : 's'})`); for (const p of probs) console.log(`      ${p}`); }
-  else console.log(`  \x1b[32m✓\x1b[0m ${where}: the map open, a stop tapped (${maps} map${maps === 1 ? '' : 's'})`);
+  // The opened route is numbered on the map, in its own order, and nothing else is.
+  const drawn = (await page.evaluate(() => window.__guardDrawn?.() || [])).flat().filter((f) => f.label);
+  if (!drawn.length || new Set(drawn.map((f) => f.loadId)).size !== 1 || !drawn.every((f) => String(f.seq) === f.label)) probs.push(`the opened route's stops are not numbered in order on the map (${drawn.length} labels on ${new Set(drawn.map((f) => f.loadId)).size} trucks)`);
+  if (probs.length) { failures += 1; console.log(`  \x1b[31m✗\x1b[0m ${where}: a route and the map open, a stop tapped (${maps} map${maps === 1 ? '' : 's'})`); for (const p of probs) console.log(`      ${p}`); }
+  else console.log(`  \x1b[32m✓\x1b[0m ${where}: a route and the map open, a stop tapped (${maps} map${maps === 1 ? '' : 's'}, ${drawn.length} stops numbered)`);
   await ctx.close();
 }
 await browser.close();

@@ -110,7 +110,7 @@ export interface BtProblem {
   serviceMin: number;                 // on-site minutes a stop (the engine's DEFAULT_SERVICE_MIN)
   shiftMin: number;                   // a truck's day (the engine's typical_shift_hours × 60)
   loads: BtLoad[]; stops: BtStop[];
-  excluded: { noCoords: { n: string; route: string }[]; duplicate: string[] };
+  excluded: { noCoords: { n: string; route: string; load?: string }[]; duplicate: string[] };  // load: since v1.73.0
   counts: any;                        // learnDay's census for the day
   roster: string;                     // learnDay: 'read' | 'none' — was the day's load roster there?
   stampGate: string;                  // learnDay: 'applied' | 'off' — did delivery stamps decide the day?
@@ -165,7 +165,7 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
 
   const stops: BtStop[] = [];
   const idOf = new Map<string, number>();
-  const noCoords: { n: string; route: string }[] = [];
+  const noCoords: { n: string; route: string; load?: string }[] = [];
   const duplicate: string[] = [];
   const loads: BtLoad[] = [];
   day.trips.forEach((trip: any, i: number) => {
@@ -178,7 +178,9 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
       if (idOf.has(n)) { duplicate.push(n); continue; }
       const r = byNbr.get(n);
       if (!r || !usableCoords(r.lat, r.lng)) {
-        noCoords.push({ n, route: trip.route });
+        // The load this trip becomes (pushed right after this loop), so the route view can tie the
+        // order to ITS truck even when two trucks ran one route name.
+        noCoords.push({ n, route: trip.route, load: `L${loads.length + 1}` });
         // It rode on this truck all the same: its room is held back, not handed to Claude.
         if (r) { reserved += skidSpots(num(r.cartons) ?? 0, num(r.volume) ?? 0, input.loosePerSkid); reservedLbs += Math.round(num(r.weight) ?? 0); reservedStops++; }
         continue;
@@ -335,6 +337,30 @@ export function tourCost(problem: BtProblem, order: number[], cfg: any): { miles
     lat = s.lat; lng = s.lng;
   }
   return { miles: r1(crow * cfg.road_factor), driveMin: Math.round(min) };
+}
+
+/**
+ * The same tour as tourCost, leg by leg, for the route view: road miles and drive minutes from the
+ * previous stop (Buford for the first), with the totals accumulated EXACTLY as tourCost does them —
+ * so `miles`/`driveMin` here equal the scored numbers, and a test pins that they do. `homeMi` is the
+ * last stop back to Buford: shown, never scored (the tours are open — see the header).
+ */
+export function tourLegs(problem: BtProblem, order: number[], cfg: any): { legs: { mi: number; min: number }[]; miles: number; driveMin: number; homeMi: number | null } {
+  const byId = new Map(problem.stops.map((s) => [s.id, s]));
+  let lat = problem.depot.lat, lng = problem.depot.lng, crow = 0, min = 0;
+  const legs: { mi: number; min: number }[] = [];
+  for (const id of order) {
+    const s = byId.get(id);
+    if (!s) continue;
+    const leg = haversineMiles(lat, lng, s.lat, s.lng);
+    const m = travelMinutesForMiles(leg, cfg);
+    crow += leg;
+    min += m;
+    legs.push({ mi: r1(leg * cfg.road_factor), min: Math.round(m * 10) / 10 });
+    lat = s.lat; lng = s.lng;
+  }
+  const homeMi = legs.length ? r1(haversineMiles(lat, lng, problem.depot.lat, problem.depot.lng) * cfg.road_factor) : null;
+  return { legs, miles: r1(crow * cfg.road_factor), driveMin: Math.round(min), homeMi };
 }
 
 /** Measure a plan (load id → stop ids). `sequence`: 'as-given' keeps the order, 'solver' re-orders. */
@@ -656,18 +682,51 @@ export function compareBacktest(p: BtProblem, claudePlan: any, cfg: any, rates: 
  * very stops and numbering Claude planned) and the stored result's per-load orders, so the map can
  * only ever show what was measured — never a re-derivation that could drift from it.
  */
-export function backtestMapPayload(p: BtProblem, r: any) {
+export function backtestMapPayload(p: BtProblem, r: any, cfg: any = null) {
   const orders = (col: 'driven' | 'reseq' | 'claude') => Object.fromEntries(
     (Array.isArray(r?.loads) ? r.loads : [])
       .filter((l: any) => Array.isArray(l?.[col]?.order) && l[col].order.length)
       .map((l: any) => [String(l.id), l[col].order.map(Number)]),
   );
+  const resLoad = new Map((Array.isArray(r?.loads) ? r.loads : []).map((l: any) => [String(l?.id), l]));
+  // Each route's numbers per plan are the STORED measurement (the scorecard's own), never re-measured
+  // here. The one thing added is the leg-by-leg walk of the stored order — and only when the run's
+  // own estimator config is on file; legsOk says whether its legs add back up to the stored totals.
+  const col = (l: any, c: 'driven' | 'reseq' | 'claude') => {
+    const x = l?.[c];
+    if (!x || typeof x !== 'object') return null;
+    const out: any = {
+      stops: x.stops, spots: x.spots, cap: x.cap, util: x.util, weight: x.weight, maxLbs: x.maxLbs ?? null, overWeight: x.overWeight ?? null,
+      miles: x.miles, driveMin: x.driveMin, routeMin: x.routeMin ?? null, driverMin: x.driverMin ?? null, maxMin: x.maxMin ?? null,
+      overTime: x.overTime ?? null, over: x.over ?? null, blocked: x.blocked ?? null,
+    };
+    if (cfg && c !== 'reseq' && Array.isArray(x.order)) {
+      const t = tourLegs(p, x.order.map(Number), cfg);
+      out.legs = t.legs;
+      out.homeMi = t.homeMi;
+      out.legsOk = t.miles === x.miles && t.driveMin === x.driveMin;
+    }
+    return out;
+  };
   return {
     date: p.date, at: r?.at ?? null, depot: p.depot,
-    stops: p.stops.map((s) => ({ id: s.id, n: s.n, lat: s.lat, lng: s.lng, city: s.city, zip: s.zip, name: s.name, spots: s.spots, lbs: s.weight, noTractor: s.blocksTractor })),
+    loosePerSkid: p.loosePerSkid, serviceMin: p.serviceMin ?? DEFAULT_SERVICE_MIN,
+    // skids / loose as recorded (a stop with no count recorded reads 0 — the route view says so);
+    // k is the customer's location key, so orders at one address can be counted as one stop.
+    stops: p.stops.map((s) => ({ id: s.id, n: s.n, lat: s.lat, lng: s.lng, city: s.city, zip: s.zip, name: s.name, skids: s.skids, loose: s.loose, spots: s.spots, lbs: s.weight, noTractor: s.blocksTractor, k: s.k })),
     // orderSource: 'driven' (delivery stamps), 'planned' or 'stop number' — so a truck whose line is
     // NOT the order it was delivered in is never drawn under "as driven" without saying so.
-    loads: p.loads.map((l) => ({ id: l.id, route: l.route, driver: l.driver, cls: l.cls, orderSource: l.orderSource })),
+    loads: p.loads.map((l) => {
+      const x: any = resLoad.get(l.id) || {};
+      return {
+        id: l.id, route: l.route, driver: l.driver, cls: l.cls, orderSource: l.orderSource,
+        clsSource: l.clsSource, cap: l.cap, capSource: l.capSource, capNote: l.capNote,
+        maxMin: l.maxMin, maxMinNote: l.maxMinNote ?? null, maxLbs: l.maxLbs ?? null, lbsNote: l.lbsNote ?? null,
+        why: typeof x.why === 'string' ? x.why : null,
+        cols: { driven: col(x, 'driven'), reseq: col(x, 'reseq'), claude: col(x, 'claude') },
+      };
+    }),
+    excluded: { noCoords: Array.isArray(p.excluded?.noCoords) ? p.excluded.noCoords : [] },
     plans: { driven: orders('driven'), reseq: orders('reseq'), claude: orders('claude') },
     // A stop Claude left unplanned is still a stop on the day — the map must show it, with the reason.
     unplanned: (Array.isArray(r?.unplanned) ? r.unplanned : [])
