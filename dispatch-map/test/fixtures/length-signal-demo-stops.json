@@ -1,0 +1,77 @@
+[
+  {
+    "_case": "structured length in FEET (lengthUOM FT) — exercises the FT UOM bucket",
+    "stopNbr": "D-001",
+    "pallets": 2,
+    "weight": 1800,
+    "weightUOM": "LB",
+    "stopDetails": [
+      { "product": "Steel rack section", "sku": "RACK-FT", "quantity": 2, "quantityUOM": "EA", "weight": 700, "weightUOM": "LB", "productCategory": "L", "length": 12, "lengthUOM": "FT", "criticalDimension": 12, "criticalDimensionUOM": "FT" }
+    ],
+    "signalSources": { "orderInstructions": null },
+    "addr2": null
+  },
+  {
+    "_case": "structured length in INCHES — contrast bucket",
+    "stopNbr": "D-002",
+    "pallets": 1,
+    "weight": 900,
+    "weightUOM": "LB",
+    "stopDetails": [
+      { "product": "Conduit bundle", "sku": "CON-9", "quantity": 1, "quantityUOM": "EA", "weight": 300, "weightUOM": "LB", "productCategory": "L", "length": 120, "lengthUOM": "IN" }
+    ],
+    "signalSources": { "orderInstructions": null },
+    "addr2": null
+  },
+  {
+    "_case": "folded free-text feet in orderInstructions (SPL-INSTR-TEXT) — example allowed",
+    "stopNbr": "D-003",
+    "pallets": 1,
+    "weight": 500,
+    "weightUOM": "LB",
+    "stopDetails": [
+      { "product": "Assorted hardware", "sku": "HW-9", "quantity": 1, "quantityUOM": "PLT", "weight": 500, "weightUOM": "LB", "productCategory": "S" }
+    ],
+    "signalSources": { "orderInstructions": "SPL-INSTR-TEXT: includes 10ft racking uprights, handle with care" },
+    "addr2": null
+  },
+  {
+    "_case": "raw.comments-ONLY feet (non-folded DLV_NOTE) + two-word name + divergence (tubing, no structured len)",
+    "stopNbr": "D-004",
+    "pallets": 1,
+    "weight": 650,
+    "weightUOM": "LB",
+    "stopDetails": [
+      { "product": "Steel tubing", "sku": "TUBE-3", "quantity": 1, "quantityUOM": "PLT", "weight": 650, "weightUOM": "LB", "productCategory": "S" }
+    ],
+    "signalSources": { "orderInstructions": null },
+    "addr2": null,
+    "raw": {
+      "comments": [
+        { "cmtType": "DLV_NOTE", "commentDescription": "Ask John Smith, 12FT pieces on this drop" }
+      ]
+    }
+  },
+  {
+    "_case": "feet token ONLY in addr2 (LF) — must be COUNTED but never emitted as an example",
+    "stopNbr": "D-005",
+    "pallets": 1,
+    "weight": 400,
+    "weightUOM": "LB",
+    "stopDetails": [
+      { "product": "Boxed widgets", "sku": "WID-1", "quantity": 1, "quantityUOM": "PLT", "weight": 400, "weightUOM": "LB", "productCategory": "S" }
+    ],
+    "signalSources": { "orderInstructions": null },
+    "addr2": "Loading dock 3, 12 LF staging bay"
+  },
+  {
+    "_case": "plain pallets, no length signal at all — falls back to pallet floor",
+    "stopNbr": "D-006",
+    "pallets": 3,
+    "weight": 1200,
+    "weightUOM": "LB",
+    "stopDetails": [],
+    "signalSources": { "orderInstructions": null },
+    "addr2": null
+  }
+]
