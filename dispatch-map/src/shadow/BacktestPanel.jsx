@@ -199,7 +199,7 @@ function RouterSettings({ v, onSave }) {
   // Filled from the saved settings when the form OPENS — not on every poll, which hands back a new
   // settings object every 20 s while a job runs and would wipe what is being typed.
   const openForm = () => {
-    setForm({ capRule: s.capRule, costPerMile: s.costPerMile ?? '', costPerDriveHour: s.costPerDriveHour ?? '', effort: s.effort, maxRounds: String(s.maxRounds), maxUsd: String(s.maxUsd) });
+    setForm({ capRule: s.capRule, costPerMile: s.costPerMile ?? '', costPerDriveHour: s.costPerDriveHour ?? '', effort: s.effort, maxRounds: String(s.maxRounds), maxUsd: String(s.maxUsd), lbsBox: String(s.lbsBox ?? ''), lbsTractor: String(s.lbsTractor ?? '') });
     setOpen(true);
   };
   const save = async () => {
@@ -207,6 +207,9 @@ function RouterSettings({ v, onSave }) {
       capRule: form.capRule, effort: form.effort, maxRounds: form.maxRounds, maxUsd: form.maxUsd,
       costPerMile: String(form.costPerMile).trim() === '' ? null : form.costPerMile,
       costPerDriveHour: String(form.costPerDriveHour).trim() === '' ? null : form.costPerDriveHour,
+      // A weight limit left blank goes back to the default (the engine's truck profile).
+      lbsBox: String(form.lbsBox).trim() === '' ? null : form.lbsBox,
+      lbsTractor: String(form.lbsTractor).trim() === '' ? null : form.lbsTractor,
     };
     const r = await onSave(change);
     setNote(r.ok ? 'Saved. New backtests use these; finished days keep the settings they ran with.' : `Not saved: ${r.error}`);
@@ -219,7 +222,7 @@ function RouterSettings({ v, onSave }) {
         <button onClick={() => (open ? setOpen(false) : openForm())} className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 min-h-[44px] shrink-0">
           <Settings2 size={13} /> Router settings {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
-        <span className="text-xs text-slate-400">cap rule {s.capRule} · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}{v.ceiling ? ` · all backtests ≤${usd(v.ceiling.usd)} per 24 h (${usd(v.ceiling.spent24h)} used)` : ''}</span>
+        <span className="text-xs text-slate-400">cap rule {s.capRule} · box ≤{int(s.lbsBox)} lb · tractor ≤{int(s.lbsTractor)} lb · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}{v.ceiling ? ` · all backtests ≤${usd(v.ceiling.usd)} per 24 h (${usd(v.ceiling.spent24h)} used)` : ''}</span>
       </div>
       {note && <p className="text-[11px] text-slate-600">{note}</p>}
       {open && form && (
@@ -247,6 +250,12 @@ function RouterSettings({ v, onSave }) {
           </label>
           <label className="text-[11px] text-slate-600">Most $ per day ({v.bounds.maxUsd[0]}–{v.bounds.maxUsd[1]})
             <input className={field} inputMode="decimal" value={form.maxUsd} onChange={(e) => setForm({ ...form, maxUsd: e.target.value })} />
+          </label>
+          <label className="text-[11px] text-slate-600">Box truck weight limit (lb; blank = {int(v.defaults?.lbsBox)})
+            <input className={field} inputMode="numeric" value={form.lbsBox} onChange={(e) => setForm({ ...form, lbsBox: e.target.value })} placeholder={String(v.defaults?.lbsBox ?? '')} />
+          </label>
+          <label className="text-[11px] text-slate-600">Tractor weight limit (lb; blank = {int(v.defaults?.lbsTractor)})
+            <input className={field} inputMode="numeric" value={form.lbsTractor} onChange={(e) => setForm({ ...form, lbsTractor: e.target.value })} placeholder={String(v.defaults?.lbsTractor ?? '')} />
           </label>
           <div className="col-span-2 md:col-span-3 flex gap-2">
             <button onClick={save} className="rounded-lg bg-slate-900 text-white px-3 text-xs font-semibold min-h-[44px]">Save</button>

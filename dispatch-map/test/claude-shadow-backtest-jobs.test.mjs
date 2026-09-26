@@ -8,8 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   enqueueBacktests, workerTick, cancelJob, backtestView, backtestResult, saveRouterSettings,
-  routerSettingsFrom, validateRouterChange, routerRefusal, ROUTER_DEFAULTS, ROUTER_SETTINGS_PATH, jobPath, resultPath,
-} from '../netlify/functions/lib/claude-shadow/backtest.mts';
+  routerSettingsFrom, validateRouterChange, routerRefusal, ROUTER_DEFAULTS, ROUTER_SETTINGS_PATH, jobPath, resultPath, ROUTER_BOUNDS,} from '../netlify/functions/lib/claude-shadow/backtest.mts';
 import { restoreState } from '../netlify/functions/lib/claude-shadow/plan-loop.mts';
 
 const D = '2026-09-23';
@@ -386,4 +385,27 @@ test('five throttles in a row do fail the job, so a lasting outage cannot hold t
   for (let i = 1; i <= 4; i++) { const r = await workerTick(down); assert.equal(r.transient, i); assert.equal(st.docs.get(id).status, 'queued'); }
   await workerTick(down);
   assert.equal(st.docs.get(id).status, 'failed');
+});
+
+// ── WEIGHT LIMITS ARE SETTINGS (v1.74.0). Chad: "10,000 pound limit on box trucks and 30,000 on
+// tractors is the weight limits" … "make it where I can manually change it".
+test('weight limits: the defaults are the engine\u2019s truck profiles, a typed limit replaces them, a bad one is refused, blank puts the default back', () => {
+  assert.equal(routerSettingsFrom(null).lbsBox, 10000);
+  assert.equal(routerSettingsFrom(null).lbsTractor, 30000);
+  assert.equal(routerSettingsFrom({ lbsTractor: 26000 }).lbsTractor, 26000);
+  assert.equal(routerSettingsFrom({ lbsTractor: '26000' }).lbsTractor, 26000);
+  // Malformed or out of range keeps the default — never a truck that holds nothing.
+  for (const bad of [0, -5, 'x', '', null, 90000, true]) assert.equal(routerSettingsFrom({ lbsBox: bad }).lbsBox, 10000, String(bad));
+  const ok = validateRouterChange({ lbsTractor: '26000', lbsBox: 9500.6 });
+  assert.equal(ok.ok, true, ok.errors.join());
+  assert.deepEqual(ok.fields, { lbsTractor: 26000, lbsBox: 9501 });
+  const cleared = validateRouterChange({ lbsTractor: null });
+  assert.equal(cleared.ok, true);
+  assert.deepEqual(cleared.fields, { lbsTractor: null });
+  for (const bad of ['', '0', 'ten thousand', 500, 100000]) {
+    const r = validateRouterChange({ lbsBox: bad });
+    assert.equal(r.ok, false, String(bad));
+    assert.match(r.errors[0], /box-truck weight limit must be a whole number of lb between 1,000 and 80,000/);
+  }
+  assert.deepEqual(ROUTER_BOUNDS.lbsTractor, [1000, 80000]);
 });

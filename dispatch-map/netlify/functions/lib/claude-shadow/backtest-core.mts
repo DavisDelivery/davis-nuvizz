@@ -107,6 +107,7 @@ export interface BtLoad {
 }
 export interface BtProblem {
   date: string; loosePerSkid: number; capRule: CapRule;
+  lbsLimits: { box_truck: number; tractor: number };   // the weight limits this day was held to (lb)
   depot: { lat: number; lng: number };
   serviceMin: number;                 // on-site minutes a stop (the engine's DEFAULT_SERVICE_MIN)
   shiftMin: number;                   // a truck's day (the engine's typical_shift_hours × 60)
@@ -128,6 +129,7 @@ export interface BtInput {
   caps: { drivers: Record<string, any>; routes: Record<string, any> } | null;
   loosePerSkid: number;
   capRule: CapRule;
+  lbsLimits?: { box_truck?: number | null; tractor?: number | null } | null;   // Router settings; absent → PROFILE_MAX_LBS
   employees: any[];
   notes: Map<string, any>;            // customer_notes by match key (current state)
   depot: { lat: number; lng: number };
@@ -164,6 +166,10 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
   const rRows = new Map((model?.routes || []).map((r: any) => [r.key, r]));
   const empClass = employeeClassMap(input.employees || []);
 
+  // The weight limits this day is held to: Router settings when typed (a positive, finite number), else
+  // the engine's truck profiles. Recorded on the problem, so every result says which it used.
+  const lim = (v: any, dflt: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : dflt);
+  const lbsLimits = { box_truck: lim(input.lbsLimits?.box_truck, PROFILE_MAX_LBS.box_truck), tractor: lim(input.lbsLimits?.tractor, PROFILE_MAX_LBS.tractor) };
   const stops: BtStop[] = [];
   const idOf = new Map<string, number>();
   const noCoords: { n: string; route: string; load?: string }[] = [];
@@ -224,7 +230,7 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
     }
     // WEIGHT, like skid spots: the class's rating, less what unlocated stops on it weighed, raised to
     // what dispatch actually put on this truck that day — the dispatcher's own load is never refused.
-    let maxLbs = Math.max(0, (PROFILE_MAX_LBS[cls] ?? PROFILE_MAX_LBS.box_truck) - reservedLbs), lbsNote: string | null = null;
+    let maxLbs = Math.max(0, (lbsLimits[cls] ?? lbsLimits.box_truck) - reservedLbs), lbsNote: string | null = null;
     if (lbsRan > maxLbs) { lbsNote = `raised from ${maxLbs} to ${lbsRan} lb — dispatch loaded that much on ${trip.route} / ${trip.driver} on ${input.date}`; maxLbs = lbsRan; }
     loads.push({ id: `L${loads.length + 1}`, route: trip.route, driver: trip.driver, cls, clsSource, cap, capSource: base.source, capNote, dispatch: ids, orderSource, maxMin: 0, maxMinNote: null, maxLbs, lbsNote });
   });
@@ -264,7 +270,7 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
   }
 
   return {
-    date: input.date, loosePerSkid: input.loosePerSkid, capRule: input.capRule, depot: input.depot, serviceMin, shiftMin,
+    date: input.date, loosePerSkid: input.loosePerSkid, capRule: input.capRule, lbsLimits, depot: input.depot, serviceMin, shiftMin,
     loads, stops: order, excluded: { noCoords, duplicate }, counts: day.counts, roster: day.roster, stampGate: day.stampGate,
     capModel: { days: model?.days?.count ?? 0, first: model?.days?.first ?? null, last: model?.days?.last ?? null },
     approximations: [
@@ -274,7 +280,7 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
       'Miles and drive minutes are the learned engine’s estimate (straight line × road factor, tiered speeds), open tour from Buford — the same for every column.',
       ...(day.stampGate === 'off' ? ['Fewer than half this day’s delivered stops carried a delivery stamp on the day, so every delivered stop counted — some may have gone out on a neighbouring day.'] : []),
       ...(day.roster === 'none' ? ['This day’s load roster was not captured, so two loads run under one route name cannot be told apart from one.'] : []),
-      `Weight limits are the engine’s default truck profiles (box ${PROFILE_MAX_LBS.box_truck.toLocaleString('en-US')} lb, tractor ${PROFILE_MAX_LBS.tractor.toLocaleString('en-US')} lb), raised to what dispatch loaded on that truck that day; stop weights are as recorded.`,
+      `Weight limits are Router settings (box ${lbsLimits.box_truck.toLocaleString('en-US')} lb, tractor ${lbsLimits.tractor.toLocaleString('en-US')} lb), raised to what dispatch loaded on that truck that day; stop weights are as recorded.`,
       'A driver’s loads share ONE day (a driver on two loads works one shift between them); the return to the terminal between two loads is not counted.',
       `A driver’s day is drive minutes plus a flat ${DEFAULT_SERVICE_MIN} min on site a stop (the engine’s default, not each customer’s learned time), against the engine’s typical shift of ${shiftMin / 60} h — or longer where that driver’s own dispatched day took longer.`,
     ],

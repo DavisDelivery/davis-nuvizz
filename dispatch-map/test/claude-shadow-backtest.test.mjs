@@ -347,3 +347,17 @@ test('what the day could not tell is written on the result: no roster captured, 
   assert.ok(p.approximations.some((a) => /load roster was not captured/.test(a)));
   assert.ok(p.approximations.some((a) => /15 min on site/.test(a)));
 });
+
+test('weight limits from Router settings: the problem is held to the typed limits, records them, and falls back to the profiles when they are missing or malformed', () => {
+  const caps = { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 40 }, DULUTH: { name: 'DULUTH', cap: 40 } } };
+  const dflt = buildBacktestProblem(input({ caps }));
+  assert.deepEqual(dflt.lbsLimits, { box_truck: 10000, tractor: 30000 }, 'no settings: the engine\u2019s profiles');
+  assert.match(dflt.approximations.find((a) => /Weight limits/.test(a)), /box 10,000 lb, tractor 30,000 lb/);
+  const typed = buildBacktestProblem(input({ caps, lbsLimits: { box_truck: 12000, tractor: 26000 } }));
+  assert.deepEqual(typed.lbsLimits, { box_truck: 12000, tractor: 26000 });
+  const box = typed.loads.find((l) => l.cls !== 'tractor');
+  assert.equal(box.maxLbs, 12000 - 800, 'the typed box limit, less the 800 lb of the unlocated stop that rode on it');
+  assert.match(typed.approximations.find((a) => /Weight limits/.test(a)), /box 12,000 lb, tractor 26,000 lb/);
+  const bad = buildBacktestProblem(input({ caps, lbsLimits: { box_truck: 0, tractor: 'x' } }));
+  assert.deepEqual(bad.lbsLimits, { box_truck: 10000, tractor: 30000 }, 'a malformed limit is the default, never 0');
+});

@@ -26,7 +26,7 @@ import { readSettings } from './settings.mts';
 import { LEARN_DAYS_COLLECTION, HISTORY_MANIFEST_MASK, sealedDaysFrom } from './learn-core.mts';
 import {
   BT_TENANT, BT_JOBS, BT_RESULTS, BT_STOP_MASK, LEARN_DAY_MASK, CAP_RULES,
-  buildBacktestProblem, btLoopProblem, compareBacktest, backtestMapPayload, type BtProblem, type CapRule,
+  buildBacktestProblem, btLoopProblem, compareBacktest, backtestMapPayload, PROFILE_MAX_LBS, type BtProblem, type CapRule,
 } from './backtest-core.mts';
 import { restoreState, runRounds, type LoopState, type LoopSettings, type RoundRecord } from './plan-loop.mts';
 import { effectiveEngineConfig, engineConfigPath } from '../routing-engine-config.mts';
@@ -48,8 +48,15 @@ export const ROUTER_DEFAULTS = {
   maxRounds: 8,
   maxUsd: 5,          // per backtest day
   maxTokens: 32000,   // per round (thinking + the plan)
+  // WEIGHT LIMITS a backtest holds a truck to, in lb. Chad, 2026-09-26: "10,000 pound limit on box
+  // trucks and 30,000 on tractors is the weight limits" — and "make it where I can manually change
+  // it". The defaults are the engine's truck profiles (PROFILE_MAX_LBS, pinned to them by a test);
+  // a number typed here replaces them for every backtest from then on, and each result records the
+  // limits it ran with. Blank puts the default back.
+  lbsBox: PROFILE_MAX_LBS.box_truck,
+  lbsTractor: PROFILE_MAX_LBS.tractor,
 };
-export const ROUTER_BOUNDS = { maxRounds: [2, 20], maxUsd: [0.5, 50], maxTokens: [8000, 64000], costPerMile: [0, 50], costPerDriveHour: [0, 500] } as const;
+export const ROUTER_BOUNDS = { maxRounds: [2, 20], maxUsd: [0.5, 50], maxTokens: [8000, 64000], costPerMile: [0, 50], costPerDriveHour: [0, 500], lbsBox: [1000, 80000], lbsTractor: [1000, 80000] } as const;
 
 export type RouterSettings = typeof ROUTER_DEFAULTS;
 
@@ -69,6 +76,8 @@ export function routerSettingsFrom(doc: any): RouterSettings {
     maxRounds: numIn(d.maxRounds, ROUTER_BOUNDS.maxRounds) ?? ROUTER_DEFAULTS.maxRounds,
     maxUsd: numIn(d.maxUsd, ROUTER_BOUNDS.maxUsd) ?? ROUTER_DEFAULTS.maxUsd,
     maxTokens: numIn(d.maxTokens, ROUTER_BOUNDS.maxTokens) ?? ROUTER_DEFAULTS.maxTokens,
+    lbsBox: numIn(d.lbsBox, ROUTER_BOUNDS.lbsBox) ?? ROUTER_DEFAULTS.lbsBox,
+    lbsTractor: numIn(d.lbsTractor, ROUTER_BOUNDS.lbsTractor) ?? ROUTER_DEFAULTS.lbsTractor,
   };
 }
 
@@ -89,6 +98,14 @@ export function validateRouterChange(change: any): { ok: boolean; errors: string
     if (!(k in change)) continue;
     const v = numIn(change[k], ROUTER_BOUNDS[k]);
     if (v == null) errors.push(`${k} must be between ${ROUTER_BOUNDS[k][0]} and ${ROUTER_BOUNDS[k][1]}`); else fields[k] = k === 'maxUsd' ? Math.round(v * 100) / 100 : Math.round(v);
+  }
+  // A weight limit: a whole number of lb in range, or null to put the default back. Blank is refused
+  // by numIn (Number('') is 0, and 0 is finite — a truck that holds nothing is never typed by accident).
+  for (const k of ['lbsBox', 'lbsTractor'] as const) {
+    if (!(k in change)) continue;
+    if (change[k] === null) { fields[k] = null; continue; }
+    const v = numIn(change[k], ROUTER_BOUNDS[k]);
+    if (v == null) errors.push(`${k === 'lbsBox' ? 'the box-truck weight limit' : 'the tractor weight limit'} must be a whole number of lb between ${ROUTER_BOUNDS[k][0].toLocaleString('en-US')} and ${ROUTER_BOUNDS[k][1].toLocaleString('en-US')}, or blank for the default`); else fields[k] = Math.round(v);
   }
   if (!errors.length && !Object.keys(fields).length) errors.push('nothing to change');
   return { ok: errors.length === 0, errors, fields };
@@ -189,6 +206,7 @@ export async function readBacktestDay(date: string, rs: RouterSettings, deps: Bt
     date, rows, roster, stamp: sealed[0].stamp,
     learnDaysBefore: (learnDays || []).filter((d: any) => String(d?.date || '') < date),
     caps: settings.caps, loosePerSkid: loosePerSkidFrom(settings.settings).value, capRule: rs.capRule,
+    lbsLimits: { box_truck: rs.lbsBox, tractor: rs.lbsTractor },
     employees, notes, depot: { lat: DEPOT.lat, lng: DEPOT.lng }, at: deps.now().toISOString(), cfg,
   });
   return { problem, cfg };
@@ -224,7 +242,7 @@ export async function enqueueBacktests(dates: any, by: string | null, deps: BtDe
     const id = `bt__${date}__${at.replace(/[:.]/g, '-')}__${i}`;
     const made = await deps.shadowCreate(jobPath(id), {
       kind: 'backtest', date, status: 'queued', createdAt: at, updatedAt: at, by,
-      settings: { model, effort: rs.effort, maxRounds: rs.maxRounds, maxUsd: rs.maxUsd, maxTokens: rs.maxTokens, capRule: rs.capRule },
+      settings: { model, effort: rs.effort, maxRounds: rs.maxRounds, maxUsd: rs.maxUsd, maxTokens: rs.maxTokens, capRule: rs.capRule, lbsBox: rs.lbsBox, lbsTractor: rs.lbsTractor },
       rounds: 0, usd: 0, ended: null, endNote: null,
     });
     (made ? queued : skipped).push(date);
@@ -418,6 +436,7 @@ export async function finishJob(id: string, job: any, problem: BtProblem, cfg: a
     tenant: BT_TENANT, date: problem.date, jobId: id, at, submitted,
     planFrom: submitted ? 'submitted' : `the last clean evaluation (round ${state.bestCleanRound}) — the run ended before a submit (${state.ended})`,
     model: job?.settings?.model ?? null, effort: job?.settings?.effort ?? null, capRule: problem.capRule, loosePerSkid: problem.loosePerSkid,
+    lbsLimits: problem.lbsLimits ?? null,
     rounds: state.rounds.length, usd: state.usd, ended: state.ended, endNote: state.endNote,
     rates: { perMile: rs.costPerMile, perDriveHour: rs.costPerDriveHour },
     stats: { stops: problem.stops.length, loads: problem.loads.length, excludedNoCoords: problem.excluded.noCoords.length, capModelDays: problem.capModel.days, counts: problem.counts, roster: problem.roster ?? null, stampGate: problem.stampGate ?? null },
