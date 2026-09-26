@@ -11,7 +11,11 @@
 //          trucks: [{ key: 'SUW 2', name, loadNbr, loadId,
 //                     truck_class: 'box_truck'|'tractor',
 //                     max_skids, max_weight_lb, driver_user_name? }, ...],
-//          exclude_stop_nbrs: ['123', ...] }   // stops already staged on open cards
+//          exclude_stop_nbrs: ['123', ...],   // stops already staged on open cards
+//          // Read only under the Build rules (FILL_MY_LOADS_BUILD_RULES, default on):
+//          tractor_only_green: bool, window_mode: 'strict'|'advisory',   // step 3's toggles
+//          trucks[].capabilities: { tractor, liftgate, lengthClassFt, overheadClearance },
+//          trucks[].existing_stop_nbrs: ['123', ...] }   // what the load already carries, in order
 //     → 200 CleanupResult (see routing-cleanup-core.mts)
 //     → 400 no trucks / too many / duplicate key / the pool is a whole board
 //     → 404 no board data for that date yet
@@ -65,13 +69,24 @@ export default async (req: Request): Promise<Response> => {
     // direction: the driver finds out at a residential door.
     liftgate: t?.liftgate === true,
     driver_user_name: t?.driver_user_name ? String(t.driver_user_name) : null,
+    // The profile's capabilities, only the four fields the Build rule reads, typed here.
+    capabilities: t?.capabilities && typeof t.capabilities === 'object' ? {
+      ...(typeof t.capabilities.tractor === 'boolean' ? { tractor: t.capabilities.tractor } : {}),
+      ...(typeof t.capabilities.liftgate === 'boolean' ? { liftgate: t.capabilities.liftgate } : {}),
+      ...(num(t.capabilities.lengthClassFt) ? { lengthClassFt: num(t.capabilities.lengthClassFt)! } : {}),
+      ...(typeof t.capabilities.overheadClearance === 'boolean' ? { overheadClearance: t.capabilities.overheadClearance } : {}),
+    } : null,
+    existing_stop_nbrs: Array.isArray(t?.existing_stop_nbrs) ? t.existing_stop_nbrs.slice(0, 300).map((x: any) => String(x)) : null,
   }));
   // Bounded like every other input — an unbounded list is the one field a caller
   // could use to make this endpoint do unbounded work.
   const exclude = Array.isArray(body?.exclude_stop_nbrs) ? body.exclude_stop_nbrs.slice(0, 2000).map((x: any) => String(x)) : [];
 
   try {
-    const res = await runCleanup(TENANT, date, trucks, exclude);
+    const res = await runCleanup(TENANT, date, trucks, exclude, {
+      tractorOnlyGreen: body?.tractor_only_green === true,
+      windowMode: body?.window_mode === 'strict' ? 'strict' : 'advisory',
+    });
     if (!res.ok) {
       return new Response(JSON.stringify({ ok: false, error: res.error }), { status: res.status, headers });
     }

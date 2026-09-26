@@ -88,9 +88,9 @@ test('a truck is loaded to the profile Chad maintains, not the fleet p95', () =>
   assert.ok(profileCap.trucks[0].skid_equiv < classCap.trucks[0].skid_equiv, 'the tighter profile really binds');
 });
 
-test('a profile can only TIGHTEN — a 40-skid claim on a box truck is not honoured', () => {
+test('ENGINE RULES (FILL_MY_LOADS_BUILD_RULES=off): a profile can only TIGHTEN — a 40-skid claim on a box truck is not honoured', () => {
   const rows = Array.from({ length: 20 }, (_, i) => row(`U${i}`, { skids: 3 }));
-  const p = plan(rows, [shell('SUW 2', { maxSkids: 40 })]);
+  const p = plan(rows, [shell('SUW 2', { maxSkids: 40 })], { rules: 'engine' });
   assert.equal(p.trucks[0].cap.skids, 22, 'the class bound still wins');
   assert.ok(p.trucks[0].skid_equiv <= 22 + 1e-9);
 });
@@ -410,7 +410,7 @@ test('the dock CLOSE TIME reaches the card — a dispatcher cannot judge a seque
   assert.equal(bare.early_close, false);
 });
 
-test('an early-closing dock sequenced into the back half is CALLED OUT, not buried', () => {
+test('ENGINE RULES (FILL_MY_LOADS_BUILD_RULES=off): an early-closing dock sequenced into the back half is CALLED OUT, not buried', () => {
   const inp = inputs();
   // Put the early closer far out so the sequencer puts it late.
   const far = 'far_dock__f1_main_st__dalton__30518';
@@ -419,7 +419,7 @@ test('an early-closing dock sequenced into the back half is CALLED OUT, not buri
     ...Array.from({ length: 6 }, (_, i) => row(`U${i}`, { lat: 34.10 + i * 0.01, lng: -84.00 })),
     { ...row('F1', { name: 'FAR DOCK' }), city: 'Dalton', addr1: 'F1 Main St', lat: 34.77, lng: -84.97 },
   ];
-  const p = plan(rows, [shell('T1')], { inputs: inp });
+  const p = plan(rows, [shell('T1')], { inputs: inp, rules: 'engine' });
   const t = p.trucks[0];
   const idx = t.stops.findIndex((s) => s.stopNbr === 'F1');
   if (idx >= Math.floor(t.stops.length / 2)) {

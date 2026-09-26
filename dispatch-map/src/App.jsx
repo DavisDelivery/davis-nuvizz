@@ -183,7 +183,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.75.0';
+const APP_VERSION = '1.76.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -237,6 +237,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.76.0', 'STEP 4 \u00b7 ENGINE \u00b7 \u201cFILL MY LOADS\u201d FOLLOWS THE BUILD RULES. Chad: \u201cI want the 4. engine to be able to hand it routes and it build them with the data that is stored from the engine and build data.\u201d Asked which of four readings he meant, he picked A \u2014 the loads he ticks in 2 \u00b7 Plan onto, filled from whatever is still unplanned, Fill my loads fixed to follow the Build rules. Read off the code first, the two buttons disagreed on the same stop in five ways, each a way to put freight on the wrong truck: (1) WHICH TRUCK \u2014 the engine read one \u201cblocks a tractor\u201d bit off the restriction list and nothing else, so a red Box-only stop could ride a 53\u2032, a green Tractor-OK stop with an auto-detected blocker was kept off one, and step 3\u2019s \u201conly green on a 53\u2032\u201d did nothing here; (2) LIFTGATE \u2014 read off the list but never off the note\u2019s liftgate box, and only as \u201cdoes ANY picked truck have one\u201d, so a gated stop could land on the box without a gate; (3) HOW MUCH \u2014 a profile could only lower the learned cap, so an empty tractor shell was cut to the mixed fleet\u2019s average while freight was called \u201cneeds another truck\u201d; (4) WHAT IS ALREADY ON IT \u2014 step 2 lists loads that already hold stops and each was offered a whole empty truck on top; (5) THE CLOCK \u2014 the order was geographic and only guessed at early closers by their place in the list. NOW the engine still decides what it is good at \u2014 who gets which stop by geography, the learned stop order, learned service minutes and drive times, the truck\u2019s typical start \u2014 and the Build decides what the Build decides: the SAME equipment rule (moved to one shared file both buttons import, so they cannot drift again), checked per truck against each load\u2019s profile; each load filled to its profile LESS what its card or board already carries; and each stop\u2019s time restriction (the Build\u2019s own resolver: appointment window \u2229 receiving hours) fitted into the learned order by the Build\u2019s own insertion rule, with an ETA on every clocked stop. Advisory flags a stop that still cannot make it; strict leaves it off, first offering it to any other picked load that reaches it in time. The panel says step 3\u2019s two toggles back before you press Fill, and the result says which rules actually ran. PUT IT BACK: FILL_MY_LOADS_BUILD_RULES=off \u2014 one switch, every side at once, and the result then says \u201cEngine rules\u201d. Build Panel only: the Compare cards, staging, Save and the map are untouched. 15 new tests, each shown to fail when its rule is removed; the 32 existing Fill my loads tests still pass, two of them now pinned to the switched-off rules they describe.'],
   ['1.75.0', 'EVERYONE GETS THEIR OWN LOGIN \u2014 AND THEIR OWN NUVIZZ LOGIN. Chad: \u201cI want to create logins for all the different users with their personal nuvizz login information instead of every dispatcher using mine.\u201d Until now every change this app sent to NuVizz \u2014 Route Workbench saves, assigns, dispatches, notes, new orders, address fixes \u2014 went out under one shared login, so NuVizz\u2019s history named the same person for every stop anyone moved, and our own write ledger stamped the word \u2018dispatcher\u2019. NEW SCREEN, ACCOUNT & LOGINS (More, on the desktop and the phone): sign in, change your password, sign out; save YOUR NuVizz login, which is tested with NuVizz before it is kept (5 NuVizz calls with the Route Workbench on, 1 without), sealed on the server (AES-256-GCM, bound to both usernames) and never shown again \u2014 not to you, not to an admin. Admins also get Everyone: add a person (a temporary password shown once, or an emailed link), set a role, reset, unlock, sign out everywhere, turn an account off, set anyone\u2019s NuVizz login, and a turn-on checklist that reads each step back from the server. First-time setup creates the first admin with the one-time setup code. THE WRITE ITSELF: a change sent by a signed-in person with a working saved login goes to NuVizz under THEIR login \u2014 the v7 API and the Route Workbench alike, one Save one person. Route Workbench sessions are now kept per login (a warm instance used to hold ONE session for everybody it served) and the no-auto-resequence preference is set per login. The ledger records who pressed Save (by) and which NuVizz login it went out under (nuvizzAs). THE NIGHT A PASSWORD CHANGES: a saved login NuVizz refuses is tried once, marked on the account and not used again until it is re-entered, so a changed NuVizz password cannot lock a dispatcher out of NuVizz itself by being retried on every Save. WHAT CHANGES LIVE: nothing until somebody signs in. The sign-in switches (VITE_LOGIN_ENABLED, AUTH_REQUIRED) are untouched; with nobody signed in every write goes out under the shared login exactly as before; scans and every other read stay on the shared login. THE SWITCH: NUVIZZ_PERSONAL_LOGINS \u2014 unset or preferred: a person\u2019s own login when it works, otherwise the shared one, and the answer says which; required: no personal login, no write; off: every write on the shared login. PUT IT BACK: NUVIZZ_PERSONAL_LOGINS=off in Netlify and redeploy; reverting this commit removes the screen too.'],
   ['1.74.4', 'THE ROUTES TO BUILD ARE A LIST, EACH WITH ITS OWN BOX / TRACTOR, AND IT SAYS WHEN THE CHOICE IS REMEMBERED. Chad, on the Build Panel line that read \u201c2 routes to build: ALLEN C, JOHN\u201d: \u201cTHIS SHOULD BUILD AS A LIST AND ALLOW ME TO SET BOX OR TRACTOR AND SHOULD REMEMBER MY SELECTION.\u201d Step 2 \u00b7 Plan onto now lists every route the Build will make on its own row with Box and Tractor beside it. A tap sets that route for this build AND saves the choice for the load\u2019s NAME in the shared memory (routing_load_vehicles), so ALLEN C is a tractor tomorrow and next week on every dispatcher\u2019s screen \u2014 the same handler as the button on the ticked load in the list above, so the two can never disagree. Under each route it says where the answer came from: \u2713 remembered only when the shared memory READ BACK holds that choice for that name; \u201cset for this build \u2014 not saved yet\u201d while a save has not landed or was refused; otherwise NuVizz\u2019s own truck on the load today, the name, or the default. A remembered choice that disagrees with the truck NuVizz has on the load today still says so, on the row. The picker above is unchanged. Build Panel only: the Route Workbench is not touched. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.74.3', 'MONDAY\u2019S LOADS REACH THE LOADS PANEL AND COMPARE ON A FRIDAY AND A WEEKEND NOW. Chad, Saturday, Monday\u2019s board with CHE, DARVIN, DENIS SALKIC, MARCUS, SCOTT and VICTOR planned and none of them opening in Compare: \u201cThe roster scan from the refresh should of picked them up and also every roster scan on friday should be picking up monday and tuesdays loads\u201d \u2014 then \u201cmondays loads are in there \u2026 run up to 10 scans to figure this out.\u201d HE WAS RIGHT, AND THE SCANS HAD RUN: Friday pulled Monday and Tuesday and skipped the weekend exactly as he wants, and so did his Saturday refresh. Every one of those pulls asked NuVizz for the day as an offset from today \u2014 +3d from Friday, +2d from Saturday \u2014 and NuVizz answers that shape with HTTP 200 and an EMPTY list, no error. Monday\u2019s roster had 24 empty pulls in a row, Tuesday\u2019s 10; every pull on file that ever returned loads used 0d (today). MEASURED WITH FOUR CALLS, NOT REASONED: the stop list asked with only the period changed gave +/-30d \u2192 2,301 rows, +2d \u2192 0, +/-2d \u2192 0; the load list asked +/-7d gave 959 loads, 90 of them departing Monday 9/28 \u2014 CHE, DARVIN, DENIS SALKIC, MARCUS, SCOTT, VICTOR, the empty TRAILER 1\u20136 and the rest \u2014 with the Load Latest Departure column filled on all 959, and its counts for 9/22\u20139/25 equal to what the 0d pulls stored for those days. Monday\u2019s loads were created about nine days ahead; the only thing wrong was the period. THE FIX: today still asks 0d. Any other day within a week asks +/-7d \u2014 still ONE call \u2014 and keeps the loads whose Load Latest Departure is that day. A window that comes back at its row cap is refused rather than written short (a roster write replaces the day), and so is a grid with no departure column. Beyond a week nothing was measured, so it asks the old way. Both the scan and the Loads endpoint use the one function, so the Loads panels, the empty shells and the load number a Compare card saves to all come from it. FEWER CALLS, NOT MORE: a future day that captured nothing was re-pulled every roster hour; captured, it is pulled once a day. ALSO: the one-call load-list diagnostic (nuvizz-load-columns, confirm=1) takes &period= and &max= and says how many loads depart each day \u2014 the tool that measured this. PUT IT BACK: ROSTER_WINDOW_PULL=off returns every roster pull to the offset at once. NOT CHANGED: the Route Workbench, the Build Panel, the scan schedule, and which days are pulled. 13 new tests; seven mutations of the rule, each seen to fail.'],
@@ -23542,6 +23543,16 @@ function EngineResultPanel({ result, kind, onDismiss }) {
         )}
       </div>
 
+      {/* WHICH RULES RAN — read off the answer, never off the checkboxes: the server decides
+          (FILL_MY_LOADS_BUILD_RULES) and a panel may not claim rules that did not apply. */}
+      {isCleanup && result.rules && (
+        <div className="text-slate-600">
+          {result.rules === 'build'
+            ? <>Build rules · only green on a 53′ <b>{result.rules_detail?.tractor_only_green ? 'on' : 'off'}</b> · time restrictions <b>{result.rules_detail?.window_mode === 'strict' ? 'strict' : 'advisory'}</b>{result.rules_detail && !result.rules_detail.time_restrictions ? ' (switched off on the server)' : ''}</>
+            : <>Engine rules — the Build rules are switched off on the server (FILL_MY_LOADS_BUILD_RULES)</>}
+        </div>
+      )}
+
       {isCleanup && result.fit && (
         <div className={`rounded p-1.5 ${result.fit.fits ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>
           {result.fit.fits
@@ -23556,9 +23567,11 @@ function EngineResultPanel({ result, kind, onDismiss }) {
             <b>{isCleanup ? t.key : t.driver_key}</b>
             <span className="text-slate-500"> · {t.truck_class === 'tractor' ? '53′' : 'box'} · </span>
             {isCleanup ? (
-              t.stop_count
-                ? <>{t.stop_count} stop{t.stop_count === 1 ? '' : 's'} · <b>{t.skid_equiv}</b>/{t.cap.skids} skids · ~{Math.round(t.travel_min_est)}m</>
-                : <span className="text-slate-500">nothing — the pool fit on the others</span>
+              t.full
+                ? <span className="text-slate-500">already full ({t.existing?.skid_equiv}/{t.cap.skids} skids on it) — nothing added</span>
+                : t.stop_count
+                  ? <>{t.stop_count} stop{t.stop_count === 1 ? '' : 's'} · {t.existing ? <>{t.existing.skid_equiv} on it + </> : null}<b>{t.skid_equiv}</b>/{t.cap.skids} skids · ~{Math.round(t.travel_min_est)}m{t.depart_label ? ` · leaves ${t.depart_label}` : ''}</>
+                  : <span className="text-slate-500">nothing — the pool fit on the others</span>
             ) : (
               <>{t.total_stops} stop{t.total_stops === 1 ? '' : 's'}</>
             )}
@@ -23568,14 +23581,19 @@ function EngineResultPanel({ result, kind, onDismiss }) {
               and which of these are pickups. A note saying "check the pickups"
               on a card that does not mark them is not actionable. Only the
               stops carrying a fact are listed — a clean truck stays one line. */}
-          {isCleanup && t.stops?.some((s) => s.close_min != null || s.pickup) && (
+          {/* Under the Build rules the clock is computed: the window the Build reads and the ETA
+              on the engine's own drive and service times, red only when it truly arrives late. */}
+          {isCleanup && t.stops?.some((s) => s.close_min != null || s.pickup || s.window_label) && (
             <div className="mt-0.5 space-y-0.5">
-              {t.stops.map((s, i) => (s.close_min == null && !s.pickup) ? null : (
-                <div key={s.stopNbr} className={`flex gap-1.5 pl-2 ${s.early_close ? 'text-rose-700' : 'text-slate-500'}`}>
+              {t.stops.map((s, i) => (s.close_min == null && !s.pickup && !s.window_label) ? null : (
+                <div key={s.stopNbr} className={`flex gap-1.5 pl-2 ${(result.rules === 'build' ? s.late : s.early_close) ? 'text-rose-700' : 'text-slate-500'}`}>
                   <span className="shrink-0">{i + 1}.</span>
                   <span className="font-medium shrink-0 truncate">{s.businessName || s.stopNbr}</span>
                   <span className="min-w-0 truncate">
-                    {[s.pickup ? 'PICKUP' : null, s.close_label ? `shuts ${s.close_label}` : null].filter(Boolean).join(' · ')}
+                    {[s.pickup ? 'PICKUP' : null,
+                      s.window_label
+                        ? `${s.window_label}${s.eta_label ? ` · ETA ${s.eta_label}` : ''}${s.late ? ' — LATE' : ''}`
+                        : (s.close_label ? `shuts ${s.close_label}` : null)].filter(Boolean).join(' · ')}
                   </span>
                 </div>
               ))}
@@ -26886,12 +26904,26 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // The picked load's own board stops tell us its driver, when it has one; an
     // empty shell has none, and the card's driver picker is where that is settled.
     const driverByName = new Map(routeGroups.map((g) => [String(g.name || g.key).toLowerCase(), g.driver || null]));
+    // WHAT EACH PICKED LOAD ALREADY CARRIES, in running order — its open card's order when one
+    // is open (unsaved work included), else its board stops by the same rule the card opens
+    // with. The engine fills the room that is LEFT and runs these first on the clock, because
+    // the engine's stops are added after them. Read here, never written.
+    const existingFor = (t) => {
+      const card = wbRoutes.find((r) => r.key === t.display || (t.loadId && String(r.loadId || '') === String(t.loadId)));
+      if (card) return card.order.map(String);
+      return orderRouteStops(boardStopsAllRef.current.filter((x) => !x.windowExtra && (x.routeName || x.loadNbr) === t.display)).map((x) => String(x.stopNbr));
+    };
     try {
       const res = await apiFetch('/.netlify/functions/routing-cleanup', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           date: selectedDate,
           exclude_stop_nbrs: excluded,
+          // STEP 3's RULES, the Build button's own (Chad: "A" — Fill my loads follows the Build
+          // rules). The server reads them only while FILL_MY_LOADS_BUILD_RULES is on and says
+          // which rules ran in `rules`, so the panel below reports what happened, not this ask.
+          tractor_only_green: trailerGreenOnly === true,
+          window_mode: windowStrict ? 'strict' : 'advisory',
           trucks: planTargets.map((t) => ({
             key: t.display, name: t.name || null, loadNbr: t.loadNbr, loadId: t.loadId,
             truck_class: t.profile?.capabilities?.tractor ? 'tractor' : 'box_truck',
@@ -26901,6 +26933,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
             // the capability so the engine can refuse rather than load it.
             liftgate: t.profile?.capabilities?.liftgate === true,
             driver_user_name: driverByName.get(String(t.display).toLowerCase()) || null,
+            // The profile's equipment, exactly what the Build button hands its solver.
+            capabilities: t.profile?.capabilities || null,
+            existing_stop_nbrs: existingFor(t),
           })),
         }),
       });
@@ -26921,7 +26956,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     } finally {
       if (runId === engineRunRef.current) setCleanupBusy(false);
     }
-  }, [planTargets, selectedDate, wbRoutes, routeGroups, stageCleanupPlan, engineGate.allowed, engineGate.reason]);
+  }, [planTargets, selectedDate, wbRoutes, routeGroups, stageCleanupPlan, engineGate.allowed, engineGate.reason, trailerGreenOnly, windowStrict]);
 
   const runEngineDraft = useCallback(async () => {
     if (!engineGate.allowed) { setDraftError(engineGate.reason); return; }
@@ -27373,10 +27408,16 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         <>
         <div className="text-[11px] text-slate-500">
           End of night: tick the loads to fill in <b>2 · Plan onto</b> above, and the engine puts
-          <b> everything still unplanned</b> on <b>{formatDateLong(selectedDate)}</b> onto them — geography and truck
-          capacity, not guesswork about whose stop it is. Each load is filled to the truck profile you picked for it.
-          Anything that will not fit is listed rather than crammed on. The cards it opens are your real loads, so
-          Save goes out the usual way.
+          <b> everything still unplanned</b> on <b>{formatDateLong(selectedDate)}</b> onto them. The engine decides who
+          gets what by geography and runs each load in its learned order; the <b>Build rules</b> decide what a truck may
+          carry — the green/red marks, liftgates, each load’s profile less what is already on it, and time
+          restrictions. Anything that will not fit is listed with the reason rather than crammed on. The cards it
+          opens are your real loads, so Save goes out the usual way.
+        </div>
+        {/* Step 3's two toggles, said back here BEFORE the run: they change what this button does, and
+            they live a screen above it. The server says which rules actually ran in the result below. */}
+        <div className="text-[11px] text-slate-600 bg-slate-50 rounded p-1.5">
+          From 3 · Plan: only green on a 53′ <b>{trailerGreenOnly ? 'on' : 'off'}</b> · time restrictions <b>{windowStrict ? 'strict (left off)' : 'advisory (flagged)'}</b>
         </div>
         {planTargets.length > 0 ? (
           <div className="text-[11px] text-slate-600 bg-slate-50 rounded p-1.5">

@@ -70,21 +70,51 @@ function windowAwareOrder(stops: SolverStop[], indexById: Map<string, number>, m
   const rest = stops.filter((s) => !hasWindow(s));
   const byNode = new Map(stops.map((s) => [indexById.get(s.id)!, s]));
   const node = (s: SolverStop) => indexById.get(s.id)!;
-  let order: SolverStop[] = sequence(rest.map(node), strategy, matrix).map((n) => byNode.get(n)!);
+  const base: SolverStop[] = sequence(rest.map(node), strategy, matrix).map((n) => byNode.get(n)!);
   const dist = matrix.distanceMeters;
+  return insertByWindow(base, windowed, {
+    timeline: (cand) => timeline(cand, indexById, matrix, depart),
+    closeOf: (s) => (hasWindow(s) ? s.timeWindow!.endSec : null),
+    added: (prev, w, next) => {
+      const p = prev ? node(prev) : 0;
+      return dist[p][node(w)] + (next ? dist[node(w)][node(next)] - dist[p][node(next)] : 0);
+    },
+  });
+}
+
+/**
+ * THE INSERTION RULE, shared. Each windowed stop — in the order given, which callers make
+ * earliest-deadline first — goes in at the position that (1) leaves every windowed stop on
+ * time, then (2) idles the least waiting for docks to open, then (3) adds the least distance.
+ * When no position is on time it takes the least-late one; the caller decides whether that
+ * stop stays and is flagged (advisory) or comes off (strict). The un-windowed `base` order is
+ * never reshuffled — that is the dispatcher's strategy (Build) or the learned sequence
+ * (Fill my loads), and a clock is a reason to move a windowed stop, not everything else.
+ *
+ * Generic over the stop shape and the clock so the Build button (seconds, on its matrix) and
+ * step 4's "Fill my loads" (minutes, on the engine's travel model) run the SAME rule.
+ */
+export function insertByWindow<S>(
+  base: S[], windowed: S[],
+  fns: {
+    timeline: (order: S[]) => { etas: number[]; waits: number[] };
+    closeOf: (s: S) => number | null;
+    added: (prev: S | null, w: S, next: S | null) => number;
+  },
+): S[] {
+  let order = base.slice();
   for (const w of windowed) {
     let best: { pos: number; late: number; wait: number; added: number } | null = null;
     for (let pos = 0; pos <= order.length; pos++) {
       const cand = [...order.slice(0, pos), w, ...order.slice(pos)];
-      const { etas, waits } = timeline(cand, indexById, matrix, depart);
+      const { etas, waits } = fns.timeline(cand);
       let late = 0, wait = 0;
       cand.forEach((s, i) => {
-        if (hasWindow(s) && etas[i] > s.timeWindow!.endSec) late += etas[i] - s.timeWindow!.endSec;
+        const close = fns.closeOf(s);
+        if (close != null && etas[i] > close) late += etas[i] - close;
         wait += waits[i];
       });
-      const prev = pos === 0 ? 0 : node(order[pos - 1]);
-      const next = pos < order.length ? node(order[pos]) : null;
-      const added = dist[prev][node(w)] + (next != null ? dist[node(w)][next] - dist[prev][next] : 0);
+      const added = fns.added(pos === 0 ? null : order[pos - 1], w, pos < order.length ? order[pos] : null);
       const better = best == null
         || late < best.late
         || (late === best.late && (wait < best.wait || (wait === best.wait && added < best.added)));
