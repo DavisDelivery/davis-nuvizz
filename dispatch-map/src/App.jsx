@@ -23592,8 +23592,7 @@ function EngineResultPanel({ result, kind, onDismiss }) {
             <div className="mt-0.5 space-y-0.5">
               {t.stops.map((s, i) => (s.close_min == null && !s.pickup && !s.window_label) ? null : (
                 <div key={s.stopNbr} className={`flex gap-1.5 pl-2 ${(result.rules === 'build' ? s.late : s.early_close) ? 'text-rose-700' : 'text-slate-500'}`}>
-                  {/* Its place on the CARD, where the load's own stops come first. */}
-                  <span className="shrink-0">{i + 1 + (t.existing?.stops || 0)}.</span>
+                  <span className="shrink-0">{i + 1}.</span>
                   <span className="font-medium shrink-0 truncate">{s.businessName || s.stopNbr}</span>
                   <span className="min-w-0 truncate">
                     {[s.pickup ? 'PICKUP' : null,
