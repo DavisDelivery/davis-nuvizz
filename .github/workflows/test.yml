@@ -308,6 +308,13 @@ jobs:
       - run: npm run verify:engine-map
         env:
           SMOKE_PORT: '8813'
+      # THE CLAUDE-vs-DISPATCH MAP (v1.72.0). Chad: "I want an interactive map to see Claude's vs my own
+      # dispatch." The layout guards above run on the first build, which has no Maps key, so the map there
+      # (correctly) says it could not load. This opens a backtested day's map with Google stood in, taps a
+      # stop, and measures it at two phones, two iPads and a desktop. Rides the keyed build above.
+      - run: npm run verify:shadow-map
+        env:
+          SMOKE_PORT: '8815'
       # A ROUTE IN THE ROUTES PANEL OPENS IN COMPARE. Chad, 2026-09-24: "if its panel for routes it
       # should load." ESTES APPT refused because its load sits on the PREVIOUS day's roster (NuVizz
       # still dated its stops the day before). Drives the real bundle with that board: the route

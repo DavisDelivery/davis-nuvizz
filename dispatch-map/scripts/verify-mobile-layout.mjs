@@ -38,7 +38,7 @@ import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay } from './lib/claude-shadow-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
 
@@ -273,34 +273,13 @@ const PROBES = {
   // one claim MEASURE cannot make: it judges horizontal overflow only, and this menu drops UP from
   // the bottom of the screen, so "fully inside the viewport, Live dispatch readable without a
   // scroll" is asserted by hand.
-  // THE CLAUDE-vs-DISPATCH MAP (v1.72.0) lives two taps down — open a backtested day, open its map —
-  // and a review found no guard ever went there. This one does, with Google stood in (CI's key cannot
-  // load the real thing; the stand-in is installed for this probe's page load only), taps a stop so
-  // the stop card is measured too, and proves each step arrived.
+  // A BACKTESTED DAY, OPENED (v1.72.0): its scorecard, loads and the map button. The MAP itself is
+  // measured by verify-shadow-map.mjs — this guard runs on CI's first build, which has no Google Maps
+  // key, and there the map honestly says it could not load (that is how the first cut of this probe
+  // went red in CI while passing on a machine whose build had a key).
   claudeshadow: [{
-    name: 'a backtested day and its map open, a stop tapped',
-    fakeMaps: true,
-    open: async (page) => {
-      const opened = await page.evaluate(() => {
-        const cb = document.querySelector('input[aria-label="Pick 2026-09-23"]');
-        let row = cb && cb.parentElement;
-        for (let i = 0; row && i < 4; i++, row = row.parentElement) {
-          const b = [...row.querySelectorAll('button')].find((x) => /— open$/i.test((x.innerText || '').trim()));
-          if (b) { b.click(); return true; }
-        }
-        return false;
-      });
-      if (!opened) return false;
-      await page.waitForTimeout(600);
-      const btn = page.getByRole('button', { name: /map: claude vs dispatch/i }).first();
-      if (!(await btn.isVisible().catch(() => false))) return false;
-      await btn.click();
-      await page.waitForTimeout(900);
-      if (!(await page.getByText(/^Trucks \(\d+\)/).first().isVisible().catch(() => false))) return false;
-      if (!(await page.evaluate(() => window.__guardTapStop?.() === true))) return false;
-      await page.waitForTimeout(400);
-      return page.getByText(/stops at this address/).first().isVisible().catch(() => false);
-    },
+    name: 'a backtested day open',
+    open: async (page) => guardOpenBacktestDay(page),
   }],
   routing: [
     { name: 'Setup sheet open', open: async (page) => { await page.getByRole('button', { name: /^setup/i }).first().click(); await page.waitForTimeout(600); return page.getByText(/Select stops/i).first().isVisible().catch(() => false); } },

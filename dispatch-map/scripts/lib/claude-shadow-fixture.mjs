@@ -202,3 +202,33 @@ export const CLAUDE_SHADOW_FAKE_MAPS = `(() => {
 
 /** Is this request Google's Maps script? (A predicate, so a guard can route and unroute exactly it.) */
 export const isGoogleMapsScript = (url) => { try { return new URL(String(url)).hostname === 'maps.googleapis.com'; } catch { return false; } };
+
+// ── GUARD STEPS for the backtested day. Shared by the layout guards and verify-shadow-map so they walk
+// the screen the same way. Each step PROVES it arrived (a probe that quietly no-ops measures the
+// screen it started on under another name), and waits for its proof rather than a fixed pause.
+const seen = async (loc, ms = 8000) => { try { await loc.first().waitFor({ state: 'visible', timeout: ms }); return true; } catch { return false; } };
+
+/** Open the backtested day's row (the phone's summary button or the desktop's Open) and wait for it to open. */
+export async function guardOpenBacktestDay(page, date = '2026-09-23') {
+  const opened = await page.evaluate((d) => {
+    const cb = document.querySelector(`input[aria-label="Pick ${d}"]`);
+    let row = cb && cb.parentElement;
+    for (let i = 0; row && i < 4; i++, row = row.parentElement) {
+      const b = [...row.querySelectorAll('button')].find((x) => /^open$|— open$/i.test((x.innerText || '').trim()));
+      if (b) { b.click(); return true; }
+    }
+    return false;
+  }, date);
+  if (!opened) return false;
+  return seen(page.getByRole('button', { name: /map: claude vs dispatch/i }));
+}
+
+/** Open the map (Google stood in — needs a build WITH a Maps key) and tap the stop two orders share. */
+export async function guardOpenMapAndTapStop(page) {
+  const btn = page.getByRole('button', { name: /map: claude vs dispatch/i }).first();
+  if (!(await btn.isVisible().catch(() => false))) return false;
+  await btn.click();
+  if (!(await seen(page.getByText(/^Trucks \(\d+\)/)))) return false;
+  if (!(await page.evaluate(() => window.__guardTapStop?.() === true))) return false;
+  return seen(page.getByText(/stops at this address/));
+}
