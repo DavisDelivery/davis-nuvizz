@@ -231,6 +231,13 @@ test('ONLY THE TOP BAR CARRIES THE NOTCH INSET', () => {
   assert.match(shell, /<PermissionBanner[^>]*atTop=\{!updateAvailable\}/s);
   assert.match(shell, /<RoleRefusalBar[^>]*atTop=\{!updateAvailable && !denials\.length\}/s);
   assert.match(shell, /<LegacyLoginFlagBar[^>]*atTop=\{!updateAvailable && !denials\.length && !roleRefusal\}/s);
+  // v1.75.0: the "NuVizz refused your saved login" bar sits last in the stack, below all three.
+  assert.match(shell, /<NuvizzLoginBar[^>]*atTop=\{!updateAvailable && !denials\.length && !roleRefusal && !LEGACY_FLAG_ONLY\}/s);
+  const loginBar = readFileSync(new URL('../src/components/NuvizzLoginBar.jsx', import.meta.url), 'utf8');
+  assert.match(loginBar, /style=\{atTop \? \{ paddingTop: 'calc\(0\.5rem \+ env\(safe-area-inset-top\)\)' \} : undefined\}/,
+    'NuvizzLoginBar (phone): the inset is conditional');
+  assert.match(loginBar, /style=\{atTop \? \{ paddingTop: 'calc\(0\.375rem \+ env\(safe-area-inset-top\)\)' \} : undefined\}/,
+    'NuvizzLoginBar (desktop): the inset is conditional');
   for (const name of ['function PermissionBanner', 'function RoleRefusalBar', 'function LegacyLoginFlagBar']) {
     const body = APP.slice(APP.indexOf(name), APP.indexOf(name) + 4000);
     assert.match(body, /style=\{atTop \? \{ paddingTop: 'calc\(0\.5rem \+ env\(safe-area-inset-top\)\)' \} : undefined\}/,
@@ -249,7 +256,9 @@ test('AND THE APP BAR — the one this test is named after and never checked', (
 
   // Shell owns the order, so Shell computes "is anything above the header?" — once, and
   // spelled out, rather than each bar guessing where it sits.
-  assert.match(shell, /const headerAtTop = !updateAvailable && !denials\.length && !roleRefusal && !LEGACY_FLAG_ONLY;/,
+  // v1.75.0 added the NuVizz-login bar to the stack above the header, so the header gives up the
+  // inset while it shows too.
+  assert.match(shell, /const headerAtTop = !updateAvailable && !denials\.length && !roleRefusal && !LEGACY_FLAG_ONLY && !loginNotice;/,
     'the header is last in the stack and says so');
   assert.match(shell, /<MobileAppBar[\s\S]{0,400}?atTop=\{headerAtTop\}/, 'the PHONE header is handed it');
   assert.match(shell, /<header className="shrink-0 relative z-30[^>]*style=\{headerAtTop \? \{ paddingTop: 'env\(safe-area-inset-top\)' \} : undefined\}/,

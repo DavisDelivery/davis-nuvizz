@@ -33,6 +33,10 @@ export interface OpRecord {
   // can tell "nothing was captured" from "the capture was too big to keep".
   capturesDropped?: number;
   captureNote?: string;
+  /** The signed-in account that made the write; null for the pre-login caller. */
+  by?: string | null;
+  /** The NuVizz login the write went out under: a person's NuVizz username, or 'shared'. */
+  nuvizzAs?: string | null;
 }
 
 // ── Idempotency ledger ───────────────────────────────────────────────────────
@@ -130,6 +134,8 @@ export interface CreatedOrder {
   loadNbr?: string | null;
   status: OpStatus;
   createdBy?: string | null;
+  /** The signed-in account behind the create (createdBy is the SOURCE: single / bulk / manifest). */
+  by?: string | null;
   createdAt: string;
   clientOpId?: string | null;
   nuvizzResponse?: any;

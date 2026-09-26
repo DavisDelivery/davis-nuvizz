@@ -30,6 +30,15 @@ import {
   storeReady, findUserByEmail,
 } from './lib/auth-store.mts';
 import { authMailEnabled, sendResetEmail } from './lib/auth-mail.mts';
+import { publicNuvizzLogin } from './lib/nuvizz-identity.mts';
+
+// Each person's NuVizz login SUMMARY rides with their row — saved? as whom? tested how? refused
+// when? — so the admin list can say who is ready to write under their own name. Never the
+// password or its seal (publicNuvizzLogin cannot return either). Added HERE rather than inside
+// auth-store's publicUser on purpose: auth-store is imported by requireUser, which every gated
+// function (the shadow planner and the driver-area sheet included) reaches, and those carry CI
+// guards that no nuvizz-* module is reachable from them.
+const listed = (d: any) => ({ ...publicUser(d), nuvizz: publicNuvizzLogin(d) });
 
 const bad = (error: string, status = 400) => jsonResponse({ ok: false, error }, status);
 
@@ -41,7 +50,7 @@ export default async (req: Request): Promise<Response> => {
 
   if (req.method === 'GET') {
     const rows = await listUsers();
-    return jsonResponse({ ok: true, users: rows.map((r) => publicUser(r)), mailConfigured: authMailEnabled(), roles: ROLES });
+    return jsonResponse({ ok: true, users: rows.map((r) => listed(r)), mailConfigured: authMailEnabled(), roles: ROLES });
   }
   if (req.method !== 'POST') return bad('GET or POST only', 405);
 
@@ -126,7 +135,7 @@ export default async (req: Request): Promise<Response> => {
     if (revoke) await bumpTokenVersion(doc, fields); else await patchUser(username, fields);
     console.log(`[auth-users] ${admin} updated user=${username} fields=${Object.keys(fields).join(',')} revoke=${revoke}`);
     const fresh = await getUser(username);
-    return jsonResponse({ ok: true, user: publicUser(fresh || { ...doc, ...fields }) });
+    return jsonResponse({ ok: true, user: listed(fresh || { ...doc, ...fields }) });
   }
 
   // ── reset ─────────────────────────────────────────────────────────────────

@@ -402,9 +402,33 @@ export function computeBackoffMs(attempt: number, cfg: Pick<RequesterConfig, 'ba
   return Math.round(capped * jitter);
 }
 
-/** Stable dedupe key for an in-flight request. */
-export function dedupeKey(method: string, url: string): string {
-  return `${method.toUpperCase()} ${url}`;
+/**
+ * Stable dedupe key for an in-flight request.
+ *
+ * `credFp` — a fingerprint of the credentials the request CARRIES (credentialFingerprint below).
+ * Two GETs to the same URL under DIFFERENT logins are different requests: the answer to one is not
+ * the answer to the other. While every request went out under the one shared login this never
+ * mattered; with personal NuVizz logins, merging Jane's login check into Mike's in-flight one hands
+ * Jane Mike's 401 — and a 401 now takes a login out of service. With no fingerprint (every existing
+ * caller of this function, and every shared-login request, whose fingerprint is always the same)
+ * the key is exactly what it always was.
+ */
+export function dedupeKey(method: string, url: string, credFp?: string | null): string {
+  return credFp ? `${method.toUpperCase()} ${url} #${credFp}` : `${method.toUpperCase()} ${url}`;
+}
+
+/** Short, one-way fingerprint of a request's Authorization and Cookie headers; '' when it has neither. */
+export function credentialFingerprint(headers: Record<string, string> | null | undefined): string {
+  if (!headers || typeof headers !== 'object') return '';
+  let auth = '';
+  let cookie = '';
+  for (const [k, v] of Object.entries(headers)) {
+    const lk = k.toLowerCase();
+    if (lk === 'authorization') auth = String(v ?? '');
+    else if (lk === 'cookie') cookie = String(v ?? '');
+  }
+  if (!auth && !cookie) return '';
+  return createHash('sha256').update(`${auth}\n${cookie}`).digest('hex').slice(0, 16);
 }
 
 /**
@@ -551,7 +575,7 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
 
     // Dedupe only idempotent GETs (POST/writes must never be coalesced).
     if (method === 'GET') {
-      const key = dedupeKey(method, url);
+      const key = dedupeKey(method, url, credentialFingerprint(opts.headers));
       const existing = inflight.get(key);
       if (existing) return existing.then((r) => r.clone());
       const p = doFetchWithRetry(url, init, maxRetries, meta).finally(() => inflight.delete(key));
@@ -587,6 +611,7 @@ export function scanIntervalElapsed(lastScannedAtISO: string | null | undefined,
 // A singleton per warm instance so in-flight dedupe + breaker memo survive across
 // invocations. Imported lazily to keep the pure module test-friendly.
 import { deadlineSignal } from './fetch-deadline.mts';
+import { createHash } from 'node:crypto';
 export { deadlineSignal };
 import { incrementCallCounter, readCircuit, setCircuit, etDayString, readScanConfig, readCallStats, isFirestoreEnabled } from './firestore.mts';
 

@@ -38,6 +38,7 @@ import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, 
 import { completionPatch } from './scan-completions.mts';
 import { finishedGuardEnabled } from './finished-guard.mts';
 import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes } from './nuvizz-rwb.mts';
+import { basicAuthFor } from './nuvizz-identity.mts';
 
 const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
 
@@ -60,6 +61,23 @@ const NUVIZZ_V7_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com
 export function resolveWriteCreds(): WriteCreds {
   const { companyCode } = getCreds();
   return { base: NUVIZZ_V7_BASE.replace(/\/+$/, ''), companyCode, auth: basicAuthHeader() };
+}
+
+/**
+ * Creds for a write that goes out under a PERSON'S own NuVizz login (lib/nuvizz-identity.mts) —
+ * the v7 Basic auth AND the Route Workbench portal login, from the same username and password,
+ * so one Save is one person end to end. Same API base and company as the shared creds. (It needs
+ * no shared password itself — but the write endpoint still resolves the shared creds first and
+ * refuses without them, because every deploy that writes also scans with them.)
+ */
+export function personalWriteCreds(nuvizzUser: string, password: string): WriteCreds {
+  const { companyCode } = getCreds();
+  return {
+    base: NUVIZZ_V7_BASE.replace(/\/+$/, ''),
+    companyCode,
+    auth: basicAuthFor(nuvizzUser, password),
+    rwb: { username: nuvizzUser, password },
+  };
 }
 
 // Minimal surface of the metered requester we depend on (lets tests pass a stub).
@@ -1457,8 +1475,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   // own empty-creds guard fires only AFTER lever 1's insertStops/removeStops, which would
   // leave a load's membership mutated with its order never set (an enabled-but-credentialless
   // deploy). Gating up-front keeps the "refused before any network call" invariant true.
-  if (!rwbConfigReady()) {
-    return { ok: false, gated: true, error: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS) — refused before any write' };
+  if (!rwbConfigReady(creds.rwb)) {
+    return { ok: false, gated: true, error: creds.rwb ? 'the personal NuVizz login is incomplete (no username or password) — refused before any write' : 'RWB creds not configured (NUVIZZ_RWB_USER/PASS) — refused before any write' };
   }
   const loadsIn: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
   if (!loadsIn.length) return { ok: true, loads: [], orphaned: [] };
@@ -1852,7 +1870,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   for (const p of live) {
     if (!p.result.ok || !p.addArrivals.length) continue;
     try {
-      const add = await rwbAddStopsToRoute(requester, p.routePlanId, p.addArrivals.map((a: any) => a.stopId));
+      const add = await rwbAddStopsToRoute(requester, p.routePlanId, p.addArrivals.map((a: any) => a.stopId), creds.rwb);
       p.rwbAddCalls = add.calls;
       p.result.steps.push(...add.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}` })));
       if (!add.ok) { p.result.ok = false; p.result.error = `commitBoard(rwb): ${add.message}`; continue; }
@@ -1902,7 +1920,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
         }
         if (holdErr) { p.result.ok = false; p.result.error = holdErr; continue; }
         if (fresh.length) {
-          const add2 = await rwbAddStopsToRoute(requester, p.routePlanId, fresh.map((f) => f.stopId));
+          const add2 = await rwbAddStopsToRoute(requester, p.routePlanId, fresh.map((f) => f.stopId), creds.rwb);
           p.rwbAddCalls += add2.calls;
           p.result.steps.push(...add2.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(refresh-id)` })));
           for (const f of fresh) { const a = p.addArrivals.find((x: any) => String(x.nbr) === f.nbr); if (a) a.stopId = f.stopId; }
@@ -2050,7 +2068,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   if (saveGroup.length) {
     try {
       for (const p of saveGroup) p.reseqRequested = needsReseq(p);
-      const r = await rwbSequenceRoutes(requester, saveGroup.map((p: any) => ({ routePlanId: p.routePlanId, orderedStopIds: p.orderedIds, origin: originOf(p), pickupLegIds: p.pickupLegIds || [], resequence: p.reseqRequested, ...extrasOf(p) })));
+      const r = await rwbSequenceRoutes(requester, saveGroup.map((p: any) => ({ routePlanId: p.routePlanId, orderedStopIds: p.orderedIds, origin: originOf(p), pickupLegIds: p.pickupLegIds || [], resequence: p.reseqRequested, ...extrasOf(p) })), creds.rwb);
       for (const [i, p] of saveGroup.entries()) {
         const mySteps = r.steps.filter((s: any) => !s.routePlanId || String(s.routePlanId) === p.routePlanId);
         p.result.steps.push(...mySteps.map((s: any) => ({ ...s, op: `rwb:${s.op}` })));
@@ -2078,10 +2096,10 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
           const onNow = new Set((f3.load.stops || []).map((s: any) => String(s?.stopNbr)));
           const missingMoves = p.moveArrivals.filter((a: any) => !onNow.has(String(a.nbr)));
           if (!missingMoves.length) continue;
-          const add = await rwbAddStopsToRoute(requester, p.routePlanId, missingMoves.map((a: any) => a.stopId));
+          const add = await rwbAddStopsToRoute(requester, p.routePlanId, missingMoves.map((a: any) => a.stopId), creds.rwb);
           p.result.calls.rwbAdd += add.calls;
           p.result.steps.push(...add.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(move-fallback)` })));
-          const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: RWB_RESEQ });
+          const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: RWB_RESEQ }, creds.rwb);
           p.result.steps.push(...r2.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(move-fallback)` })));
           p.result.calls.rwb += r2.calls;
           if (!r2.ok) { p.result.ok = false; p.result.error = `commitBoard(rwb): ${r2.message}`; }
@@ -2149,7 +2167,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
               break;
             }
             if (seqPending && !lingering.length) continue;   // soft retry: plain re-read, no write
-            const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: RWB_RESEQ });
+            const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: RWB_RESEQ }, creds.rwb);
             p.result.steps.push(...r2.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(repair)` })));
             p.result.calls.rwb += r2.calls;
             if (!r2.ok) { verdict = r2.message; break; }
@@ -2207,7 +2225,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     };
     if (!d.from.cancelled) { leftBehind(`is still on ${from}, whose cancel was refused (${d.from.result.error || 'see its message'}). Sort out ${from}, then move ${d.nbr} and re-Save — nothing on ${self} was lost.`); continue; }
     try {
-      const add = await rwbAddStopsToRoute(requester, p.routePlanId, [d.stopId]);
+      const add = await rwbAddStopsToRoute(requester, p.routePlanId, [d.stopId], creds.rwb);
       p.result.calls.rwbAdd += add.calls;
       p.result.steps.push(...add.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(drained-anchor)` })));
       if (!add.ok) { leftBehind(`could not be added after ${from} was cancelled: ${add.message}. It is UNPLANNED now — plan it onto ${self} and re-Save.`); continue; }
@@ -2222,7 +2240,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       const gone = p.orderedNbrs.find((n: string) => !idByNbr.has(n));
       if (gone) { leftBehind(`landed, but stop ${gone} no longer reads on ${self} — refresh and re-Save.`); continue; }
       p.orderedIds = p.orderedNbrs.map((n: string) => idByNbr.get(n) as string);
-      const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: RWB_RESEQ });
+      const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: RWB_RESEQ }, creds.rwb);
       p.result.steps.push(...r2.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(drained-anchor)` })));
       p.result.calls.rwb += r2.calls;
       if (!r2.ok) { leftBehind(`is on ${self} but the order could not be set: ${r2.message}. Re-Save to set it.`); continue; }
