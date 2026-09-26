@@ -12,6 +12,7 @@ import { backtestMap, jobPath, resultPath } from '../netlify/functions/lib/claud
 import { effectiveEngineConfig } from '../netlify/functions/lib/routing-engine-config.mts';
 import {
   whereIs, planLoads, truckRows, stopStory, storiesAt, orderNote, toggleTruck, pickTrucks, planGeo, boundsOf, MAX_SELECTED, SELECT_COLORS,
+  truckColor, colorFor, TRUCK_WHEEL, MUTED, coreBounds, mapFiltersFrom, MAP_FILTER_DEFAULTS, mapTypeFor, focusStatus, paneTitle,
   routeCompare, routeRows, sortRoutes, freightOf, customerSplits, focusBounds, focusPicks, fmtHm,
 } from '../src/shadow/backtest-map-core.js';
 
@@ -448,4 +449,86 @@ test('REVIEW ROUTES: an order with no map point is tied to ITS truck — even wh
   delete old.excluded.noCoords[0].load;
   const f = routeCompare(old, bo.id).flags.find((x) => x.key === 'nocoords');
   assert.match(f.text, /2 trucks ran ATL1, and the stored record cannot say which/);
+});
+
+
+// ── v1.74.2: every truck coloured, the map opened where the day is, the filters ────────────────────
+// Chad, 2026-09-26, at first open of the Claude map: "very hard to see whats what here."
+test('every truck wears its own colour until trucks are picked; picks take the eight and grey the rest', () => {
+  const m = { loads: Array.from({ length: 30 }, (_, i) => ({ id: `L${i + 1}`, route: `R${i + 1}`, driver: 'd' })), stops: [], plans: { driven: {}, claude: {} } };
+  const none = new Map();
+  assert.equal(TRUCK_WHEEL.length, 24);
+  assert.ok(TRUCK_WHEEL.every((c) => /^#[0-9a-f]{6}$/.test(c)), 'hex colours');
+  assert.equal(new Set(TRUCK_WHEEL).size, 24, 'twenty-four distinct colours');
+  // The first 24 trucks each get a different colour; neighbours in the list are far apart on the wheel.
+  const first = m.loads.slice(0, 24).map((l) => truckColor(m, l.id));
+  assert.equal(new Set(first).size, 24);
+  assert.notEqual(truckColor(m, 'L1'), truckColor(m, 'L2'));
+  assert.equal(truckColor(m, 'L25'), truckColor(m, 'L1'), 'the wheel repeats after 24, and says so on screen');
+  assert.equal(truckColor(m, 'nope'), MUTED, 'a truck not in the day is grey');
+  assert.equal(colorFor(m, none, 'L3'), truckColor(m, 'L3'), 'nothing picked: the wheel');
+  const sel = toggleTruck(none, 'L3').next;
+  assert.equal(colorFor(m, sel, 'L3'), SELECT_COLORS[0], 'picked: its pick colour');
+  assert.equal(colorFor(m, sel, 'L4'), MUTED, 'with picks, the rest are grey');
+  assert.equal(colorFor(m, null, 'L4'), truckColor(m, 'L4'), 'no selection object at all reads as nothing picked');
+});
+
+test('the map opens on where the stops are (the middle 94% on each axis plus the terminal) and counts the stops beyond it', () => {
+  // 100 stops on a tight metro grid, 4 far outliers (Dalton, Macon, Athens, Rome).
+  const metro = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, lat: 33.8 + (i % 10) * 0.02, lng: -84.4 + Math.floor(i / 10) * 0.02 }));
+  const far = [{ id: 101, lat: 34.77, lng: -84.97 }, { id: 102, lat: 32.84, lng: -83.63 }, { id: 103, lat: 33.95, lng: -83.38 }, { id: 104, lat: 34.26, lng: -85.16 }];
+  const m = { stops: [...metro, ...far], depot: { lat: 34.12, lng: -84.0 }, loads: [], plans: {} };
+  const { bounds, outside } = coreBounds(m);
+  assert.ok(bounds.north < 34.5 && bounds.south > 33.5 && bounds.west > -84.9 && bounds.east < -83.5, JSON.stringify(bounds));
+  assert.ok(bounds.north >= 34.12 && bounds.east >= -84.0, 'the terminal is always in view');
+  assert.equal(outside, 4, 'the four outliers lie beyond the opening view');
+  const all = boundsOf(m);
+  assert.ok(all.north >= 34.77 && all.south <= 32.84, 'boundsOf still holds every stop');
+  assert.deepEqual(coreBounds({ stops: [], depot: null }), { bounds: null, outside: 0 });
+});
+
+test('the map filters: only known keys, only booleans, satellite with or without labels is the map type', () => {
+  assert.deepEqual(mapFiltersFrom(null), MAP_FILTER_DEFAULTS);
+  assert.deepEqual(mapFiltersFrom({ satellite: 'yes', hideLabels: true, bogus: true }), { ...MAP_FILTER_DEFAULTS, hideLabels: true });
+  assert.equal(mapTypeFor(MAP_FILTER_DEFAULTS), 'roadmap');
+  assert.equal(mapTypeFor({ ...MAP_FILTER_DEFAULTS, satellite: true }), 'hybrid', 'satellite keeps the place labels');
+  assert.equal(mapTypeFor({ ...MAP_FILTER_DEFAULTS, satellite: true, hideLabels: true }), 'satellite', 'satellite without labels');
+  assert.equal(mapTypeFor({ ...MAP_FILTER_DEFAULTS, hideLabels: true }), 'roadmap', 'on the road map, labels are a style, not a type');
+});
+
+test('"Hide stem-out line" draws each truck\u2019s line from its first stop instead of from Buford', () => {
+  const m = { depot: { lat: 34.12, lng: -84.0 }, stops: [{ id: 1, lat: 34.0, lng: -84.1, n: 'A' }, { id: 2, lat: 34.01, lng: -84.12, n: 'B' }], loads: [{ id: 'L1', route: 'R', driver: 'd' }], plans: { driven: { L1: [1, 2] }, claude: { L1: [1, 2] } }, unplanned: [] };
+  const withStem = planGeo(m, 'driven').features.find((f) => f.properties.kind === 'route');
+  const noStem = planGeo(m, 'driven', { stemOut: false }).features.find((f) => f.properties.kind === 'route');
+  assert.equal(withStem.geometry.coordinates.length, 3, 'terminal, then the two stops');
+  assert.deepEqual(withStem.geometry.coordinates[0], [-84.0, 34.12]);
+  assert.equal(noStem.geometry.coordinates.length, 2);
+  assert.deepEqual(noStem.geometry.coordinates[0], [-84.1, 34.0], 'starts at the first stop');
+  assert.ok(planGeo(m, 'driven', { stemOut: false }).features.some((f) => f.properties.kind === 'depot'), 'the terminal marker itself is still drawn (its own filter hides it)');
+});
+
+// v1.74.3: the opened route's stops, ringed by what happened to them, and a plain title per map.
+test('an opened route says on each side what happened to each stop, and titles each map plainly', () => {
+  const st = (id, lat, lng, extra = {}) => ({ id, n: `S${id}`, name: `C${id}`, lat, lng, skids: 1, loose: 0, spots: 1, lbs: 100, ...extra });
+  const m = {
+    depot: { lat: 34.12, lng: -84.0 },
+    stops: [st(1, 34.0, -84.1), st(2, 34.01, -84.11), st(3, 34.02, -84.12), st(4, 34.5, -84.5)],
+    loads: [{ id: 'L1', route: 'CHRIS HEAD', driver: 'Chris Head', cls: 'tractor', cols: { driven: { miles: 75.9 }, claude: { miles: 80.5 } } }, { id: 'L2', route: 'MATT', driver: 'Matthew Faison', cls: 'box_truck', cols: { driven: { miles: 10 }, claude: { miles: 12 } } }],
+    plans: { driven: { L1: [1, 2, 3], L2: [4] }, claude: { L1: [1, 4], L2: [2] } },
+    unplanned: [{ id: 3, reason: 'no room' }],
+  };
+  const f = focusStatus(m, 'L1');
+  assert.equal(f.driven.get(1), 'kept');
+  assert.equal(f.driven.get(2), 'moved', 'stop 2 went to MATT');
+  assert.equal(f.driven.get(3), 'unplanned', 'stop 3 was left unplanned');
+  assert.equal(f.claude.get(1), 'kept');
+  assert.equal(f.claude.get(4), 'added', 'stop 4 came from MATT');
+  assert.equal(f.claude.has(2), false);
+  assert.deepEqual(focusStatus(m, null), { driven: new Map(), claude: new Map() });
+  assert.deepEqual(focusStatus(m, 'nope'), { driven: new Map(), claude: new Map() });
+  const td = paneTitle(m, 'L1', 'driven'), tc = paneTitle(m, 'L1', 'claude');
+  assert.equal(td.who, 'CHRIS HEAD · Chris Head · tractor');
+  assert.match(td.line, /^3 stops · 3 spots · 300 lb/);
+  assert.match(tc.line, /^2 stops · 2 spots · 200 lb/);
+  assert.equal(paneTitle(m, 'nope', 'driven'), null);
 });

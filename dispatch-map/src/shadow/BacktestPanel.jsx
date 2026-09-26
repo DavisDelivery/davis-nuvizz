@@ -442,12 +442,13 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
   const toggle = useCallback((id) => setSel((s0) => { const x = toggleTruck(s0, id); setNote(x.refused ? TOO_MANY : null); return x.next; }), [TOO_MANY, setSel]);
   const pick = useCallback((ids) => setSel((s0) => { const x = pickTrucks(s0, ids); setNote(x.refused ? TOO_MANY : null); return x.next; }), [TOO_MANY, setSel]);
   // Opening a route colours it and the trucks it traded with, and the maps zoom to it.
+  // v1.74.3: opening a route colours THAT route and nothing else; the trucks it traded with come on
+  // only when asked for (showPartners), so what is on the map is always what was asked for.
   const openRoute = useCallback((id) => {
     if (!m) return;
     const c = routeCompare(m, id);
     if (!c) return;
-    const f = focusPicks(c);
-    setSel(f.next);
+    setSel(new Map([[id, 0]]));
     setNote(null);
     setFocus(id);
     setZoomTick((n) => n + 1);
@@ -458,9 +459,20 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
       panelRef.current?.querySelector('section[aria-label^="Route "]')?.focus({ preventScroll: true });
     });
   }, [m, showMap, setSel, setFocus]);
+  const partnersShown = !!cmp && sel.size > 1;
+  const showPartners = useCallback(() => {
+    if (!cmp) return;
+    const f = focusPicks(cmp);
+    setSel(f.next);
+    setNote(f.left ? `${f.left} more truck${f.left === 1 ? '' : 's'} traded with this route and ${f.left === 1 ? 'is' : 'are'} not coloured — ${MAX_SELECTED} colours at a time.` : null);
+    if (!showMap) setShowMap(true);
+    requestAnimationFrame(() => mapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }, [cmp, showMap, setShowMap, setSel]);
+  const hidePartners = useCallback(() => { if (cmp) { setSel(new Map([[cmp.load.id, 0]])); setNote(null); } }, [cmp, setSel]);
+  const allRoutes = useCallback(() => { setFocus(null); setSel(new Map()); setNote(null); }, [setFocus, setSel]);
   const at = cmp ? sorted.findIndex((x) => x.id === cmp.load.id) : -1;
-  const colourNote = cmp ? (() => { const left = focusPicks(cmp).left; return left ? `${left} more truck${left === 1 ? '' : 's'} traded with this route and ${left === 1 ? 'is' : 'are'} not coloured — ${MAX_SELECTED} colours at a time.` : null; })() : null;
-  const routesProps = { rows: sorted, total: rows.length, sel, onToggle: toggle, onOpen: openRoute, focus, q, setQ, sortBy, setSortBy, serviceMin: m?.serviceMin ?? 15 };
+  const colourNote = cmp && partnersShown ? (() => { const left = focusPicks(cmp).left; return left ? `${left} more truck${left === 1 ? '' : 's'} traded with this route and ${left === 1 ? 'is' : 'are'} not coloured — ${MAX_SELECTED} colours at a time.` : null; })() : null;
+  const routesProps = { rows: sorted, total: rows.length, sel, onToggle: toggle, onOpen: openRoute, focus, q, setQ, sortBy, setSortBy, serviceMin: m?.serviceMin ?? 15, m };
   return (
     <div className="rounded-xl border-2 border-indigo-200 bg-white p-3 space-y-3">
       <div className="flex items-start justify-between gap-2">
@@ -488,10 +500,10 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
             <MapPinned size={13} /> {showMap ? (phone ? 'Hide the map' : 'Hide the maps') : phone ? 'Map: yours and Claude’s' : 'Maps: yours and Claude’s, side by side'}
           </button>
           <div ref={mapRef} className="scroll-mt-2">
-            {showMap && m && !stale && <BacktestMap m={m} phone={phone} sel={sel} onPick={pick} onClearPicks={() => { setSel(new Map()); setNote(null); }} focus={focus} zoomTick={zoomTick} onOpenRoute={openRoute} note={note} />}
+            {showMap && m && !stale && <BacktestMap m={m} phone={phone} sel={sel} onPick={pick} onClearPicks={() => { setSel(new Map()); setNote(null); }} focus={focus} zoomTick={zoomTick} onOpenRoute={openRoute} onAllRoutes={allRoutes} partners={cmp?.partners?.length || 0} partnersShown={partnersShown} onShowPartners={showPartners} onHidePartners={hidePartners} note={note} />}
           </div>
           <div ref={panelRef} className="scroll-mt-2">
-            {cmp && <RoutePanel cmp={cmp} phone={phone} sel={sel} onOpen={openRoute} onClose={() => setFocus(null)}
+            {cmp && <RoutePanel cmp={cmp} m={m} phone={phone} sel={sel} onOpen={openRoute} onClose={allRoutes} onShowPartners={showPartners} partnersShown={partnersShown} showMap={showMap}
               prevId={at > 0 ? sorted[at - 1].id : null} nextId={at >= 0 && at < sorted.length - 1 ? sorted[at + 1].id : null}
               position={at >= 0 ? at + 1 : null} total={sorted.length} colourNote={colourNote} />}
           </div>

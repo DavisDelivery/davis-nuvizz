@@ -204,7 +204,7 @@ export const CLAUDE_SHADOW_FAKE_MAPS = `(() => {
       if (el && el.setAttribute) { el.setAttribute('data-guard-map', String(n)); const d = document.createElement('div'); d.className = 'gm-style'; d.style.cssText = 'width:100%;height:100%'; el.appendChild(d); }
       all.push(this); return tolerant(this);
     }
-    fitBounds() {} setOptions() {} getDiv() { return this.el; } getZoom() { return this.z; } setZoom(z) { this.z = z; } getCenter() { return this.c; }
+    fitBounds() {} setOptions() {} setMapTypeId(t) { this.t = t; } getMapTypeId() { return this.t || 'roadmap'; } getDiv() { return this.el; } getZoom() { return this.z; } setZoom(z) { this.z = z; } getCenter() { return this.c; }
     setCenter(c) { if (c) this.c = new LatLng(typeof c.lat === 'function' ? c.lat() : c.lat, typeof c.lng === 'function' ? c.lng() : c.lng); }
     addListener() { return { remove() {} }; }
   }
