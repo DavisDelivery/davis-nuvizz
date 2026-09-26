@@ -125,15 +125,54 @@ export async function listDrivers(tenant: string, date: string): Promise<any[]> 
 }
 
 // ── bounded-concurrency upserts (UPSERT only — never delete) ──────────────────
-async function upsertAll<T>(items: T[], pathFn: (item: T) => string, conc = 12): Promise<void> {
-  let i = 0;
-  const worker = async () => {
-    while (i < items.length) {
-      const item = items[i++];
-      await setDoc(pathFn(item), item as any);
+// A WRITE THAT FIRESTORE PUSHED BACK IS RETRIED, NOT DROPPED. Three days of history — Sep 10, Sep 11
+// and Sep 24, 2026 — were lost the same way: the nightly capture fired ~900 stop writes twelve at a
+// time at 02:01 ET, Firestore answered "429 This database has exceeded their maximum bandwidth for
+// writes, please retry with exponential backoff", and the loop threw on the first one. Half a day's
+// stops were on disk, no manifest was sealed, and the backtest list simply skipped the day. Firestore
+// SAYS what to do in the message. So: a 429, a 5xx or a network failure waits and tries again
+// (0.5 s, 1 s, 2 s, 4 s, 8 s, ±25%), and after the first push-back the writers drop from twelve to
+// four so the retry is not the same storm. A 4xx that is not 429 (a bad path, no permission) is
+// still thrown at once: retrying a refusal is not persistence, it is noise.
+export const WRITE_RETRIES = 5;
+export const WRITE_BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
+export function transientWriteError(e: any): boolean {
+  const msg = String(e?.message || e || '');
+  const m = msg.match(/failed: (\d{3})\b/);
+  if (m) { const code = Number(m[1]); return code === 429 || (code >= 500 && code <= 599); }
+  return /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network|aborted/i.test(msg);
+}
+export function backoffMs(attempt: number, rnd = Math.random()): number {
+  const base = WRITE_BACKOFF_MS[Math.min(attempt, WRITE_BACKOFF_MS.length - 1)];
+  return Math.round(base * (0.75 + rnd * 0.5));
+}
+export interface UpsertDeps { setDoc: (path: string, data: any) => Promise<any>; sleep: (ms: number) => Promise<void> }
+const LIVE_DEPS: UpsertDeps = { setDoc, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
+
+export async function upsertAll<T>(items: T[], pathFn: (item: T) => string, conc = 12, deps: UpsertDeps = LIVE_DEPS): Promise<{ written: number; retries: number; pushedBack: boolean }> {
+  let i = 0, retries = 0, pushedBack = false, written = 0;
+  const writeOne = async (path: string, item: T) => {
+    for (let attempt = 0; ; attempt++) {
+      try { await deps.setDoc(path, item as any); written++; return; }
+      catch (e: any) {
+        if (!transientWriteError(e) || attempt >= WRITE_RETRIES) throw e;
+        pushedBack = true; retries++;
+        await deps.sleep(backoffMs(attempt));
+      }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(conc, items.length || 1) }, worker));
+  const worker = async (slot: number) => {
+    while (i < items.length) {
+      // After a push-back, only the first four workers keep going; the rest step out at the next item.
+      if (pushedBack && slot >= 4) return;
+      const item = items[i++];
+      await writeOne(pathFn(item), item);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(conc, items.length || 1) }, (_, slot) => worker(slot)));
+  // Anything the retired workers left behind is finished by the four that stayed.
+  while (i < items.length) { const item = items[i++]; await writeOne(pathFn(item), item); }
+  return { written, retries, pushedBack };
 }
 
 export async function upsertStops(tenant: string, date: string, records: any[]): Promise<void> {
