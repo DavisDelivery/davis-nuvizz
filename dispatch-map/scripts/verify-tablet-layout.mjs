@@ -32,6 +32,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { MEASURE } from './lib/layout-measure.mjs';
+import { accountAnswer, ADMIN_SESSION, SESSION_KEY } from './lib/account-fixture.mjs';
 
 const DIST = process.argv[2] || 'dist';
 const PORT = Number(process.env.PORT || 4183);
@@ -61,11 +62,40 @@ const SCREENS = [
   // Routing's third tab since v1.68.2: Routing, then the Build | Engine | Shadow toggle.
   { key: 'claudeshadow', label: 'Routing — Shadow (Claude shadow)', nav: /routing/i, sub: /^shadow$/i, arrive: 'Claude shadow' },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i, inMore: true },
+  // ACCOUNT & LOGINS (v1.75.0): signed out, then as an admin over the worst rows
+  // (scripts/lib/account-fixture.mjs) — the table and its Manage panel are desktop layout on a
+  // finger, which is exactly what this guard is for. `session` seeds a signed-in admin.
+  { key: 'users', label: 'Account & logins', nav: /account & logins/i, inMore: true },
+  { key: 'users-admin', label: 'Account & logins — admin', nav: /account & logins/i, inMore: true, session: true },
 ];
 
 // AT REST IS NOT ENOUGH, and the phone guard learned this the expensive way. Every defect
 // Chad photographed needed a tap first: the Status menu is not in the DOM until it is opened.
 const PROBES = {
+  // Account & logins, admin: one person opened (their NuVizz login, role, name, password and
+  // access controls, every button 44px on a finger) and the add-a-person form.
+  'users-admin': [
+    {
+      name: 'a person opened (Manage)',
+      open: async (page) => {
+        const b = page.getByRole('button', { name: /^manage$/i }).first();
+        if (!(await b.isVisible().catch(() => false))) return false;
+        await b.click();
+        await page.waitForTimeout(400);
+        return page.getByRole('button', { name: /new temporary password/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'add a person open',
+      open: async (page) => {
+        const b = page.getByRole('button', { name: /add a person/i }).first();
+        if (!(await b.isVisible().catch(() => false))) return false;
+        await b.click();
+        await page.waitForTimeout(300);
+        return page.getByRole('button', { name: /add this person/i }).first().isVisible().catch(() => false);
+      },
+    },
+  ],
   // A BACKTESTED DAY, OPENED, WITH ONE ROUTE OPENED (v1.72.0, v1.73.0). The map itself is measured by
   // verify-shadow-map.mjs on the keyed build — this guard runs on CI's first build, which has no Maps key.
   claudeshadow: [{
@@ -367,6 +397,8 @@ for (const dev of TABLETS) {
   await page.route('**/.netlify/functions/**', (route) => {
     const u = route.request().url();
     const J = (b) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
+    const acct = accountAnswer(u);
+    if (acct) return route.fulfill({ status: acct.status, contentType: 'application/json', body: JSON.stringify(acct.body) });
     // THE PROBLEM-ADDRESS QUEUE — seeded with the worst rows, per the rule above. One of each
     // signal; a 44-character business name; a street that wraps twice at 360px; a row already
     // waved off; a row with NO stopId (excluded from select-all, so its explanatory line
@@ -517,7 +549,16 @@ for (const dev of TABLETS) {
   page.on('pageerror', (e) => { console.log(`  \x1b[31m! page error:\x1b[0m ${String(e).slice(0, 200)}`); });
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
 
+  let sessionOn = false;
   for (const screen of SCREENS) {
+    // A signed-in screen gets its session seeded and the app reloaded; the next screen that does
+    // not want one gets it removed the same way — at the TOP of the loop, so a screen that fails
+    // to open cannot leave a session behind for every screen after it.
+    if (!!screen.session !== sessionOn) {
+      sessionOn = !!screen.session;
+      await page.evaluate(([k, v, on]) => { try { if (on) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch { /* private mode */ } }, [SESSION_KEY, ADMIN_SESSION, sessionOn]);
+      await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
+    }
     // AN UNREACHABLE SCREEN IS A FAILURE, NOT A SKIP.
     //
     // The first version printed "- not reachable" and moved on, which is how this guard

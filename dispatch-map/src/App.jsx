@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Building2, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal } from 'lucide-react';
+  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc, arrayUnion, arrayRemove, deleteField,
@@ -116,6 +116,7 @@ import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute, resolveRouteOrigin, originLine, newRouteSeed, newRouteSeedNote } from './lib/route-create.js';
 import { clipForToast } from './lib/write-error.js';
 import UatBench from './components/UatBench.jsx';
+import AccountScreen from './components/AccountScreen.jsx';
 // The Claude shadow tab lives in its own directory so scripts/check-shadow-isolation.mjs can
 // prove what it reaches: its own files, lib/api.js and lib/session.js, and nothing else.
 import ClaudeShadowScreen from './shadow/ClaudeShadowScreen.jsx';
@@ -180,7 +181,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.74.4';
+const APP_VERSION = '1.75.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -234,6 +235,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.75.0', 'EVERYONE GETS THEIR OWN LOGIN \u2014 AND THEIR OWN NUVIZZ LOGIN. Chad: \u201cI want to create logins for all the different users with their personal nuvizz login information instead of every dispatcher using mine.\u201d Until now every change this app sent to NuVizz \u2014 Route Workbench saves, assigns, dispatches, notes, new orders, address fixes \u2014 went out under one shared login, so NuVizz\u2019s history named the same person for every stop anyone moved, and our own write ledger stamped the word \u2018dispatcher\u2019. NEW SCREEN, ACCOUNT & LOGINS (More, on the desktop and the phone): sign in, change your password, sign out; save YOUR NuVizz login, which is tested with NuVizz before it is kept (5 NuVizz calls with the Route Workbench on, 1 without), sealed on the server (AES-256-GCM, bound to both usernames) and never shown again \u2014 not to you, not to an admin. Admins also get Everyone: add a person (a temporary password shown once, or an emailed link), set a role, reset, unlock, sign out everywhere, turn an account off, set anyone\u2019s NuVizz login, and a turn-on checklist that reads each step back from the server. First-time setup creates the first admin with the one-time setup code. THE WRITE ITSELF: a change sent by a signed-in person with a working saved login goes to NuVizz under THEIR login \u2014 the v7 API and the Route Workbench alike, one Save one person. Route Workbench sessions are now kept per login (a warm instance used to hold ONE session for everybody it served) and the no-auto-resequence preference is set per login. The ledger records who pressed Save (by) and which NuVizz login it went out under (nuvizzAs). THE NIGHT A PASSWORD CHANGES: a saved login NuVizz refuses is tried once, marked on the account and not used again until it is re-entered, so a changed NuVizz password cannot lock a dispatcher out of NuVizz itself by being retried on every Save. WHAT CHANGES LIVE: nothing until somebody signs in. The sign-in switches (VITE_LOGIN_ENABLED, AUTH_REQUIRED) are untouched; with nobody signed in every write goes out under the shared login exactly as before; scans and every other read stay on the shared login. THE SWITCH: NUVIZZ_PERSONAL_LOGINS \u2014 unset or preferred: a person\u2019s own login when it works, otherwise the shared one, and the answer says which; required: no personal login, no write; off: every write on the shared login. PUT IT BACK: NUVIZZ_PERSONAL_LOGINS=off in Netlify and redeploy; reverting this commit removes the screen too.'],
   ['1.74.4', 'THE ROUTES TO BUILD ARE A LIST, EACH WITH ITS OWN BOX / TRACTOR, AND IT SAYS WHEN THE CHOICE IS REMEMBERED. Chad, on the Build Panel line that read \u201c2 routes to build: ALLEN C, JOHN\u201d: \u201cTHIS SHOULD BUILD AS A LIST AND ALLOW ME TO SET BOX OR TRACTOR AND SHOULD REMEMBER MY SELECTION.\u201d Step 2 \u00b7 Plan onto now lists every route the Build will make on its own row with Box and Tractor beside it. A tap sets that route for this build AND saves the choice for the load\u2019s NAME in the shared memory (routing_load_vehicles), so ALLEN C is a tractor tomorrow and next week on every dispatcher\u2019s screen \u2014 the same handler as the button on the ticked load in the list above, so the two can never disagree. Under each route it says where the answer came from: \u2713 remembered only when the shared memory READ BACK holds that choice for that name; \u201cset for this build \u2014 not saved yet\u201d while a save has not landed or was refused; otherwise NuVizz\u2019s own truck on the load today, the name, or the default. A remembered choice that disagrees with the truck NuVizz has on the load today still says so, on the row. The picker above is unchanged. Build Panel only: the Route Workbench is not touched. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.74.3', 'MONDAY\u2019S LOADS REACH THE LOADS PANEL AND COMPARE ON A FRIDAY AND A WEEKEND NOW. Chad, Saturday, Monday\u2019s board with CHE, DARVIN, DENIS SALKIC, MARCUS, SCOTT and VICTOR planned and none of them opening in Compare: \u201cThe roster scan from the refresh should of picked them up and also every roster scan on friday should be picking up monday and tuesdays loads\u201d \u2014 then \u201cmondays loads are in there \u2026 run up to 10 scans to figure this out.\u201d HE WAS RIGHT, AND THE SCANS HAD RUN: Friday pulled Monday and Tuesday and skipped the weekend exactly as he wants, and so did his Saturday refresh. Every one of those pulls asked NuVizz for the day as an offset from today \u2014 +3d from Friday, +2d from Saturday \u2014 and NuVizz answers that shape with HTTP 200 and an EMPTY list, no error. Monday\u2019s roster had 24 empty pulls in a row, Tuesday\u2019s 10; every pull on file that ever returned loads used 0d (today). MEASURED WITH FOUR CALLS, NOT REASONED: the stop list asked with only the period changed gave +/-30d \u2192 2,301 rows, +2d \u2192 0, +/-2d \u2192 0; the load list asked +/-7d gave 959 loads, 90 of them departing Monday 9/28 \u2014 CHE, DARVIN, DENIS SALKIC, MARCUS, SCOTT, VICTOR, the empty TRAILER 1\u20136 and the rest \u2014 with the Load Latest Departure column filled on all 959, and its counts for 9/22\u20139/25 equal to what the 0d pulls stored for those days. Monday\u2019s loads were created about nine days ahead; the only thing wrong was the period. THE FIX: today still asks 0d. Any other day within a week asks +/-7d \u2014 still ONE call \u2014 and keeps the loads whose Load Latest Departure is that day. A window that comes back at its row cap is refused rather than written short (a roster write replaces the day), and so is a grid with no departure column. Beyond a week nothing was measured, so it asks the old way. Both the scan and the Loads endpoint use the one function, so the Loads panels, the empty shells and the load number a Compare card saves to all come from it. FEWER CALLS, NOT MORE: a future day that captured nothing was re-pulled every roster hour; captured, it is pulled once a day. ALSO: the one-call load-list diagnostic (nuvizz-load-columns, confirm=1) takes &period= and &max= and says how many loads depart each day \u2014 the tool that measured this. PUT IT BACK: ROSTER_WINDOW_PULL=off returns every roster pull to the offset at once. NOT CHANGED: the Route Workbench, the Build Panel, the scan schedule, and which days are pulled. 13 new tests; seven mutations of the rule, each seen to fail.'],
   ['1.74.2', 'THE COMPARE ROW SHOWS AUTO-DETECTED HOURS TOO, AND SAYS SO. Chad, 2026-09-25, on TITAN ELECTRIC reading \u201c11M LATE\u201d with nothing beside it: \u201cwhy are titan electrics hours not displayed in the compare panel\u201d, then \u201cyes i want the proposed fix.\u201d ANSWERED FROM THE RECORD: TITAN\u2019s 7:00a\u20133:30p was read from Uline\u2019s order text (\u201cRH 7AM-3 30PM\u201d, provenance auto), and v1.56.1 gave the row chip to dispatcher-TYPED hours only. An auto window the map calls ordinary drew nothing \u2014 so the row said LATE without the time it was late against, which is the one thing a dispatcher needs next. NOW every window on file gets its chip, and every chip whose hours were NOT typed carries a quiet \u201c\u00b7 auto\u201d, so a time read from an order is never mistaken for one a dispatcher confirmed. Typed chips are unchanged. The map pins are untouched. A Route Workbench change, made because Chad approved it; the commit carries his sentence. VITE_COMPARE_AUTO_HOURS=off puts the row back to typed-only (build-time, so it is a redeploy). 7 new tests, one mutation-checked.'],
@@ -11268,6 +11270,15 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                 {/* Diagnostics and Debug moved UNDER More (Chad, v0.54.82). Both are
                     tools for looking into the app rather than screens for running the
                     day, and they were sitting between the dispatcher and the Map. */}
+                {/* Account & logins (v1.75.0) — the same place as on the desktop menu, beside
+                    Diagnostics. Both navigations or neither: dispatch runs on a phone. */}
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('users')}
+                  role="menuitem"
+                >
+                  <KeyRound size={12} /> Account &amp; logins
+                </button>
                 <button
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('diagnostics')}
@@ -30434,7 +30445,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'uatbench'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'uatbench', 'users'];
     openTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -30584,6 +30595,10 @@ function Shell() {
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
                 // Claude shadow moved to Routing's Build | Engine | Shadow toggle (Chad, 2026-09-25).
+                // Account & logins (v1.75.0): sign in, your own NuVizz login and, for admins, everyone's.
+                // Beside Diagnostics because both are about the app rather than the day. The phone menu
+                // carries it too, in the same place — a screen in one navigation only does not exist on a phone.
+                { id: 'users', label: 'Account & logins', hint: 'Your sign-in and NuVizz login — admins manage people here', icon: <KeyRound size={14} /> },
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
                 { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
                 // UAT ONLY, keyed on the HOSTNAME — the one fact about a deploy nobody can
@@ -30626,7 +30641,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'users' ? <AccountScreen isMobile={isMobile} loginMode={LOGIN_MODE} /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}

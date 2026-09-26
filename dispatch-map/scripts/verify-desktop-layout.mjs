@@ -26,6 +26,7 @@ import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
+import { accountAnswer, ADMIN_SESSION, SESSION_KEY } from './lib/account-fixture.mjs';
 
 const DIST = process.argv[2] || 'dist';
 const PORT = 4183;
@@ -55,6 +56,12 @@ const SCREENS = [
   // label is the screen's own heading, which is this guard's proof of arrival.
   { key: 'claudeshadow', label: 'Claude shadow', nav: /routing/i, sub: /^shadow$/i },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i, inMore: true },
+  // ACCOUNT & LOGINS (v1.75.0): signed out, then signed in as an admin over the worst rows
+  // (scripts/lib/account-fixture.mjs). The admin table is the view an admin actually works in
+  // on a monitor, so measuring only the signed-out screen would prove nothing about it.
+  // `session` seeds a signed-in admin for that one screen and takes it away again after.
+  { key: 'users', label: 'Account & logins', nav: /account & logins/i, inMore: true },
+  { key: 'users-admin', name: 'Accounts (admin)', label: 'Account & logins', nav: /account & logins/i, inMore: true, session: true },
 ];
 
 const srv = createServer(async (req, res) => {
@@ -95,10 +102,28 @@ for (const device of DESKTOPS) {
   await page.route('**/.netlify/functions/labels-by-shipper*', (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify(labelsAnswer(route.request().url())),
   }));
+  // Account & logins reads three auth-* endpoints; answered here so the screen renders its real
+  // layout (the admin table, the checklist) rather than a load error. Nothing else is affected:
+  // the only other caller is the app's boot-time auth-me, whose answer here changes nothing drawn.
+  await page.route('**/.netlify/functions/auth-*', (route) => {
+    const a = accountAnswer(route.request().url());
+    if (!a) return route.continue();
+    return route.fulfill({ status: a.status, contentType: 'application/json', body: JSON.stringify(a.body) });
+  });
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1200);
 
+  let sessionOn = false;
   for (const screen of SCREENS) {
+    // A signed-in screen gets its session seeded and the app reloaded; the next screen that does
+    // not want one gets it removed the same way. Done at the TOP of the loop so a screen that
+    // fails to open cannot leave a session behind for every screen after it.
+    if (!!screen.session !== sessionOn) {
+      sessionOn = !!screen.session;
+      await page.evaluate(([k, v, on]) => { try { if (on) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch { /* private mode */ } }, [SESSION_KEY, ADMIN_SESSION, sessionOn]);
+      await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(1200);
+    }
     // NAVIGATION. Playwright's click is refused here for the More-menu items (the menu
     // overlays them), so after opening the group we fall back to a DOM click on the button
     // whose own text matches. Whichever path is used, the screen must then PROVE it opened
@@ -139,7 +164,7 @@ for (const device of DESKTOPS) {
 
     if (!opened) {
       failures += 1;
-      console.log(`  \x1b[31mFAIL\x1b[0m ${screen.label.padEnd(16)} could not be opened — NOT measured`);
+      console.log(`  \x1b[31mFAIL\x1b[0m ${(screen.name || screen.label).padEnd(16)} could not be opened — NOT measured`);
       continue;
     }
 
@@ -214,16 +239,16 @@ for (const device of DESKTOPS) {
 
     const pct = Math.round(m.occupancy * 100);
     if (m.optOut) {
-      console.log(`  \x1b[36m-\x1b[0m ${screen.label.padEnd(18)} ${pct}% — deliberately narrow: ${m.optOut}`);
+      console.log(`  \x1b[36m-\x1b[0m ${(screen.name || screen.label).padEnd(18)} ${pct}% — deliberately narrow: ${m.optOut}`);
     } else if (m.occupancy < MIN_OCCUPANCY) {
       failures += 1;
-      console.log(`  \x1b[31mFAIL\x1b[0m ${screen.label.padEnd(16)} uses ${pct}% of ${m.vw}px (${m.widest}px, ${m.mode}) — floor is ${Math.round(MIN_OCCUPANCY * 100)}%`);
+      console.log(`  \x1b[31mFAIL\x1b[0m ${(screen.name || screen.label).padEnd(16)} uses ${pct}% of ${m.vw}px (${m.widest}px, ${m.mode}) — floor is ${Math.round(MIN_OCCUPANCY * 100)}%`);
     } else if (m.samples < 5) {
       // Too little rendered text to judge honestly — say so rather than pass by default.
       failures += 1;
-      console.log(`  \x1b[31mFAIL\x1b[0m ${screen.label.padEnd(16)} only ${m.samples} text nodes measured — cannot judge`);
+      console.log(`  \x1b[31mFAIL\x1b[0m ${(screen.name || screen.label).padEnd(16)} only ${m.samples} text nodes measured — cannot judge`);
     } else {
-      console.log(`  \x1b[32mok\x1b[0m   ${screen.label.padEnd(16)} uses ${pct}% of ${m.vw}px (${m.widest}px, ${m.samples} nodes, ${m.mode})`);
+      console.log(`  \x1b[32mok\x1b[0m   ${(screen.name || screen.label).padEnd(16)} uses ${pct}% of ${m.vw}px (${m.widest}px, ${m.samples} nodes, ${m.mode})`);
     }
     if (SHOT_DIR) {
       await page.screenshot({ path: join(SHOT_DIR, `${device.name}-${screen.key}.png`) }).catch(() => {});

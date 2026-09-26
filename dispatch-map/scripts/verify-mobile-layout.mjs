@@ -41,6 +41,7 @@ import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay, guardOpenFirstRoute } from './lib/claude-shadow-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
+import { accountAnswer, ADMIN_SESSION, SESSION_KEY } from './lib/account-fixture.mjs';
 
 const DIST = resolve(process.argv[2] || 'dist');
 const PORT = 8891;
@@ -173,6 +174,14 @@ const SCREENS = [
   // phone reaches it: Routing, then the app-bar gear's "Shadow view". The Build | Engine | Shadow
   // row it lands under is measured with it.
   { key: 'claudeshadow', label: 'Routing — Shadow (Claude shadow)', nav: /routing/i, gear: /shadow view/i, arrive: 'Claude shadow' },
+  // ACCOUNT & LOGINS (v1.75.0), twice: signed out (the sign-in card, and the first-admin setup
+  // form behind its button), and signed in as an admin over the worst rows the list can carry
+  // (scripts/lib/account-fixture.mjs). The admin half is where the furniture is — the people
+  // cards, the Manage panel, the add-a-person form — so measuring only the signed-out screen
+  // would pass a phone layout nobody with the admin role could use.
+  { key: 'users', label: 'Account & logins', nav: /account & logins/i, inMore: true },
+  { key: 'users-admin', label: 'Account & logins — admin', nav: /account & logins/i, inMore: true,
+    prefs: { [SESSION_KEY]: ADMIN_SESSION } },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i },
   // Both open as overlays rather than swapping `tab`, which is why they were missed.
   { key: 'messages', label: 'Messages', nav: /^messages/i },
@@ -782,6 +791,54 @@ const PROBES = {
       },
     },
   ],
+  // Account & logins: the surfaces that only exist after a tap.
+  users: [
+    {
+      name: 'first-time setup open',
+      open: async (page) => {
+        const b = page.getByRole('button', { name: /first-time setup/i }).first();
+        if (!(await b.isVisible().catch(() => false))) return false;
+        await b.click();
+        await page.waitForTimeout(300);
+        return page.getByLabel(/setup code/i).first().isVisible().catch(() => false);
+      },
+    },
+  ],
+  'users-admin': [
+    {
+      // The deepest surface: one person's NuVizz login, role, name, password and access
+      // controls, opened inside their card — on the worst row (the 40-character username
+      // with a refused NuVizz login, locked, on a temporary password).
+      name: 'a person opened (Manage)',
+      open: async (page) => {
+        const b = page.getByRole('button', { name: /^manage$/i }).first();
+        if (!(await b.isVisible().catch(() => false))) return false;
+        await b.click();
+        await page.waitForTimeout(400);
+        return page.getByRole('button', { name: /new temporary password/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'add a person open',
+      open: async (page) => {
+        const b = page.getByRole('button', { name: /add a person/i }).first();
+        if (!(await b.isVisible().catch(() => false))) return false;
+        await b.click();
+        await page.waitForTimeout(300);
+        return page.getByRole('button', { name: /add this person/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'your NuVizz login, replacing it',
+      open: async (page) => {
+        const b = page.getByRole('button', { name: /^replace$/i }).first();
+        if (!(await b.isVisible().catch(() => false))) return false;
+        await b.click();
+        await page.waitForTimeout(300);
+        return page.getByRole('button', { name: /save & test/i }).first().isVisible().catch(() => false);
+      },
+    },
+  ],
   comms: [
     {
       name: 'all sections open',
@@ -827,6 +884,8 @@ function stubRoutes(page, emailHtml) {
   return page.route('**/.netlify/functions/**', (route) => {
     const u = route.request().url();
     const R = (b, s) => route.fulfill(json(b, s));
+    const acct = accountAnswer(u);
+    if (acct) return R(acct.body, acct.status);
     if (u.includes('customer-comms-config')) {
       return R({
         ok: true,
@@ -1139,7 +1198,7 @@ for (const device of DEVICES) {
     // a screen it did not mean to measure reads as proof of the screen it named.
     await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
     await page.evaluate((prefs) => {
-      for (const k of ['routing.rightPanel', 'routing.routesLoadsTab', 'dd_neworder_mode']) { try { localStorage.removeItem(k); } catch { /* private mode */ } }
+      for (const k of ['routing.rightPanel', 'routing.routesLoadsTab', 'dd_neworder_mode', 'dispatchMap.session.v1']) { try { localStorage.removeItem(k); } catch { /* private mode */ } }
       for (const [k, v] of Object.entries(prefs || {})) { try { localStorage.setItem(k, v); } catch { /* private mode */ } }
     }, screen.prefs || {});
     await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });

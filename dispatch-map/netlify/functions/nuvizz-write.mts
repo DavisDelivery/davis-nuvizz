@@ -27,11 +27,20 @@
 //     deduped) — enforced fleet-wide by test/no-direct-nuvizz-fetch.test.mjs.
 //   • The response always reports `tenant` + `live` so the UI banner shows PROD vs the
 //     write-enabled state. No NuVizz creds ever reach the browser (this fn is the proxy).
+//   • WHOSE LOGIN (Sep 2026 — Chad: "...with their personal nuvizz login information instead of
+//     every dispatcher using mine"). A write that changes something goes out under the SIGNED-IN
+//     person's own NuVizz login when they have a working one saved, on the v7 API and the Route
+//     Workbench alike; otherwise under the shared login, as before, and the answer says which
+//     (`identity`). NUVIZZ_PERSONAL_LOGINS=off puts every write back on the shared login;
+//     =required refuses a write with no personal login behind it. See lib/nuvizz-identity.mts.
 
 import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, type WriteOp } from './lib/nuvizz-write-ops.mts';
 import { requireUser } from './lib/require-user.mts';
-import { runOp, resolveWriteCreds, loadImportBlocked } from './lib/nuvizz-write.mts';
-import { rwbEngineBlocked } from './lib/nuvizz-rwb.mts';
+import { runOp, resolveWriteCreds, loadImportBlocked, personalWriteCreds } from './lib/nuvizz-write.mts';
+import { rwbEngineBlocked, takeRwbLoginRefusal } from './lib/nuvizz-rwb.mts';
+import { personalLoginsMode, publicIdentity, type Identity } from './lib/nuvizz-identity.mts';
+import { resolveWriteIdentity, watchPersonalRefusals, refusalAfterWrite, markLoginRejected } from './lib/nuvizz-write-identity.mts';
+import { getUser, patchUser } from './lib/auth-store.mts';
 import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
@@ -203,11 +212,14 @@ function previewBodyFor(op: WriteOp, payload: any): any {
   }
 }
 
-async function journal(op: WriteOp, payload: any, result: any, tenant: string, clientOpId: string | null, createdBy: string | null): Promise<void> {
+async function journal(op: WriteOp, payload: any, result: any, tenant: string, clientOpId: string | null, createdBy: string | null, by: string | null = null): Promise<void> {
   const date = String(payload?.date || etDayString());
   try {
     if (op === 'createStop' && result?.ok) {
-      await recordCreatedOrder({ tenant, stopNbr: result.entityNbr, stopId: result.entityId, loadNbr: payload?.loadNbr ?? null, status: 'succeeded', createdBy, createdAt: new Date().toISOString(), clientOpId, nuvizzResponse: result });
+      // `createdBy` is the SOURCE the client names ('dispatcher', 'dispatcher-bulk',
+      // 'dispatcher-manifest') and is kept exactly as sent; `by` is the PERSON — the signed-in
+      // account, or null for the pre-login caller. Two facts, two fields.
+      await recordCreatedOrder({ tenant, stopNbr: result.entityNbr, stopId: result.entityId, loadNbr: payload?.loadNbr ?? null, status: 'succeeded', createdBy, by, createdAt: new Date().toISOString(), clientOpId, nuvizzResponse: result });
     }
     if ((op === 'assignDriver' || op === 'commitLoad') && payload?.driverId != null && payload?.driverId !== '') {
       await recordAssignment({ tenant, date, loadNbr: String(payload?.loadNbr ?? ''), loadId: payload?.loadId ?? result?.loadId ?? null, driverId: payload?.driverId, driverName: payload?.driverName ?? null, status: result?.ok ? 'assigned' : 'failed', assignedAt: new Date().toISOString() });
@@ -290,6 +302,24 @@ export default async (req: Request): Promise<Response> => {
     if (priorShortCircuits(prior)) return J({ ok: true, op, tenant, live, dryRun: false, idempotent: true, result: prior!.result, ops });
   }
 
+  // 4b) WHOSE LOGIN THIS WRITE GOES OUT UNDER (lib/nuvizz-identity.mts). Only a write that CHANGES
+  //     something: a read through this door stays on the shared login, as every read does. After
+  //     the idempotency short-circuit on purpose, so a retry of a Save that already landed returns
+  //     that success rather than a refusal about a login it no longer needs. A refusal (only under
+  //     NUVIZZ_PERSONAL_LOGINS=required) happens HERE, before the budget check and before any
+  //     NuVizz call — nothing half-done, nothing spent.
+  const mode = personalLoginsMode();
+  const who = gate.user.authenticated ? gate.user.username : null;
+  let identity: Identity = { kind: 'shared', appUser: who, why: 'off', note: null };
+  if (MUTATING_OPS.has(op)) {
+    identity = await resolveWriteIdentity(mode, gate.user, { getUser });
+    if (identity.kind === 'refused') {
+      return J({ ok: false, op, tenant, live, error: identity.error, identity: publicIdentity(identity, mode), ops }, identity.status);
+    }
+    if (identity.kind === 'personal') creds = personalWriteCreds(identity.nuvizzUser, identity.password);
+  }
+  const identityOut = publicIdentity(identity, mode);
+
   // 5) Pre-flight budget — refuse to start at/over the ceiling. The breaker itself defaults to
   //    ENFORCE (nuvizz-request.mts:70), so this is the polite refusal before the hard one.
   if (ops.current >= ops.ceiling) {
@@ -306,23 +336,42 @@ export default async (req: Request): Promise<Response> => {
   const reqr = getNuvizzRequester();
   const callsBefore = reqr.getStats().totalThisInstance;
   const callsSince = () => reqr.getStats().totalThisInstance - callsBefore;
+  // Watches for NuVizz refusing a PERSONAL login mid-write (a no-op pass-through for the shared one).
+  const watch = watchPersonalRefusals(reqr, identity.kind === 'personal' ? creds.auth : null);
+  // After the write, the one question the refusal watch exists for: did NuVizz just refuse this
+  // person's saved login? If so it is recorded on their account, so the NEXT write — on any
+  // instance — stops using it rather than trying it again (lib/nuvizz-rwb.mts: a stale password
+  // tried on every Save is how a dispatcher gets locked out of NuVizz itself).
+  const noteRefusal = async (): Promise<string | null> => {
+    if (identity.kind !== 'personal') return null;
+    const reason = refusalAfterWrite(identity, watch.refusedStatus(), takeRwbLoginRefusal(identity.nuvizzUser));
+    if (!reason) return null;
+    await markLoginRejected(identity.appUser, reason, { patchUser });
+    console.warn(`[nuvizz-write] NuVizz refused the personal login of user=${identity.appUser} (nuvizz=${identity.nuvizzUser}) — marked; reason=${reason}`);
+    return reason;
+  };
   let result: any;
   try {
-    result = await runOp(reqr, op, payload, creds);
+    result = await runOp(watch.requester, op, payload, creds);
   } catch (e: any) {
-    if (e instanceof NuvizzCircuitOpenError) return J({ ok: false, op, tenant, live, callsUsed: callsSince(), error: 'NuVizz circuit breaker open — write refused', ops: await opsSnapshot() }, 503);
+    const loginRefused = await noteRefusal();
+    const extra = { identity: identityOut, ...(loginRefused ? { loginRefused } : {}) };
+    if (e instanceof NuvizzCircuitOpenError) return J({ ok: false, op, tenant, live, callsUsed: callsSince(), error: 'NuVizz circuit breaker open — write refused', ...extra, ops: await opsSnapshot() }, 503);
     // A builder threw → malformed payload (missing required field) → 400.
-    return J({ ok: false, op, tenant, live, callsUsed: callsSince(), error: e?.message || 'write failed', ops: await opsSnapshot() }, 400);
+    return J({ ok: false, op, tenant, live, callsUsed: callsSince(), error: e?.message || 'write failed', ...extra, ops: await opsSnapshot() }, 400);
   }
+  const loginRefused = await noteRefusal();
 
-  // 7) Journal (best-effort) + idempotency ledger.
+  // 7) Journal (best-effort) + idempotency ledger. `by` is the signed-in PERSON (null for the
+  //    pre-login caller) and `nuvizzAs` the NuVizz login the write actually went out under — so
+  //    "who changed this route" has an answer in our own ledger as well as in NuVizz's history.
   if (MUTATING_OPS.has(op)) {
-    await journal(op, payload, result, tenant, clientOpId, createdBy);
-    if (clientOpId) await putOpRecord({ clientOpId, op, status: result?.ok ? 'succeeded' : 'failed', result, tenant, at: new Date().toISOString() });
+    await journal(op, payload, result, tenant, clientOpId, createdBy, who);
+    if (clientOpId) await putOpRecord({ clientOpId, op, status: result?.ok ? 'succeeded' : 'failed', result, tenant, at: new Date().toISOString(), by: who, nuvizzAs: identity.kind === 'personal' ? identity.nuvizzUser : 'shared' });
   }
 
   // 8) Answer. A failure MUST carry its reason at the top level — the executors always build
   //    one, and this envelope used to drop it, leaving callers to guess (see hoistResultError).
   const failure = hoistResultError(result);
-  return J({ ok: !!result?.ok, op, tenant, live, dryRun: false, ...(failure ? { error: failure } : {}), result, callsUsed: callsSince(), ops: await opsSnapshot() }, result?.ok ? 200 : 502);
+  return J({ ok: !!result?.ok, op, tenant, live, dryRun: false, ...(failure ? { error: failure } : {}), result, identity: identityOut, ...(loginRefused ? { loginRefused } : {}), callsUsed: callsSince(), ops: await opsSnapshot() }, result?.ok ? 200 : 502);
 };
