@@ -231,12 +231,29 @@ export const isGoogleMapsScript = (url) => { try { return new URL(String(url)).h
 
 // ── GUARD STEPS for the backtested day (v1.72.0 map, v1.73.0 routes). Shared by the layout guards and
 // verify-shadow-map so they walk the screen the same way. Each step PROVES it arrived (a probe that
-// quietly no-ops measures the screen it started on under another name), and waits for its proof rather
-// than a fixed pause.
+// quietly no-ops measures the screen it started on under another name), waits for its proof rather
+// than a fixed pause, and looks for that proof INSIDE the shadow's own sections: on a phone the Shadow
+// view sits over the Routing screen, which has "Routes (…)" text of its own — a loose text match
+// passed before the day's routes had loaded, and CI's slower runners lost that race every time.
 const seen = async (loc, ms = 8000) => { try { await loc.first().waitFor({ state: 'visible', timeout: ms }); return true; } catch { return false; } };
+const ROUTE_BUTTON = 'section[aria-label="Routes"] button:not([aria-label])';
+const ROUTE_PANEL = 'section[aria-label^="Route "]:not([aria-label="Routes"])';
+// When a step fails, say which and what the page showed — "could not open" alone cannot be fixed.
+const why = async (page, step) => {
+  const st = await page.evaluate(([rb, rp]) => ({
+    routesSection: !!document.querySelector('section[aria-label="Routes"]'),
+    routeButtons: document.querySelectorAll(rb).length,
+    panel: [...document.querySelectorAll(rp)].map((x) => x.getAttribute('aria-label')),
+    dayOpen: !!document.querySelector('button[aria-label="Close the day"]'),
+  }), [ROUTE_BUTTON, ROUTE_PANEL]).catch((e) => ({ error: String(e).slice(0, 120) }));
+  console.log(`      guard step failed: ${step} — ${JSON.stringify(st)}`);
+  if (process.env.GUARD_SHOT_DIR) await page.screenshot({ path: `${process.env.GUARD_SHOT_DIR}/guard-fail-${Date.now()}.png` }).catch(() => {});
+  return false;
+};
 
 /** Open the backtested day's row (the phone's summary button or the desktop's Open) and wait for its routes. */
 export async function guardOpenBacktestDay(page, date = '2026-09-23') {
+  if (!(await seen(page.locator(`input[aria-label="Pick ${date}"]`), 8000))) return why(page, `the ${date} row never appeared`);
   const opened = await page.evaluate((d) => {
     const cb = document.querySelector(`input[aria-label="Pick ${d}"]`);
     let row = cb && cb.parentElement;
@@ -246,29 +263,24 @@ export async function guardOpenBacktestDay(page, date = '2026-09-23') {
     }
     return false;
   }, date);
-  if (!opened) return false;
-  return seen(page.getByText(/^Routes \(\d+/));
+  if (!opened) return why(page, 'the day row has no Open button');
+  return (await seen(page.locator(ROUTE_BUTTON))) || why(page, "the day's routes never appeared");
 }
 
-/** Open the first route in the routes list and wait for its numbers. */
+/** Open the first route in the routes list and wait for its numbers, inside the route itself. */
 export async function guardOpenFirstRoute(page) {
-  const clicked = await page.evaluate(() => {
-    const list = document.querySelector('section[aria-label="Routes"]');
-    const b = list && [...list.querySelectorAll('button')].find((x) => !x.getAttribute('aria-label'));
-    if (!b) return false;
-    b.click();
-    return true;
-  });
-  if (!clicked) return false;
-  return seen(page.getByText(/^Skid spots \/ cap$/));
+  const b = page.locator(ROUTE_BUTTON).first();
+  if (!(await seen(b))) return why(page, 'no route in the list to open');
+  await b.click();
+  return (await seen(page.locator(ROUTE_PANEL).getByText(/^Skid spots \/ cap$/))) || why(page, 'the opened route never showed its numbers');
 }
 
 /** Open the map (Google stood in — needs a build WITH a Maps key) and tap the stop two orders share. */
 export async function guardOpenMapAndTapStop(page) {
   const btn = page.getByRole('button', { name: /^map: yours|^maps: yours/i }).first();
-  if (!(await btn.isVisible().catch(() => false))) return false;
+  if (!(await seen(btn))) return why(page, 'no map button');
   await btn.click();
-  if (!(await seen(page.locator('[aria-label$=" map"]')))) return false;
-  if (!(await page.evaluate(() => window.__guardTapStop?.() === true))) return false;
-  return seen(page.getByText(/stops at this address/));
+  if (!(await seen(page.locator('[aria-label="Claude map"], [aria-label="Dispatch — as driven map"]')))) return why(page, 'the map never appeared');
+  if (!(await page.evaluate(() => window.__guardTapStop?.() === true))) return why(page, 'no stop to tap on the map');
+  return (await seen(page.getByText(/stops at this address/))) || why(page, 'the stop card never opened');
 }
