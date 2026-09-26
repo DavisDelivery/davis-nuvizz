@@ -233,7 +233,7 @@ function RouterSettings({ v, onSave }) {
         <div className="mt-2 grid grid-cols-2 md:grid-cols-3 gap-2 rounded-lg border bg-slate-50 p-3">
           <label className="text-[11px] text-slate-600">When a driver and a route both have a cap
             <select className={field} value={form.capRule} onChange={(e) => setForm({ ...form, capRule: e.target.value })}>
-              <option value="tighter">the tighter one binds</option>
+              <option value="tighter">the tighter one binds (a cap you typed beats a learned one)</option>
               <option value="driver">the driver’s binds</option>
               <option value="route">the route’s binds</option>
             </select>
@@ -266,7 +266,9 @@ function RouterSettings({ v, onSave }) {
             <button onClick={() => setOpen(false)} className="rounded-lg border bg-white px-3 text-xs min-h-[44px]">Cancel</button>
           </div>
           <p className="col-span-2 md:col-span-3 text-[11px] text-slate-500">Cost is left blank until you enter a rate: nothing in the app says what a mile or a driver-hour costs Davis, so no dollar saving is shown until you do.</p>
-          <p className="col-span-2 md:col-span-3 text-[11px] text-slate-500">The two weight limits govern the backtest only; the live route builder’s limit is the truck card in the Build panel (2 · Plan onto → Trucks). A limit under what dispatch loaded on a truck is raised to that load for that truck, and the result says on how many loads that happened.</p>
+          <p className="col-span-2 md:col-span-3 text-[11px] text-slate-500">The two weight limits govern the backtest only; the live route builder’s limit is the truck card in the Build panel (2 · Plan onto → Trucks). {v.hardCaps === false
+            ? 'Hard caps are off (SHADOW_HARD_CAPS=off): a limit under what dispatch loaded on a truck is raised to that load for that truck, and the result says on how many loads that happened.'
+            : 'The limits hold: a truck dispatch loaded past one reads as over on dispatch\u2019s side, and Claude may not match it (SHADOW_HARD_CAPS=off puts the old raise back).'} Under “the tighter one binds”, a cap you typed on a driver or a route beats a learned one; a typed route cap is still held to the ceiling of the truck that runs it.</p>
         </div>
       )}
     </div>
@@ -285,9 +287,17 @@ function LimitsLine({ r }) {
     const x = raised?.[cls];
     return x && x.raised ? ` (raised on ${x.raised} of ${x.of} to what dispatch loaded)` : '';
   };
+  // v1.75.0: whether the caps HELD (and what they were held to) or were RAISED to dispatch's load.
+  const held = r.capsHeld ? (r.capsHeld.box_truck?.held || 0) + (r.capsHeld.tractor?.held || 0) : 0;
+  const ofN = r.capsHeld ? (r.capsHeld.box_truck?.of || 0) + (r.capsHeld.tractor?.of || 0) : 0;
+  // One name for dispatch's side on this screen: "Dispatch", as the scorecard column says (review).
+  const p95 = r.dispatchOver?.capLearned || 0;
+  const caps = r.capMode === 'hard'
+    ? ` Caps and limits HELD${r.ceilings ? ` — box ≤${r.ceilings.box_truck} · tractor ≤${r.ceilings.tractor} skid spots; on ${held} of ${ofN} loads with a learned cap it was held to that ceiling` : ''}.${p95 ? ` Of Dispatch’s loads over a cap, ${p95} ${p95 === 1 ? 'was' : 'were'} past only that driver’s own learned cap — the 95th percentile of their loads, so about one load in twenty sits above it.` : ''}`
+    : r.capMode === 'raised' ? ' Caps and limits were RAISED to what dispatch loaded (hard caps off).' : '';
   return (
     <p className="text-[11px] text-slate-600 mt-1">
-      Weight limits this day ran with: box ≤{int(L.box_truck)} lb{part('box_truck')} · tractor ≤{int(L.tractor)} lb{part('tractor')}.
+      Weight limits this day ran with: box ≤{int(L.box_truck)} lb{part('box_truck')} · tractor ≤{int(L.tractor)} lb{part('tractor')}.{caps}
     </p>
   );
 }
@@ -405,7 +415,9 @@ function LoadRows({ r, phone }) {
           ))}
         </tbody>
       </table>
-      <p className="text-[11px] text-slate-400 mt-1">* the cap was adjusted for this day — raised to what dispatch delivered on that route and driver, and/or less room held for stops with no map point (hover a cap for why).</p>
+      <p className="text-[11px] text-slate-400 mt-1">{r.capMode === 'hard'
+        ? '* held for this day — a learned cap (or a cap typed on a route) held to its class ceiling, and/or less room held for stops with no map point; where Dispatch ran past it, the note says so (hover a cap for why).'
+        : '* the cap was adjusted for this day — raised to what dispatch delivered on that route and driver, and/or less room held for stops with no map point (hover a cap for why).'}</p>
     </div>
   );
 }

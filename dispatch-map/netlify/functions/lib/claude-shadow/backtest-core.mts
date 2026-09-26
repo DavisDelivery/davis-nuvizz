@@ -37,6 +37,7 @@ import { solveRoute, haversineMiles, travelMinutesForMiles } from '../routing-en
 import { zoneId } from '../zones.mts';
 import { DEFAULT_SERVICE_MIN } from '../routing-types.mts';
 import { employeeClassMap, CLASS_OVERRIDE } from '../driver-class.mts';
+import { clipCap, DEFAULT_CEILINGS } from './settings-core.mts';
 import { learnDay, buildCapacityModel, keyOf, tidy, num, skidSpots, HISTORY_STOP_MASK, LEARN_TENANT } from './learn-core.mts';
 import { withOverrides } from './settings-core.mts';
 import type { EvalResult, Problem, ToolDef } from './plan-loop.mts';
@@ -111,6 +112,14 @@ export interface BtProblem {
   date: string; loosePerSkid: number; capRule: CapRule;
   lbsLimits: { box_truck: number; tractor: number };   // the weight limits this day was held to (lb)
   lbsRaised?: LbsRaised;              // v1.74.1: per class, how many loads dispatch loaded past the limit (so it was raised)
+  capMode: 'hard' | 'raised';         // v1.75.0: hard = caps and limits held; raised = the old rule (raised to dispatch's load)
+  ceilings: { box_truck: number; tractor: number } | null;   // the class ceilings a learned cap was held to (hard only)
+  capsHeld: { box_truck: { held: number; of: number }; tractor: { held: number; of: number } };   // learned caps held to the ceiling
+  // hard only: loads dispatch itself ran past the cap / the weight limit. `cap` counts the overs that
+  // matter (past a ceiling, a cap you typed, or a truck's rating); `capLearned` the ones past only that
+  // driver's own learned cap — the 95th percentile of their loads, so about one load in twenty.
+  dispatchOver: { cap: number; lbs: number; capLearned?: number };
+  infeasible?: string | null;         // hard only: why no plan can put every stop on a truck, found before any spend
   depot: { lat: number; lng: number };
   serviceMin: number;                 // on-site minutes a stop (the engine's DEFAULT_SERVICE_MIN)
   shiftMin: number;                   // a truck's day (the engine's typical_shift_hours × 60)
@@ -133,6 +142,11 @@ export interface BtInput {
   loosePerSkid: number;
   capRule: CapRule;
   lbsLimits?: { box_truck?: number | null; tractor?: number | null } | null;   // Router settings; absent → PROFILE_MAX_LBS
+  // v1.75.0 HARD CAPS. hardCaps (default true): caps and weight limits are held, never raised to
+  // what dispatch loaded; a learned skid cap is held down to the class ceiling. ceilings: the
+  // capacity settings' ceilings (absent → DEFAULT_CEILINGS). hardCaps false puts the old rule back.
+  hardCaps?: boolean;
+  ceilings?: { box_truck: number; tractor: number } | null;
   employees: any[];
   notes: Map<string, any>;            // customer_notes by match key (current state)
   depot: { lat: number; lng: number };
@@ -140,20 +154,64 @@ export interface BtInput {
   cfg: any;                           // the engine config: the estimator and typical_shift_hours
 }
 
-/** Your cap / the learned cap for this driver and route, combined by the rule; else the profile. */
-export function capFor(driverRow: any, routeRow: any, rule: CapRule, cls: string): { cap: number; source: string } {
+/** Your cap / the learned cap for this driver and route, combined by the rule; else the profile.
+ *  v1.75.0: with ceilings given, a LEARNED cap is held down to the class ceiling (a person's cap is
+ *  that person's number and stands); `clipped` says it happened and `learned` what it was. */
+export function capFor(driverRow: any, routeRow: any, rule: CapRule, cls: string, ceilings: { box_truck: number; tractor: number } | null = null): { cap: number; source: string; clipped: boolean; learned: number | null; typed: number | null; ceiling: number | null } {
   const d = typeof driverRow?.capUsed === 'number' ? driverRow.capUsed : null;
   const r = typeof routeRow?.capUsed === 'number' ? routeRow.capUsed : null;
-  const dSrc = driverRow?.capSource === 'yours' ? 'your driver cap' : 'learned driver cap';
-  const rSrc = routeRow?.capSource === 'yours' ? 'your route cap' : 'learned route cap';
+  const dYours = driverRow?.capSource === 'yours', rYours = routeRow?.capSource === 'yours';
+  const dSrc = dYours ? 'your driver cap' : 'learned driver cap';
+  const rSrc = rYours ? 'your route cap' : 'learned route cap';
+  const klass = (cls === 'tractor' ? 'tractor' : 'box_truck') as 'box_truck' | 'tractor';
+  // WHICH NUMBERS A CEILING HOLDS (v1.75.0, review): a LEARNED cap, always; a cap you typed on a
+  // ROUTE, too — a route pools every truck that runs it, so 46 typed for the corrugated trailer must
+  // not brief a 26' box truck covering that route at 46. A cap you typed on a DRIVER is that driver's
+  // own truck, and it stands above the ceiling: that is how the 46-pallet day is allowed.
+  const word = klass === 'tractor' ? 'tractor' : 'box-truck';
+  const hold = (cap: number, source: string, yours: boolean, side: 'driver' | 'route') => {
+    const h = clipCap(cap, yours && side === 'driver' ? 'yours' : 'learned', klass, ceilings);
+    const said = !h.clipped ? source
+      : yours ? `${source} ${cap}, held to the ${word} ceiling ${h.ceiling} (a route cap is held to the truck that runs it; type it on the driver to go past the ceiling)`
+      : `${source} ${cap}, held to the ${word} ceiling ${h.ceiling}`;
+    return { cap: h.cap as number, source: said, clipped: h.clipped, learned: yours ? null : cap, typed: yours ? cap : null, ceiling: h.ceiling };
+  };
   if (d != null && r != null) {
-    if (rule === 'driver') return { cap: d, source: dSrc };
-    if (rule === 'route') return { cap: r, source: rSrc };
-    return d <= r ? { cap: d, source: `${dSrc} (tighter than the route's ${r})` } : { cap: r, source: `${rSrc} (tighter than the driver's ${d})` };
+    if (rule === 'driver') return hold(d, dSrc, dYours, 'driver');
+    if (rule === 'route') return hold(r, rSrc, rYours, 'route');
+    // "Tighter" between a number a person typed and a number history learned: the person's wins.
+    // Typing a cap is how the learned one is corrected; a learned cap must not out-vote it. Hard caps
+    // only (ceilings given): with SHADOW_HARD_CAPS=off the old rule — the smaller binds — is back whole.
+    if (dYours !== rYours && ceilings) return dYours ? hold(d, `${dSrc} (your number, over the learned route cap ${r})`, true, 'driver') : hold(r, `${rSrc} (your number, over the learned driver cap ${d})`, true, 'route');
+    return d <= r ? hold(d, `${dSrc} (tighter than the route's ${r})`, dYours, 'driver') : hold(r, `${rSrc} (tighter than the driver's ${d})`, rYours, 'route');
   }
-  if (d != null) return { cap: d, source: dSrc };
-  if (r != null) return { cap: r, source: rSrc };
-  return { cap: PROFILE_MAX_SKIDS[cls] ?? PROFILE_MAX_SKIDS.box_truck, source: `${cls === 'tractor' ? 'tractor' : 'box truck'} profile (no learned cap)` };
+  if (d != null) return hold(d, dSrc, dYours, 'driver');
+  if (r != null) return hold(r, rSrc, rYours, 'route');
+  const prof = PROFILE_MAX_SKIDS[klass];
+  return { cap: prof, source: `${klass === 'tractor' ? 'tractor' : 'box truck'} profile (no learned cap)`, clipped: false, learned: null, typed: null, ceiling: ceilings ? ceilings[klass] : null };
+}
+
+/**
+ * v1.75.0 (review): can ANY plan put every stop on a truck under the caps that now hold? Checked with
+ * bounds that are never wrong in the "infeasible" direction: every stop that must ride (all but a
+ * no-tractor stop, which may be left off when no box truck has room) against every load's room added
+ * up, and each such stop against the biggest load. A day that fails is refused before round 1, at $0,
+ * with the reason — not after every round is paid for and the run ends "no plan without a violation".
+ */
+export function feasibilityOf(stops: BtStop[], loads: BtLoad[]): string | null {
+  if (!loads.length || !stops.length) return null;
+  const must = stops.filter((s) => !s.blocksTractor);
+  const spots = r1(must.reduce((a, s) => a + s.spots, 0));
+  const room = r1(loads.reduce((a, l) => a + l.cap, 0));
+  if (spots > room + 1e-9) return `the caps that hold carry ${room} skid spots and the stops that must ride need ${spots}: no plan can put them all on a truck — raise a ceiling, or type a cap for the drivers who ran over (SHADOW_HARD_CAPS=off raises caps to what dispatch ran)`;
+  const lbs = must.reduce((a, s) => a + s.weight, 0);
+  const lbsRoom = loads.reduce((a, l) => a + (typeof l.maxLbs === 'number' ? l.maxLbs : Infinity), 0);
+  if (lbs > lbsRoom) return `the weight limits that hold carry ${lbsRoom.toLocaleString('en-US')} lb and the stops that must ride weigh ${lbs.toLocaleString('en-US')} lb: no plan can put them all on a truck — raise a limit in Router settings`;
+  const biggest = Math.max(...loads.map((l) => l.cap));
+  const heaviest = Math.max(...loads.map((l) => (typeof l.maxLbs === 'number' ? l.maxLbs : Infinity)));
+  const tooBig = must.find((s) => s.spots > biggest + 1e-9 || s.weight > heaviest);
+  if (tooBig) return `stop ${tooBig.n} (${tooBig.spots} skid spots, ${tooBig.weight.toLocaleString('en-US')} lb) fits on no truck under the caps and limits that hold (the biggest is ${biggest} spots, ${heaviest.toLocaleString('en-US')} lb)`;
+  return null;
 }
 
 /** One sealed day → the problem Claude plans, and the answer key it is measured against. */
@@ -173,6 +231,12 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
   // the engine's truck profiles. Recorded on the problem, so every result says which it used.
   const lim = (v: any, dflt: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : dflt);
   const lbsLimits = { box_truck: lim(input.lbsLimits?.box_truck, PROFILE_MAX_LBS.box_truck), tractor: lim(input.lbsLimits?.tractor, PROFILE_MAX_LBS.tractor) };
+  // HARD CAPS (v1.75.0): held, not raised. The ceilings only exist in hard mode.
+  const hard = input.hardCaps !== false;
+  const ceil = (v: any, dflt: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : dflt);
+  const ceilings = hard ? { box_truck: ceil(input.ceilings?.box_truck, DEFAULT_CEILINGS.box_truck), tractor: ceil(input.ceilings?.tractor, DEFAULT_CEILINGS.tractor) } : null;
+  const capsHeld = { box_truck: { held: 0, of: 0 }, tractor: { held: 0, of: 0 } };
+  const dispatchOver = { cap: 0, lbs: 0, capLearned: 0 };
   const stops: BtStop[] = [];
   const idOf = new Map<string, number>();
   const noCoords: { n: string; route: string; load?: string }[] = [];
@@ -216,11 +280,15 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
     const pinned = CLASS_OVERRIDE.get(dk);
     const cls = (fromRoster || pinned || 'box_truck') as BtLoad['cls'];
     const clsSource: BtLoad['clsSource'] = fromRoster ? 'roster' : pinned ? 'pin' : 'default';
-    const base = capFor(dRows.get(keyOf(trip.driver)), rRows.get(keyOf(trip.route)), input.capRule, cls);
+    const base = capFor(dRows.get(keyOf(trip.driver)), rRows.get(keyOf(trip.route)), input.capRule, cls, ceilings);
     let cap = r1(base.cap), capNote: string | null = null;
+    const capBefore = cap;
+    if (base.learned != null) capsHeld[cls].of += 1;
+    if (base.clipped && base.learned != null) { capsHeld[cls].held += 1; capNote = `learned ${base.learned} held to the ${cls === 'tractor' ? 'tractor' : 'box-truck'} ceiling ${base.ceiling}`; }
+    else if (base.clipped) capNote = `your route cap ${base.typed} held to the ${cls === 'tractor' ? 'tractor' : 'box-truck'} ceiling ${base.ceiling} — a route cap is held to the truck that runs it`;
     if (reserved > 0) {
       const left = r1(Math.max(0, cap - reserved));
-      capNote = `${r1(reserved)} of ${cap} held back for ${reservedStops} stop${reservedStops === 1 ? '' : 's'} on it with no location`;
+      capNote = `${capNote ? capNote + '; ' : ''}${r1(reserved)} of ${cap} held back for ${reservedStops} stop${reservedStops === 1 ? '' : 's'} on it with no location`;
       cap = left;
     }
     if (spotsRan > cap + 1e-9) {
@@ -228,8 +296,17 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
       const how = trip.shared === true
         ? 'over more than one trip: the roster lists more loads under this route name than history has trips'
         : 'on one truck or over more than one trip (history cannot tell which)';
-      capNote = `${capNote ? capNote + '; ' : ''}raised from ${cap} to ${r1(spotsRan)} — dispatch delivered that much on ${trip.route} / ${trip.driver} on ${input.date}, ${how}`;
-      cap = r1(spotsRan);
+      if (hard) {
+        // HELD: dispatch's own load reads as over its cap on dispatch's side, and Claude may not match it.
+        // Past only the driver's own learned cap (unheld, the 95th percentile of their loads) is the
+        // one-in-twenty that cap is built to leave above it — counted apart, so it is not read as a fault.
+        const ownP95 = base.learned != null && !base.clipped;
+        if (ownP95) dispatchOver.capLearned = (dispatchOver.capLearned || 0) + 1; else dispatchOver.cap += 1;
+        capNote = `${capNote ? capNote + '; ' : ''}dispatch delivered ${r1(spotsRan + reserved)} on a cap of ${capBefore} on ${input.date} (${how}) — over on dispatch's side${ownP95 ? ' (past only that driver\u2019s own learned cap)' : ''}; the cap holds`;
+      } else {
+        capNote = `${capNote ? capNote + '; ' : ''}raised from ${cap} to ${r1(spotsRan)} — dispatch delivered that much on ${trip.route} / ${trip.driver} on ${input.date}, ${how}`;
+        cap = r1(spotsRan);
+      }
     }
     // WEIGHT, like skid spots: the class's limit, less what unlocated stops on it weighed, raised to
     // what dispatch actually put on this truck that day — the dispatcher's own load is never refused.
@@ -239,7 +316,10 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
     let maxLbs = Math.max(0, lbsLimit - reservedLbs), lbsNote: string | null = null;
     if (reservedLbs > 0) lbsNote = `${reservedLbs} of ${lbsLimit} lb held back for ${reservedStops} stop${reservedStops === 1 ? '' : 's'} on it with no location`;
     let lbsRaisedFrom: number | null = null;
-    if (lbsRan > maxLbs) { lbsNote = `${lbsNote ? lbsNote + '; ' : ''}raised from ${maxLbs} to ${lbsRan} lb — dispatch loaded that much on ${trip.route} / ${trip.driver} on ${input.date}`; lbsRaisedFrom = maxLbs; maxLbs = lbsRan; }
+    if (lbsRan > maxLbs) {
+      if (hard) { dispatchOver.lbs += 1; lbsNote = `${lbsNote ? lbsNote + '; ' : ''}dispatch loaded ${lbsRan + reservedLbs} lb against the ${lbsLimit} lb limit on ${input.date} — over on dispatch's side; the limit holds`; }
+      else { lbsNote = `${lbsNote ? lbsNote + '; ' : ''}raised from ${maxLbs} to ${lbsRan} lb — dispatch loaded that much on ${trip.route} / ${trip.driver} on ${input.date}`; lbsRaisedFrom = maxLbs; maxLbs = lbsRan; }
+    }
     loads.push({ id: `L${loads.length + 1}`, route: trip.route, driver: trip.driver, cls, clsSource, cap, capSource: base.source, capNote, dispatch: ids, orderSource, maxMin: 0, maxMinNote: null, maxLbs, lbsNote, lbsRaisedFrom });
   });
   // COUNT THE RAISES, per class. A limit typed under what dispatch loaded binds only the loads
@@ -292,8 +372,9 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
     }
   }
 
+  const infeasible = hard ? feasibilityOf(order, loads) : null;
   return {
-    date: input.date, loosePerSkid: input.loosePerSkid, capRule: input.capRule, lbsLimits, lbsRaised, depot: input.depot, serviceMin, shiftMin,
+    date: input.date, loosePerSkid: input.loosePerSkid, capRule: input.capRule, lbsLimits, lbsRaised, capMode: hard ? 'hard' : 'raised', ceilings, capsHeld, dispatchOver, infeasible, depot: input.depot, serviceMin, shiftMin,
     loads, stops: order, excluded: { noCoords, duplicate }, counts: day.counts, roster: day.roster, stampGate: day.stampGate,
     capModel: { days: model?.days?.count ?? 0, first: model?.days?.first ?? null, last: model?.days?.last ?? null },
     approximations: [
@@ -303,8 +384,13 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
       'Miles and drive minutes are the learned engine’s estimate (straight line × road factor, tiered speeds), open tour from Buford — the same for every column.',
       ...(day.stampGate === 'off' ? ['Fewer than half this day’s delivered stops carried a delivery stamp on the day, so every delivered stop counted — some may have gone out on a neighbouring day.'] : []),
       ...(day.roster === 'none' ? ['This day’s load roster was not captured, so two loads run under one route name cannot be told apart from one.'] : []),
-      `Weight limits are Router settings (box ${lbsLimits.box_truck.toLocaleString('en-US')} lb, tractor ${lbsLimits.tractor.toLocaleString('en-US')} lb), raised to what dispatch loaded on that truck that day; stop weights are as recorded.`,
-      ...raisedLine('box_truck'), ...raisedLine('tractor'),
+      ...(hard
+        ? [
+          `Weight limits are Router settings (box ${lbsLimits.box_truck.toLocaleString('en-US')} lb, tractor ${lbsLimits.tractor.toLocaleString('en-US')} lb) and HOLD: a load dispatch ran past one reads as over on dispatch's side${dispatchOver.lbs ? ` (${dispatchOver.lbs} on this day)` : ' (none on this day)'}; stop weights are as recorded.`,
+          `Skid caps HOLD: a learned cap, and a cap you typed on a route, is held down to the class ceiling of the truck that runs it (box ${ceilings!.box_truck} spots, tractor ${ceilings!.tractor}); a cap you typed on a driver stands — on ${capsHeld.box_truck.held + capsHeld.tractor.held} of the ${capsHeld.box_truck.of + capsHeld.tractor.of} loads with a learned cap it was held on this day. A load dispatch ran past its cap reads as over on dispatch's side: ${dispatchOver.cap} past a ceiling, a cap you typed or a truck's rating${dispatchOver.capLearned ? `, and ${dispatchOver.capLearned} past only that driver's own learned cap (the 95th percentile of their loads, so about one load in twenty sits above it)` : ''}.`,
+        ]
+        : [`Weight limits are Router settings (box ${lbsLimits.box_truck.toLocaleString('en-US')} lb, tractor ${lbsLimits.tractor.toLocaleString('en-US')} lb), raised to what dispatch loaded on that truck that day; stop weights are as recorded.`]),
+      ...(hard ? [] : [...raisedLine('box_truck'), ...raisedLine('tractor')]),
       'A driver’s loads share ONE day (a driver on two loads works one shift between them); the return to the terminal between two loads is not counted.',
       `A driver’s day is drive minutes plus a flat ${DEFAULT_SERVICE_MIN} min on site a stop (the engine’s default, not each customer’s learned time), against the engine’s typical shift of ${shiftMin / 60} h — or longer where that driver’s own dispatched day took longer.`,
     ],
@@ -542,8 +628,10 @@ export const BT_TOOLS: ToolDef[] = [
 const MAX_LISTED = 40;
 
 /**
- * The only stops a backtest plan may leave unplanned. Every stop rode out on D, and dispatch's own
- * loads prove a legal home for each one (a cap is never below what ran) — EXCEPT a no-tractor stop
+ * The only stops a backtest plan may leave unplanned. Every stop rode out on D, and with caps raised
+ * to what ran, dispatch's own loads prove a legal home for each one. Under HARD caps a cap can sit
+ * below what ran, so no home is proven — feasibilityOf refuses a day whose stops cannot all fit before
+ * round 1, and a day that passes it may still be tight; either way no stop is let off. EXCEPT a no-tractor stop
  * dispatch sent on a tractor, which may have no box truck with room. Anything else left unplanned
  * would shrink Claude's miles by dropping freight, and read as a saving.
  */

@@ -12,6 +12,7 @@ import {
 import { TRAILER_BLOCKER_KEYS as ENGINE_BLOCKERS } from '../netlify/functions/lib/routing-assignment-solver.mts';
 import { DEFAULT_TRUCK_PROFILES } from '../netlify/functions/lib/truck-profiles.mts';
 import { effectiveEngineConfig } from '../netlify/functions/lib/routing-engine-config.mts';
+import { DEFAULT_CEILINGS } from '../netlify/functions/lib/claude-shadow/settings-core.mts';
 
 const D = '2026-09-23';
 const CFG = { ...effectiveEngineConfig(null, {}), solver_ms_cap: 200 };
@@ -134,12 +135,28 @@ test('dropping freight is never a saving: a delivered stop a load can carry may 
 
 test('a load past its cap is rejected; putting every stop on one truck is over cap when the cap is the tighter learned number', () => {
   const caps = { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 10 }, DULUTH: { name: 'DULUTH', cap: 10 } } };
+  // HARD (the default, v1.75.0): your route cap of 10 holds. DULUTH ran 12.5 spots (2.5 of them on
+  // a stop with no location, held back from the cap), so its cap reads 7.5 and dispatch's own load
+  // reads as over on dispatch's side — the cap does not rise to meet it.
   const p = buildBacktestProblem(input({ caps }));
   const a = p.loads[0];
-  assert.equal(a.cap, 10, 'your route cap binds (10 spots; the day put 4 × 2.5 = 10 on it)');
+  assert.equal(a.route, 'DULUTH');
+  assert.equal(a.cap, 7.5, 'your route cap (10), less the 2.5 held back for the unlocated stop');
+  assert.match(a.capNote, /2\.5 of 10 held back/);
+  assert.match(a.capNote, /dispatch delivered 12\.5 on a cap of 10 on 2026-09-23 .* over on dispatch's side; the cap holds/);
+  assert.deepEqual(p.dispatchOver, { cap: 1, lbs: 0, capLearned: 0 });
+  assert.equal(p.capMode, 'hard');
   const res = evaluateAssignment(p, { loads: [{ load: a.id, stops: p.stops.map((s) => s.id) }], unplanned: [] }, CFG, makeSequencer(p, CFG));
   assert.equal(res.ok, false);
-  assert.ok(res.summary.hardViolations.some((v) => /over its cap: 20 of 10/.test(v)));
+  assert.ok(res.summary.hardViolations.some((v) => /over its cap: 20 of 7\.5/.test(v)));
+  // Dispatch's own assignment is over that cap too — and the evaluator says so rather than hiding it.
+  const own = evaluateAssignment(p, { loads: p.loads.map((l) => ({ load: l.id, stops: l.dispatch })), unplanned: [] }, CFG, makeSequencer(p, CFG));
+  assert.ok(own.summary.hardViolations.some((v) => /over its cap: 10 of 7\.5/.test(v)), own.summary.hardViolations.join('; '));
+  // RAISED (SHADOW_HARD_CAPS=off): the old rule — the cap rises to what dispatch delivered.
+  const q = buildBacktestProblem(input({ caps, hardCaps: false }));
+  assert.equal(q.loads[0].cap, 10, 'raised from 7.5 to 10');
+  assert.equal(q.capMode, 'raised');
+  assert.equal(q.ceilings, null, 'no ceilings under the old rule');
 });
 
 test('the cap rule: the tighter of driver and route binds by default; either can be chosen; no number at all falls back to the class profile', () => {
@@ -152,12 +169,65 @@ test('the cap rule: the tighter of driver and route binds by default; either can
   assert.match(capFor(null, null, 'tighter', 'box_truck').source, /profile/);
 });
 
-test('a cap below what dispatch actually loaded that day is raised to what ran, and the load says so', () => {
+test('a cap below what dispatch actually loaded that day: HELD by default (dispatch reads over), RAISED to what ran only with hard caps off', () => {
   const caps = { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 6 } } };
   const p = buildBacktestProblem(input({ caps }));
   const g = p.loads.find((l) => l.route === 'GAINESVILLE');
-  assert.equal(g.cap, 10);
-  assert.match(g.capNote, /raised from 6 to 10/);
+  assert.equal(g.cap, 6, 'your cap of 6 holds');
+  assert.match(g.capNote, /dispatch delivered 10 on a cap of 6 on 2026-09-23 .* over on dispatch's side; the cap holds/);
+  assert.equal(p.dispatchOver.cap, 1, 'past a cap you typed: an over that matters');
+  assert.equal(p.dispatchOver.capLearned, 0);
+  assert.match(p.approximations.find((a) => /Skid caps HOLD/.test(a)), /reads as over on dispatch's side: 1 past a ceiling, a cap you typed or a truck's rating\./);
+  const q = buildBacktestProblem(input({ caps, hardCaps: false }));
+  const h = q.loads.find((l) => l.route === 'GAINESVILLE');
+  assert.equal(h.cap, 10);
+  assert.match(h.capNote, /raised from 6 to 10/);
+  assert.ok(!q.approximations.some((a) => /HOLD/.test(a)));
+});
+
+// v1.75.0 — THE CEILINGS. Chad: "there are times where we can get 46 pallets on a truck but its when
+// its certain very stackable freight like corregated boxes. So i like hard caps on even the learned
+// behavior and a ui to adjust them all against their learned behaviors."
+test('a LEARNED cap above the class ceiling is held to it; a cap a person set is that person\u2019s number and stands; off, no ceilings', () => {
+  const trip = (n) => ({ route: 'GAINESVILLE', driver: 'Ben  Paintsil', stops: 4, skids: n, loose: 0, weight: 0, freightStops: 4, uncountedStops: 0, shared: false });
+  const learned = (date, n) => ({ date, learnVersion: 2, roster: 'read', stampGate: 'applied', counts: {}, trips: [trip(n)] });
+  const before = Array.from({ length: 25 }, (_, i) => learned(`2026-08-${String(i + 1).padStart(2, '0')}`, 41));
+  // Ben drives a tractor (employees); the learned cap from history is 41 spots.
+  const p = buildBacktestProblem(input({ learnDaysBefore: before }));
+  const g = p.loads.find((l) => l.route === 'GAINESVILLE');
+  assert.equal(g.cls, 'tractor');
+  assert.equal(g.cap, 37, 'learned 41, held to the default tractor ceiling 37');
+  assert.match(g.capSource, /learned .* 41, held to the tractor ceiling 37/);
+  assert.match(g.capNote, /^learned 41 held to the tractor ceiling 37/);
+  assert.deepEqual(p.ceilings, { box_truck: 22, tractor: 37 });
+  assert.deepEqual(p.capsHeld, { box_truck: { held: 0, of: 0 }, tractor: { held: 1, of: 1 } });
+  assert.match(p.approximations.find((a) => /Skid caps HOLD/.test(a)), /box 22 spots, tractor 37.*on 1 of the 1 loads with a learned cap it was held/);
+  // A ceiling of Chad's own replaces the default.
+  const c = buildBacktestProblem(input({ learnDaysBefore: before, ceilings: { box_truck: 22, tractor: 46 } }));
+  assert.equal(c.loads.find((l) => l.route === 'GAINESVILLE').cap, 41, 'ceiling 46: the learned 41 stands');
+  // A cap Chad set for the DRIVER is his number for that driver's truck and is never held down — that
+  // is how the 46-pallet corrugated day is allowed — and under the "tighter" rule it beats the learned
+  // cap on the other side: typing a cap is how a learned one is corrected.
+  const yours = buildBacktestProblem(input({ learnDaysBefore: before, caps: { drivers: { 'BEN PAINTSIL': { name: 'Ben Paintsil', cap: 46 } }, routes: {} } }));
+  const y = yours.loads.find((l) => l.route === 'GAINESVILLE');
+  assert.equal(y.cap, 46);
+  assert.match(y.capSource, /^your driver cap/);
+  assert.ok(!/held to/.test(y.capSource));
+  // A cap typed on a ROUTE pools every truck that runs it: it is held to the ceiling of the truck
+  // that ran it that day (review, v1.75.0) — 46 typed for the corrugated trailer is 37 on this tractor.
+  const onRoute = buildBacktestProblem(input({ learnDaysBefore: before, caps: { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 46 } } } }));
+  const rt = onRoute.loads.find((l) => l.route === 'GAINESVILLE');
+  assert.equal(rt.cap, 37);
+  assert.match(rt.capSource, /your route cap \(your number, over the learned driver cap 41\) 46, held to the tractor ceiling 37 \(a route cap is held to the truck that runs it; type it on the driver to go past the ceiling\)/);
+  assert.match(rt.capNote, /^your route cap 46 held to the tractor ceiling 37 — a route cap is held to the truck that runs it/);
+  assert.deepEqual(onRoute.capsHeld.tractor, { held: 0, of: 0 }, 'a typed cap is not a learned one: "learned caps held" does not count it');
+  // Hard caps off: no ceilings at all.
+  const off = buildBacktestProblem(input({ learnDaysBefore: before, hardCaps: false }));
+  assert.equal(off.loads.find((l) => l.route === 'GAINESVILLE').cap, 41);
+  assert.equal(off.ceilings, null);
+  // The defaults are the learned engine's own hard caps, pinned.
+  const eng = effectiveEngineConfig(null, {});
+  assert.deepEqual(DEFAULT_CEILINGS, { box_truck: eng.skid_cap_box_hard, tractor: eng.skid_cap_tractor_hard });
 });
 
 test('capacity is learned only from days BEFORE the backtest day — the future never sets a cap', () => {
@@ -218,7 +288,9 @@ test('the briefing never carries the answer: no stop is tied to the load dispatc
 
 test('folding two trucks into one is refused when no driver could finish that day: drive + 15 min a stop against the shift, raised to what dispatch’s own truck took', () => {
   const cfg = { ...CFG, typical_shift_hours: 2 };
-  const caps = { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 40 }, DULUTH: { name: 'DULUTH', cap: 40 } } };
+  // Room typed on the DRIVERS (a driver cap is that driver's truck and stands above the ceiling; a
+  // route cap would be held to the box truck's 22), so the day is the only limit in play.
+  const caps = { drivers: { 'BEN PAINTSIL': { name: 'Ben Paintsil', cap: 40 }, 'AARON MITCHELL': { name: 'Aaron Mitchell', cap: 40 } }, routes: {} };
   const p = buildBacktestProblem(input({ cfg, caps }));
   const seqr = makeSequencer(p, cfg);
   assert.equal(p.serviceMin, 15);
@@ -308,9 +380,17 @@ test('weight is a hard limit — the first production plan put 10,084 lb on a 10
   const hbox = hp.loads.find((l) => l.cls !== 'tractor');
   const res = evaluateAssignment(hp, { loads: [{ load: hbox.id, stops: hp.stops.map((s) => s.id) }], unplanned: [] }, CFG, makeSequencer(hp, CFG));
   assert.match(res.summary.hardViolations.join(' '), new RegExp(`${hbox.id} carries 12800 lb — over its 8400 lb limit`), 'rating less the 1,600 lb unlocated stop');
-  // A truck dispatch loaded past its rating keeps what it carried, and says so.
+  // A truck dispatch loaded past its limit: HELD by default — the limit stays, dispatch reads over
+  // on dispatch's side; RAISED to what it carried only with hard caps off.
   const over = day().map((r, i) => (i < 4 ? { ...r, weight: 3000 } : r));      // GAINESVILLE (Ben, tractor) 12,000; fine
-  const op = buildBacktestProblem(input({ caps, rows: over.map((r, i) => (i >= 4 && i < 8 ? { ...r, weight: 2600 } : r)) }));
+  const overRows = over.map((r, i) => (i >= 4 && i < 8 ? { ...r, weight: 2600 } : r));
+  const hp2 = buildBacktestProblem(input({ caps, rows: overRows }));
+  const hbox2 = hp2.loads.find((l) => l.cls !== 'tractor');
+  assert.equal(hbox2.maxLbs, 9200, 'the limit holds');
+  assert.equal(hbox2.lbsNote, '800 of 10000 lb held back for 1 stop on it with no location; dispatch loaded 11200 lb against the 10000 lb limit on 2026-09-23 — over on dispatch\'s side; the limit holds');
+  assert.deepEqual(hp2.dispatchOver, { cap: 0, lbs: 1, capLearned: 0 });
+  assert.match(hp2.approximations.find((a) => /Weight limits/.test(a)), /HOLD.*\(1 on this day\)/);
+  const op = buildBacktestProblem(input({ caps, rows: overRows, hardCaps: false }));
   const obox = op.loads.find((l) => l.cls !== 'tractor');
   assert.equal(obox.maxLbs, 10400);
   assert.equal(obox.lbsNote, `800 of 10000 lb held back for 1 stop on it with no location; raised from 9200 to 10400 lb — dispatch loaded that much on ${obox.route} / ${obox.driver} on 2026-09-23`);
@@ -369,13 +449,13 @@ test('weight limits from Router settings: the problem is held to the typed limit
 // so on those loads it binds nothing — the result counts them, per class, and says so.
 test('weight limits: a limit raised to dispatch\u2019s own load is counted per class and said in the approximations', () => {
   const caps = { drivers: {}, routes: {}, days: { count: 0, first: null, last: null } };
-  const none = buildBacktestProblem(input({ caps }));
+  const none = buildBacktestProblem(input({ caps, hardCaps: false }));
   assert.deepEqual(none.lbsRaised, { box_truck: { raised: 0, of: 1, heaviest: 0 }, tractor: { raised: 0, of: 1, heaviest: 0 } });
   assert.ok(!none.approximations.some((a) => /was raised on/.test(a)), 'nothing raised, nothing said');
   assert.ok(none.loads.every((l) => l.lbsRaisedFrom === null));
   // Box limit typed at 1,000 lb: the box load carried 3,200 lb located + 800 lb unlocated, so its
   // limit reads 200 after the hold-back and is raised to 3,200.
-  const low = buildBacktestProblem(input({ caps, lbsLimits: { box_truck: 1000, tractor: 26000 } }));
+  const low = buildBacktestProblem(input({ caps, lbsLimits: { box_truck: 1000, tractor: 26000 }, hardCaps: false }));
   const box = low.loads.find((l) => l.cls !== 'tractor');
   assert.equal(box.lbsRaisedFrom, 200);
   assert.equal(box.maxLbs, 3200);
@@ -383,4 +463,58 @@ test('weight limits: a limit raised to dispatch\u2019s own load is counted per c
   const said = low.approximations.find((a) => /was raised on/.test(a));
   assert.match(said, /^The box-truck limit of 1,000 lb was raised on 1 of 1 box-truck load to what dispatch loaded \(the heaviest to 3,200 lb\)/);
   assert.ok(!low.approximations.some((a) => /tractor limit of/.test(a)), 'the tractor limit was not raised, so no tractor sentence');
+  // Hard (the default): nothing is raised; the limit of 1,000 holds and dispatch reads over.
+  const hard = buildBacktestProblem(input({ caps, lbsLimits: { box_truck: 1000, tractor: 26000 } }));
+  const hb = hard.loads.find((l) => l.cls !== 'tractor');
+  assert.equal(hb.maxLbs, 200, '1,000 less the 800 held back');
+  assert.equal(hb.lbsRaisedFrom, null);
+  assert.deepEqual(hard.lbsRaised, { box_truck: { raised: 0, of: 1, heaviest: 0 }, tractor: { raised: 0, of: 1, heaviest: 0 } });
+  assert.equal(hard.dispatchOver.lbs, 1);
+  assert.ok(!hard.approximations.some((a) => /was raised on/.test(a)));
+});
+
+// v1.75.0 REVIEW — the fixes, each named for the day it protects.
+test('a route cap typed for the corrugated trailer never briefs a 26′ box truck covering that route at 46 spots; a driver cap stands', () => {
+  // Aaron Mitchell drives a BOX truck (no employees record → default) and runs DULUTH today.
+  const typedRoute = buildBacktestProblem(input({ caps: { drivers: {}, routes: { DULUTH: { name: 'DULUTH', cap: 46 } } } }));
+  const d = typedRoute.loads.find((l) => l.route === 'DULUTH');
+  assert.equal(d.cls, 'box_truck');
+  assert.equal(d.cap, 22 - 2.5, 'held to the box ceiling 22, less the ungeocoded stop’s room');
+  assert.match(d.capNote, /your route cap 46 held to the box-truck ceiling 22/);
+  const typedDriver = buildBacktestProblem(input({ caps: { drivers: { 'AARON MITCHELL': { name: 'Aaron Mitchell', cap: 30 } }, routes: {} } }));
+  assert.equal(typedDriver.loads.find((l) => l.route === 'DULUTH').cap, 30 - 2.5, 'a cap typed on the driver is his truck: it stands above the ceiling');
+});
+
+test('dispatch past only its own learned cap (the 95th percentile — one load in twenty by design) is counted apart from a real over', () => {
+  const trip = (n) => ({ route: 'DULUTH', driver: 'Aaron Mitchell', stops: 4, skids: n, loose: 0, weight: 0, freightStops: 4, uncountedStops: 0, shared: false });
+  const learned = (date, n) => ({ date, learnVersion: 2, roster: 'read', stampGate: 'applied', counts: {}, trips: [trip(n)] });
+  // Aaron's learned cap: 9 spots. On D he ran 10 + the held-back ungeocoded stop — past his own p95, under the box ceiling.
+  const p = buildBacktestProblem(input({ learnDaysBefore: Array.from({ length: 25 }, (_, i) => learned(`2026-08-${String(i + 1).padStart(2, '0')}`, 9)) }));
+  assert.equal(p.dispatchOver.capLearned, 1);
+  assert.equal(p.dispatchOver.cap, 0, 'not past a ceiling, a typed cap or a rating — not an over that matters');
+  assert.match(p.loads.find((l) => l.route === 'DULUTH').capNote, /over on dispatch's side \(past only that driver’s own learned cap\); the cap holds/);
+  assert.match(p.approximations.find((a) => /Skid caps HOLD/.test(a)), /and 1 past only that driver's own learned cap \(the 95th percentile of their loads, so about one load in twenty sits above it\)/);
+});
+
+test('A DAY NO PLAN CAN SATISFY IS FOUND BEFORE ANY SPEND: the caps that hold carry fewer spots than must ride, or one stop fits no truck', async () => {
+  const { feasibilityOf } = await import('../netlify/functions/lib/claude-shadow/backtest-core.mts');
+  const tight = buildBacktestProblem(input({ caps: { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 5 }, DULUTH: { name: 'DULUTH', cap: 5 } } } }));
+  assert.match(tight.infeasible, /the caps that hold carry 7\.5 skid spots and the stops that must ride need 20: no plan can put them all on a truck/);
+  assert.equal(buildBacktestProblem(input()).infeasible, null, 'an ordinary day plans');
+  assert.equal(buildBacktestProblem(input({ hardCaps: false, caps: { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 5 }, DULUTH: { name: 'DULUTH', cap: 5 } } } })).infeasible, null, 'hard caps off: caps are raised to what ran, so every day plans');
+  // One stop bigger than the biggest truck.
+  const stops = [{ id: 1, n: 'BIG', spots: 30, weight: 100, blocksTractor: false }];
+  assert.match(feasibilityOf(stops, [{ cap: 22, maxLbs: 10000 }, { cap: 26, maxLbs: 30000 }]), /stop BIG \(30 skid spots, 100 lb\) fits on no truck/);
+  // A no-tractor stop may be left off when no box truck has room, so it never makes a day infeasible.
+  assert.equal(feasibilityOf([{ id: 1, n: 'NT', spots: 30, weight: 100, blocksTractor: true }], [{ cap: 22, maxLbs: 10000 }]), null);
+  // Weight too.
+  assert.match(feasibilityOf([{ id: 1, n: 'A', spots: 1, weight: 12000, blocksTractor: false }, { id: 2, n: 'B', spots: 1, weight: 12000, blocksTractor: false }], [{ cap: 22, maxLbs: 10000 }, { cap: 22, maxLbs: 10000 }]), /weight limits that hold carry 20,000 lb and the stops that must ride weigh 24,000 lb/);
+});
+
+test('SHADOW_HARD_CAPS=off puts the whole old cap rule back: with no ceilings, a typed cap no longer out-votes a smaller learned one', () => {
+  const learned = { capUsed: 20, capSource: 'learned' }, typed = { capUsed: 46, capSource: 'yours' };
+  assert.equal(capFor(learned, typed, 'tighter', 'box_truck', { box_truck: 22, tractor: 37 }).cap, 22, 'hard: typed route 46 wins, held to the box ceiling');
+  const off = capFor(learned, typed, 'tighter', 'box_truck', null);
+  assert.equal(off.cap, 20, 'off: the smaller binds, as before v1.75.0');
+  assert.match(off.source, /tighter than the route's 46/);
 });

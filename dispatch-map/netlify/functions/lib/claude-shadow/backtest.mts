@@ -22,6 +22,8 @@ import { shadowSet, shadowPatch, shadowCreate } from './store.mts';
 import { callMessages, PRICES_PER_MTOK } from './anthropic.mts';
 import { claudeShadowEnabled, shadowModel, anthropicKeyConfigured } from './config.mts';
 import { learnRefusal, loosePerSkidFrom } from './learn.mts';
+import { ceilingsInForce } from './settings-core.mts';
+import { hardCapsEnabled } from './config.mts';
 import { readSettings } from './settings.mts';
 import { LEARN_DAYS_COLLECTION, HISTORY_MANIFEST_MASK, sealedDaysFrom } from './learn-core.mts';
 import {
@@ -217,7 +219,11 @@ export async function readBacktestDay(date: string, rs: RouterSettings, deps: Bt
     deps.listDocs(LEARN_DAYS_COLLECTION, { mask: LEARN_DAY_MASK }),
     // The same reads through the injected doors, so a test's fake store serves them too.
     readSettings({ getDoc: deps.getDoc, listDocs: deps.listDocs } as any),
-    deps.listDocs('employees', { mask: ['vehicleType', 'externalIds', 'fullName', 'firstName', 'lastName', 'aliases'] }).catch(() => [] as any[]),
+    // Every driver's truck class comes from this roster. Read as empty, every tractor would be briefed
+    // as a box truck and held to the box ceiling — so a failed read stops the build, like the settings
+    // (a throttle is retried by the next tick; nothing has been spent).
+    deps.listDocs('employees', { mask: ['vehicleType', 'externalIds', 'fullName', 'firstName', 'lastName', 'aliases'] })
+      .catch((e: any) => { throw new Error(`the employees roster could not be read, so no truck class is known: ${String(e?.message || e)}`); }),
     deps.getDoc(engineConfigPath(BT_TENANT)).catch(() => null),
   ]);
   if (settings.error) throw new Error(`the capacity settings could not be read: ${settings.error}`);
@@ -231,6 +237,9 @@ export async function readBacktestDay(date: string, rs: RouterSettings, deps: Bt
     learnDaysBefore: (learnDays || []).filter((d: any) => String(d?.date || '') < date),
     caps: settings.caps, loosePerSkid: loosePerSkidFrom(settings.settings).value, capRule: rs.capRule,
     lbsLimits: { box_truck: rs.lbsBox, tractor: rs.lbsTractor },
+    // v1.75.0 HARD CAPS: the class ceilings from the capacity settings; SHADOW_HARD_CAPS=off puts the old rule back.
+    hardCaps: hardCapsEnabled(deps.env),
+    ceilings: (({ box_truck, tractor }) => ({ box_truck, tractor }))(ceilingsInForce(settings.settings)),
     employees, notes, depot: { lat: DEPOT.lat, lng: DEPOT.lng }, at: deps.now().toISOString(), cfg,
   });
   return { problem, cfg };
@@ -369,6 +378,11 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
         await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at(), updatedAt: at(), error: 'the day has no stops that rode out with a usable location' });
         return { ok: true, job: id, failed: 'no stops' };
       }
+      // Under hard caps a day can have no plan at all. Said now, at $0, not after every round is paid.
+      if (problem.infeasible) {
+        await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at(), updatedAt: at(), usd: 0, error: `not run — ${problem.infeasible}` });
+        return { ok: true, job: id, failed: 'infeasible' };
+      }
       // The prompt is frozen WITH the data: a deploy mid-job that edits the system text, the tools or
       // the briefing format would otherwise change the prefix under replayed thinking, and the API
       // refuses that. The evaluator is still today's code — it is the rules, not the conversation.
@@ -461,6 +475,7 @@ export async function finishJob(id: string, job: any, problem: BtProblem, cfg: a
     planFrom: submitted ? 'submitted' : `the last clean evaluation (round ${state.bestCleanRound}) — the run ended before a submit (${state.ended})`,
     model: job?.settings?.model ?? null, effort: job?.settings?.effort ?? null, capRule: problem.capRule, loosePerSkid: problem.loosePerSkid,
     lbsLimits: problem.lbsLimits ?? null,
+    capMode: problem.capMode ?? null, ceilings: problem.ceilings ?? null, capsHeld: problem.capsHeld ?? null, dispatchOver: problem.dispatchOver ?? null,
     rounds: state.rounds.length, usd: state.usd, ended: state.ended, endNote: state.endNote,
     rates: { perMile: rs.costPerMile, perDriveHour: rs.costPerDriveHour },
     stats: { stops: problem.stops.length, loads: problem.loads.length, excludedNoCoords: problem.excluded.noCoords.length, capModelDays: problem.capModel.days, counts: problem.counts, roster: problem.roster ?? null, stampGate: problem.stampGate ?? null },
@@ -499,7 +514,7 @@ export async function backtestView(deps: BtDeps = LIVE) {
     // EVERY run's spend — failed, stopped and re-run days included — not just each day's latest result.
     spend: { usd: Math.round(jobs.reduce((a: number, j: any) => a + (typeof j.usd === 'number' ? j.usd : 0), 0) * 100) / 100, runs: jobs.length },
     ceiling: ceilingView(jobs, routerSettingsFrom(rsDoc), deps),
-    settings: routerSettingsFrom(rsDoc), pinned: routerPinned(rsDoc), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
+    settings: routerSettingsFrom(rsDoc), pinned: routerPinned(rsDoc), hardCaps: hardCapsEnabled(deps.env), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
     refused: routerRefusal(deps.env, deps.firestoreOn()),
     enabled: claudeShadowEnabled(deps.env),
     model: shadowModel(deps.env).model,

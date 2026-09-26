@@ -458,6 +458,12 @@ export function routeFlags(m, cmp) {
       : { key: 'split', level: 'info', text: `${mine.length} customer${mine.length === 1 ? '' : 's'} split across trucks — as you split ${mine.length === 1 ? 'it' : 'them'} too` });
   }
   if (d && Number(d.blocked) > 0) out.push({ key: 'tractor-d', level: 'info', text: `you sent ${d.blocked} no-tractor stop${d.blocked === 1 ? '' : 's'} on this tractor` });
+  // v1.75.0 (review): DISPATCH'S OWN load past a cap or a weight limit that now holds. These are the
+  // loads the scorecard's Dispatch "Loads over cap / weight" counts are made of — flagged here so the
+  // count leads to its rows, and a good load (corrugated, stacked) can be given a cap of its own.
+  // Only where Claude's version is within the limit: where it is over too, the red chip above says so.
+  if (d && d.over && !c?.over) out.push({ key: 'cap-d', level: 'amber', text: `Dispatch ran this at ${d.spots} skid spots on a cap of ${d.cap}; the cap held, so Claude could not match it — type a cap for this driver if that load was right` });
+  if (d && d.overWeight && !c?.overWeight) out.push({ key: 'lbs-d', level: 'amber', text: `Dispatch loaded ${fmtInt(d.weight)} lb against the ${fmtInt(d.maxLbs)} lb limit; the limit held` });
   if (L.orderSource && L.orderSource !== 'driven') out.push({ key: 'order', level: 'info', text: `your order here is the ${ORDER_WORD[L.orderSource] || L.orderSource} — no delivery times` });
   if (cmp.noCoords.length) {
     const shared = cmp.routeShared > 1 ? ` — ${cmp.routeShared} trucks ran ${L.route}, and the stored record cannot say which carried ${cmp.noCoords.length === 1 ? 'it' : 'them'}` : '';

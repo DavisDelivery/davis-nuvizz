@@ -17,7 +17,7 @@ import { shadowSet, shadowPatch, shadowDelete, shadowCreate } from './store.mts'
 import { SETTINGS_PATH, CAPACITY_PATH } from './learn-core.mts';
 import { rebuildModel, loosePerSkidFrom } from './learn.mts';
 import {
-  validateSettingsChange, capDocPath, capsFromDocs, CAPS_COLLECTION, SETTINGS_LOG_COLLECTION, type CapChange,
+  validateSettingsChange, capDocPath, capsFromDocs, CAPS_COLLECTION, SETTINGS_LOG_COLLECTION, CEILING_NAMES, type CapChange,
 } from './settings-core.mts';
 
 export interface SettingsDeps {
@@ -98,6 +98,21 @@ export async function saveSettings(change: any, by: string | null, deps: Setting
     }
   }
 
+  // THE CEILINGS (v1.75.0): three fields each on the settings document, field-masked, like the ratio.
+  const ceilings: { kind: string; name: string; value: number | null; outcome: Outcome; error?: string }[] = [];
+  for (const k of ['ceilingBox', 'ceilingTractor'] as const) {
+    if (!v.normalized.ceilings || !(k in v.normalized.ceilings)) continue;
+    const value = v.normalized.ceilings[k] ?? null;
+    const was = before.settings?.[k] ?? null;
+    if (value === was) { ceilings.push({ kind: k, name: CEILING_NAMES[k], value, outcome: 'unchanged' }); continue; }
+    const r = await settle(
+      () => deps.shadowPatch(SETTINGS_PATH, { [k]: value, [`${k}At`]: at, [`${k}By`]: by }),
+      async () => (await deps.getDoc(SETTINGS_PATH))?.[`${k}At`] === at,
+    );
+    ceilings.push({ kind: k, name: CEILING_NAMES[k], value, ...r });
+    if (r.outcome === 'saved') log.push({ at, by, kind: 'ceiling', key: k, name: CEILING_NAMES[k], before: was, after: value });
+  }
+
   // The record of who changed what. Create-only, one row per change; a failure here is reported,
   // and does not undo a save that landed.
   // The id carries a random tail: two saves in the same millisecond (two dispatchers, or two
@@ -120,6 +135,7 @@ export async function saveSettings(change: any, by: string | null, deps: Setting
     rebuildError = `the learned numbers are not at the saved ratio yet: ${String(e?.message || e)} — Learn now or tonight's run rebuilds them`;
   }
 
-  const allSaved = results.every((r) => r.outcome === 'saved' || r.outcome === 'unchanged') && (!ratio || ratio.outcome === 'saved' || ratio.outcome === 'unchanged');
-  return { status: allSaved ? 200 : 502, body: { ok: allSaved, at, results, ratio, rebuilt, rebuildError, logError } };
+  const fine = (o: Outcome) => o === 'saved' || o === 'unchanged';
+  const allSaved = results.every((r) => fine(r.outcome)) && (!ratio || fine(ratio.outcome)) && ceilings.every((c) => fine(c.outcome));
+  return { status: allSaved ? 200 : 502, body: { ok: allSaved, at, results, ratio, ceilings, rebuilt, rebuildError, logError } };
 }

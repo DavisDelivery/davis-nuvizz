@@ -259,7 +259,7 @@ function LearnSummary({ m }) {
       {trips.length > 0 && <p className="text-[11px] text-slate-500">Trips left out of capacity: {trips.join('; ')}.</p>}
       {rows.length > 0 && <p className="text-[11px] text-slate-500">Stops not counted as carried: {rows.join('; ')}.</p>}
       {m.days?.stampGateOff > 0 && <p className="text-[11px] text-slate-500">On {m.days.stampGateOff} day{m.days.stampGateOff === 1 ? '' : 's'} most deliveries carried no same-day stamp, so every delivered stop counted.</p>}
-      <p className="text-[11px] text-slate-500">Cap = the fuller end of what they have carried: the {Math.round((m.capQuantile || 0.95) * 100)}th percentile of their trips in skid spots. Needs {m.minTrips} trips — below that the 95th percentile is just the single fullest trip — so fewer shows none. Nothing plans with these numbers yet.</p>
+      <p className="text-[11px] text-slate-500">Cap = the fuller end of what they have carried: the {Math.round((m.capQuantile || 0.95) * 100)}th percentile of their trips in skid spots. Needs {m.minTrips} trips — below that the 95th percentile is just the single fullest trip — so fewer shows none. A backtest plans with these caps as learned from the days before the day it plans, yours on top, held to the ceilings above; nothing is sent or saved with them.</p>
     </div>
   );
 }
@@ -270,19 +270,39 @@ function fullestLine(f) {
   return `${parts} · ${fmtDay(f.date)}`;
 }
 
-// "Cap in force" — yours when you set one, else the learned cap, else none; and which it is.
-// It is not "what the planner uses": nothing plans with it yet, and which of a driver's cap and a
-// route's cap a load will be held to is not decided.
-function CapUsed({ r }) {
+// "Cap in force" — the cap a backtest will HOLD this driver or route to (v1.75.0): yours, or the
+// learned cap, or the learned cap held down to the class ceiling (said, with the learned number, so
+// the two can be compared). A ROUTE's truck is only known when a day is built, so a route row says
+// what its number is held to on each class; a cap you typed on a route is held there too.
+const clsWord = (cls) => (cls === 'tractor' ? 'tractor' : cls === 'box_truck' ? 'box truck' : null);
+function heldLine(r) {
+  if (r.capSource === 'unknown' || r.capUsed == null) return null;
+  if (r.clipped) return `learned ${spots(r.cap)}, held to the ${clsWord(r.cls)} ceiling ${spots(r.ceiling)}`;
+  const rc = r.routeCeilings;
+  if (rc && r.capUsed > rc.box_truck) {
+    return r.capUsed > rc.tractor
+      ? `held to ${spots(rc.box_truck)} on a box truck, ${spots(rc.tractor)} on a tractor, when a day is built`
+      : `held to ${spots(rc.box_truck)} on a box truck when a day is built`;
+  }
+  return null;
+}
+function CapUsed({ r, phone = false }) {
   if (r.capSource === 'unknown') return <span className="text-amber-700 text-xs">unknown</span>;
   if (r.capUsed == null) return <span className="text-slate-400 font-normal text-xs">none yet</span>;
+  const held = heldLine(r);
   return (
-    <span className="inline-flex items-baseline gap-1">
-      <span className="font-semibold">{spots(r.capUsed)}</span>
-      <span className={`text-[10px] ${r.capSource === 'yours' ? 'text-indigo-700' : 'text-slate-500'}`}>{r.capSource === 'yours' ? 'yours' : 'learned'}</span>
+    <span className="inline-flex flex-col items-end">
+      <span className="inline-flex items-baseline gap-1">
+        <span className="font-semibold">{spots(r.capUsed)}</span>
+        <span className={`text-[10px] ${r.capSource === 'yours' ? 'text-indigo-700' : r.clipped ? 'text-amber-700' : 'text-slate-500'}`}>{r.capSource === 'yours' ? 'yours' : r.clipped ? 'ceiling' : 'learned'}</span>
+      </span>
+      {/* On a phone the held line is its own row under the name (PhoneCapacityList), so the name keeps its width. */}
+      {held && !phone && <span className="text-[10px] text-amber-700 whitespace-nowrap">{held}</span>}
     </span>
   );
 }
+// What a BLANK cap box means for this row: the learned cap — or, where that is held, the ceiling it is held to.
+const blankMeans = (r) => (r.clipped && typeof r.ceiling === 'number' ? `ceiling ${spots(r.ceiling)}` : 'learned');
 const setBy = (r) => (r.capSource === 'yours' && (r.yourCapBy || r.yourCapAt) ? `set by ${r.yourCapBy || 'unknown'} · ${fmtWhen(r.yourCapAt)}` : null);
 
 // One cap box. Blank means "use the learned cap" and is sent as an explicit clear, never as 0.
@@ -306,7 +326,7 @@ function DesktopCapacityTable({ rows, kind, ed }) {
             <th className="py-1.5 pr-3 font-medium text-right">Typical</th>
             <th className="py-1.5 pr-3 font-medium text-right">Full (85%)</th>
             <th className="py-1.5 pr-3 font-medium text-right">Learned cap</th>
-            <th className="py-1.5 pr-3 font-medium text-right">{editing ? 'Your cap' : 'Cap in force'}</th>
+            <th className="py-1.5 pr-3 font-medium text-right">{editing ? 'Your cap' : kind === 'routes' ? 'Cap, before the truck\u2019s ceiling' : 'Cap in force'}</th>
             <th className="py-1.5 pr-3 font-medium text-right">Most ever</th>
             <th className="py-1.5 font-medium">Fullest trip</th>
           </tr>
@@ -314,7 +334,7 @@ function DesktopCapacityTable({ rows, kind, ed }) {
         <tbody>
           {rows.map((r) => (
             <tr key={r.key} className="border-b border-slate-100 align-top">
-              <td className="py-1.5 pr-3 font-medium text-slate-800">{r.name}{r.noHistory ? <span className="ml-1 text-[10px] text-slate-400">no history yet</span> : null}</td>
+              <td className="py-1.5 pr-3 font-medium text-slate-800">{r.name}{r.cls ? <span className="ml-1 text-[10px] font-normal text-slate-500">{clsWord(r.cls)}</span> : null}{r.noHistory ? <span className="ml-1 text-[10px] text-slate-400">no history yet</span> : null}</td>
               <td className="py-1.5 pr-3 text-slate-600">{((kind === 'routes' ? r.drivers : r.routes) || []).map((x) => x.name).join(', ')}</td>
               <td className="py-1.5 pr-3 text-right">{r.trips}{r.lastDate ? <span className="block text-[10px] text-slate-400">last {fmtDay(r.lastDate)}</span> : null}</td>
               <td className="py-1.5 pr-3 text-right">{spots(r.p50)}</td>
@@ -322,7 +342,7 @@ function DesktopCapacityTable({ rows, kind, ed }) {
               <td className="py-1.5 pr-3 text-right">{r.cap == null ? <span className="text-slate-400">none</span> : spots(r.cap)}</td>
               <td className="py-1.5 pr-3 text-right">
                 {editing
-                  ? <CapInput value={ed.boxFor(kind, r)} onChange={(v) => ed.setBox(kind, r.key, v)} bad={ed.plan.bad[kind].has(r.key)} label={`Your cap for ${r.name}`} />
+                  ? <CapInput value={ed.boxFor(kind, r)} onChange={(v) => ed.setBox(kind, r.key, v)} bad={ed.plan.bad[kind].has(r.key)} label={`Your cap for ${r.name}`} placeholder={blankMeans(r)} />
                   : <><CapUsed r={r} />{setBy(r) ? <span className="block text-[10px] text-slate-400">{setBy(r)}</span> : null}</>}
               </td>
               <td className="py-1.5 pr-3 text-right">{spots(r.max)}</td>
@@ -342,17 +362,18 @@ function PhoneCapacityList({ rows, kind, ed }) {
         <li key={r.key} className="py-2">
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-sm font-medium text-slate-800 min-w-0 break-words">{r.name}</span>
-            <span className="text-sm shrink-0"><CapUsed r={r} /></span>
+            <span className="text-sm shrink-0"><CapUsed r={r} phone /></span>
           </div>
+          {heldLine(r) && <p className="text-[11px] text-amber-700 break-words">{heldLine(r)}</p>}
           <p className="text-[11px] text-slate-500 mt-0.5 break-words">
-            {r.noHistory ? 'no history yet' : `learned ${r.cap == null ? 'none' : spots(r.cap)} · ${r.trips} trips${r.lastDate ? `, last ${fmtDay(r.lastDate)}` : ''} · full ${spots(r.p85)} · most ${spots(r.max)} (${fullestLine(r.fullest)})`}
+            {r.cls ? `${clsWord(r.cls)} · ` : ''}{r.noHistory ? 'no history yet' : `learned ${r.cap == null ? 'none' : spots(r.cap)} · ${r.trips} trips${r.lastDate ? `, last ${fmtDay(r.lastDate)}` : ''} · full ${spots(r.p85)} · most ${spots(r.max)} (${fullestLine(r.fullest)})`}
           </p>
           {setBy(r) && <p className="text-[11px] text-indigo-700 break-words">{setBy(r)}</p>}
           <p className="text-[11px] text-slate-400 break-words">{((kind === 'routes' ? r.drivers : r.routes) || []).map((x) => x.name).join(', ')}</p>
           {ed.editing && (
             <label className="mt-1 flex items-center justify-between gap-2 text-xs text-slate-600">
               Your cap (skid spots)
-              <CapInput phone value={ed.boxFor(kind, r)} onChange={(v) => ed.setBox(kind, r.key, v)} bad={ed.plan.bad[kind].has(r.key)} label={`Your cap for ${r.name}`} />
+              <CapInput phone value={ed.boxFor(kind, r)} onChange={(v) => ed.setBox(kind, r.key, v)} bad={ed.plan.bad[kind].has(r.key)} label={`Your cap for ${r.name}`} placeholder={blankMeans(r)} />
             </label>
           )}
         </li>
@@ -381,8 +402,10 @@ function useCapacityEditor(s, reload) {
   const [editing, setEditing] = useState(false);
   const [kind, setKind] = useState('drivers');
   const [boxes, setBoxes] = useState({ drivers: {}, routes: {} });
-  const [touched, setTouched] = useState({ drivers: {}, routes: {}, ratio: false });
+  const [touched, setTouched] = useState({ drivers: {}, routes: {}, ratio: false, ceilBox: false, ceilTractor: false });
   const [ratio, setRatioText] = useState('');
+  // v1.75.0: the class ceilings a learned cap is held to. Blank = the default (the engine's hard cap).
+  const [ceil, setCeilText] = useState({ box: '', tractor: '' });
   const [adds, setAdds] = useState({ drivers: { name: '', cap: '' }, routes: { name: '', cap: '' } });
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState(null);
@@ -390,8 +413,9 @@ function useCapacityEditor(s, reload) {
   const m = s?.learned;
   const start = () => {
     setBoxes({ drivers: {}, routes: {} });
-    setTouched({ drivers: {}, routes: {}, ratio: false });
+    setTouched({ drivers: {}, routes: {}, ratio: false, ceilBox: false, ceilTractor: false });
     setRatioText(s?.settings?.loosePerSkid == null ? '' : String(s.settings.loosePerSkid));
+    setCeilText({ box: s?.settings?.ceilingBox == null ? '' : String(s.settings.ceilingBox), tractor: s?.settings?.ceilingTractor == null ? '' : String(s.settings.ceilingTractor) });
     setAdds({ drivers: { name: '', cap: '' }, routes: { name: '', cap: '' } });
     setSaveMsg(null);
     setEditing(true);
@@ -404,6 +428,7 @@ function useCapacityEditor(s, reload) {
     setTouched((t) => ({ ...t, [k]: { ...t[k], [key]: true } }));
   };
   const setRatio = (v) => { setRatioText(v); setTouched((t) => ({ ...t, ratio: true })); };
+  const setCeil = (k, v) => { setCeilText((c) => ({ ...c, [k]: v })); setTouched((t) => ({ ...t, [k === 'box' ? 'ceilBox' : 'ceilTractor']: true })); };
   const setAdd = (k, field, v) => setAdds((a) => ({ ...a, [k]: { ...a[k], [field]: v } }));
 
   const plan = (() => {
@@ -432,9 +457,13 @@ function useCapacityEditor(s, reload) {
     const rb = readBox(ratio, bounds.loosePerSkid);
     const change = { caps };
     if (touched.ratio && !rb.error && (rb.value ?? null) !== (s?.settings?.loosePerSkid ?? null)) change.loosePerSkid = rb.value;
-    const count = caps.length + ('loosePerSkid' in change ? 1 : 0);
-    const fix = bad.drivers.size + bad.routes.size + (touched.ratio && rb.error ? 1 : 0) + (addBad.drivers ? 1 : 0) + (addBad.routes ? 1 : 0);
-    return { change, bad, addBad, ratioBad: touched.ratio && !!rb.error, count, fix };
+    // The ceilings: blank puts the default back (sent as null, never as 0).
+    const cb = readBox(ceil.box, bounds.cap), ct = readBox(ceil.tractor, bounds.cap);
+    if (touched.ceilBox && !cb.error && (cb.value ?? null) !== (s?.settings?.ceilingBox ?? null)) change.ceilingBox = cb.value;
+    if (touched.ceilTractor && !ct.error && (ct.value ?? null) !== (s?.settings?.ceilingTractor ?? null)) change.ceilingTractor = ct.value;
+    const count = caps.length + ('loosePerSkid' in change ? 1 : 0) + ('ceilingBox' in change ? 1 : 0) + ('ceilingTractor' in change ? 1 : 0);
+    const fix = bad.drivers.size + bad.routes.size + (touched.ratio && rb.error ? 1 : 0) + (touched.ceilBox && cb.error ? 1 : 0) + (touched.ceilTractor && ct.error ? 1 : 0) + (addBad.drivers ? 1 : 0) + (addBad.routes ? 1 : 0);
+    return { change, bad, addBad, ratioBad: touched.ratio && !!rb.error, ceilBad: { box: touched.ceilBox && !!cb.error, tractor: touched.ceilTractor && !!ct.error }, count, fix };
   })();
 
   const save = async () => {
@@ -448,7 +477,7 @@ function useCapacityEditor(s, reload) {
       const j = await r.json().catch(() => null);
       if (!j) { setSaveMsg(`HTTP ${r.status} — no readable answer, so whether it saved is unknown. Refresh to check.`); return; }
       if (j.errors) { setSaveMsg(`Not saved: ${j.errors.join('; ')}.`); return; }
-      const items = [...(j.results || []), ...(j.ratio ? [{ name: 'loose pieces per skid spot', ...j.ratio }] : [])];
+      const items = [...(j.results || []), ...(j.ratio ? [{ name: 'loose pieces per skid spot', ...j.ratio }] : []), ...(j.ceilings || [])];
       const bad = items.filter((x) => x.outcome === 'failed' || x.outcome === 'unknown');
       const parts = [];
       if (!j.results && !j.ratio && j.error) parts.push(`Not saved: ${j.error}.`);
@@ -467,7 +496,7 @@ function useCapacityEditor(s, reload) {
       setSaving(false);
     }
   };
-  return { editing, start, cancel, kind, setKind, boxFor, setBox, ratio, setRatio, adds, setAdd, plan, save, saving, saveMsg, bounds };
+  return { editing, start, cancel, kind, setKind, boxFor, setBox, ratio, setRatio, ceil, setCeil, adds, setAdd, plan, save, saving, saveMsg, bounds };
 }
 
 function AddNameRow({ ed, kind, phone }) {
@@ -511,7 +540,10 @@ function CapacityCard({ s, phone, learning, learnMsg, onLearn, ed }) {
           )}
         </div>
       </div>
-      <p className="text-xs text-slate-500 mt-1">What each driver and route has actually carried out of the dock, from every sealed day of history, in skid spots. Pickups, rolled orders and cancellations are not counted. Where you set a cap it replaces the learned one; when a driver and a route both have a cap, which one a load is held to is not decided yet — nothing plans with either yet. 0 NuVizz calls.</p>
+      <p className="text-xs text-slate-500 mt-1">What each driver and route has actually carried out of the dock, from every sealed day of history, in skid spots. Pickups, rolled orders and cancellations are not counted. Where you set a cap it replaces the learned one. 0 NuVizz calls.</p>
+      {st.hardCaps === false
+        ? <p className="mt-1 text-[11px] text-amber-800">Hard caps are OFF (SHADOW_HARD_CAPS=off): a backtest raises a cap or a weight limit to what dispatch loaded that day, and no ceiling holds a learned cap.</p>
+        : st.ceilings && <p className="mt-1 text-[11px] text-slate-600"><b>Caps are hard.</b> A learned cap, and a cap you typed on a route, is held down to the ceiling of the truck that runs it — box truck {spots(st.ceilings.box_truck)} spots{s.settingsNote ? ' (the default — your settings could not be read)' : st.ceilings.sources?.box_truck === 'yours' ? ' (yours)' : ' (default)'} · tractor {spots(st.ceilings.tractor)}{s.settingsNote ? '' : st.ceilings.sources?.tractor === 'yours' ? ' (yours)' : ' (default)'}. A cap you typed on a driver is that driver’s own truck and stands above it — that is how a 46-pallet corrugated day is allowed. A load dispatch ran past a cap or a weight limit reads as over on dispatch’s side in a backtest; Claude may not match it.{st.classesKnown === false ? ' The employee roster could not be read, so no row here knows its truck class.' : ''}</p>}
       <div className="mt-2 space-y-0.5"><LearnRunLine last={s.learnLast} refused={s.learnRefused} note={s.learnLastNote} /></div>
       {s.settingsNote && <p className="mt-1 text-[11px] text-amber-800">{s.settingsNote}</p>}
       {st.ratioPending && m && <p className="mt-1 text-[11px] text-amber-800">Your setting is {st.loosePerSkid ?? st.defaultLoosePerSkid} loose pieces per skid spot; the numbers below are still at {m.loosePerSkid} until they are rebuilt — Learn now, or tonight’s run.</p>}
@@ -520,6 +552,7 @@ function CapacityCard({ s, phone, learning, learnMsg, onLearn, ed }) {
       {!m && <p className="text-xs text-slate-600 mt-3">{s.learnedNote || 'Nothing has been learned yet.'}</p>}
       {m && <div className="mt-3"><LearnSummary m={m} /></div>}
       {(st.loosePerSkidAt || st.loosePerSkidBy) && !ed.editing && <p className="mt-1 text-[11px] text-slate-500">Loose-per-spot setting {st.loosePerSkid == null ? 'put back to the default' : `set to ${st.loosePerSkid}`} by {st.loosePerSkidBy || 'unknown'} · {fmtWhen(st.loosePerSkidAt)}.</p>}
+      {(st.ceilingBoxAt || st.ceilingTractorAt) && !ed.editing && <p className="mt-1 text-[11px] text-slate-500">{[st.ceilingBoxAt && `Box-truck ceiling ${st.ceilingBox == null ? 'put back to the default' : `set to ${st.ceilingBox}`} by ${st.ceilingBoxBy || 'unknown'} · ${fmtWhen(st.ceilingBoxAt)}`, st.ceilingTractorAt && `${st.ceilingBoxAt ? 'tractor' : 'Tractor'} ceiling ${st.ceilingTractor == null ? 'put back to the default' : `set to ${st.ceilingTractor}`} by ${st.ceilingTractorBy || 'unknown'} · ${fmtWhen(st.ceilingTractorAt)}`].filter(Boolean).join('; ')}{st.hardCaps === false ? ' — not in force while hard caps are off.' : '.'}</p>}
       {ed.editing && (
         <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3 space-y-2">
           <label className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-700">
@@ -527,7 +560,18 @@ function CapacityCard({ s, phone, learning, learnMsg, onLearn, ed }) {
             <input type="text" inputMode="decimal" aria-label="Loose pieces per skid spot" value={ed.ratio} onChange={(e) => ed.setRatio(e.target.value)} placeholder={String(st.defaultLoosePerSkid ?? 10)}
               className={`w-24 min-h-[44px] rounded border px-2 text-right text-sm ${ed.plan.ratioBad ? 'border-rose-400 bg-rose-50' : 'border-slate-300'}`} />
           </label>
-          <p className="text-[11px] text-slate-600">Type a cap in skid spots ({ed.bounds.cap[0]}–{ed.bounds.cap[1]}) beside any driver or route to replace the learned one; clear it to go back to the learned cap. Only the boxes you change are saved. Red boxes are not a number in range, and nothing is saved until they are fixed.</p>
+          {st.hardCaps !== false && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {[['box', 'Box-truck ceiling', st.defaultCeilings?.box_truck ?? 22], ['tractor', 'Tractor ceiling', st.defaultCeilings?.tractor ?? 37]].map(([k, label, dflt]) => (
+                <label key={k} className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-700">
+                  <span>{label} <span className="text-slate-500">(skid spots a learned cap, or a cap typed on a route, is held to; blank = {dflt}, the engine’s hard cap)</span></span>
+                  <input type="text" inputMode="decimal" aria-label={label} value={ed.ceil[k]} onChange={(e) => ed.setCeil(k, e.target.value)} placeholder={String(dflt)}
+                    className={`w-24 min-h-[44px] rounded border px-2 text-right text-sm ${ed.plan.ceilBad?.[k] ? 'border-rose-400 bg-rose-50' : 'border-slate-300'}`} />
+                </label>
+              ))}
+            </div>
+          )}
+          <p className="text-[11px] text-slate-600">Type a cap in skid spots ({ed.bounds.cap[0]}–{ed.bounds.cap[1]}) beside any driver or route to replace the learned one — your number stands, above the ceiling or not; clear it to go back to the learned cap. Only the boxes you change are saved. Red boxes are not a number in range, and nothing is saved until they are fixed.</p>
           <div className="flex flex-wrap gap-2">
             <button onClick={ed.save} disabled={ed.saving || !!ed.plan.fix || !ed.plan.count}
               className="rounded-lg px-3 py-2 min-h-[44px] text-xs font-semibold bg-slate-800 text-white disabled:opacity-50">
@@ -548,7 +592,7 @@ function CapacityCard({ s, phone, learning, learnMsg, onLearn, ed }) {
               </button>
             ))}
           </div>
-          {kind === 'routes' && <p className="mt-2 text-[11px] text-slate-500">A route’s numbers pool every driver who ran it, and the shadow does not yet know which truck ran each day — a box-truck day and a tractor day under one name are mixed here.</p>}
+          {kind === 'routes' && <p className="mt-2 text-[11px] text-slate-500">A route’s numbers pool every driver who ran it, and the shadow does not yet know which truck ran each day — a box-truck day and a tractor day under one name are mixed here. Its ceiling is applied by the truck’s class when a day is built, so the number here is before that ceiling and the line under it says what it is held to on each truck. A cap you type on a route is held there too; type it on the driver to go past the ceiling.</p>}
           {ed.editing && <AddNameRow ed={ed} kind={kind} phone={phone} />}
           {phone ? <PhoneCapacityList rows={rows} kind={kind} ed={ed} /> : <DesktopCapacityTable rows={rows} kind={kind} ed={ed} />}
         </div>
