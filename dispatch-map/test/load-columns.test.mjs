@@ -57,3 +57,41 @@ test('long values are truncated so the stored record stays small', () => {
   const s = summarizeLoadColumns(j, { maxValue: 20 });
   assert.equal(s.firstRows[0].blob.length, 21);
 });
+
+// ── THE DAY EACH LOAD ROW CARRIES (the Monday-roster investigation, 2026-09-26) ──
+import { gridDay, tallyLoadDays } from '../netlify/functions/lib/load-columns.mts';
+
+test('the grid\'s own date formats read as the day they name — and nothing else does', () => {
+  assert.equal(gridDay('9/2/26 11:59 PM'), '2026-09-02');
+  assert.equal(gridDay('09/28/2026'), '2026-09-28');
+  assert.equal(gridDay('2026-09-28T08:00:00'), '2026-09-28');
+  assert.equal(gridDay(''), null);
+  assert.equal(gridDay(null), null, 'null is no date, never 1970');
+  assert.equal(gridDay('13/40/26'), null);
+  assert.equal(gridDay('DAVIS000203100'), null);
+  assert.equal(gridDay('4159'), null, 'a weight is not a date');
+});
+
+test('a window pull says which loads sit on Monday, by the column that carries the day, and counts the blanks', () => {
+  const j = grid([
+    ['KeyColumn', 'KeyColumn'], ['name', 'Load Name'], ['schEndTime', 'Load Latest Departure'],
+    ['createdTime', 'Load Created Dttm'], ['load.weight', 'Load - Weight'],
+  ], [
+    ['a1', 'CHE', '9/28/26 11:59 PM', '9/25/26 05:10 PM', '7804'],
+    ['a2', 'DARVIN', '9/28/26 11:59 PM', '9/26/26 10:01 AM', '6750'],
+    ['a3', 'TRAILER 3', '', '9/26/26 10:02 AM', ''],
+    ['a4', 'DIXON', '9/25/26 11:59 PM', '9/25/26 05:19 AM', '4159'],
+  ]);
+  const t = tallyLoadDays(j, '2026-09-28');
+  assert.deepEqual(t.columns.schEndTime.byDay, { '2026-09-25': 1, '2026-09-28': 2 });
+  assert.equal(t.columns.schEndTime.blank, 1, 'an empty trailer with no departure is counted, not dropped silently');
+  assert.deepEqual(t.onDate.schEndTime, ['CHE', 'DARVIN']);
+  assert.equal(t.columns['load.weight'], undefined, 'a numeric column is not mistaken for a date column');
+  assert.deepEqual(t.columns.createdTime.byDay, { '2026-09-25': 2, '2026-09-26': 2 });
+});
+
+test('an empty grid tallies to nothing rather than throwing', () => {
+  const t = tallyLoadDays(grid([['KeyColumn', 'K'], ['name', 'Load Name']], []), '2026-09-28');
+  assert.deepEqual(t.columns, {});
+  assert.deepEqual(t.onDate, {});
+});
