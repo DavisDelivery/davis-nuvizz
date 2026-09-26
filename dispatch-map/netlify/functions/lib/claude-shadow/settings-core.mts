@@ -38,7 +38,56 @@ export const MAX_NAME_LENGTH = 120;
 
 export type CapKind = 'driver' | 'route';
 export interface CapChange { kind: CapKind; key: string; name: string; cap: number | null }
-export interface NormalizedChange { loosePerSkid?: number | null; caps: CapChange[] }
+export interface NormalizedChange { loosePerSkid?: number | null; caps: CapChange[]; ceilings?: { ceilingBox?: number | null; ceilingTractor?: number | null } }
+
+// THE CEILINGS (v1.75.0). Chad, 2026-09-26: "there are times where we can get 46 pallets on a truck
+// but its when its certain very stackable freight like corregated boxes. So i like hard caps on
+// even the learned behavior and a ui to adjust them all against their learned behaviors." A learned
+// cap says what a driver or route HAS carried; on Sep 23, 58 of 61 loads carried a learned cap
+// above the truck's rating (TRAILER 6 at 46.4 on a 28-skid trailer, from a raise that history
+// cannot tell was one trip or two). So a ceiling per truck class holds every learned cap down,
+// and a cap a person sets for a driver or a route is that person's number and may sit above it —
+// that is the "adjust them all against their learned behaviors". The defaults are the learned
+// engine's own hard caps (routing-engine-config.mts skid_cap_box_hard / skid_cap_tractor_hard,
+// from ~900 real trips: box p95 22, tractor p95 37); pinned to them by a test. The truck RATINGS
+// (14 / 28) are not the defaults: Sep 23 carried 1,230 spots on 61 loads against 1,148 rated,
+// so ratings as ceilings would make a real day unplannable.
+export const DEFAULT_CEILINGS: Record<'box_truck' | 'tractor', number> = { box_truck: 22, tractor: 37 };
+export const CEILING_FIELDS = { ceilingBox: 'box_truck', ceilingTractor: 'tractor' } as const;
+export const CEILING_NAMES = { ceilingBox: 'box-truck ceiling', ceilingTractor: 'tractor ceiling' } as const;
+
+/** The ceilings in force from the settings document: a stored number in range, else the default. */
+export function ceilingsInForce(settings: any): { box_truck: number; tractor: number; sources: { box_truck: 'yours' | 'default'; tractor: 'yours' | 'default' } } {
+  // Only a number, or a plain decimal string, is a ceiling: num() would read `true` as 1, `[5]` as 5
+  // and '0x10' as 16 — values the validator refuses — so a malformed stored field falls to the default.
+  const pick = (v: any) => {
+    const n = typeof v === 'number' ? v : typeof v === 'string' && DECIMAL_RE.test(v) ? Number(v) : null;
+    return n != null && Number.isFinite(n) && n >= CAP_BOUNDS[0] && n <= CAP_BOUNDS[1] ? n : null;
+  };
+  const b = pick(settings?.ceilingBox), t = pick(settings?.ceilingTractor);
+  return { box_truck: b ?? DEFAULT_CEILINGS.box_truck, tractor: t ?? DEFAULT_CEILINGS.tractor, sources: { box_truck: b != null ? 'yours' : 'default', tractor: t != null ? 'yours' : 'default' } };
+}
+
+/**
+ * A driver's truck class for the capacity card, in the backtest's own order (buildBacktestProblem):
+ * the employees roster, then the one pinned class (CLASS_OVERRIDE). Null when the roster could not
+ * be read — the card then says no class is known rather than guessing box truck.
+ */
+export function classOfFrom(empClass: Map<string, string> | null, override: Map<string, string>) {
+  if (!empClass) return null;
+  const fold = (x: any) => String(x || '').trim().toUpperCase().replace(/\s+/g, '_');
+  return (key: string, name?: string): 'box_truck' | 'tractor' | null => {
+    const c = empClass.get(fold(name ?? key)) || empClass.get(fold(key)) || override.get(fold(name ?? key)) || override.get(fold(key));
+    return c === 'tractor' ? 'tractor' : c === 'box_truck' ? 'box_truck' : null;
+  };
+}
+
+/** A learned cap held to its class ceiling; a cap a person set is never touched; no class, no ceiling. */
+export function clipCap(cap: number | null, source: 'yours' | 'learned' | null, cls: 'box_truck' | 'tractor' | null, ceilings: { box_truck: number; tractor: number } | null): { cap: number | null; clipped: boolean; ceiling: number | null } {
+  const ceiling = cls && ceilings ? ceilings[cls] ?? null : null;
+  if (cap == null || source !== 'learned' || ceiling == null || cap <= ceiling) return { cap, clipped: false, ceiling };
+  return { cap: ceiling, clipped: true, ceiling };
+}
 
 const DECIMAL_RE = /^\s*\d+(\.\d+)?\s*$/;
 
@@ -66,6 +115,12 @@ export function validateSettingsChange(change: any): { ok: boolean; errors: stri
     const r = readNumber(change.loosePerSkid, LOOSE_PER_SKID_BOUNDS, 'loose pieces per skid spot');
     if (r.error) errors.push(r.error); else normalized.loosePerSkid = r.value ?? null;
   }
+  for (const k of ['ceilingBox', 'ceilingTractor'] as const) {
+    if (!(k in change)) continue;
+    const r = readNumber(change[k], CAP_BOUNDS, `the ${CEILING_NAMES[k]}`);
+    if (r.error) { errors.push(r.error); continue; }
+    normalized.ceilings = { ...(normalized.ceilings || {}), [k]: r.value ?? null };
+  }
   const list = change.caps == null ? [] : change.caps;
   if (!Array.isArray(list)) errors.push('caps must be a list');
   else {
@@ -86,7 +141,7 @@ export function validateSettingsChange(change: any): { ok: boolean; errors: stri
       normalized.caps.push({ kind, key, name, cap: r.value ?? null });
     }
   }
-  if (!('loosePerSkid' in normalized) && !normalized.caps.length && !errors.length) errors.push('nothing to change');
+  if (!('loosePerSkid' in normalized) && !normalized.caps.length && !normalized.ceilings && !errors.length) errors.push('nothing to change');
   return { ok: errors.length === 0, errors, normalized };
 }
 
@@ -129,32 +184,47 @@ export function ratioInForce(settings: any): number {
  * learned cap, else none — and which of the two it is. `caps` null with `unknown` true means the
  * caps could not be read: every row then says so, instead of presenting "no cap of yours" as fact.
  */
-export function withOverrides(model: any, caps: { drivers: Record<string, any>; routes: Record<string, any> } | null, opts: { unknown?: boolean } = {}) {
+export function withOverrides(
+  model: any, caps: { drivers: Record<string, any>; routes: Record<string, any> } | null, opts: { unknown?: boolean } = {},
+  // v1.75.0: the ceilings and each driver's truck class, so a row can say the cap the backtest will
+  // actually hold it to. A route pools every truck that ran it, so its class — and its ceiling —
+  // is only known when a day is built; its row shows the learned cap and says so.
+  ceilings: { box_truck: number; tractor: number } | null = null, classOf: ((key: string, name?: string) => 'box_truck' | 'tractor' | null) | null = null,
+) {
   if (!model) return model;
   const od = caps?.drivers || {};
   const or = caps?.routes || {};
-  const resolve = (row: any, bucket: any) => {
-    if (opts.unknown) return { ...row, yourCap: null, yourCapBy: null, yourCapAt: null, capUsed: null, capSource: 'unknown' };
+  const resolve = (row: any, bucket: any, kind: CapKind) => {
+    const cls = kind === 'driver' && classOf ? classOf(row.key, row.name) : null;
+    if (opts.unknown) return { ...row, cls, yourCap: null, yourCapBy: null, yourCapAt: null, capUsed: null, capSource: 'unknown', clipped: false, ceiling: null };
     const o = bucket[row.key] || null;
     const yours = o ? num(o.cap) : null;
+    const source: 'yours' | 'learned' | null = yours != null ? 'yours' : row.cap != null ? 'learned' : null;
+    const held = clipCap(yours ?? row.cap ?? null, source, cls, ceilings);
     return {
       ...row,
+      cls,
       yourCap: yours,
       yourCapBy: o ? o.by ?? null : null,
       yourCapAt: o ? o.at ?? null : null,
-      capUsed: yours ?? row.cap ?? null,
-      capSource: yours != null ? 'yours' : row.cap != null ? 'learned' : null,
+      capUsed: held.cap,
+      capSource: source,
+      clipped: held.clipped,
+      ceiling: held.ceiling,
+      // A route row's class is only known when a day is built, so its row carries BOTH ceilings: the
+      // screen says what the number will be held to on each truck (a typed route cap too, v1.75.0).
+      routeCeilings: kind === 'route' && ceilings ? { box_truck: ceilings.box_truck, tractor: ceilings.tractor } : null,
     };
   };
-  const drivers = (Array.isArray(model.drivers) ? model.drivers : []).map((r: any) => resolve(r, od));
-  const routes = (Array.isArray(model.routes) ? model.routes : []).map((r: any) => resolve(r, or));
+  const drivers = (Array.isArray(model.drivers) ? model.drivers : []).map((r: any) => resolve(r, od, 'driver'));
+  const routes = (Array.isArray(model.routes) ? model.routes : []).map((r: any) => resolve(r, or, 'route'));
   // A cap for a driver or route with no learned trips yet (a new hire, a new route) is still shown,
   // so it can be seen, changed and cleared.
   const orphans = (bucket: any, rows: any[]) => {
     const known = new Set(rows.map((r) => r.key));
     return Object.entries(bucket)
       .filter(([k]) => !known.has(k))
-      .map(([k, o]: [string, any]) => ({ key: k, name: o.name, cap: null, trips: 0, noHistory: true, yourCap: num(o.cap), yourCapBy: o.by ?? null, yourCapAt: o.at ?? null, capUsed: num(o.cap), capSource: 'yours' }));
+      .map(([k, o]: [string, any]) => ({ key: k, name: o.name, cap: null, trips: 0, noHistory: true, cls: null, yourCap: num(o.cap), yourCapBy: o.by ?? null, yourCapAt: o.at ?? null, capUsed: num(o.cap), capSource: 'yours', clipped: false, ceiling: null }));
   };
   return {
     ...model,
