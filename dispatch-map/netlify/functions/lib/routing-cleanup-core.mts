@@ -141,6 +141,13 @@ export function fillMyLoadsBuildRules(env: Record<string, any> = process.env): b
   return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
 }
 
+// The clock pass's own wall-clock budget. Measured on the biggest board cleanup accepts (390
+// stops, 12 loads): the engine alone is ~20.1s, strict adds ~1.8s — inside the 26s function
+// limit but not by much. Past this budget strict still takes EVERY late stop off (that is the
+// rule), it just stops re-inserting after each removal and stops re-offering, so a slow
+// container costs polish, never correctness.
+export const CLEANUP_CLOCK_MS = 2_500;
+
 // When the engine has no typical start for a truck, the Build button's own departure.
 // Same number as routing-types DEFAULT_DEPART_HHMM ('08:00').
 export const CLEANUP_DEFAULT_DEPART_MIN = 8 * 60;
@@ -1166,6 +1173,8 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       const { etas } = tlFor(pre)(order);
       return order.map((s, i) => { const c = closeOf(s); return c != null && etas[i] > c ? etas[i] - c : 0; });
     };
+    const clockDeadline = Date.now() + CLEANUP_CLOCK_MS;
+    const overBudget = () => Date.now() > clockDeadline;
     const pres = new Map(drivers.map((d) => [d.driver_key, prefixOf(d)] as const));
     for (const d of drivers) {
       const pre = pres.get(d.driver_key)!;
@@ -1182,9 +1191,16 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
           let worst = -1;
           late.forEach((m, i) => { if (m > 0 && (worst < 0 || m > late[worst])) worst = i; });
           if (worst < 0) break;
+          const k = kept.get(d.driver_key)!;
+          if (overBudget()) {
+            // Out of time: every stop still late comes off at once — strict is never broken.
+            const gone = order.filter((_, i) => late[i] > 0);
+            for (const g of gone) { timeLeftovers.push(g); k.splice(k.indexOf(g), 1); }
+            order = order.filter((x) => !gone.includes(x));
+            break;
+          }
           const gone = order[worst];
           timeLeftovers.push(gone);
-          const k = kept.get(d.driver_key)!;
           k.splice(k.indexOf(gone), 1);
           order = orderWithClock(pre, order.filter((x) => x !== gone));
         }
@@ -1197,6 +1213,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       const pending = timeLeftovers.splice(0).sort(edf);
       for (const s of pending) {
         let placed = false;
+        if (overBudget()) { timeLeftovers.push(s); continue; }
         for (const d of active) {
           if (!driverCanServe(d, s)) continue;
           const room = roomFor(d);
@@ -1215,7 +1232,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     // ROOM A TIME REMOVAL FREED goes back to freight that was left for capacity — otherwise
     // strict takes a stop off, and the freight behind it is still told "that load is full".
     for (const s of spill) {
-      if (!stillOver.has(s.id)) continue;
+      if (!stillOver.has(s.id) || overBudget()) continue;
       const need = stopSkidEquiv(s, cfg), needLb = Number(s.weight) || 0;
       for (const d of active) {
         if (!driverCanServe(d, s)) continue;
