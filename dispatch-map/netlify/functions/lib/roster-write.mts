@@ -55,7 +55,7 @@ export interface RosterCache {
   /** When the most recent empty answer was observed. */
   emptyAt?: string | null;
   /** What the pull that wrote this document saw (period sent, rows back, rows kept). Absent before v0.93.12. */
-  pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number; drivers?: number } | null;
+  pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number; drivers?: number; day?: string | null } | null;
 }
 
 export interface RosterWriteVerdict {
@@ -145,10 +145,14 @@ export function explainRosterRow(date: string, cached: RosterCache | null | unde
   // say whether the vendor answered zero rows for the period or answered rows the parser kept
   // none of, and those two send a reader in opposite directions. Documents written since
   // v0.93.12 carry the pull; older ones say so rather than guess.
+  // A WINDOW PULL (pull.day set, v1.74.2) is a different sentence: its rows are a fortnight of
+  // loads and `kept` is the ones departing this day, so "the parser kept none" would send a
+  // reader after a parser bug on what is simply a day with no loads.
   const pullNote = !pull ? null
     : pull.rows === 0 ? `the vendor answered ZERO rows for period ${pull.period} (${pull.cols} column defs)`
-      : pull.kept === 0 ? `the vendor answered ${pull.rows} row(s) for period ${pull.period} and the parser KEPT NONE`
-        : `${pull.kept} of ${pull.rows} row(s) kept for period ${pull.period}`;
+      : pull.day ? `${pull.kept} of the ${pull.rows} load(s) in window ${pull.period} depart ${pull.day}`
+        : pull.kept === 0 ? `the vendor answered ${pull.rows} row(s) for period ${pull.period} and the parser KEPT NONE`
+          : `${pull.kept} of ${pull.rows} row(s) kept for period ${pull.period}`;
   // A ROSTER WHERE NOBODY IS DRIVING IS EITHER A QUIET DAY OR A LOST COLUMN, AND THOSE ARE
   // OPPOSITE ACTIONS. Chad's grid puts a driver on nearly every shell, so `driven: 0` across a
   // hundred loads means the saved search stopped returning Driver Name — not that a hundred

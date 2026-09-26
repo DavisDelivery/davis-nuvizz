@@ -20,7 +20,7 @@
 // until the thing that produced it has been checked too — that one had not been.
 //
 // PURE: takes the parsed JSON, returns a summary safe to store and read back. No network.
-import { normalizeLoads } from './nuvizz-loads.mts';
+import { normalizeLoads, gridDay } from './nuvizz-loads.mts';
 import { linkVal } from './nuvizz-list.mts';
 
 export interface ColumnDef { key: string; label: string }
@@ -93,19 +93,7 @@ export function summarizeLoadColumns(j: any, opts: { rows?: number; maxValue?: n
 // whether it is ever blank (an empty Draft trailer is exactly the row that might lack one), and
 // which loads sit on the date asked about. No network.
 
-/** "9/2/26 11:59 PM" / "09/28/2026" / "2026-09-28T…" → "2026-09-28"; anything else → null. */
-export function gridDay(v: any): string | null {
-  const s = String(v ?? '').trim();
-  if (!s) return null;
-  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
-  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
-  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/.exec(s);
-  if (!us) return null;
-  const m = Number(us[1]); const d = Number(us[2]);
-  const y = us[3].length === 2 ? 2000 + Number(us[3]) : Number(us[3]);
-  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
-  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-}
+export { gridDay };
 
 export interface LoadDayTally {
   /** Per date-bearing column: rows per day, plus how many rows had no date in that column. */
