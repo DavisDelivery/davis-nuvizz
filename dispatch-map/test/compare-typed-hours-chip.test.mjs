@@ -94,3 +94,61 @@ test('hoursTypedByDispatcher reads ownership, not the presence of hours', () => 
   assert.equal(hoursTypedByDispatcher({ manual_overrides: { receiving_hours: 1 } }), false);
   assert.equal(hoursTypedByDispatcher(null), false);
 });
+
+// ── AUTO-DETECTED HOURS SHOW TOO, MARKED (Chad, 2026-09-25) ──────────────────────────────────
+// "why are titan electrics hours not displayed in the compare panel" → "yes i want the proposed
+// fix". TITAN ELECTRIC's 7:00a–3:30p came from Uline's order text ("RH 7AM-3 30PM"), so the row
+// said "11M LATE" with no window beside it.
+import { compareAutoHoursEnabled } from '../src/lib/time-marks.js';
+
+const TITAN = { receiving_hours: { fri: { open: '07:00', close: '15:30' } } };                 // auto
+const WINSTED = { receiving_hours: { fri: { open: '06:00', close: '15:00' } } };               // auto, classified
+const TITAN_TYPED = { ...TITAN, manual_overrides: { receiving_hours: true } };
+
+test('TITAN ELECTRIC: auto hours get a chip on the Compare row, marked auto', () => {
+  const chip = timeMarkChip(TITAN, 'fri', { autoHours: true });
+  assert.ok(chip, 'the row must show the window it says the stop is late against');
+  assert.equal(chip.text, '7:00a–3:30p');
+  assert.equal(chip.auto, true);
+  assert.match(chip.title, /read from the order text/);
+});
+
+test('an auto window the map already marks keeps its mark, and now says it is auto', () => {
+  const chip = timeMarkChip(WINSTED, 'fri', { autoHours: true });
+  assert.equal(chip.kind, 'hours_runs_early');
+  assert.equal(chip.text, '6:00a–3:00p');
+  assert.equal(chip.auto, true);
+});
+
+test('typed hours never say auto', () => {
+  const chip = timeMarkChip(TITAN_TYPED, 'fri', { autoHours: true });
+  assert.equal(chip.text, '7:00a–3:30p');
+  assert.equal(chip.auto, undefined);
+  assert.match(chip.title, /set by a dispatcher/);
+});
+
+test('switch off: exactly the typed-only row it was before', () => {
+  assert.equal(timeMarkChip(TITAN, 'fri'), null);
+  assert.equal(timeMarkChip(TITAN, 'fri', { autoHours: false }), null);
+  const winsted = timeMarkChip(WINSTED, 'fri');
+  assert.equal(winsted.kind, 'hours_runs_early');
+  assert.equal(winsted.auto, undefined, 'no marker at all with the switch off');
+  assert.doesNotMatch(winsted.title, /order text/);
+});
+
+test('the map pin rule is untouched by any of this', () => {
+  assert.equal(timeMarkForDay(TITAN, 'fri'), null);
+});
+
+test('VITE_COMPARE_AUTO_HOURS: default on, an off-word turns it off, a typo leaves it on', () => {
+  assert.equal(compareAutoHoursEnabled({}), true);
+  assert.equal(compareAutoHoursEnabled(undefined), true);
+  for (const v of ['off', 'OFF', '0', 'false', 'no']) assert.equal(compareAutoHoursEnabled({ VITE_COMPARE_AUTO_HOURS: v }), false, v);
+  for (const v of ['offf', 'on', '1', '', 'nope']) assert.equal(compareAutoHoursEnabled({ VITE_COMPARE_AUTO_HOURS: v }), true, v);
+});
+
+test('the Compare row passes the switch, and draws the auto marker', () => {
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(src, /timeMarkChip\(notes\.get\(s\.matchKey\), dayKey, \{ autoHours: COMPARE_AUTO_HOURS_ON \}\)/);
+  assert.match(src, /\{mark\.auto && <span className="font-normal text-slate-400">&nbsp;· auto<\/span>\}/);
+});

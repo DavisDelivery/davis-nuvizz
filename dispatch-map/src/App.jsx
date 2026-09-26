@@ -80,7 +80,7 @@ import { buildLabelsHtml } from './lib/label-html.js';
 import { filterLabelRows } from './lib/label-shippers.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
-import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
+import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS, compareAutoHoursEnabled } from './lib/time-marks.js';
 import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUEUE_DAYS_AHEAD, addDays as rangeAddDays } from './lib/history-range.js';
 // ADDRESS / CITY SEARCH (v1.62.0) — the same module the endpoint and the nightly digest writer use,
 // so the screen can never build a query the server reads differently.
@@ -180,7 +180,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.74.1';
+const APP_VERSION = '1.74.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -234,6 +234,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.74.2', 'THE COMPARE ROW SHOWS AUTO-DETECTED HOURS TOO, AND SAYS SO. Chad, 2026-09-25, on TITAN ELECTRIC reading \u201c11M LATE\u201d with nothing beside it: \u201cwhy are titan electrics hours not displayed in the compare panel\u201d, then \u201cyes i want the proposed fix.\u201d ANSWERED FROM THE RECORD: TITAN\u2019s 7:00a\u20133:30p was read from Uline\u2019s order text (\u201cRH 7AM-3 30PM\u201d, provenance auto), and v1.56.1 gave the row chip to dispatcher-TYPED hours only. An auto window the map calls ordinary drew nothing \u2014 so the row said LATE without the time it was late against, which is the one thing a dispatcher needs next. NOW every window on file gets its chip, and every chip whose hours were NOT typed carries a quiet \u201c\u00b7 auto\u201d, so a time read from an order is never mistaken for one a dispatcher confirmed. Typed chips are unchanged. The map pins are untouched. A Route Workbench change, made because Chad approved it; the commit carries his sentence. VITE_COMPARE_AUTO_HOURS=off puts the row back to typed-only (build-time, so it is a redeploy). 7 new tests, one mutation-checked.'],
   ['1.74.1', 'A WEIGHT LIMIT RAISED TO DISPATCH\u2019S OWN LOAD IS COUNTED AND SAID. From the review of 1.74.0: a limit typed under what dispatch loaded on a truck is raised to that load for that truck (the same rule as skid caps and day length, so the driven column stays feasible) \u2014 and on those loads it binds nothing, so \u201cLoads over weight 0\u201d read as more than it was. Every result now counts the raises per class (lbsRaised: raised, of, heaviest) and carries each load\u2019s lbsNote and lbsRaisedFrom; the \u201cWhat this measures\u201d list gains a sentence when any were raised (\u201cThe box-truck limit of 8,000 lb was raised on 5 of 40 box-truck loads to what dispatch loaded (the heaviest to 9,323 lb)\u2026\u201d); and the day\u2019s scorecard says which limits it ran with and how many were raised, instead of leaving that inside the collapsed block. The Router-settings form says whose limits these are: the backtest\u2019s only, with the live builder\u2019s on the Build panel\u2019s truck card. Additive; nothing about how a day is built or scored changes. PUT IT BACK: revert this commit.'],
   ['1.74.0', 'THE BACKTEST\u2019S WEIGHT LIMITS ARE YOURS TO SET. Chad: \u201cMake it where I can manually change it then you change it yourself for now.\u201d Router settings (Routing \u2192 Shadow \u2192 Router settings) now carry a box-truck weight limit and a tractor weight limit, in lb; they start at the engine\u2019s truck profiles (10,000 and 30,000) and a number typed there replaces them for every backtest from then on. Blank puts the default back; a word or a 0 is refused rather than saved as a truck that holds nothing, and \u201c30,000\u201d typed the way the screen prints it is thirty thousand, not a refusal. A limit you have not set opens blank and reads \u201c(default)\u201d in the summary line, so opening the form and saving it untouched pins nothing. Every result records the limits it ran with, and its \u201cWhat this measures\u201d line names them; a day is built with the limits it was QUEUED with, so a change saved afterwards reaches the next day queued, not one already waiting. As before, a limit is raised to what dispatch actually loaded on that truck that day, so your own load is never refused. THE PART DONE BY HAND, ONCE: the live route builder\u2019s tractor profile (truck_profiles/tractor_53) was still 44,000 lb from June; with Chad\u2019s word it was set to 30,000 by one field-masked write (that field only) and read back \u2014 the Build panel\u2019s 53ft Trailer card shows it, so the sentence can be checked on screen. The Build panel\u2019s truck-profile cards remain the place the LIVE builder\u2019s weight limit is changed (routing-constraints reads the card\u2019s maxWeightLbs and nothing else); the Engine tab\u2019s per-trip caps bound the LEARNED engine\u2019s proposals (4 \u00b7 Engine, the nightly shadow), which write nothing. These settings govern the backtest only. A route whose limit reads under the one you typed says why on its card (\u201c800 of 10,000 lb held back for 1 stop on it with no location\u201d), the way its skid cap does. PUT IT BACK: clear the two fields (or revert this commit) for the backtest; the by-hand tractor_53 change is put back on the Build panel\u2019s truck-profile card (44,000) \u2014 neither clearing the fields nor reverting the commit touches it.'],
   ['1.73.1', 'TRACTORS CARRY 30,000 LB, NOT 44,000. Chad: \u201c10,000 pound limit on box trucks and 30,000 on tractors is the weight limits.\u201d The 44,000 lb tractor figure was the app\u2019s own default \u2014 a generic trailer payload \u2014 kept in four places that tests hold in step: the truck profile the live route builder seeds (truck-profiles.mts), the engine\u2019s per-trip payload cap (WEIGHT_CAP_TRACTOR_LB; Engine tab), the client seed, and the Claude backtest\u2019s weight limit. All four now say 30,000; box trucks stay at 10,000. WHAT CHANGES LIVE: the engine\u2019s per-trip tractor cap is 30,000 from this deploy \u2014 the live config had no override for it (read from the tuning endpoint before this change: effective 44,000, stored none) \u2014 so a tractor trip over 30,000 lb is now split where before it was allowed up to 44,000. WHAT DOES NOT CHANGE BY ITSELF: the truck_profiles/tractor_53 document the route builder reads was seeded when the profiles first ran and a deploy does not rewrite it; its weight is changed in the app\u2019s truck-profile editor. The Claude backtest holds tractors to 30,000 on every run from now on; Sep 23\u2019s result was measured before weight was a rule and shows \u2018\u2014\u2019 until the day is run again. PUT IT BACK: WEIGHT_CAP_TRACTOR_LB=44000 on Netlify, or the Engine tab\u2019s override, restores the engine\u2019s old cap with no deploy; revert this commit restores the rest.'],
@@ -1280,6 +1281,9 @@ const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 // A Routes-panel route opens in Compare even when NuVizz dates its stops earlier (lib/wb-own-day.js).
 // VITE_WB_OWN_DAY_ROSTER=off puts back the old refusal. Build-time, so flipping it is a redeploy.
 const WB_OWN_DAY_ROSTER_ON = wbOwnDayRosterEnabled(import.meta.env);
+// Auto-detected receiving hours on the Compare row, marked "· auto" (lib/time-marks.js timeMarkChip).
+// VITE_COMPARE_AUTO_HOURS=off puts the row back to typed-only. Build-time, so flipping it is a redeploy.
+const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 // THE WALL DISPLAY DRAWS ITS MAP AS A PICTURE — see lib/tv-static-map.js for why, and for the
 // house-shape switch. Read once at module load, like every other build-time flag here.
 // VITE_TV_STATIC_MAP=off puts the TV back on the live JS map; anything malformed leaves it ON.
@@ -1775,7 +1779,7 @@ const RESTRICTION_ICONS = {
   // because this is a fact about the customer and not a warning about this build — the same
   // distinction the chip's own comment draws between the clock and the preflight badge.
   hours_on_file: {
-    label: 'Receiving hours on file — typed by a dispatcher',
+    label: 'Receiving hours on file',
     short: 'Hours on file',
     bg: '#475569',
     accent: '#475569',
@@ -21258,7 +21262,10 @@ function TimeMarkChip({ mark, isMobile }) {
       title={mark.title}
       className={`inline-flex items-center gap-0.5 shrink-0 font-semibold text-slate-600 ${isMobile ? 'text-[10px]' : 'text-[9px]'}`}
     >
-      <RestrictionIcon kind={mark.kind} size={isMobile ? 13 : 12} />{mark.text}
+      <RestrictionIcon kind={mark.kind} size={isMobile ? 13 : 12} title={mark.title} />{mark.text}
+      {/* WHERE THE TIME CAME FROM, on the row: a window read from the order text says so, in
+          the quiet weight, so it is never mistaken for one a dispatcher typed. */}
+      {mark.auto && <span className="font-normal text-slate-400">&nbsp;· auto</span>}
     </span>
   );
 }
@@ -21330,7 +21337,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
   if (dayKey && notes) {
     for (const s of rows) {
       if (s.__unresolved) continue;
-      const chip = timeMarkChip(notes.get(s.matchKey), dayKey);
+      const chip = timeMarkChip(notes.get(s.matchKey), dayKey, { autoHours: COMPARE_AUTO_HOURS_ON });
       if (chip) timeMarkByStop.set(String(s.stopNbr), chip);
     }
   }
