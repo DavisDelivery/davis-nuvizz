@@ -15,7 +15,8 @@
 //          // Read only under the Build rules (FILL_MY_LOADS_BUILD_RULES, default on):
 //          tractor_only_green: bool, window_mode: 'strict'|'advisory',   // step 3's toggles
 //          trucks[].capabilities: { tractor, liftgate, lengthClassFt, overheadClearance },
-//          trucks[].existing_stop_nbrs: ['123', ...] }   // what the load already carries, in order
+//          trucks[].existing_stop_nbrs: ['123', ...],    // what the load already carries, in order
+//          trucks[].existing_stops: [{ stopNbr, cartons, volume, pallets, weight, lat, lng, ... }] }
 //     → 200 CleanupResult (see routing-cleanup-core.mts)
 //     → 400 no trucks / too many / duplicate key / the pool is a whole board
 //     → 404 no board data for that date yet
@@ -77,6 +78,17 @@ export default async (req: Request): Promise<Response> => {
       ...(typeof t.capabilities.overheadClearance === 'boolean' ? { overheadClearance: t.capabilities.overheadClearance } : {}),
     } : null,
     existing_stop_nbrs: Array.isArray(t?.existing_stop_nbrs) ? t.existing_stop_nbrs.slice(0, 300).map((x: any) => String(x)) : null,
+    // What the browser sees on the load — only the fields the fill reads, typed here. Used only
+    // for a stop the server's board does not have (a carry-over from another day on the card).
+    existing_stops: Array.isArray(t?.existing_stops) ? t.existing_stops.slice(0, 300).map((x: any) => {
+      const n = (v: any) => { const k = Number(v); return Number.isFinite(k) ? k : null; };
+      const str = (v: any) => (v == null ? null : String(v).slice(0, 200));
+      return {
+        stopNbr: str(x?.stopNbr), cartons: n(x?.cartons), volume: n(x?.volume), pallets: n(x?.pallets), weight: n(x?.weight),
+        lat: n(x?.lat), lng: n(x?.lng), businessName: str(x?.businessName), addr1: str(x?.addr1), city: str(x?.city), zip: str(x?.zip),
+        scheduledFrom: str(x?.scheduledFrom), scheduledTo: str(x?.scheduledTo),
+      };
+    }).filter((x: any) => x.stopNbr) : null,
   }));
   // Bounded like every other input — an unbounded list is the one field a caller
   // could use to make this endpoint do unbounded work.

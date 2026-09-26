@@ -353,3 +353,68 @@ test('a dock NOBODY can reach does not bid for the front of the run and make a r
   assert.equal(a.late, false, `A arrives ${a.eta_label}; order ${p.trucks[0].stops.map((s) => `${s.stopNbr}@${s.eta_label}`)}`);
   assert.equal(h.late, true, 'the unreachable one is still flagged');
 });
+
+// ── what the independent review of the first cut caught (each one run, not argued) ──
+
+test('REVIEW · strict takes off EVERY stop it cannot make — the removal loop runs to the end, and no note blames "advisory"', () => {
+  const rows = Array.from({ length: 4 }, (_, i) => row(`X${i}`, { name: `DAWN ${i}`, city: 'Dalton', lat: 34.77 + i * 0.01, lng: -84.97 }));
+  const inp = inputs(notesFor(rows, Object.fromEntries(rows.map((r) => [r.stopNbr, { receiving_hours: { thu: '5AM-6AM' } }]))));
+  const p = plan(rows, [shell('T1')], { inputs: inp, windowMode: 'strict' });
+  assert.equal(p.trucks[0].stop_count, 0, `still on the truck: ${p.trucks[0].stops.map((s) => `${s.stopNbr}@${s.eta_label}`)}`);
+  assert.equal(p.left_unplanned.filter((l) => l.reason === 'time_window').length, 4);
+  assert.ok(!p.notes.some((n) => /advisory/.test(n)), JSON.stringify(p.notes));
+});
+
+test('REVIEW · a stop already on the load that opens at 10 makes the truck WAIT there — the stop behind it is not "on time at 8:29"', () => {
+  const e1 = row('E1', { planned: true, name: 'LATE OPENER', lat: 34.20, lng: -84.00 });
+  const w1 = row('W1', { name: 'EARLY CLOSER', lat: 34.225, lng: -84.00 });
+  const inp = inputs(notesFor([e1, w1], { E1: { receiving_hours: { thu: '10AM-4PM' } }, W1: { receiving_hours: { thu: '8AM-10AM' } } }));
+  const trucks = [shell('T1', { existing: ['E1'] })];
+  const adv = plan([e1, w1], trucks, { inputs: inp, windowMode: 'advisory' });
+  assert.equal(adv.trucks[0].stops.find((s) => s.stopNbr === 'W1')?.late, true, 'after waiting for E1 at 10:00 it cannot make a 10:00 close');
+  const str = plan([e1, w1], trucks, { inputs: inp, windowMode: 'strict' });
+  assert.equal(str.left_unplanned.find((l) => l.stopNbr === 'W1')?.reason, 'time_window');
+});
+
+test('REVIEW · a carry-over order on the card that is NOT on this day\'s board still counts against the truck', () => {
+  const today = Array.from({ length: 4 }, (_, i) => row(`B${i}`, { planned: true, skids: 2 }));   // 8 skids on the board
+  const pool = Array.from({ length: 6 }, (_, i) => row(`U${i}`, { skids: 1 }));
+  const carry = { stopNbr: 'CARRY-1', cartons: 6, volume: 0, pallets: 6, weight: 900, lat: 34.10, lng: -84.02, businessName: 'CARRYOVER CO', addr1: '1 Old Rd', city: 'Buford', zip: '30518' };
+  const t = { ...shell('BOX'), existing_stop_nbrs: [...today.map((r) => r.stopNbr), 'CARRY-1'], existing_stops: [carry] };
+  const p = plan([...today, ...pool], [t]);
+  const box = p.trucks[0];
+  assert.deepEqual(box.existing, { stops: 5, skid_equiv: 14, weight_lb: 2900 });
+  assert.equal(box.full, true, '8 + 6 carry-over = 14 of 14');
+  assert.equal(box.stop_count, 0, 'nothing is piled on top of a full truck');
+});
+
+test('REVIEW · a stop refused for EQUIPMENT is not also called "too big", and the board is not called empty', () => {
+  const rows = [row('R1', { name: 'RED' })];
+  const inp = inputs(notesFor(rows, { R1: { vehicle_eligibility: 'box_only' } }));
+  const p = plan(rows, [shell('TRL', { tractor: true })], { inputs: inp });
+  assert.equal(p.left_unplanned[0].reason, 'equipment');
+  assert.ok(!p.notes.some((n) => /will not fit on any truck|nothing is sitting unplanned|got nothing/.test(n)), JSON.stringify(p.notes));
+});
+
+test('REVIEW · a stop that fits the EMPTY truck but not the room left is a capacity question — never "needs a bigger truck"', () => {
+  const onBoard = Array.from({ length: 11 }, (_, i) => row(`B${i}`, { planned: true, skids: 2 }));   // 22 of 28
+  const big = row('BIG', { name: 'EIGHT SKIDS', skids: 8, weight: 2000 });
+  const p = plan([...onBoard, big], [shell('TRL', { tractor: true, existing: onBoard.map((r) => r.stopNbr) })]);
+  const l = p.left_unplanned.find((x) => x.stopNbr === 'BIG');
+  assert.equal(l?.reason, 'over_capacity', JSON.stringify(l));
+  assert.doesNotMatch(l.detail, /bigger truck/);
+});
+
+test('REVIEW · the engine\'s learned start is the FIRST DELIVERY, not leaving the dock — it anchors the first stop', () => {
+  // Twelve past days whose first delivery was 9:30. Nothing reaches a stop before then.
+  const days = Array.from({ length: 12 }, (_, i) => ({
+    tenant: 'davis', date: `2026-08-${String(10 + i).padStart(2, '0')}`, driver_key: 'SOMEONE', truck_class: 'box_truck',
+    trips: [], day_totals: { skids: 0, loose: 0, weight: 0 }, start_time: `2026-08-${String(10 + i).padStart(2, '0')}T09:30:00`, end_time: null,
+  }));
+  const rows = [row('N1', { name: 'NEAR', lat: 34.16, lng: -83.96 })];
+  const inp = { ...inputs(notesFor(rows, { N1: { receiving_hours: { thu: '8AM-5PM' } } })), driverDaysBefore: days };
+  const p = plan(rows, [shell('T1')], { inputs: inp });
+  const n = p.trucks[0].stops[0];
+  assert.equal(n.eta_label, '9:30a', 'arrival at the first stop is the learned first delivery — the drive is not added again');
+  assert.match(p.trucks[0].depart_label, /^9:[0-2]\da$/, `leaves ${p.trucks[0].depart_label} — a few minutes before the 9:30 first delivery`);
+});

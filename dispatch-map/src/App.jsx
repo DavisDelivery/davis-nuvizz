@@ -23553,7 +23553,7 @@ function EngineResultPanel({ result, kind, onDismiss }) {
         </div>
       )}
 
-      {isCleanup && result.fit && (
+      {isCleanup && result.fit && (result.fit.pool_skid_equiv > 0 || !result.fit.fits) && (
         <div className={`rounded p-1.5 ${result.fit.fits ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>
           {result.fit.fits
             ? <>It all fits: <b>{result.fit.pool_skid_equiv}</b> skid-equivalents onto about <b>{result.fit.capacity_skid_equiv}</b> of truck.</>
@@ -23571,10 +23571,10 @@ function EngineResultPanel({ result, kind, onDismiss }) {
             <span className="text-slate-500"> · {t.truck_class === 'tractor' ? '53′' : 'box'} · </span>
             {isCleanup ? (
               t.full
-                ? <span className="text-slate-500">already full ({t.existing?.skid_equiv}/{t.cap.skids} skids on it) — nothing added</span>
+                ? <span className="text-slate-500">already full ({t.full_by === 'weight' ? `${t.existing?.weight_lb}/${t.cap.weight_lb} lb` : `${t.existing?.skid_equiv}/${t.cap.skids} skids`} on it) — nothing added</span>
                 : t.stop_count
                   ? <>{t.stop_count} stop{t.stop_count === 1 ? '' : 's'} · {t.existing ? <>{t.existing.skid_equiv} on it + </> : null}<b>{t.skid_equiv}</b>/{t.cap.skids} skids · ~{Math.round(t.travel_min_est)}m{t.depart_label ? ` · leaves ${t.depart_label}` : ''}</>
-                  : <span className="text-slate-500">nothing — the pool fit on the others</span>
+                  : <span className="text-slate-500">{result.pool?.routed > 0 ? 'nothing — the pool fit on the others' : 'nothing'}</span>
             ) : (
               <>{t.total_stops} stop{t.total_stops === 1 ? '' : 's'}</>
             )}
@@ -23590,7 +23590,8 @@ function EngineResultPanel({ result, kind, onDismiss }) {
             <div className="mt-0.5 space-y-0.5">
               {t.stops.map((s, i) => (s.close_min == null && !s.pickup && !s.window_label) ? null : (
                 <div key={s.stopNbr} className={`flex gap-1.5 pl-2 ${(result.rules === 'build' ? s.late : s.early_close) ? 'text-rose-700' : 'text-slate-500'}`}>
-                  <span className="shrink-0">{i + 1}.</span>
+                  {/* Its place on the CARD, where the load's own stops come first. */}
+                  <span className="shrink-0">{i + 1 + (t.existing?.stops || 0)}.</span>
                   <span className="font-medium shrink-0 truncate">{s.businessName || s.stopNbr}</span>
                   <span className="min-w-0 truncate">
                     {[s.pickup ? 'PICKUP' : null,
@@ -26916,6 +26917,17 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       if (card) return card.order.map(String);
       return orderRouteStops(boardStopsAllRef.current.filter((x) => !x.windowExtra && (x.routeName || x.loadNbr) === t.display)).map((x) => String(x.stopNbr));
     };
+    // The freight behind those ids as this browser sees it. The server prefers its own board
+    // row; this is what lets it count a carry-over order from another day on the card, which
+    // is not on the day's board and otherwise went uncounted.
+    const existingRowsFor = (ids) => ids.map((id) => {
+      const x = stopById.get(id) || boardStopById.get(id);
+      return x ? {
+        stopNbr: id, cartons: x.cartons ?? null, volume: x.volume ?? null, pallets: x.pallets ?? null, weight: x.weight ?? null,
+        lat: x.lat ?? null, lng: x.lng ?? null, businessName: x.businessName ?? null, addr1: x.addr1 ?? null, city: x.city ?? null,
+        zip: x.zip ?? null, scheduledFrom: x.scheduledFrom ?? null, scheduledTo: x.scheduledTo ?? null,
+      } : { stopNbr: id };
+    });
     try {
       const res = await apiFetch('/.netlify/functions/routing-cleanup', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -26938,7 +26950,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
             driver_user_name: driverByName.get(String(t.display).toLowerCase()) || null,
             // The profile's equipment, exactly what the Build button hands its solver.
             capabilities: t.profile?.capabilities || null,
-            existing_stop_nbrs: existingFor(t),
+            ...(() => { const ids = existingFor(t); return { existing_stop_nbrs: ids, existing_stops: existingRowsFor(ids) }; })(),
           })),
         }),
       });
@@ -26959,7 +26971,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     } finally {
       if (runId === engineRunRef.current) setCleanupBusy(false);
     }
-  }, [planTargets, selectedDate, wbRoutes, routeGroups, stageCleanupPlan, engineGate.allowed, engineGate.reason, trailerGreenOnly, windowStrict]);
+  }, [planTargets, selectedDate, wbRoutes, routeGroups, stageCleanupPlan, engineGate.allowed, engineGate.reason, trailerGreenOnly, windowStrict, stopById, boardStopById]);
 
   const runEngineDraft = useCallback(async () => {
     if (!engineGate.allowed) { setDraftError(engineGate.reason); return; }
@@ -27420,7 +27432,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         {/* Step 3's two toggles, said back here BEFORE the run: they change what this button does, and
             they live a screen above it. The server says which rules actually ran in the result below. */}
         <div className="text-[11px] text-slate-600 bg-slate-50 rounded p-1.5">
-          From 3 · Plan: only green on a 53′ <b>{trailerGreenOnly ? 'on' : 'off'}</b> · time restrictions <b>{windowStrict ? 'strict (left off)' : 'advisory (flagged)'}</b>
+          From 3 · Plan: only green on a 53′ <b>{trailerGreenOnly ? 'on' : 'off'}</b> · time restrictions <b>{windowStrict ? 'strict (left off)' : 'advisory (flagged)'}</b> — the result says which rules ran
         </div>
         {planTargets.length > 0 ? (
           <div className="text-[11px] text-slate-600 bg-slate-50 rounded p-1.5">
