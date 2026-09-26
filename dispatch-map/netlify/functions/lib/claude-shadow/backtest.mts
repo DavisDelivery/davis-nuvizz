@@ -64,6 +64,20 @@ const numIn = (v: any, [lo, hi]: readonly [number, number]): number | null => {
   const n = typeof v === 'number' ? v : typeof v === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(v) ? Number(v) : NaN;
   return Number.isFinite(n) && n >= lo && n <= hi ? n : null;
 };
+// A weight limit as a person types it: the screen prints "30,000" and the refusal says "between
+// 1,000 and 80,000", so "30,000", "30 000" and "30,000 lb" are that number, not a refusal. Only
+// digits grouped in threes are read that way — "3,0,0" and "30,000," are still refused, not
+// silently read as something else. Only the whole number survives (a hand-stored 9,500.6 reads as
+// 9,501, the same as the write would have stored it).
+const lbsIn = (v: any, k: 'lbsBox' | 'lbsTractor'): number | null => {
+  let raw = v;
+  if (typeof v === 'string') {
+    const t = v.trim().replace(/\s*lbs?\.?$/i, '');
+    raw = /^\d{1,3}([, ]\d{3})+(\.\d+)?$/.test(t) ? t.replace(/[, ]/g, '') : t;
+  }
+  const n = numIn(raw, ROUTER_BOUNDS[k]);
+  return n == null ? null : Math.round(n);
+};
 
 /** The stored router settings over the defaults; anything malformed keeps the default. */
 export function routerSettingsFrom(doc: any): RouterSettings {
@@ -76,9 +90,17 @@ export function routerSettingsFrom(doc: any): RouterSettings {
     maxRounds: numIn(d.maxRounds, ROUTER_BOUNDS.maxRounds) ?? ROUTER_DEFAULTS.maxRounds,
     maxUsd: numIn(d.maxUsd, ROUTER_BOUNDS.maxUsd) ?? ROUTER_DEFAULTS.maxUsd,
     maxTokens: numIn(d.maxTokens, ROUTER_BOUNDS.maxTokens) ?? ROUTER_DEFAULTS.maxTokens,
-    lbsBox: numIn(d.lbsBox, ROUTER_BOUNDS.lbsBox) ?? ROUTER_DEFAULTS.lbsBox,
-    lbsTractor: numIn(d.lbsTractor, ROUTER_BOUNDS.lbsTractor) ?? ROUTER_DEFAULTS.lbsTractor,
+    lbsBox: lbsIn(d.lbsBox, 'lbsBox') ?? ROUTER_DEFAULTS.lbsBox,
+    lbsTractor: lbsIn(d.lbsTractor, 'lbsTractor') ?? ROUTER_DEFAULTS.lbsTractor,
   };
+}
+
+/** Which weight limits the stored settings PIN (a number of Chad's) as against leaving the default.
+ *  The resolved settings cannot say: a stored 10,000 and no stored value both read 10,000. The form
+ *  needs the difference so that opening and saving it untouched does not quietly pin the defaults. */
+export function routerPinned(doc: any): { lbsBox: boolean; lbsTractor: boolean } {
+  const d = doc || {};
+  return { lbsBox: lbsIn(d.lbsBox, 'lbsBox') != null, lbsTractor: lbsIn(d.lbsTractor, 'lbsTractor') != null };
 }
 
 /** Check a settings change whole; one bad value refuses it and nothing is written. */
@@ -104,8 +126,8 @@ export function validateRouterChange(change: any): { ok: boolean; errors: string
   for (const k of ['lbsBox', 'lbsTractor'] as const) {
     if (!(k in change)) continue;
     if (change[k] === null) { fields[k] = null; continue; }
-    const v = numIn(change[k], ROUTER_BOUNDS[k]);
-    if (v == null) errors.push(`${k === 'lbsBox' ? 'the box-truck weight limit' : 'the tractor weight limit'} must be a whole number of lb between ${ROUTER_BOUNDS[k][0].toLocaleString('en-US')} and ${ROUTER_BOUNDS[k][1].toLocaleString('en-US')}, or blank for the default`); else fields[k] = Math.round(v);
+    const v = lbsIn(change[k], k);
+    if (v == null) errors.push(`${k === 'lbsBox' ? 'the box-truck weight limit' : 'the tractor weight limit'} must be a whole number of lb between ${ROUTER_BOUNDS[k][0].toLocaleString('en-US')} and ${ROUTER_BOUNDS[k][1].toLocaleString('en-US')}, or blank for the default`); else fields[k] = v;
   }
   if (!errors.length && !Object.keys(fields).length) errors.push('nothing to change');
   return { ok: errors.length === 0, errors, fields };
@@ -475,7 +497,7 @@ export async function backtestView(deps: BtDeps = LIVE) {
     // EVERY run's spend — failed, stopped and re-run days included — not just each day's latest result.
     spend: { usd: Math.round(jobs.reduce((a: number, j: any) => a + (typeof j.usd === 'number' ? j.usd : 0), 0) * 100) / 100, runs: jobs.length },
     ceiling: ceilingView(jobs, routerSettingsFrom(rsDoc), deps),
-    settings: routerSettingsFrom(rsDoc), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
+    settings: routerSettingsFrom(rsDoc), pinned: routerPinned(rsDoc), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
     refused: routerRefusal(deps.env, deps.firestoreOn()),
     enabled: claudeShadowEnabled(deps.env),
     model: shadowModel(deps.env).model,

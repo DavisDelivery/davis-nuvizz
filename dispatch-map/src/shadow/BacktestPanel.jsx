@@ -199,7 +199,9 @@ function RouterSettings({ v, onSave }) {
   // Filled from the saved settings when the form OPENS — not on every poll, which hands back a new
   // settings object every 20 s while a job runs and would wipe what is being typed.
   const openForm = () => {
-    setForm({ capRule: s.capRule, costPerMile: s.costPerMile ?? '', costPerDriveHour: s.costPerDriveHour ?? '', effort: s.effort, maxRounds: String(s.maxRounds), maxUsd: String(s.maxUsd), lbsBox: String(s.lbsBox ?? ''), lbsTractor: String(s.lbsTractor ?? '') });
+    // A weight limit the settings do not pin opens BLANK (the default shows as the placeholder), so
+    // a form opened and saved untouched leaves the default in charge instead of pinning today's number.
+    setForm({ capRule: s.capRule, costPerMile: s.costPerMile ?? '', costPerDriveHour: s.costPerDriveHour ?? '', effort: s.effort, maxRounds: String(s.maxRounds), maxUsd: String(s.maxUsd), lbsBox: v.pinned?.lbsBox ? String(s.lbsBox) : '', lbsTractor: v.pinned?.lbsTractor ? String(s.lbsTractor) : '' });
     setOpen(true);
   };
   const save = async () => {
@@ -212,7 +214,9 @@ function RouterSettings({ v, onSave }) {
       lbsTractor: String(form.lbsTractor).trim() === '' ? null : form.lbsTractor,
     };
     const r = await onSave(change);
-    setNote(r.ok ? 'Saved. New backtests use these; finished days keep the settings they ran with.' : `Not saved: ${r.error}`);
+    // A day is built from the settings it was QUEUED with (the job's snapshot wins over the settings
+    // doc), so a day already in the queue keeps the old limits — say so where he can still re-queue it.
+    setNote(r.ok ? 'Saved. Days queued from now use these; days already queued or finished keep the settings they were queued with.' : `Not saved: ${r.error}`);
     if (r.ok) setOpen(false);
   };
   const field = 'rounded border px-2 py-1 text-xs min-h-[44px] w-full bg-white';
@@ -222,7 +226,7 @@ function RouterSettings({ v, onSave }) {
         <button onClick={() => (open ? setOpen(false) : openForm())} className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 min-h-[44px] shrink-0">
           <Settings2 size={13} /> Router settings {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
-        <span className="text-xs text-slate-400">cap rule {s.capRule} · box ≤{int(s.lbsBox)} lb · tractor ≤{int(s.lbsTractor)} lb · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}{v.ceiling ? ` · all backtests ≤${usd(v.ceiling.usd)} per 24 h (${usd(v.ceiling.spent24h)} used)` : ''}</span>
+        <span className="text-xs text-slate-400">cap rule {s.capRule} · box ≤{int(s.lbsBox)} lb{v.pinned?.lbsBox ? '' : ' (default)'} · tractor ≤{int(s.lbsTractor)} lb{v.pinned?.lbsTractor ? '' : ' (default)'} · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}{v.ceiling ? ` · all backtests ≤${usd(v.ceiling.usd)} per 24 h (${usd(v.ceiling.spent24h)} used)` : ''}</span>
       </div>
       {note && <p className="text-[11px] text-slate-600">{note}</p>}
       {open && form && (

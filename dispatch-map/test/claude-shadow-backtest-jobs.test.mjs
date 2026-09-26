@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   enqueueBacktests, workerTick, cancelJob, backtestView, backtestResult, saveRouterSettings,
-  routerSettingsFrom, validateRouterChange, routerRefusal, ROUTER_DEFAULTS, ROUTER_SETTINGS_PATH, jobPath, resultPath, ROUTER_BOUNDS,} from '../netlify/functions/lib/claude-shadow/backtest.mts';
+  routerSettingsFrom, validateRouterChange, routerRefusal, routerPinned, ROUTER_DEFAULTS, ROUTER_SETTINGS_PATH, jobPath, resultPath, ROUTER_BOUNDS,} from '../netlify/functions/lib/claude-shadow/backtest.mts';
 import { restoreState } from '../netlify/functions/lib/claude-shadow/plan-loop.mts';
 
 const D = '2026-09-23';
@@ -408,4 +408,59 @@ test('weight limits: the defaults are the engine\u2019s truck profiles, a typed 
     assert.match(r.errors[0], /box-truck weight limit must be a whole number of lb between 1,000 and 80,000/);
   }
   assert.deepEqual(ROUTER_BOUNDS.lbsTractor, [1000, 80000]);
+});
+
+// The screen prints the limits as "10,000" and the refusal says "between 1,000 and 80,000" — so a
+// limit typed the same way is that number, not a refusal.
+test('weight limits: "30,000", "30 000" and "30,000 lb" are thirty thousand, typed or stored', () => {
+  for (const typed of ['30,000', '30 000', '30,000 lb', '30000 lbs', ' 30,000 ']) {
+    const r = validateRouterChange({ lbsTractor: typed });
+    assert.equal(r.ok, true, `${JSON.stringify(typed)}: ${r.errors.join()}`);
+    assert.deepEqual(r.fields, { lbsTractor: 30000 }, JSON.stringify(typed));
+    assert.equal(routerSettingsFrom({ lbsTractor: typed }).lbsTractor, 30000, JSON.stringify(typed));
+  }
+  for (const bad of ['30,000 kg', '3,0,0', 'lb', '30,000,']) assert.equal(validateRouterChange({ lbsTractor: bad }).ok, false, JSON.stringify(bad));
+  // A hand-stored fraction reads as the whole number the write would have stored.
+  assert.equal(routerSettingsFrom({ lbsBox: 9500.6 }).lbsBox, 9501);
+});
+
+// A stored 10,000 and no stored value both resolve to 10,000, so the resolved settings cannot say
+// which limits are Chad's. The view says: a form opened and saved untouched must not pin the defaults.
+test('weight limits: the view says which limits are pinned, and blank on save puts the default back', async () => {
+  assert.deepEqual(routerPinned(null), { lbsBox: false, lbsTractor: false });
+  assert.deepEqual(routerPinned({ lbsBox: 10000 }), { lbsBox: true, lbsTractor: false }, 'pinned at the default is still pinned');
+  assert.deepEqual(routerPinned({ lbsBox: 'x', lbsTractor: '26,000' }), { lbsBox: false, lbsTractor: true });
+  const st = store(seedDay());
+  const d = deps(st, model([]), clock());
+  assert.deepEqual((await backtestView(d)).pinned, { lbsBox: false, lbsTractor: false });
+  await saveRouterSettings({ lbsTractor: '26,000' }, 'disp', d);
+  const v = await backtestView(d);
+  assert.deepEqual(v.pinned, { lbsBox: false, lbsTractor: true });
+  assert.equal(v.settings.lbsTractor, 26000);
+  await saveRouterSettings({ lbsTractor: null }, 'disp', d);
+  assert.deepEqual((await backtestView(d)).pinned, { lbsBox: false, lbsTractor: false });
+  assert.equal((await backtestView(d)).settings.lbsTractor, ROUTER_DEFAULTS.lbsTractor);
+});
+
+// The limits are snapshotted into the job when the day is QUEUED; a change saved afterwards does not
+// reach a day already in the queue. The result records the limits the day actually ran with.
+test('weight limits: a queued day runs with the limits it was queued with, and the result records them', async () => {
+  const st = store(seedDay());
+  const m = model([
+    reply([{ type: 'thinking', thinking: '', signature: 's' }, { type: 'tool_use', id: 't1', name: 'evaluate_plan', input: PLAN }]),
+    reply([{ type: 'tool_use', id: 't2', name: 'submit_plan', input: { ...PLAN, loads: PLAN.loads.map((l) => ({ ...l, why: 'area' })), summary: 'ok' } }]),
+  ]);
+  const d = deps(st, m, clock());
+  await saveRouterSettings({ lbsBox: '12,000', lbsTractor: 28000 }, 'disp', d);
+  await enqueueBacktests([D], 'disp', d);
+  await saveRouterSettings({ lbsBox: 9000, lbsTractor: null }, 'disp', d);   // after queueing — too late for this day
+  const job = [...st.docs.entries()].find(([p]) => p.startsWith('claude_shadow_jobs/') && p.split('/').length === 2)[1];
+  assert.equal(job.settings.lbsBox, 12000);
+  assert.equal(job.settings.lbsTractor, 28000);
+  assert.equal((await workerTick(d)).done, true);
+  const res = st.docs.get(resultPath(D));
+  assert.deepEqual(res.lbsLimits, { box_truck: 12000, tractor: 28000 }, 'the day ran with the limits it was queued with');
+  assert.match(res.approximations.join(' '), /box 12,000 lb, tractor 28,000 lb/);
+  // The next day queued picks up the change.
+  assert.equal(routerSettingsFrom(await d.getDoc(ROUTER_SETTINGS_PATH)).lbsBox, 9000);
 });
