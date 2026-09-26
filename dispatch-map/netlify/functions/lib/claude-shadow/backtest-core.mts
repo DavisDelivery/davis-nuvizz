@@ -104,10 +104,13 @@ export interface BtLoad {
   maxMinNote: string | null;
   maxLbs?: number;                    // weight limit (profile rating, raised to what dispatch loaded)
   lbsNote?: string | null;
+  lbsRaisedFrom?: number | null;      // v1.74.1: the limit before it was raised to dispatch's own load, else null
 }
+export type LbsRaised = { box_truck: { raised: number; of: number; heaviest: number }; tractor: { raised: number; of: number; heaviest: number } };
 export interface BtProblem {
   date: string; loosePerSkid: number; capRule: CapRule;
   lbsLimits: { box_truck: number; tractor: number };   // the weight limits this day was held to (lb)
+  lbsRaised?: LbsRaised;              // v1.74.1: per class, how many loads dispatch loaded past the limit (so it was raised)
   depot: { lat: number; lng: number };
   serviceMin: number;                 // on-site minutes a stop (the engine's DEFAULT_SERVICE_MIN)
   shiftMin: number;                   // a truck's day (the engine's typical_shift_hours × 60)
@@ -235,9 +238,25 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
     const lbsLimit = lbsLimits[cls] ?? lbsLimits.box_truck;
     let maxLbs = Math.max(0, lbsLimit - reservedLbs), lbsNote: string | null = null;
     if (reservedLbs > 0) lbsNote = `${reservedLbs} of ${lbsLimit} lb held back for ${reservedStops} stop${reservedStops === 1 ? '' : 's'} on it with no location`;
-    if (lbsRan > maxLbs) { lbsNote = `${lbsNote ? lbsNote + '; ' : ''}raised from ${maxLbs} to ${lbsRan} lb — dispatch loaded that much on ${trip.route} / ${trip.driver} on ${input.date}`; maxLbs = lbsRan; }
-    loads.push({ id: `L${loads.length + 1}`, route: trip.route, driver: trip.driver, cls, clsSource, cap, capSource: base.source, capNote, dispatch: ids, orderSource, maxMin: 0, maxMinNote: null, maxLbs, lbsNote });
+    let lbsRaisedFrom: number | null = null;
+    if (lbsRan > maxLbs) { lbsNote = `${lbsNote ? lbsNote + '; ' : ''}raised from ${maxLbs} to ${lbsRan} lb — dispatch loaded that much on ${trip.route} / ${trip.driver} on ${input.date}`; lbsRaisedFrom = maxLbs; maxLbs = lbsRan; }
+    loads.push({ id: `L${loads.length + 1}`, route: trip.route, driver: trip.driver, cls, clsSource, cap, capSource: base.source, capNote, dispatch: ids, orderSource, maxMin: 0, maxMinNote: null, maxLbs, lbsNote, lbsRaisedFrom });
   });
+  // COUNT THE RAISES, per class. A limit typed under what dispatch loaded binds only the loads
+  // dispatch kept lighter; on the rest it is silently the dispatcher's own load. "Over weight: 0"
+  // on such a day means less than it reads, so the result says on how many loads it happened.
+  const lbsRaised: LbsRaised = { box_truck: { raised: 0, of: 0, heaviest: 0 }, tractor: { raised: 0, of: 0, heaviest: 0 } };
+  for (const l of loads) {
+    const r = lbsRaised[l.cls];
+    r.of += 1;
+    if (l.lbsRaisedFrom != null) { r.raised += 1; r.heaviest = Math.max(r.heaviest, l.maxLbs ?? 0); }
+  }
+  const raisedLine = (cls: 'box_truck' | 'tractor') => {
+    const r = lbsRaised[cls];
+    if (!r.raised) return [];
+    const word = cls === 'tractor' ? 'tractor' : 'box-truck';
+    return [`The ${word} limit of ${lbsLimits[cls].toLocaleString('en-US')} lb was raised on ${r.raised} of ${r.of} ${word} load${r.of === 1 ? '' : 's'} to what dispatch loaded (the heaviest to ${r.heaviest.toLocaleString('en-US')} lb): on those loads the limit is dispatch's own load, not the number typed, and "over weight" cannot count them.`];
+  };
 
   // NUMBERED BY PLACE, NOT BY LOAD. Ids handed out in the order the trips were read ran in one
   // block per dispatch load, in delivered order — the answer, written into the question. Renumber
@@ -274,7 +293,7 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
   }
 
   return {
-    date: input.date, loosePerSkid: input.loosePerSkid, capRule: input.capRule, lbsLimits, depot: input.depot, serviceMin, shiftMin,
+    date: input.date, loosePerSkid: input.loosePerSkid, capRule: input.capRule, lbsLimits, lbsRaised, depot: input.depot, serviceMin, shiftMin,
     loads, stops: order, excluded: { noCoords, duplicate }, counts: day.counts, roster: day.roster, stampGate: day.stampGate,
     capModel: { days: model?.days?.count ?? 0, first: model?.days?.first ?? null, last: model?.days?.last ?? null },
     approximations: [
@@ -285,6 +304,7 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
       ...(day.stampGate === 'off' ? ['Fewer than half this day’s delivered stops carried a delivery stamp on the day, so every delivered stop counted — some may have gone out on a neighbouring day.'] : []),
       ...(day.roster === 'none' ? ['This day’s load roster was not captured, so two loads run under one route name cannot be told apart from one.'] : []),
       `Weight limits are Router settings (box ${lbsLimits.box_truck.toLocaleString('en-US')} lb, tractor ${lbsLimits.tractor.toLocaleString('en-US')} lb), raised to what dispatch loaded on that truck that day; stop weights are as recorded.`,
+      ...raisedLine('box_truck'), ...raisedLine('tractor'),
       'A driver’s loads share ONE day (a driver on two loads works one shift between them); the return to the terminal between two loads is not counted.',
       `A driver’s day is drive minutes plus a flat ${DEFAULT_SERVICE_MIN} min on site a stop (the engine’s default, not each customer’s learned time), against the engine’s typical shift of ${shiftMin / 60} h — or longer where that driver’s own dispatched day took longer.`,
     ],
@@ -666,8 +686,10 @@ export function compareBacktest(p: BtProblem, claudePlan: any, cfg: any, rates: 
     sequencingOnly: { miles: delta(reseq.totals.miles, driven.totals.miles), driveMin: delta(reseq.totals.driveMin, driven.totals.driveMin) },
     assignmentOnly: { miles: delta(claude.totals.miles, reseq.totals.miles), driveMin: delta(claude.totals.driveMin, reseq.totals.driveMin), trucks: claude.totals.trucks - reseq.totals.trucks },
     agreement: { stopsMoved: moved, stopsSameLoad: p.stops.length - moved - unplanned, coLoadRecall: co.recall, coLoadPrecision: co.precision },
+    lbsRaised: p.lbsRaised ?? null,
     loads: p.loads.map((l) => ({
       id: l.id, route: l.route, driver: l.driver, cls: l.cls, clsSource: l.clsSource, cap: l.cap, capSource: l.capSource, capNote: l.capNote, orderSource: l.orderSource,
+      lbsNote: l.lbsNote ?? null, lbsRaisedFrom: l.lbsRaisedFrom ?? null,
       driven: driven.loads.find((x) => x.id === l.id) || null,
       reseq: reseq.loads.find((x) => x.id === l.id) || null,
       claude: claude.loads.find((x) => x.id === l.id) || null,

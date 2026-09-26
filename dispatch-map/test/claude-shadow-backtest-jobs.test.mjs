@@ -462,6 +462,8 @@ test('weight limits: a queued day runs with the limits it was queued with, and t
   assert.equal((await workerTick(d)).done, true);
   const res = st.docs.get(resultPath(D));
   assert.deepEqual(res.lbsLimits, { box_truck: 12000, tractor: 28000 }, 'the day ran with the limits it was queued with');
+  assert.deepEqual(res.lbsRaised, { box_truck: { raised: 0, of: 2, heaviest: 0 }, tractor: { raised: 0, of: 0, heaviest: 0 } }, 'and says on how many loads the limit was raised (none: 1,000 lb loads)');
+  assert.ok(res.loads.every((l) => l.lbsNote === null && l.lbsRaisedFrom === null));
   assert.match(res.approximations.join(' '), /box 12,000 lb, tractor 28,000 lb/);
   // The next day queued picks up the change.
   assert.equal(routerSettingsFrom(await d.getDoc(ROUTER_SETTINGS_PATH)).lbsBox, 9000);
