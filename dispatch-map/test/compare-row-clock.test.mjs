@@ -14,7 +14,8 @@ test('the chip has a data source: notes + the BOARD day reach both workbench vie
   const n = (src.match(/notes=\{notes\} dayKey=\{weekdayKeyFromDate\(selectedDate\)\}/g) || []).length;
   assert.equal(n, 2, `expected the mobile AND desktop RoutingWorkbench to pass notes+dayKey, found ${n}`);
   assert.ok(
-    /const chip = timeMarkChip\(notes\.get\(s\.matchKey\), dayKey\);/.test(src),
+    // v1.68.3 (Chad approved auto hours on the row) added the switch argument; the data source is unchanged.
+    /const chip = timeMarkChip\(notes\.get\(s\.matchKey\), dayKey, \{ autoHours: COMPARE_AUTO_HOURS_ON \}\);/.test(src),
     'the card must resolve each row\'s note by matchKey — the same key the map draws from.',
   );
 });
@@ -36,12 +37,13 @@ test('the clock renders on the marks line AND in the expanded detail', () => {
 test('the row prints the TIME, never the icon alone', () => {
   // v0.54.83 found four values reachable only through a title= tooltip, which a touch
   // device never shows. A clock face with no clock on it is the fifth.
-  assert.ok(/<RestrictionIcon kind=\{mark\.kind\} size=\{isMobile \? 13 : 12\} \/>\{mark\.text\}/.test(src),
+  // v1.68.3: the icon's hover title is now the chip's own (typed vs read from the order); the text still sits beside it.
+  assert.ok(/<RestrictionIcon kind=\{mark\.kind\} size=\{isMobile \? 13 : 12\} title=\{mark\.title\} \/>\{mark\.text\}/.test(src),
     'TimeMarkChip must render mark.text beside the glyph, at both view sizes.');
 });
 
 test('the mark is the MAP\'s mark — one rule, not a second one', () => {
-  assert.ok(src.includes("import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';"),
+  assert.ok(src.includes("import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS, compareAutoHoursEnabled } from './lib/time-marks.js';"),
     'the chip must come from time-marks.js; a locally-derived clock is a second rule that can drift.');
 });
 
