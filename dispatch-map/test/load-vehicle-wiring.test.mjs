@@ -83,3 +83,30 @@ test('the conflict line renders only when it is real', () => {
   assert.ok(/\{on && veh\.conflict && \(/.test(code), 'the conflict line is unconditional or gone');
   assert.ok(/NuVizz has a \{veh\.assigned === 'tractor' \? 'tractor' : 'box truck'\}/.test(code), 'the conflict line does not name what NuVizz has');
 });
+
+// Chad, on "2 routes to build: ALLEN C, JOHN": "THIS SHOULD BUILD AS A LIST AND ALLOW ME TO SET
+// BOX OR TRACTOR AND SHOULD REMEMBER MY SELECTION." The list is wiring, so it is pinned as wiring.
+test('THE ROUTES TO BUILD ARE A LIST — one row per target, each with the Box/Tractor that remembers', () => {
+  const m = /\{planTargets\.length > 0 && \(\n\s*<div className="bg-slate-50 rounded p-1\.5 space-y-1" data-plan-build-list=([\s\S]*?)\n\s*\)\}\n\s*<\/>/.exec(code);
+  assert.ok(m, 'the routes-to-build list is gone');
+  const list = m[1];
+  assert.ok(!/\.join\(', '\)/.test(list), 'the routes to build are a comma-joined line again');
+  assert.ok(/planTargets\.map\(\(t\) => \{/.test(list), 'the list does not render one row per build target');
+  assert.ok(/loadVehicleChoices\(profiles\)\.map\(\(c, i\) => \(/.test(list), 'a row has no Box/Tractor buttons');
+  assert.ok(/onClick=\{\(\) => pickLoadVehicle\(t, c\.cls\)\}/.test(list), 'a row’s button does not go through pickLoadVehicle — it would set this build and NOT remember');
+  assert.ok(/aria-pressed=\{t\.vehicleClass === c\.cls\}/.test(list), 'the pressed button is not the class the build will send');
+});
+
+test('"remembered" is what the shared memory READ BACK — never what was tapped', () => {
+  const m = /data-plan-build-list=([\s\S]*?)<\/ul>/.exec(code);
+  assert.ok(m, 'the routes-to-build list is gone');
+  assert.ok(/const saved = !!t\.vehicleClass && loadVehicleByKey\.get\(loadVehicleKey\(t\.display\)\) === t\.vehicleClass;/.test(m[1]),
+    'the row claims "remembered" from something other than the memory the snapshot delivered');
+  assert.ok(/t\.vehicleSource === 'picked' \? 'set for this build — not saved yet'/.test(m[1]), 'a tap whose save has not landed is not told apart');
+  assert.ok(/\{t\.vehicleConflict && \(/.test(m[1]), 'a remembered class that disagrees with NuVizz today is not said on the row');
+});
+
+test('the build target carries the conflict it is shown with — one resolve, not two', () => {
+  const m = /const planTargets = useMemo\(\(\) => \{([\s\S]*?)\n  \}, \[planPickRows/.exec(code);
+  assert.ok(/vehicleAssigned: v\.assigned, vehicleConflict: v\.conflict/.test(m[1]), 'the list would re-derive the conflict separately from the build');
+});
