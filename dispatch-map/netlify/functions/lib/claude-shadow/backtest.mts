@@ -121,11 +121,13 @@ export function validateRouterChange(change: any): { ok: boolean; errors: string
     const v = numIn(change[k], ROUTER_BOUNDS[k]);
     if (v == null) errors.push(`${k} must be between ${ROUTER_BOUNDS[k][0]} and ${ROUTER_BOUNDS[k][1]}`); else fields[k] = k === 'maxUsd' ? Math.round(v * 100) / 100 : Math.round(v);
   }
-  // A weight limit: a whole number of lb in range, or null to put the default back. Blank is refused
-  // by numIn (Number('') is 0, and 0 is finite — a truck that holds nothing is never typed by accident).
+  // A weight limit: a whole number of lb in range, or null / blank to put the default back — the
+  // refusal says "or blank for the default", so blank must be that, at the API as at the form. A 0
+  // or a word is refused (Number('') is 0 and 0 is finite: never let that read as a truck that holds
+  // nothing).
   for (const k of ['lbsBox', 'lbsTractor'] as const) {
     if (!(k in change)) continue;
-    if (change[k] === null) { fields[k] = null; continue; }
+    if (change[k] === null || (typeof change[k] === 'string' && change[k].trim() === '')) { fields[k] = null; continue; }
     const v = lbsIn(change[k], k);
     if (v == null) errors.push(`${k === 'lbsBox' ? 'the box-truck weight limit' : 'the tractor weight limit'} must be a whole number of lb between ${ROUTER_BOUNDS[k][0].toLocaleString('en-US')} and ${ROUTER_BOUNDS[k][1].toLocaleString('en-US')}, or blank for the default`); else fields[k] = v;
   }

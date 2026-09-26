@@ -402,11 +402,13 @@ test('weight limits: the defaults are the engine\u2019s truck profiles, a typed 
   const cleared = validateRouterChange({ lbsTractor: null });
   assert.equal(cleared.ok, true);
   assert.deepEqual(cleared.fields, { lbsTractor: null });
-  for (const bad of ['', '0', 'ten thousand', 500, 100000]) {
+  for (const bad of ['0', 0, 'ten thousand', 500, 100000]) {
     const r = validateRouterChange({ lbsBox: bad });
     assert.equal(r.ok, false, String(bad));
-    assert.match(r.errors[0], /box-truck weight limit must be a whole number of lb between 1,000 and 80,000/);
+    assert.match(r.errors[0], /box-truck weight limit must be a whole number of lb between 1,000 and 80,000, or blank for the default/);
   }
+  // The refusal says "or blank for the default", so blank IS the default — at the API as at the form.
+  for (const blank of ['', '  ']) assert.deepEqual(validateRouterChange({ lbsBox: blank }), { ok: true, errors: [], fields: { lbsBox: null } }, JSON.stringify(blank));
   assert.deepEqual(ROUTER_BOUNDS.lbsTractor, [1000, 80000]);
 });
 

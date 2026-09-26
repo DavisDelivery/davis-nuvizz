@@ -228,10 +228,14 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
       capNote = `${capNote ? capNote + '; ' : ''}raised from ${cap} to ${r1(spotsRan)} — dispatch delivered that much on ${trip.route} / ${trip.driver} on ${input.date}, ${how}`;
       cap = r1(spotsRan);
     }
-    // WEIGHT, like skid spots: the class's rating, less what unlocated stops on it weighed, raised to
+    // WEIGHT, like skid spots: the class's limit, less what unlocated stops on it weighed, raised to
     // what dispatch actually put on this truck that day — the dispatcher's own load is never refused.
-    let maxLbs = Math.max(0, (lbsLimits[cls] ?? lbsLimits.box_truck) - reservedLbs), lbsNote: string | null = null;
-    if (lbsRan > maxLbs) { lbsNote = `raised from ${maxLbs} to ${lbsRan} lb — dispatch loaded that much on ${trip.route} / ${trip.driver} on ${input.date}`; maxLbs = lbsRan; }
+    // Each step is said in the note, as the cap's is: the limit is now a number Chad typed, so a
+    // route reading "9,200" under a typed 10,000 must say where the 800 went.
+    const lbsLimit = lbsLimits[cls] ?? lbsLimits.box_truck;
+    let maxLbs = Math.max(0, lbsLimit - reservedLbs), lbsNote: string | null = null;
+    if (reservedLbs > 0) lbsNote = `${reservedLbs} of ${lbsLimit} lb held back for ${reservedStops} stop${reservedStops === 1 ? '' : 's'} on it with no location`;
+    if (lbsRan > maxLbs) { lbsNote = `${lbsNote ? lbsNote + '; ' : ''}raised from ${maxLbs} to ${lbsRan} lb — dispatch loaded that much on ${trip.route} / ${trip.driver} on ${input.date}`; maxLbs = lbsRan; }
     loads.push({ id: `L${loads.length + 1}`, route: trip.route, driver: trip.driver, cls, clsSource, cap, capSource: base.source, capNote, dispatch: ids, orderSource, maxMin: 0, maxMinNote: null, maxLbs, lbsNote });
   });
 
