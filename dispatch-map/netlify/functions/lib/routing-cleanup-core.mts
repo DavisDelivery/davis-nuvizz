@@ -595,14 +595,38 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   // Which picked trucks may carry this stop under the Build rules — the Build button's own
   // requirement list (equipmentReqsFrom) checked against each truck's capabilities
   // (equipmentOk). Reasons are the Build's own words.
-  const eligibility = (s: AssignStop) => {
-    const reqs = equipmentReqsFrom(noteOf(s.matchKey), { tractorOnlyGreen });
+  type Elig = { reqs: string[]; ok: string[]; reasons: string[]; toggleOnly: boolean };
+  const eligibility = (s: AssignStop): Elig => {
+    const note = noteOf(s.matchKey);
+    const reqs = equipmentReqsFrom(note, { tractorOnlyGreen });
+    // The same stop with step 3's toggle off, to tell a truck the TOGGLE excludes from one its
+    // own equipment excludes — the first is fixed by a green mark or a checkbox, the second
+    // only by a different truck, and the dispatcher needs to know which he is looking at.
+    const base = tractorOnlyGreen ? equipmentReqsFrom(note, { tractorOnlyGreen: false }) : reqs;
     const ok: string[] = []; const reasons = new Set<string>();
+    let byToggle = 0;
     for (const d of drivers) {
-      const r = equipmentOk({ equipmentReqs: reqs } as any, { capabilities: capabilitiesOf.get(d.driver_key)! } as any);
-      if (r.ok) ok.push(d.driver_key); else for (const x of r.reasons) reasons.add(x);
+      const caps = { capabilities: capabilitiesOf.get(d.driver_key)! } as any;
+      const r = equipmentOk({ equipmentReqs: reqs } as any, caps);
+      if (r.ok) { ok.push(d.driver_key); continue; }
+      const rb = equipmentOk({ equipmentReqs: base } as any, caps);
+      if (rb.ok) byToggle++; else for (const x of rb.reasons) reasons.add(x);
     }
-    return { reqs, ok, reasons: [...reasons] };
+    return { reqs, ok, reasons: [...reasons], toggleOnly: byToggle > 0 };
+  };
+  const eligOf = new Map<string, Elig>();
+  // A stop left for CAPACITY while some picked load had room must say why that load could not
+  // take it. "Every truck you picked is full" with two trailers half empty is the confident
+  // wrong answer — it sends the dispatcher for another truck he does not need.
+  const onlyLoadsDetail = (s: AssignStop, e: Elig | undefined): string => {
+    if (!e || e.ok.length >= drivers.length) return 'every truck you picked is full — this needs another truck';
+    const names = e.ok.map((k) => truckByKey.get(k)?.key || k);
+    const one = names.length === 1;
+    const why = [
+      e.toggleOnly ? 'it is not marked green, so “only green on a 53′” keeps it off the trailers' : null,
+      e.reasons.length ? `the others: ${e.reasons.join('; ')}` : null,
+    ].filter(Boolean).join('; ') || 'the others cannot carry it';
+    return `${names.join(', ')} ${one ? 'is the only load' : 'are the only loads'} it may ride and ${one ? 'it is' : 'they are'} full — ${why}`;
   };
 
   // ── freight that does not fit on ANY truck he picked, pulled out FIRST ──
@@ -649,6 +673,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       // requirement list so the one bit and the list can never disagree — a green mark lifts
       // an auto-detected blocker here exactly as it does on the Build button.
       const e = eligibility(s);
+      eligOf.set(s.id, e);
       s.blocksTractor = e.reqs.some((r) => TRAILER_BLOCKERS.has(r));
       const open = e.ok.filter((k) => !fullSet.has(k));
       if (!e.ok.length) {
@@ -657,7 +682,10 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
           stopNbr: s.id, businessName: raw?.businessName ?? null, city: raw?.city ?? null,
           skids: s.skids, reason: 'equipment',
           detail: drivers.length
-            ? `${e.reasons.join('; ') || 'equipment'} — none of the loads you picked can take it`
+            ? `${[
+              e.toggleOnly ? 'not marked green, and “only green on a 53′” is on' : null,
+              ...e.reasons,
+            ].filter(Boolean).join('; ') || 'equipment'} — none of the loads you picked can take it`
             : 'no loads were picked to route onto',
         });
         continue;
@@ -667,7 +695,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
         left.push({
           stopNbr: s.id, businessName: raw?.businessName ?? null, city: raw?.city ?? null,
           skids: s.skids, reason: 'over_capacity',
-          detail: 'the only loads you picked that can take it are already full',
+          detail: onlyLoadsDetail(s, e),
         });
         continue;
       }
@@ -713,7 +741,10 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   const poolEq = pool.reduce((a, s) => a + stopSkidEquiv(s, cfg), 0);
   const capacityEq = drivers.reduce((a, d) => a + (capsByKey.get(d.driver_key)?.hard || 0), 0);
   const perTruckAvg = drivers.length ? capacityEq / drivers.length : 0;
-  const fit = {
+  const fit: {
+    pool_skid_equiv: number; capacity_skid_equiv: number; fits: boolean; shortfall_skid_equiv: number;
+    trucks_needed_estimate: number; constrained?: { trucks: string[]; skid_equiv: number; room: number } | null;
+  } = {
     pool_skid_equiv: r1(poolEq),
     capacity_skid_equiv: r1(capacityEq),
     fits: poolEq <= capacityEq,
@@ -722,6 +753,34 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   };
   if (!fit.fits) {
     notes.push(`The pool is ${fit.pool_skid_equiv} skid-equivalents and these ${drivers.length} truck${drivers.length === 1 ? '' : 's'} hold about ${fit.capacity_skid_equiv} — roughly ${fit.trucks_needed_estimate} trucks would clear it. The overflow is listed, not hidden.`);
+  }
+  // ── IT FITS IN TOTAL — BUT DOES IT FIT WHERE THE RULES ALLOW? (Build rules) ──
+  // Total skids against total room says nothing when some freight may ride only some trucks:
+  // 57 skids against 65 of room "fits", and still leaves box-only freight on the dock when the
+  // one box is full. For every group of trucks some freight is limited to, the freight limited
+  // to that group must fit that group's room (Hall's condition on the sets the board actually
+  // has). The worst shortfall is reported instead of a green "it all fits".
+  let constrainedFit: { trucks: string[]; skid_equiv: number; room: number } | null = null;
+  if (buildRules && fit.fits) {
+    const groups = new Map<string, string[]>();
+    for (const x of pool) if (x.servableBy) groups.set([...x.servableBy].sort().join('|'), x.servableBy);
+    let worst = 0;
+    for (const K of groups.values()) {
+      const k = new Set(K);
+      if (k.size >= active.length) continue;   // freight free to ride any truck is the total check above
+      const eq = pool.filter((x) => (x.servableBy || []).every((y) => k.has(y))).reduce((a, x) => a + stopSkidEquiv(x, cfg), 0);
+      const room = K.reduce((a, y) => a + (capsByKey.get(y)?.hard || 0), 0);
+      if (eq > room + 1e-9 && eq - room > worst) {
+        worst = eq - room;
+        constrainedFit = { trucks: K.map((y) => truckByKey.get(y)?.key || y), skid_equiv: r1(eq), room: r1(room) };
+      }
+    }
+    if (constrainedFit) {
+      fit.fits = false;
+      fit.shortfall_skid_equiv = r1(worst);
+      const one = constrainedFit.trucks.length === 1;
+      notes.push(`It fits in total, but not where the rules allow it: ${constrainedFit.skid_equiv} skid-equivalents may ride only ${constrainedFit.trucks.join(', ')}, which ${one ? 'has' : 'have'} room for ${constrainedFit.room}. The rest is listed with the reason.`);
+    }
   }
 
   const fleet = fleetTripChain(inputs.driverDaysBefore, date, cfg);
@@ -857,9 +916,85 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     }
     if (best) { kept.get(best.driver_key)!.push(s); refilled.push(s); }
   }
+  // ── MAKE ROOM (Build rules): freight that may ride only SOME trucks gets them first ──
+  //
+  // Run on a sample of Chad's own shape — one box, two 53s, "only green on a 53'" on — the
+  // solve put GREEN stops (free to ride a trailer) on the box, the box filled, and six stops
+  // that may ride only the box came back "every truck you picked is full" with both trailers
+  // holding 6–10 skids of room. So before anything is called overflow: for a stop that did
+  // not fit, look at the trucks it MAY ride and move off them freight that is free to ride
+  // another truck with room — the smallest single move that frees enough, else biggest-first
+  // — and only then put it on. Equipment is never bent: every move goes through driverCanServe.
+  let madeRoom = 0;
+  if (buildRules) {
+    const dist = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.hypot((a.lat - b.lat) * 69, (a.lng - b.lng) * 57);
+    const nearTo = (d: AssignDriver, x: AssignStop) => {
+      const load = kept.get(d.driver_key)!;
+      return load.length ? Math.min(...load.map((y) => dist(y, x))) : dist(DEPOT, x);
+    };
+    const pending = spill.filter((x) => !refilled.includes(x));
+    for (const s of pending) {
+      const need = stopSkidEquiv(s, cfg), needLb = Number(s.weight) || 0;
+      const targets = active.filter((d) => driverCanServe(d, s)).sort((a, b) => nearTo(a, s) - nearTo(b, s) || a.driver_key.localeCompare(b.driver_key));
+      for (const d of targets) {
+        const room = roomFor(d);
+        const defEq = need - room.eq, defLb = needLb - room.lb;
+        // Room opened up by an earlier move in this pass — it just goes on, nothing else moves.
+        if (defEq <= 1e-9 && defLb <= 1e-9) {
+          kept.get(d.driver_key)!.push(s); refilled.push(s); madeRoom++;
+          break;
+        }
+        // Freight on d that another truck may carry and has room for, nearest home first.
+        const movable = kept.get(d.driver_key)!.map((f) => {
+          let best: AssignDriver | null = null, bd = Infinity;
+          for (const d2 of active) {
+            if (d2 === d || !driverCanServe(d2, f)) continue;
+            const r2 = roomFor(d2);
+            if (r2.eq + 1e-9 < stopSkidEquiv(f, cfg) || r2.lb + 1e-9 < (Number(f.weight) || 0)) continue;
+            const dd = nearTo(d2, f);
+            if (dd < bd) { bd = dd; best = d2; }
+          }
+          return best ? { f, to: best } : null;
+        }).filter(Boolean) as Array<{ f: AssignStop; to: AssignDriver }>;
+        if (!movable.length) continue;
+        const frees = (m: { f: AssignStop }) => ({ eq: stopSkidEquiv(m.f, cfg), lb: Number(m.f.weight) || 0 });
+        let plan: Array<{ f: AssignStop; to: AssignDriver }> | null = null;
+        const single = movable.filter((m) => frees(m).eq + 1e-9 >= defEq && frees(m).lb + 1e-9 >= defLb)
+          .sort((a, b) => frees(a).eq - frees(b).eq || a.f.id.localeCompare(b.f.id));
+        if (single.length) plan = [single[0]];
+        else {
+          // Biggest first, re-checking each destination's room as the moves stack up.
+          const used = new Map<string, { eq: number; lb: number }>();
+          let gotEq = 0, gotLb = 0;
+          const picks: Array<{ f: AssignStop; to: AssignDriver }> = [];
+          for (const m of [...movable].sort((a, b) => frees(b).eq - frees(a).eq || a.f.id.localeCompare(b.f.id))) {
+            const r2 = roomFor(m.to), u = used.get(m.to.driver_key) || { eq: 0, lb: 0 };
+            const fr = frees(m);
+            if (r2.eq - u.eq + 1e-9 < fr.eq || r2.lb - u.lb + 1e-9 < fr.lb) continue;
+            used.set(m.to.driver_key, { eq: u.eq + fr.eq, lb: u.lb + fr.lb });
+            picks.push(m); gotEq += fr.eq; gotLb += fr.lb;
+            if (gotEq + 1e-9 >= defEq && gotLb + 1e-9 >= defLb) { plan = picks; break; }
+          }
+        }
+        if (!plan) continue;
+        for (const m of plan) {
+          const from = kept.get(d.driver_key)!;
+          from.splice(from.indexOf(m.f), 1);
+          kept.get(m.to.driver_key)!.push(m.f);
+        }
+        kept.get(d.driver_key)!.push(s);
+        refilled.push(s);
+        madeRoom++;
+        break;
+      }
+    }
+  }
   const stillOver = new Set(spill.filter((s) => !refilled.includes(s)).map((s) => s.id));
-  if (refilled.length) {
-    notes.push(`${refilled.length} stop${refilled.length === 1 ? '' : 's'} moved onto trucks that still had room.`);
+  if (madeRoom) {
+    notes.push(`${madeRoom} stop${madeRoom === 1 ? '' : 's'} that may ride only some of your loads got on by moving freight that can ride another one.`);
+  }
+  if (refilled.length - madeRoom > 0) {
+    notes.push(`${refilled.length - madeRoom} stop${refilled.length - madeRoom === 1 ? '' : 's'} moved onto trucks that still had room.`);
   }
   // ── sequence every truck on the ENGINE's learned order (both rule sets) ──
   const seq = new Map<string, { order: AssignStop[]; travelMin: number; mode: 'guided' | 'unguided'; refsUsed: number }>();
@@ -944,13 +1079,24 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       ((closeOf(a) ?? 1e9) - (closeOf(b) ?? 1e9))
       || ((clockOf.get(a.id)?.openMin ?? 0) - (clockOf.get(b.id)?.openMin ?? 0)) || a.id.localeCompare(b.id);
     // Engine order for the stops with no clock; the windowed ones inserted by the Build's rule.
+    // A dock this truck cannot reach before it shuts even going there FIRST is hopeless on
+    // this truck. Left in the insertion it trades minutes with the stops that CAN be made —
+    // measured on the sample board: a 5–7am bakery nobody could reach pushed a 10am school 4
+    // minutes late. So a hopeless stop keeps the engine's place and does not bid for the
+    // front; it is still flagged (advisory) or taken off and re-offered (strict).
+    const hopeless = (pre: { clock: number; lat: number; lng: number }, s: AssignStop) => {
+      const c = closeOf(s);
+      return c != null && pre.clock + travelMinutesForMiles(haversineMiles(pre.lat, pre.lng, s.lat, s.lng), cfg) > c;
+    };
     const orderWithClock = (pre: { clock: number; lat: number; lng: number }, engineOrder: AssignStop[]) =>
       insertByWindow(
-        engineOrder.filter((s) => !clockOf.has(s.id)),
-        engineOrder.filter((s) => clockOf.has(s.id)).sort(edf),
+        engineOrder.filter((s) => !clockOf.has(s.id) || hopeless(pre, s)),
+        engineOrder.filter((s) => clockOf.has(s.id) && !hopeless(pre, s)).sort(edf),
         {
           timeline: tlFor(pre),
-          closeOf,
+          // A hopeless stop has no deadline worth trading for: counting its lateness would make
+          // a reachable stop late to save minutes on one that is late anyway.
+          closeOf: (s) => (hopeless(pre, s) ? null : closeOf(s)),
           added: (prev, w, next) => {
             const from = prev || pre;
             return miles(from, w) + (next ? miles(w, next) - miles(from, next) : 0);
@@ -1001,6 +1147,27 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
           break;
         }
         if (!placed) timeLeftovers.push(s);
+      }
+    }
+    // ROOM A TIME REMOVAL FREED goes back to freight that was left for capacity — otherwise
+    // strict takes a stop off, and the freight behind it is still told "that load is full".
+    for (const s of spill) {
+      if (!stillOver.has(s.id)) continue;
+      const need = stopSkidEquiv(s, cfg), needLb = Number(s.weight) || 0;
+      for (const d of active) {
+        if (!driverCanServe(d, s)) continue;
+        const room = roomFor(d);
+        if (room.eq + 1e-9 < need || room.lb + 1e-9 < needLb) continue;
+        const pre = pres.get(d.driver_key)!, cur = seq.get(d.driver_key)!;
+        const lateBefore = lateness(pre, cur.order).filter((m) => m > 0).length;
+        const cand = orderWithClock(pre, [...cur.order, s]);
+        const lateAfter = lateness(pre, cand).filter((m) => m > 0).length;
+        if (windowMode === 'strict' ? lateAfter > 0 : lateAfter > lateBefore) continue;
+        kept.get(d.driver_key)!.push(s);
+        cur.order = cand;
+        stillOver.delete(s.id);
+        timeMoved++;
+        break;
       }
     }
     for (const d of drivers) {
@@ -1097,7 +1264,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     left.push({
       stopNbr: s.id, businessName: raw?.businessName ?? null, city: raw?.city ?? null,
       skids: s.skids, reason: 'over_capacity',
-      detail: 'every truck you picked is full — this needs another truck',
+      detail: buildRules ? onlyLoadsDetail(s, eligOf.get(s.id)) : 'every truck you picked is full — this needs another truck',
     });
   }
 
@@ -1149,7 +1316,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       notes.push(`${lateAdvisory.length} stop${lateAdvisory.length === 1 ? '' : 's'} can't make ${lateAdvisory.length === 1 ? 'its' : 'their'} time restriction and ${lateAdvisory.length === 1 ? 'is' : 'are'} kept on, because time restrictions are advisory — tick “Respect time restrictions strictly” in step 3 to leave ${lateAdvisory.length === 1 ? 'it' : 'them'} off: ${lateAdvisory.join('; ')}.`);
     }
     if (timeMoved) {
-      notes.push(`${timeMoved} stop${timeMoved === 1 ? '' : 's'} moved to another load that reaches ${timeMoved === 1 ? 'it' : 'them'} in time.`);
+      notes.push(`${timeMoved} stop${timeMoved === 1 ? '' : 's'} placed after the clock check — moved to a load that reaches ${timeMoved === 1 ? 'it' : 'them'} in time, or into room a late stop left behind.`);
     }
   }
 
@@ -1163,7 +1330,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       excluded_held: excludedHeld, no_coords: noCoords, routed,
       pickups, attempts, unknown_freight: unknownFreight, duplicates, no_id: noId, closed_today: closedToday,
     },
-    fit,
+    fit: buildRules ? { ...fit, constrained: constrainedFit } : fit,
     staleness: {
       last_scanned_at: meta?.last_scanned_at ?? null,
       last_load_scan_at: meta?.lastLoadScanAt ?? null,

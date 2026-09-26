@@ -233,3 +233,123 @@ test('CONSERVATION under the Build rules: every leftover is on a truck or listed
   assert.ok(!truckOf(p, 'R1') || truckOf(p, 'R1').truck_class !== 'tractor');
   assert.ok(p.trucks.every((t) => t.truck_class !== 'tractor' || t.stop_count === 0), 'green-only with nothing green: the trailer takes nothing');
 });
+
+// ── THE SAMPLE NIGHT: one box already carrying two stops, two 53s, "only green on a 53′" on ──
+// Built to Chad's shape, and the board that caught four defects in the first cut of this
+// change when the real code was run on it: green freight filled the box and box-only freight
+// was told "every truck you picked is full" with both trailers half empty; the fit line said
+// "it all fits"; a dock nobody could reach made a reachable one late; and room a strict
+// removal freed was never refilled.
+function sampleNight() {
+  const T = {
+    Braselton: [34.109, -83.762], Hoschton: [34.096, -83.761], Jefferson: [34.117, -83.572], Commerce: [34.204, -83.457],
+    Pendergrass: [34.162, -83.678], Talmo: [34.193, -83.718], Gainesville: [34.298, -83.824], Lavonia: [34.436, -83.107],
+    Buford: [34.120, -84.004], Flowery: [34.225, -83.890], Dawsonville: [34.421, -84.119], Cumming: [34.207, -84.140],
+  };
+  let n = 100;
+  const rows = [], marks = {};
+  const add = (name, town, skids, lb, note, planned = false) => {
+    const [la, ln] = T[town]; const k = rows.length;
+    const r = {
+      stopNbr: `00${7182000 + (n += 7)}`, isUnplanned: !planned, isPlanned: planned, businessName: name,
+      addr1: `${100 + k} Main St`, city: town.toUpperCase(), zip: '30500',
+      lat: la + ((k * 37) % 11 - 5) * 0.004, lng: ln + ((k * 53) % 11 - 5) * 0.004,
+      cartons: skids, volume: 0, pallets: skids, weight: lb, timeConstraint: null,
+    };
+    rows.push(r); if (note) marks[r.stopNbr] = note; return r;
+  };
+  const G = { vehicle_eligibility: 'tractor' };
+  const j1 = add('LANIER PAPER CO', 'Buford', 3, 900, null, true);
+  const j2 = add('BUFORD TILE SUPPLY', 'Buford', 2, 700, null, true);
+  add('BRASELTON DC NORTH', 'Braselton', 8, 3480, G); add('BRASELTON DC SOUTH', 'Braselton', 6, 2400, G);
+  add('HOSCHTON COLD STORAGE', 'Hoschton', 4, 1900, G); add('TALMO MILLWORK', 'Talmo', 3, 1100, G);
+  add('PENDERGRASS STEEL', 'Pendergrass', 5, 2600, G);
+  add('JEFFERSON FOODS', 'Jefferson', 4, 1500, { ...G, receiving_hours: { mon: '7AM-11AM' } });
+  add('LAVONIA PLASTICS', 'Lavonia', 6, 3661, G);
+  add('COMMERCE PACKAGING', 'Commerce', 3, 1200, { ...G, equipment_restrictions: ['no_tractor_trailer'] });
+  add('GAINESVILLE POULTRY', 'Gainesville', 5, 2200, G);
+  add('OAKWOOD HARDWARE', 'Flowery', 1, 240); add('HOSCHTON PEDIATRICS', 'Hoschton', 1, 362, { receiving_hours: { mon: '8AM-12PM' } });
+  add('JEFFERSON LIBRARY', 'Jefferson', 1, 333); add('COMMERCE HIGH SCHOOL', 'Commerce', 1, 112, { receiving_hours: { mon: '7AM-10AM' } });
+  add('TALMO ANIMAL CLINIC', 'Talmo', 1, 190); add('CUMMING DENTAL', 'Cumming', 2, 520); add('DAWSONVILLE OUTLET', 'Dawsonville', 2, 800);
+  add('ABERDEEN CHURCH', 'Hoschton', 2, 760, { vehicle_eligibility: 'box_only' });
+  add('SMITH RESIDENCE', 'Buford', 1, 450, { liftgate_required: true });
+  add('LAVONIA BAKERY', 'Lavonia', 1, 300, { receiving_hours: { mon: '5AM-7AM' } });
+  const inp = inputs(notesFor(rows, marks));
+  const trucks = [
+    { ...shell('JOHN'), existing_stop_nbrs: [j1.stopNbr, j2.stopNbr] },
+    shell('TRL A', { tractor: true }), shell('TRL B', { tractor: true }),
+  ];
+  const run = (windowMode) => buildCleanupPlan('davis', '2026-09-28', {
+    cfg: CFG, inputs: inp, liveStops: rows, meta: null, trucks, nowIso: '2026-09-27T23:00:00Z',
+    rules: 'build', tractorOnlyGreen: true, windowMode,
+  });
+  return { rows, run };
+}
+const byName = (p, name) => p.trucks.flatMap((t) => t.stops.map((s) => ({ ...s, truck: t.key }))).find((s) => s.businessName === name);
+
+test('SAMPLE NIGHT · freight free to ride a trailer MAKES ROOM on the box for freight that may only ride the box', () => {
+  const { run } = sampleNight();
+  for (const mode of ['advisory', 'strict']) {
+    const p = run(mode);
+    const john = p.trucks.find((t) => t.key === 'JOHN');
+    const onJohn = john.existing.skid_equiv + john.skid_equiv;
+    const boxOnlyLeft = p.left_unplanned.filter((l) => l.reason === 'over_capacity');
+    // 13 skids may ride only JOHN and JOHN has room for 9, so exactly 4 skids of it stay behind
+    // (3 on strict, which takes the 1-skid bakery off for its clock first) — not more because
+    // green freight took the box's room.
+    assert.equal(onJohn, 14, `${mode}: JOHN carries ${onJohn} of 14`);
+    assert.equal(boxOnlyLeft.reduce((a, l) => a + l.skids, 0), mode === 'strict' ? 3 : 4, `${mode}: ${boxOnlyLeft.map((l) => l.businessName)}`);
+    const green = /BRASELTON DC|HOSCHTON COLD|TALMO MILL|PENDERGRASS|JEFFERSON FOODS|LAVONIA PLASTICS|GAINESVILLE/;
+    assert.ok(!john.stops.some((s) => green.test(s.businessName)), `${mode}: green freight rides the box while box-only freight waits`);
+    for (const t of p.trucks) assert.ok((t.existing?.skid_equiv || 0) + t.skid_equiv <= t.cap.skids + 1e-9, `${t.key} over its profile`);
+  }
+});
+
+test('SAMPLE NIGHT · a stop left for capacity names the load it could ride and WHY the others cannot — never "every truck is full" with trailers half empty', () => {
+  const p = sampleNight().run('advisory');
+  const oak = p.left_unplanned.find((l) => l.businessName === 'OAKWOOD HARDWARE');
+  assert.equal(oak?.reason, 'over_capacity');
+  assert.equal(oak.detail, 'JOHN is the only load it may ride and it is full — it is not marked green, so “only green on a 53′” keeps it off the trailers');
+  const smith = p.left_unplanned.find((l) => l.businessName === 'SMITH RESIDENCE');
+  assert.match(smith.detail, /the others: needs a liftgate$/, 'the trailers are out for their equipment, not the toggle');
+  assert.ok(!p.left_unplanned.some((l) => /every truck you picked is full/.test(l.detail)), 'the trailers had room — that sentence would be false');
+});
+
+test('SAMPLE NIGHT · the fit line does not say "it all fits" when the only truck some freight may ride is too small for it', () => {
+  const p = sampleNight().run('advisory');
+  assert.equal(p.fit.fits, false);
+  assert.deepEqual(p.fit.constrained, { trucks: ['JOHN'], skid_equiv: 13, room: 9 });
+  assert.ok(p.notes.some((n) => /fits in total, but not where the rules allow it: 13 skid-equivalents may ride only JOHN, which has room for 9/.test(n)));
+});
+
+test('SAMPLE NIGHT · a dock nobody can reach does not make a reachable one late (advisory)', () => {
+  const p = sampleNight().run('advisory');
+  const school = byName(p, 'COMMERCE HIGH SCHOOL');
+  assert.equal(school.late, false, `ETA ${school.eta_label} for a 10am close`);
+  const bakery = byName(p, 'LAVONIA BAKERY');
+  assert.equal(bakery.late, true, 'the unreachable one is still flagged, not hidden');
+});
+
+test('SAMPLE NIGHT · STRICT: the unreachable dock comes off, and the room it frees goes to freight that was waiting for it', () => {
+  const p = sampleNight().run('strict');
+  assert.equal(p.left_unplanned.find((l) => l.businessName === 'LAVONIA BAKERY')?.reason, 'time_window');
+  const john = p.trucks.find((t) => t.key === 'JOHN');
+  assert.equal(john.existing.skid_equiv + john.skid_equiv, 14, 'JOHN is filled to his profile, not left a skid short');
+  assert.ok(p.trucks.every((t) => t.stops.every((s) => !s.late)), 'strict: nothing on a truck is late');
+});
+
+test('a dock NOBODY can reach does not bid for the front of the run and make a reachable dock late', () => {
+  // Due north of Buford: H (shuts 7am) is out of reach whatever the order; A sits past it and
+  // shuts at 10:45 — on time only if the truck runs straight to A. Left to trade minutes, the
+  // insertion runs H first (to shave its lateness) and A misses its dock.
+  const rows = [
+    row('H1', { name: 'DAWN DOCK', lat: 35.148, lng: -83.959 }),
+    row('A1', { name: 'LATE MORNING DOCK', lat: 35.448, lng: -83.959 }),
+  ];
+  const inp = inputs(notesFor(rows, { H1: { receiving_hours: { thu: '5AM-7AM' } }, A1: { receiving_hours: { thu: '8AM-10:45AM' } } }));
+  const p = plan(rows, [shell('T1')], { inputs: inp, windowMode: 'advisory' });
+  const a = p.trucks[0].stops.find((s) => s.stopNbr === 'A1');
+  const h = p.trucks[0].stops.find((s) => s.stopNbr === 'H1');
+  assert.equal(a.late, false, `A arrives ${a.eta_label}; order ${p.trucks[0].stops.map((s) => `${s.stopNbr}@${s.eta_label}`)}`);
+  assert.equal(h.late, true, 'the unreachable one is still flagged');
+});
