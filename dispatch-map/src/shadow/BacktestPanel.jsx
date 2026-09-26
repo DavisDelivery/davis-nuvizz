@@ -87,7 +87,7 @@ function useBacktests() {
 
   const queue = useCallback(async (dates, maxUsd, daily) => {
     if (!dates.length) return false;
-    const ceiling = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd * dates.length)} at the model (${usd(maxUsd)} a day — no round starts that could pass it), usually much less.${daily ? ` All backtests together stop at ${usd(daily.usd)} per 24 hours; days past that wait.` : ''}` : '';
+    const ceiling = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd * dates.length)} at the model (${usd(maxUsd)} a day — no round starts that could pass it), usually much less.${daily ? ` Backtests and plans together stop at ${usd(daily.usd)} per 24 hours; days past that wait.` : ''}` : '';
     if (!window.confirm(`Backtest ${dates.length} day${dates.length === 1 ? '' : 's'} with Claude?${ceiling} The worker runs them one at a time, a few minutes each.`)) return false;
     setBusy(true); setMsg(null);
     let queued = false;
@@ -226,7 +226,7 @@ function RouterSettings({ v, onSave }) {
         <button onClick={() => (open ? setOpen(false) : openForm())} className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 min-h-[44px] shrink-0">
           <Settings2 size={13} /> Router settings {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
-        <span className="text-xs text-slate-400">cap rule {s.capRule} · box ≤{int(s.lbsBox)} lb{v.pinned?.lbsBox ? '' : ' (default)'} · tractor ≤{int(s.lbsTractor)} lb{v.pinned?.lbsTractor ? '' : ' (default)'} · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}{v.ceiling ? ` · all backtests ≤${usd(v.ceiling.usd)} per 24 h (${usd(v.ceiling.spent24h)} used)` : ''}</span>
+        <span className="text-xs text-slate-400">cap rule {s.capRule} · box ≤{int(s.lbsBox)} lb{v.pinned?.lbsBox ? '' : ' (default)'} · tractor ≤{int(s.lbsTractor)} lb{v.pinned?.lbsTractor ? '' : ' (default)'} · effort {s.effort} · ≤{s.maxRounds} rounds · ≤{usd(s.maxUsd)}/day{s.costPerMile != null ? ` · ${usd(s.costPerMile)}/mi` : ''}{s.costPerDriveHour != null ? ` · ${usd(s.costPerDriveHour)}/drive-h` : ''}{v.ceiling ? ` · backtests and plans ≤${usd(v.ceiling.usd)} per 24 h (${usd(v.ceiling.spent24h)} used)` : ''}</span>
       </div>
       {note && <p className="text-[11px] text-slate-600">{note}</p>}
       {open && form && (

@@ -174,15 +174,77 @@ CLAUDE_SHADOW_DAY_RESULT.at = AT;
 // reseq measures the same assignment as driven, so it carries the same count.
 CLAUDE_SHADOW_DAY_RESULT.columns = { ...CLAUDE_SHADOW_DAY_RESULT.columns, driven: { ...CLAUDE_SHADOW_DAY_RESULT.columns.driven, overCap: 2 }, reseq: { ...CLAUDE_SHADOW_DAY_RESULT.columns.reseq, overCap: 2 } };
 
+// THE PLANNING AREA (v1.76.0) — its worst rows: the longest route and driver names, roster loads with
+// no driver yet, drivers who already have a load, a preview short on every measure, a done plan with
+// stops left off, a running one and a failed one with a long error.
+const PLAN_DAY = '2026-09-28';
+const rosterLoads = [
+  ...LONG_ROUTES.map((route, i) => ({ route, driver: LONG_DRIVERS[i], loadNbr: `DAVIS0002046${10 + i}`, status: 'Draft', onBoard: i % 3 === 0 ? 14 : 0, cls: i === 5 ? 'tractor' : 'box_truck', cap: i === 5 ? 37 : 17.2 + i, source: i === 5 ? 'learned route cap (tighter than the driver\u2019s 45) 41, held to the tractor ceiling 37' : 'learned driver cap (tighter than the route\u2019s 21.8)' })),
+  { route: '1 SATL', driver: null, loadNbr: 'DAVIS000204633', status: 'Draft', onBoard: 0, cls: null, cap: 14, source: 'box truck profile (no learned cap)' },
+  { route: '2 M', driver: null, loadNbr: 'DAVIS000204636', status: 'Draft', onBoard: 0, cls: null, cap: 14, source: 'box truck profile (no learned cap)' },
+];
+export const CLAUDE_SHADOW_PLAN_OPTIONS = {
+  ok: true, date: PLAN_DAY, nuvizzCalls: 0, hardCaps: true, ceilings: { box_truck: 22, tractor: 37 },
+  boardDays: [{ date: PLAN_DAY, count: 570, unplanned: 500, planned: 70 }, { date: '2026-09-26', count: 46, unplanned: 0 }, { date: '2026-09-25', count: 833, unplanned: 48 }, { date: '2026-09-24', count: 849, unplanned: 55 }, { date: '2026-09-23', count: 906, unplanned: 50 }, { date: '2026-09-22', count: 896, unplanned: 77 }],
+  board: { count: 570, unplanned: 500, planned: 70, scannedAt: '2026-09-26T19:38:56.389Z' },
+  roster: { at: '2026-09-26T19:00:00Z', loads: rosterLoads },
+  drivers: [
+    { driver: 'Christopher Montgomery-Washington', route: LONG_ROUTES[0], cls: 'box_truck', trips: 52, onRoster: LONG_ROUTES[0], cap: 18.1, source: 'learned driver cap' },
+    { driver: 'Alfred Morgan', route: 'MORGAN', cls: null, trips: 31, onRoster: null, cap: 17.3, source: 'learned driver cap' },
+  ],
+  bounds: { lookbackDays: [0, 14], maxLoads: 120, maxStops: 1400 }, scopes: ['unplanned', 'open'],
+};
+export const CLAUDE_SHADOW_PLAN_PREVIEW = {
+  ok: true, nuvizzCalls: 0, boardAt: '2026-09-26T19:38:56.389Z', model: 'claude-opus-5-5', maxUsd: 5,
+  params: { date: PLAN_DAY, lookbackDays: 7, scope: 'unplanned', picks: [] },
+  counts: { onBoard: 618, carried: 49, cancelled: 1, pickups: 1, finished: 3, planned: 45, kept: 28, keptNoLocation: 0, noLocation: 2, toPlan: 544, byDay: { [PLAN_DAY]: 499, '2026-09-25': 44, '2026-09-24': 1 } },
+  carry: { basis: 'pool', added: 49, pruned: 1 },
+  capacity: { stops: 572, kept: 28, spots: 872.3, lbs: 276563, capSpots: 311, capLbs: 250000, loads: 13, noTractorStops: 15, noTractorSpots: 19.9, boxCapSpots: 117.4, serviceMin: 8580, dayMin: 7800, short: { spots: 561.3, lbs: 26563, noTractor: 0, time: 780 } },
+  loads: rosterLoads.map((l, i) => ({ id: `L${i + 1}`, route: l.route, driver: l.driver || '(no driver)', cls: l.cls || 'box_truck', clsSource: 'roster', cap: l.cap, capSource: l.source, capNote: i === 5 ? 'learned 41 held to the tractor ceiling 37' : null, maxLbs: l.cls === 'tractor' ? 30000 : 10000, maxMin: 600 })),
+  noLocation: [], noLocationCount: 2, capMode: 'hard', ceilings: { box_truck: 22, tractor: 37 }, lbsLimits: { box_truck: 10000, tractor: 30000 },
+  approximations: ['The stops are the 2026-09-28 board as the last scan left it — read from Firestore, not NuVizz — through the Map\u2019s own filters.', 'Delivery windows are not a constraint.'],
+};
+const planLoads = CLAUDE_SHADOW_DAY_RESULT.loads.map((l, i) => ({ ...l, driven: null, reseq: null, maxLbs: l.cls === 'tractor' ? 30000 : 10000, maxMin: 600, kept: i === 0 ? 3 : 0, claude: l.claude ? { ...l.claude, weight: 9840, driverMin: 598 } : null }));
+export const CLAUDE_SHADOW_PLAN_RESULT = {
+  tenant: 'davis', kind: 'plan', date: PLAN_DAY, jobId: `pl__${PLAN_DAY}__done`, at: AT, submitted: true, planFrom: 'submitted', usd: 3.4127, rounds: 6,
+  columns: { claude: { stops: 39, trucks: 7, miles: 1022.4, driveMin: 1811, spots: 97.5 } },
+  loads: planLoads,
+  unused: [{ id: 'L8', route: LONG_ROUTES[7], driver: LONG_DRIVERS[7] }],
+  unplanned: Array.from({ length: 6 }, (_, i) => ({ stop: 7 + i, n: `DAVIS00${203706 + i}`, name: i === 0 ? 'NORTH GEORGIA BUILDING SUPPLY AND MILLWORK COMPANY' : `CUSTOMER NUMBER ${7 + i}`, city: 'LAWRENCEVILLE', day: i === 1 ? '2026-09-25' : PLAN_DAY, spots: 2.5, lbs: 1840, reason: 'every picked box truck is at its skid cap and the tractors cannot take a no-tractor stop' })),
+  approximations: CLAUDE_SHADOW_PLAN_PREVIEW.approximations, nuvizzCalls: 0,
+};
+export const CLAUDE_SHADOW_PLAN_MAP = {
+  ...CLAUDE_SHADOW_MAP, kind: 'plan', planId: `pl__${PLAN_DAY}__done`,
+  stops: CLAUDE_SHADOW_MAP.stops.map((s, i) => ({ ...s, day: i === 3 ? '2026-09-25' : PLAN_DAY })),
+  loads: CLAUDE_SHADOW_MAP.loads.map((l) => ({ ...l, cols: { driven: null, reseq: null, claude: l.cols.claude } })),
+  plans: { driven: {}, reseq: {}, claude: CLAUDE_SHADOW_MAP.plans.claude },
+};
+export const CLAUDE_SHADOW_PLANS = {
+  ok: true, enabled: true, model: 'claude-opus-5-5', refused: null, nuvizzCalls: 0,
+  settings: CLAUDE_SHADOW_BACKTESTS.settings, ceiling: { usd: 25, spent24h: 24.87, holding: true }, spend: { usd: 41.2, runs: 12 },
+  jobs: [
+    { _id: `pl__${PLAN_DAY}__run`, kind: 'plan', date: PLAN_DAY, status: 'running', createdAt: '2026-09-26T23:10:00Z', by: 'dispatcher', rounds: 2, usd: 0.8123, params: { date: PLAN_DAY, lookbackDays: 7, scope: 'unplanned', picks: rosterLoads.map((l) => ({ kind: 'roster', route: l.route })) } },
+    { _id: `pl__${PLAN_DAY}__done`, kind: 'plan', date: PLAN_DAY, status: 'done', createdAt: '2026-09-26T22:10:00Z', by: 'dispatcher', rounds: 6, usd: 3.4127, headline: { placed: 39, unplanned: 6, trucks: 7, miles: 1022.4, driveMin: 1811 }, params: { date: PLAN_DAY, lookbackDays: 14, scope: 'open', picks: rosterLoads.slice(0, 8).map((l) => ({ kind: 'roster', route: l.route })) } },
+    { _id: `pl__${PLAN_DAY}__f`, kind: 'plan', date: PLAN_DAY, status: 'failed', createdAt: '2026-09-26T21:00:00Z', by: 'dispatcher', rounds: 8, usd: 5, error: 'no plan without a hard-rule violation: max-rounds — the last evaluation still had GAINESVILLE / DAWSONVILLE 2 over its 22-spot cap', params: { date: PLAN_DAY, lookbackDays: 0, scope: 'unplanned', picks: [] } },
+  ],
+};
+
 /**
  * What a layout guard answers for a claude-shadow request: the backtest view, one day's result, one
- * day's map, or the status body. POSTs are told apart by their action, the way the endpoint does.
+ * day's map, the planning area's reads, or the status body. POSTs are told apart by their action, the
+ * way the endpoint does.
  */
 export function claudeShadowFixtureFor(url, body = null) {
   let action = null;
   try { action = body ? JSON.parse(body)?.action ?? null : null; } catch { action = null; }
   if (action === 'backtest-result') return { ok: true, result: CLAUDE_SHADOW_DAY_RESULT };
   if (action === 'backtest-map') return { ok: true, map: CLAUDE_SHADOW_MAP, nuvizzCalls: 0 };
+  if (action === 'plan-options') return CLAUDE_SHADOW_PLAN_OPTIONS;
+  if (action === 'plan-preview') return CLAUDE_SHADOW_PLAN_PREVIEW;
+  if (action === 'plan') return { ok: true, jobId: `pl__${PLAN_DAY}__new`, stops: 544, loads: 9, capacity: CLAUDE_SHADOW_PLAN_PREVIEW.capacity, maxUsd: 5, model: 'claude-opus-5-5', nuvizzCalls: 0 };
+  if (action === 'plan-result') return { ok: true, result: CLAUDE_SHADOW_PLAN_RESULT };
+  if (action === 'plan-map') return { ok: true, map: CLAUDE_SHADOW_PLAN_MAP, nuvizzCalls: 0 };
+  if (String(url).includes('view=plans')) return CLAUDE_SHADOW_PLANS;
   return String(url).includes('view=backtests') ? CLAUDE_SHADOW_BACKTESTS : CLAUDE_SHADOW_STATUS;
 }
 

@@ -16,6 +16,8 @@
 //   claude_shadow_jobs/{id}/rounds/r{nn}      every round: the model's content verbatim, the reply
 //   claude_shadow_jobs/{id}/claims/r{n}a{k}   create-only round claims (one payer per round)
 //   claude_shadow_backtests/davis__{D}        the latest finished comparison for day D
+//   claude_shadow_plans/{job id}              v1.76.0: a finished PLAN (lib/claude-shadow/plan.mts) —
+//                                             the same queue, worker, Stop and 24-hour ceiling run it
 //   claude_shadow_settings/davis__router      the router's settings (cap rule, cost rates, limits)
 import { getDoc, listDocs, isFirestoreEnabled } from '../firestore.mts';
 import { shadowSet, shadowPatch, shadowCreate } from './store.mts';
@@ -31,6 +33,7 @@ import {
   buildBacktestProblem, btLoopProblem, compareBacktest, backtestMapPayload, PROFILE_MAX_LBS, type BtProblem, type CapRule,
 } from './backtest-core.mts';
 import { restoreState, runRounds, type LoopState, type LoopSettings, type RoundRecord } from './plan-loop.mts';
+import { finishPlan } from './plan.mts';
 import { effectiveEngineConfig, engineConfigPath } from '../routing-engine-config.mts';
 import { DEPOT } from '../routing-types.mts';
 
@@ -247,11 +250,14 @@ export async function readBacktestDay(date: string, rs: RouterSettings, deps: Bt
 
 // ── the queue ───────────────────────────────────────────────────────────────
 
-const JOB_MASK = ['kind', 'date', 'status', 'cancelRequested', 'transientErrors', 'createdAt', 'by', 'startedAt', 'finishedAt', 'updatedAt', 'rounds', 'usd', 'ended', 'endNote', 'error', 'settings', 'stats', 'headline'];
+const JOB_MASK = ['kind', 'date', 'params', 'status', 'cancelRequested', 'transientErrors', 'createdAt', 'by', 'startedAt', 'finishedAt', 'updatedAt', 'rounds', 'usd', 'ended', 'endNote', 'error', 'settings', 'stats', 'headline'];
 
-export async function listJobs(deps: BtDeps = LIVE): Promise<any[]> {
+/** v1.76.0: the queue runs two kinds — a backtest of a sealed day, and a PLAN of a board day. */
+export const JOB_KINDS = ['backtest', 'plan'] as const;
+
+export async function listJobs(deps: BtDeps = LIVE, kinds: readonly string[] = ['backtest']): Promise<any[]> {
   const docs = await deps.listDocs(BT_JOBS, { mask: JOB_MASK });
-  return (docs || []).filter((d: any) => d?.kind === 'backtest').sort((a: any, b: any) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  return (docs || []).filter((d: any) => kinds.includes(d?.kind)).sort((a: any, b: any) => String(a.createdAt).localeCompare(String(b.createdAt)));
 }
 
 /** Queue one job per date. A date already queued or running is not queued twice. */
@@ -284,7 +290,7 @@ export async function enqueueBacktests(dates: any, by: string | null, deps: BtDe
 }
 
 export async function cancelJob(id: string, by: string | null, deps: BtDeps = LIVE) {
-  if (typeof id !== 'string' || !/^bt__[\w\-]+$/.test(id)) return { status: 400, body: { ok: false, error: 'bad job id' } };
+  if (typeof id !== 'string' || !/^(bt|pl)__[\w\-]+$/.test(id)) return { status: 400, body: { ok: false, error: 'bad job id' } };
   const job = await deps.getDoc(jobPath(id));
   if (!job) return { status: 404, body: { ok: false, error: 'no such job' } };
   if (!ACTIVE.has(job.status)) return { status: 409, body: { ok: false, error: `the job is already ${job.status}` } };
@@ -348,7 +354,8 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
   const t0 = deps.now().getTime();
   const refused = routerRefusal(deps.env, deps.firestoreOn());
   if (refused) return { ok: true, idle: true, refused };
-  const jobs = await listJobs(deps);
+  // Backtests and plans share one queue (oldest first), one worker and one 24-hour ceiling.
+  const jobs = await listJobs(deps, JOB_KINDS);
   const live = jobs.filter((j) => !j.cancelRequested);
   const job = live.find((j) => j.status === 'running') || live.find((j) => j.status === 'queued');
   if (!job) return { ok: true, idle: true };
@@ -370,6 +377,16 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
   try {
     // THE PROBLEM IS BUILT ONCE and stored: a resumed run must show Claude the same day it saw.
     let stored = await deps.getDoc(`${jobPath(id)}/data/problem`);
+    // A PLAN is built when it is queued (lib/claude-shadow/plan-jobs.mts), so it runs on the board
+    // exactly as the dispatcher saw it; its problem is on file before the job is. One without it
+    // cannot be rebuilt here without silently planning a different board, so it is failed, plainly.
+    if (!stored && job.kind === 'plan') {
+      await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at(), updatedAt: at(), error: 'the board this plan was queued on is not on file — queue it again' });
+      return { ok: true, job: id, failed: 'no stored plan' };
+    }
+    if (stored && job.status === 'queued') {
+      await deps.shadowPatch(jobPath(id), { status: 'running', startedAt: at(), updatedAt: at() });
+    }
     if (!stored) {
       owned = true;
       const rs = routerSettingsFrom({ ...(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null)), ...(job.settings || {}) });
@@ -436,6 +453,10 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
       await deps.shadowPatch(jobPath(id), { endNote: state.endNote, updatedAt: at() });
     }
     if (!state.ended) return { ok: true, job: id, rounds: state.rounds.length, usd: state.usd, continuing: true };
+    if (job.kind === 'plan') {
+      const rsNow = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null));
+      return await finishPlan(id, job, problem, cfg, state, rsNow, deps, () => wasCancelled(id, deps), jobPath);
+    }
     return await finishJob(id, job, problem, cfg, state, deps);
   } catch (e: any) {
     const msg = String(e?.message || e).slice(0, 500);
@@ -489,8 +510,9 @@ export async function finishJob(id: string, job: any, problem: BtProblem, cfg: a
   return { ok: true, job: id, done: true, headline };
 }
 
-/** The ceiling as the panel shows it — and whether the worker is holding queued days on it (same test). */
-function ceilingView(jobs: any[], rs: any, deps: BtDeps) {
+/** The ceiling as the panel shows it — and whether the worker is holding queued days on it (same test).
+ *  `jobs` must be EVERY kind: backtests and plans spend against the one ceiling. */
+export function ceilingView(jobs: any[], rs: any, deps: BtDeps) {
   const usd = dailyCeilingUsd(deps.env);
   const spent24h = spentSince(jobs, deps.now().getTime() - DAY_MS);
   const rate = PRICES_PER_MTOK[shadowModel(deps.env).model]?.output ?? Infinity;
@@ -499,21 +521,23 @@ function ceilingView(jobs: any[], rs: any, deps: BtDeps) {
 
 /** The Backtest panel's read: sealed days, the latest result per day, the jobs, the settings. */
 export async function backtestView(deps: BtDeps = LIVE) {
-  const [manifests, results, jobs, rsDoc] = await Promise.all([
+  const [manifests, results, every, rsDoc] = await Promise.all([
     deps.listDocs('history_days', { mask: HISTORY_MANIFEST_MASK }),
     deps.listDocs(BT_RESULTS, { mask: ['date', 'at', 'jobId', 'submitted', 'usd', 'rounds', 'ended', 'columns', 'vsDriven', 'sequencingOnly', 'assignmentOnly', 'agreement', 'costs', 'stats', 'model'] }),
-    listJobs(deps),
+    listJobs(deps, JOB_KINDS),
     deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null),
   ]);
   const byDate = new Map((results || []).map((r: any) => [r.date, r]));
   const days = sealedDaysFrom(manifests).map((s) => s.date).sort().reverse();
+  // The ceiling counts plans too (one 24-hour ceiling); the list and the spend are backtests'.
+  const jobs = every.filter((j: any) => j.kind === 'backtest');
   return {
     ok: true,
     days: days.map((d) => ({ date: d, result: byDate.get(d) || null })),
     jobs: jobs.slice(-60).reverse(),
     // EVERY run's spend — failed, stopped and re-run days included — not just each day's latest result.
     spend: { usd: Math.round(jobs.reduce((a: number, j: any) => a + (typeof j.usd === 'number' ? j.usd : 0), 0) * 100) / 100, runs: jobs.length },
-    ceiling: ceilingView(jobs, routerSettingsFrom(rsDoc), deps),
+    ceiling: ceilingView(every, routerSettingsFrom(rsDoc), deps),
     settings: routerSettingsFrom(rsDoc), pinned: routerPinned(rsDoc), hardCaps: hardCapsEnabled(deps.env), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
     refused: routerRefusal(deps.env, deps.firestoreOn()),
     enabled: claudeShadowEnabled(deps.env),
