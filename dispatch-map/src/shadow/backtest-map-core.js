@@ -14,9 +14,61 @@
 export const SELECT_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
 export const MAX_SELECTED = SELECT_COLORS.length;
 export const MUTED = '#7b8190';
+
+// v1.74.2 — EVERY TRUCK HAS A COLOUR OF ITS OWN UNTIL YOU PICK SOME. Chad, 2026-09-26, on the map at
+// first open: "very hard to see whats what here." Sixty grey trucks over the whole state read as one
+// cloud. So with nothing picked, each truck takes a colour from a wheel of 24 (12 hues at two
+// depths), handed out in the loads' order with a stride of 11 (coprime with 24, so neighbours in the
+// list sit far apart on the wheel and every colour is used before one repeats). The wheel DOES repeat
+// past 24 trucks — two far-apart trucks can share a colour, which is why every stop's title still
+// names its truck and why picking trucks (the eight validated colours, everything else grey) remains
+// the way to follow one. The same truck is the same colour on both maps.
+const hsl = (h, s, l) => {
+  const a = (s * Math.min(l, 1 - l)) / 100;
+  const f = (n) => { const k = (n + h / 30) % 12; const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); return Math.round(255 * c).toString(16).padStart(2, '0'); };
+  return `#${f(0)}${f(8)}${f(4)}`;
+};
+export const TRUCK_WHEEL = Array.from({ length: 24 }, (_, i) => hsl((i % 12) * 30, 72, i < 12 ? 0.42 : 0.30));
+const WHEEL_STRIDE = 11;
+/** The colour a truck wears when nothing is picked: fixed by its place in the day's loads. */
+export function truckColor(m, loadId) {
+  const i = (m?.loads || []).findIndex((l) => l.id === loadId);
+  if (i < 0) return MUTED;
+  return TRUCK_WHEEL[(i * WHEEL_STRIDE) % TRUCK_WHEEL.length];
+}
+/** The colour a truck is drawn in: its pick colour when trucks are picked (grey if it is not one of
+ *  them), else its own wheel colour. */
+export function colorFor(m, sel, loadId) {
+  if (sel && sel.size) { const slot = sel.get(loadId); return slot === undefined ? MUTED : SELECT_COLORS[slot]; }
+  return truckColor(m, loadId);
+}
 export const PLAN_LABEL = { driven: 'Dispatch — as driven', claude: 'Claude' };
 // How a dispatch truck's line got its order, when it was NOT the delivery stamps.
 export const ORDER_WORD = { planned: 'planned order', 'stop number': 'stop-number order' };
+
+// v1.74.2 — THE MAP'S FILTERS, the same rows the dispatch Map's Filters menu carries where they mean
+// something here. Chad, 2026-09-26: "need satellite view and my filters." Shiplify data is not among
+// them: the shadow screen may reach only its own endpoint, and that overlay lives elsewhere.
+export const MAP_FILTER_ROWS = [
+  ['satellite', 'Satellite view'],
+  ['hideTerminal', 'Hide terminal marker'],
+  ['unplannedOnly', 'Unplanned only'],
+  ['hideLabels', 'Hide place labels'],
+  ['showRoutes', 'Show routes'],
+  ['hideStemOut', 'Hide stem-out line'],
+];
+export const MAP_FILTER_DEFAULTS = { satellite: false, hideTerminal: false, unplannedOnly: false, hideLabels: false, showRoutes: false, hideStemOut: false };
+export const MAP_FILTERS_KEY = 'claudeShadow.mapFilters';
+/** Only the known keys, only booleans; anything else is the default. */
+export function mapFiltersFrom(raw) {
+  const out = { ...MAP_FILTER_DEFAULTS };
+  if (raw && typeof raw === 'object') for (const k of Object.keys(MAP_FILTER_DEFAULTS)) if (typeof raw[k] === 'boolean') out[k] = raw[k];
+  return out;
+}
+/** Google's map type for the filters: hybrid is satellite WITH labels, satellite is without. */
+export function mapTypeFor(f) {
+  return f.satellite ? (f.hideLabels ? 'satellite' : 'hybrid') : 'roadmap';
+}
 
 /** Stop id → Claude's reason, for the stops Claude left unplanned. */
 export function unplannedOf(m) {
@@ -138,17 +190,19 @@ const stopLabel = (s) => `${s.name || s.n} · ${s.city || ''}`.replace(/ · $/, 
  * and the terminal. On Claude's plan, a stop Claude left unplanned is still drawn — kind
  * 'unplanned', with the reason — so the day's freight never silently thins out. [lng, lat].
  */
-export function planGeo(m, plan) {
+export function planGeo(m, plan, opts = {}) {
   const stops = new Map((m?.stops || []).map((s) => [s.id, s]));
   const loads = new Map((m?.loads || []).map((l) => [l.id, l]));
   const depot = m?.depot;
+  // v1.74.2: the stem-out leg (terminal → first stop) can be left off, as the Map's own filter does.
+  const stem = opts.stemOut !== false;
   const features = [];
   for (const [loadId, ids] of Object.entries(m?.plans?.[plan] || {})) {
     const pts = ids.map((id) => stops.get(Number(id))).filter(Boolean);
     if (!pts.length) continue;
     const l = loads.get(loadId);
     const odd = plan === 'driven' && l?.orderSource && l.orderSource !== 'driven' ? `, ${ORDER_WORD[l.orderSource] || l.orderSource}` : '';
-    const line = [...(depot ? [[depot.lng, depot.lat]] : []), ...pts.map((s) => [s.lng, s.lat])];
+    const line = [...(depot && stem ? [[depot.lng, depot.lat]] : []), ...pts.map((s) => [s.lng, s.lat])];
     if (line.length > 1) {
       features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: line }, properties: { kind: 'casing', loadId } });
       features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: line }, properties: { kind: 'route', loadId } });
@@ -173,6 +227,26 @@ export function planGeo(m, plan) {
   }
   if (depot) features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [depot.lng, depot.lat] }, properties: { kind: 'depot' } });
   return { type: 'FeatureCollection', features };
+}
+
+/**
+ * v1.74.2 — WHERE THE DAY ACTUALLY IS. Framing every stop puts Dalton, Macon and Athens on the
+ * edges and the metro, where 90-odd percent of the stops are, in a smear at the centre. The opening
+ * view holds the middle 94% of the stops on each axis (3% trimmed at each end) and the terminal, and
+ * says how many stops lie beyond it. Zooming out still shows them all.
+ */
+export function coreBounds(m, tail = 0.03) {
+  const pts = (m?.stops || []).filter((p) => Number.isFinite(p?.lat) && Number.isFinite(p?.lng));
+  if (!pts.length) return { bounds: boundsOf(m), outside: 0 };
+  const q = (vals, t) => { const s = vals.slice().sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.max(0, Math.floor(t * (s.length - 1))))]; };
+  const lats = pts.map((p) => p.lat), lngs = pts.map((p) => p.lng);
+  let south = q(lats, tail), north = q(lats, 1 - tail), west = q(lngs, tail), east = q(lngs, 1 - tail);
+  if (m?.depot && Number.isFinite(m.depot.lat) && Number.isFinite(m.depot.lng)) {
+    south = Math.min(south, m.depot.lat); north = Math.max(north, m.depot.lat);
+    west = Math.min(west, m.depot.lng); east = Math.max(east, m.depot.lng);
+  }
+  const outside = pts.filter((p) => p.lat < south || p.lat > north || p.lng < west || p.lng > east).length;
+  return { bounds: { north, south, east, west }, outside };
 }
 
 /** The box that holds every stop and the terminal. */
@@ -454,6 +528,46 @@ export function focusPicks(cmp) {
   let slot = 1;
   for (const p of cmp.partners) { if (slot >= MAX_SELECTED) break; next.set(p.loadId, slot++); }
   return { next, left: Math.max(0, cmp.partners.length - (MAX_SELECTED - 1)) };
+}
+
+// ── v1.74.3: ONE ROUTE AT A TIME ───────────────────────────────────────────────────────────────────
+// Chad, 2026-09-26: "I want map to be more interactive where I click on a route it shows me the route
+// and stops on it" / "too hard to understand what is what what dispatch did vs claude." Opening a
+// route (a click on any of its stops or its line, on either map, or its row) shows THAT route on both
+// maps with everything else faded, a plain title over each map, and the stops that changed hands
+// ringed: red on dispatch's map for a stop Claude took off the truck, green on Claude's for one it
+// brought on. The trucks it traded with come on only when asked for.
+
+/** For an opened route: stop id → its standing on each side (kept / moved / unplanned / missing on
+ *  dispatch's; kept / added on Claude's). Empty maps when the route is unknown. */
+export function focusStatus(m, loadId) {
+  const cmp = loadId ? routeCompare(m, loadId) : null;
+  if (!cmp) return { driven: new Map(), claude: new Map() };
+  return {
+    driven: new Map(cmp.dispatch.map((x) => [x.stop.id, x.status.kind])),
+    claude: new Map(cmp.claude.map((x) => [x.stop.id, x.status.kind])),
+  };
+}
+
+/** The plain title over one map for an opened route: who, and that side's stops, spots, pounds and
+ *  miles — or, for a truck Claude parked, that it was parked. Null when the route is unknown. */
+export function paneTitle(m, loadId, plan) {
+  const cmp = loadId ? routeCompare(m, loadId) : null;
+  const L = cmp?.load;
+  if (!L) return null;
+  const who = `${L.route} · ${L.driver}${L.cls ? ` · ${L.cls === 'tractor' ? 'tractor' : 'box truck'}` : ''}`;
+  if (plan === 'claude' && cmp.change === 'parked') return { who, line: 'Claude parked this truck: its stops ride other trucks.' };
+  if (plan === 'driven' && cmp.change === 'unmapped') return { who, line: 'None of your stops on this truck had a map point.' };
+  const f = plan === 'claude' ? cmp.freight.claude : cmp.freight.driven;
+  const mt = cmp.metrics?.[plan] || null;
+  const spots = numOrNull(f?.spots);
+  const parts = [
+    f ? `${f.orders} stop${f.orders === 1 ? '' : 's'}` : null,
+    spots === null ? null : `${Number.isInteger(spots) ? spots : spots.toFixed(1)} spots`,
+    f ? `${fmtInt(f.lbs)} lb` : null,
+    mt && numOrNull(mt.miles) !== null ? `${mt.miles} mi` : null,
+  ].filter(Boolean);
+  return { who, line: parts.join(' · ') };
 }
 
 export function fmtInt(n) { const v = numOrNull(n); return v === null ? '—' : Math.round(v).toLocaleString('en-US'); }

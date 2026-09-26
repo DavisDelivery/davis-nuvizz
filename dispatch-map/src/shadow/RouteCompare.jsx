@@ -17,7 +17,7 @@
 // times, receiving hours) is said plainly instead of invented.
 import React, { useState } from 'react';
 import { ChevronLeft, ChevronRight, X, Search, ArrowRight, ArrowLeft, AlertTriangle, Info } from 'lucide-react';
-import { SELECT_COLORS, MUTED, ORDER_WORD, NEAR, fmtInt, fmtHm, numOrNull } from './backtest-map-core.js';
+import { colorFor, ORDER_WORD, NEAR, fmtInt, fmtHm, numOrNull } from './backtest-map-core.js';
 
 // Missing is never zero: numOrNull turns null / undefined / '' into "no number", so it prints '—'.
 const one = (v) => { const n = numOrNull(v); return n === null ? '—' : Number.isInteger(n) ? n.toLocaleString('en-US') : n.toFixed(1); };
@@ -28,14 +28,15 @@ const CHANGE_TEXT = { parked: 'parked', traded: 'traded', filled: 'filled', reor
 const yourOrder = (L) => (L?.orderSource && L.orderSource !== 'driven' ? `in ${ORDER_WORD[L.orderSource] || L.orderSource}` : 'as driven');
 const SORTS = [['triage', 'Needs a look first'], ['route', 'Route name'], ['miles', 'Most miles saved'], ['traded', 'Most stops traded']];
 
-function Dot({ id, sel, onToggle, label }) {
-  const slot = sel.get(id);
-  const on = slot !== undefined;
+// v1.74.2: the dot wears the truck's own colour (its wheel colour, or its pick colour), so a row can
+// be found on the map before anything is picked; with picks, unpicked rows dim to grey.
+function Dot({ id, sel, onToggle, label, m }) {
+  const on = sel.get(id) !== undefined;
   return (
     <button onClick={(e) => { e.stopPropagation(); onToggle(id); }} aria-pressed={on} aria-label={`${on ? 'Clear' : 'Colour'} ${label} on the maps`}
       title={on ? 'Colour on the maps — tap to clear' : 'Colour this truck on the maps'}
       className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center shrink-0 rounded-lg hover:bg-slate-100">
-      <span className="inline-block w-3.5 h-3.5 rounded-full border border-white" style={{ background: on ? SELECT_COLORS[slot] : MUTED, opacity: on ? 1 : 0.5, boxShadow: '0 0 0 1px rgba(0,0,0,0.15)' }} />
+      <span className="inline-block w-3.5 h-3.5 rounded-full border border-white" style={{ background: colorFor(m, sel, id), opacity: on || !sel.size ? 1 : 0.5, boxShadow: '0 0 0 1px rgba(0,0,0,0.15)' }} />
     </button>
   );
 }
@@ -91,7 +92,7 @@ function RoutesHeader({ count, total, q, setQ, sortBy, setSortBy, phone }) {
 }
 
 /** Desktop: every route in one table, dispatch's number → Claude's in each cell. */
-export function RoutesTable({ rows, total, sel, onToggle, onOpen, focus, q, setQ, sortBy, setSortBy, serviceMin = 15 }) {
+export function RoutesTable({ rows, total, sel, onToggle, onOpen, focus, q, setQ, sortBy, setSortBy, serviceMin = 15, m = null }) {
   const shown = rows;
   return (
     <section className="space-y-2" aria-label="Routes">
@@ -116,7 +117,7 @@ export function RoutesTable({ rows, total, sel, onToggle, onOpen, focus, q, setQ
           <tbody>
             {shown.map((r) => (
               <tr key={r.id} onClick={() => onOpen(r.id)} className={`border-t border-slate-100 cursor-pointer align-middle ${focus === r.id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}>
-                <td className="pl-1"><Dot id={r.id} sel={sel} onToggle={onToggle} label={r.route} /></td>
+                <td className="pl-1"><Dot id={r.id} sel={sel} onToggle={onToggle} label={r.route} m={m} /></td>
                 <td className="py-1 pr-3">
                   <button onClick={(e) => { e.stopPropagation(); onOpen(r.id); }} className="text-left min-h-[44px]">
                     <span className="font-semibold text-slate-800 block">{r.route}</span>
@@ -144,14 +145,14 @@ export function RoutesTable({ rows, total, sel, onToggle, onOpen, focus, q, setQ
 }
 
 /** Phone: one card per route, the same numbers stacked; a tap opens it. */
-export function RouteCards({ rows, total, sel, onToggle, onOpen, focus, q, setQ, sortBy, setSortBy, serviceMin = 15 }) {
+export function RouteCards({ rows, total, sel, onToggle, onOpen, focus, q, setQ, sortBy, setSortBy, serviceMin = 15, m = null }) {
   const shown = rows;
   return (
     <section className="space-y-2" aria-label="Routes">
       <RoutesHeader count={rows.length} total={total} q={q} setQ={setQ} sortBy={sortBy} setSortBy={setSortBy} phone />
       {shown.map((r) => (
         <div key={r.id} className={`rounded-lg border ${focus === r.id ? 'border-indigo-300 bg-indigo-50' : 'bg-white'} flex items-start`}>
-          <Dot id={r.id} sel={sel} onToggle={onToggle} label={r.route} />
+          <Dot id={r.id} sel={sel} onToggle={onToggle} label={r.route} m={m} />
           <button onClick={() => onOpen(r.id)} className="flex-1 min-w-0 text-left py-2 pr-2 min-h-[44px] space-y-1">
             <span className="flex items-center justify-between gap-2">
               <span className="min-w-0"><span className="text-xs font-semibold text-slate-800">{r.route}</span> <span className="text-[11px] text-slate-500">{r.driver} · {r.cls === 'tractor' ? 'tractor' : 'box'}</span></span>
@@ -216,16 +217,16 @@ function StatRows({ cmp, phone }) {
   );
 }
 
-function TradeList({ title, groups, sel, onOpen, dir }) {
+function TradeList({ title, groups, sel, onOpen, dir, m }) {
   if (!groups.length) return null;
   return (
     <div className="space-y-1">
       <div className="text-xs font-semibold text-slate-700">{title}</div>
       {groups.map((g) => {
-        const slot = g.ref ? sel.get(g.ref.loadId) : undefined;
+        const dim = !g.ref || (sel.size > 0 && sel.get(g.ref.loadId) === undefined);
         return (
           <div key={g.key} className="rounded-lg border bg-white px-2 py-1 text-[11px] flex items-start gap-2">
-            <span className="inline-block w-2.5 h-2.5 rounded-full mt-1 shrink-0" style={{ background: slot !== undefined ? SELECT_COLORS[slot] : MUTED, opacity: slot !== undefined ? 1 : 0.5 }} />
+            <span className="inline-block w-2.5 h-2.5 rounded-full mt-1 shrink-0" style={{ background: g.ref ? colorFor(m, sel, g.ref.loadId) : '#7b8190', opacity: dim ? 0.5 : 1 }} />
             <span className="flex-1 min-w-0">
               <span className="font-semibold text-slate-800">{g.label}</span> <span className="text-slate-500">({g.items.length})</span>
               <span className="block text-slate-600">{g.items.map((x) => `${x.stop.name || x.stop.n} #${x.stop.n}${x.status.reason ? ` — ${x.status.reason}` : ''}`).join(' · ')}</span>
@@ -249,7 +250,7 @@ const groupBy = (items, refOf, labelOf) => {
   return [...m.values()].sort((a, b) => b.items.length - a.items.length);
 };
 
-function StopList({ title, items, side, sel, onOpen }) {
+function StopList({ title, items, side, sel, onOpen, m }) {
   const statusText = (x) => {
     const s = x.status;
     // otherSeq is the stop's place on the OTHER side: Claude's on your list, yours on Claude's.
@@ -280,7 +281,7 @@ function StopList({ title, items, side, sel, onOpen }) {
             <tbody>
               {items.map((x) => {
                 const st = statusText(x);
-                const slot = st.ref ? sel.get(st.ref.loadId) : undefined;
+                const refColor = st.ref ? colorFor(m, sel, st.ref.loadId) : '#7b8190';
                 return (
                   <tr key={x.stop.id} className={`border-t border-slate-100 align-top ${x.status.kind === 'kept' ? '' : side === 'claude' ? 'bg-indigo-50/40' : 'bg-amber-50/40'}`}>
                     <td className="py-1 pl-2 pr-1 tabular-nums font-semibold text-slate-700">{x.seq}</td>
@@ -292,7 +293,7 @@ function StopList({ title, items, side, sel, onOpen }) {
                     <td className="py-1 pr-2 text-right tabular-nums">{x.elapsedMin != null ? fmtHm(x.elapsedMin) : '—'}</td>
                     <td className="py-1 pr-2">
                       {st.ref
-                        ? <button onClick={() => onOpen(st.ref.loadId)} className="inline-flex items-center gap-1 text-indigo-700 font-semibold min-h-[44px] text-left"><span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: slot !== undefined ? SELECT_COLORS[slot] : MUTED }} />{st.t}</button>
+                        ? <button onClick={() => onOpen(st.ref.loadId)} className="inline-flex items-center gap-1 text-indigo-700 font-semibold min-h-[44px] text-left"><span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: refColor }} />{st.t}</button>
                         : <span className={x.status.kind === 'unplanned' || x.status.kind === 'missing' ? 'text-rose-700 font-semibold' : 'text-slate-500'}>{st.t}</span>}
                     </td>
                   </tr>
@@ -307,7 +308,7 @@ function StopList({ title, items, side, sel, onOpen }) {
 }
 
 /** One route, opened: both versions' numbers, the trade, and both stop lists. */
-export function RoutePanel({ cmp, phone, sel, onOpen, onClose, prevId, nextId, position, total, colourNote }) {
+export function RoutePanel({ cmp, phone, sel, onOpen, onClose, prevId, nextId, position, total, colourNote, m = null, onShowPartners = null, partnersShown = false, showMap = false }) {
   const [side, setSide] = useState('claude');
   if (!cmp) return null;
   const L = cmp.load;
@@ -337,13 +338,13 @@ export function RoutePanel({ cmp, phone, sel, onOpen, onClose, prevId, nextId, p
         ))}
       </div>
       {side === 'driven'
-        ? <StopList title={`Your stops, ${yourOrder(L)}`} items={cmp.dispatch} side="driven" sel={sel} onOpen={onOpen} />
-        : <StopList title="Claude’s stops, in order" items={cmp.claude} side="claude" sel={sel} onOpen={onOpen} />}
+        ? <StopList title={`Your stops, ${yourOrder(L)}`} items={cmp.dispatch} side="driven" sel={sel} onOpen={onOpen} m={m} />
+        : <StopList title="Claude’s stops, in order" items={cmp.claude} side="claude" sel={sel} onOpen={onOpen} m={m} />}
     </div>
   ) : (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
-      <StopList title={`Your stops, ${yourOrder(L)}`} items={cmp.dispatch} side="driven" sel={sel} onOpen={onOpen} />
-      <StopList title="Claude’s stops, in order" items={cmp.claude} side="claude" sel={sel} onOpen={onOpen} />
+      <StopList title={`Your stops, ${yourOrder(L)}`} items={cmp.dispatch} side="driven" sel={sel} onOpen={onOpen} m={m} />
+      <StopList title="Claude’s stops, in order" items={cmp.claude} side="claude" sel={sel} onOpen={onOpen} m={m} />
     </div>
   );
   return (
@@ -356,12 +357,17 @@ export function RoutePanel({ cmp, phone, sel, onOpen, onClose, prevId, nextId, p
         {nav}
       </div>
       <FlagChips flags={cmp.flags} />
+      {onShowPartners && cmp.partners.length > 0 && (
+        <button onClick={onShowPartners} className="rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-indigo-700 min-h-[44px]">
+          {partnersShown ? `The ${cmp.partners.length} truck${cmp.partners.length === 1 ? '' : 's'} Claude traded with ${cmp.partners.length === 1 ? 'is' : 'are'} on the map` : `Show the ${cmp.partners.length} truck${cmp.partners.length === 1 ? '' : 's'} Claude traded with on the map${showMap ? '' : ' (opens the maps)'}`}
+        </button>
+      )}
       {colourNote && <p className="text-[11px] text-slate-500" role="status">{colourNote}</p>}
       <StatRows cmp={cmp} phone={phone} />
       {L.why && <p className="text-xs text-slate-700"><span className="font-semibold text-indigo-800">Claude’s reason:</span> “{L.why}”</p>}
       <div className={phone ? 'space-y-2' : 'grid grid-cols-1 lg:grid-cols-2 gap-3 items-start'}>
-        <TradeList title={`Claude took off (${cmp.removed.length})`} groups={took} sel={sel} onOpen={onOpen} dir="to" />
-        <TradeList title={`Claude put on (${cmp.added.length})`} groups={gave} sel={sel} onOpen={onOpen} dir="from" />
+        <TradeList title={`Claude took off (${cmp.removed.length})`} groups={took} sel={sel} onOpen={onOpen} dir="to" m={m} />
+        <TradeList title={`Claude put on (${cmp.added.length})`} groups={gave} sel={sel} onOpen={onOpen} dir="from" m={m} />
       </div>
       {lists}
       <p className="text-[11px] text-slate-500">Leg miles and times are the engine’s estimate (straight line × road factor), the same yardstick as the scorecard. Elapsed is drive time plus {cmp.serviceMin} min an order since leaving Buford — not a clock time: the backtest has no start time and does not check receiving hours. Skids, loose pieces and weight are as recorded on the day. “Near a limit” means {Math.round(NEAR * 100)}% or more.</p>
