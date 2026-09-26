@@ -347,9 +347,14 @@ export async function guardOpenFirstRoute(page) {
 
 /** Open the map (Google stood in — needs a build WITH a Maps key) and tap the stop two orders share. */
 export async function guardOpenMapAndTapStop(page) {
-  const btn = page.getByRole('button', { name: /^map: yours|^maps: yours/i }).first();
-  if (!(await seen(btn))) return why(page, 'no map button');
-  await btn.click();
+  // v1.77.1: a route opened from the list opens in the ROUTE DRAWER, whose maps are already showing —
+  // the page's own map button sits under it and is not the way in.
+  const inDrawer = await page.locator('[role="dialog"][aria-label^="Route drawer"]').first().isVisible().catch(() => false);
+  if (!inDrawer) {
+    const btn = page.getByRole('button', { name: /^map: yours|^maps: yours/i }).first();
+    if (!(await seen(btn))) return why(page, 'no map button');
+    await btn.click();
+  }
   if (!(await seen(page.locator('[aria-label="Claude map"], [aria-label="Dispatch — as driven map"]')))) return why(page, 'the map never appeared');
   if (!(await page.evaluate(() => window.__guardTapStop?.() === true))) return why(page, 'no stop to tap on the map');
   return (await seen(page.getByText(/stops at this address/))) || why(page, 'the stop card never opened');
