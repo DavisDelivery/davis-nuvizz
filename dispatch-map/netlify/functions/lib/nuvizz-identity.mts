@@ -232,6 +232,14 @@ export interface ResolveInput {
    * who saved one yesterday, sends her to re-enter a password that was never the problem.
    */
   docUnavailable?: boolean;
+  /**
+   * true when the request CARRIED a session token but the gate could not verify it against the
+   * account store and let it through as the pre-login caller (require-user.mts does that in
+   * legacy mode when the store read throws). That person IS signed in; treating them as "not
+   * signed in" would, under `required`, tell a signed-in dispatcher to sign in — the wrong fix
+   * for a store hiccup — and under `preferred` drop their name from our ledger without a word.
+   */
+  tokenUnverified?: boolean;
   /** Opens the sealed password. Injected so the rule is testable without a key; may throw. */
   open: (blob: string, appUser: string, nuvizzUser: string) => string | null;
 }
@@ -263,6 +271,9 @@ export function resolveIdentity(input: ResolveInput): Identity {
     ? { kind: 'refused', appUser, why, status: why === 'unavailable' ? 503 : 403, error: sentence }
     : { kind: 'shared', appUser, why, note: sentence });
 
+  if (!appUser && input.tokenUnverified) {
+    return fallback('unavailable', `Your sign-in could not be checked just now, so your NuVizz login could not be looked up — try the Save again in a moment.`);
+  }
   if (!appUser) {
     return fallback('not-signed-in', `Writes to NuVizz need your own NuVizz login now — sign in ${WHERE} and save yours there.`);
   }
@@ -302,28 +313,38 @@ export function basicAuthFor(nuvizzUser: string, password: string): string {
 // WHAT THIS KNOWS AND WHAT IT DOES NOT. The v7 check is one authenticated GET for a load number
 // that cannot exist. The rule below is the Basic-auth norm, and the portal's own pages carry
 // Spring Security's _csrf meta tags (lib/nuvizz-rwb.mts reads them), whose filter chain refuses
-// bad credentials with a 401 BEFORE any controller can answer 404. So: 401/403 is a refusal; any
-// other answer the API gives (200, 400, 404) means the credentials got past the door; a 5xx or no
-// answer at all says nothing either way. That is reasoned from the framework, not observed on
-// this tenant — the first real check on a real dispatcher's login is what confirms it, and the
-// check records the raw status alongside the verdict so that confirmation is readable.
+// bad credentials with a 401 BEFORE any controller can answer 404. So a 401 is a refusal, and a
+// 403 is too for this purpose (the login got in but may not read loads — no use for writes). Only
+// the answers a CONTROLLER gives — 2xx, 400, 404 — mean the credentials got past the door.
+// Everything else (408, 429, 405, a 5xx, no answer) says nothing about the password, and is
+// `unknown`: a rate limit read as "accepted" would save a mistyped password as working, and read
+// as "refused" would take a good one out of service. That is reasoned from the framework, not
+// observed on this tenant — the first real check is what confirms it, and every check records
+// the raw status beside the verdict so the confirmation is readable.
 
 export function classifyApiCheck(status: number | null | undefined): CheckVerdict {
   const s = Number(status);
   if (!Number.isFinite(s) || s <= 0) return 'unknown';
   if (s === 401 || s === 403) return 'refused';
-  if (s >= 200 && s < 500) return 'ok';
+  if ((s >= 200 && s < 300) || s === 400 || s === 404) return 'ok';
   return 'unknown';
 }
 
 /**
  * The portal login's steps (lib/nuvizz-rwb.mts portalLogin) → a verdict.
  *
- * `refused` only on a clear answer: the login endpoint RESPONDED (a 2xx–4xx) and issued no token,
- * or the Route Workbench token endpoint answered 401/403 to a login that did get a token (a real
- * account with no Route Workbench access). A 5xx, a missing login page, or no answer is `unknown`
- * — an outage must never be recorded as a wrong password, because a recorded refusal takes the
- * login out of service until somebody re-enters it.
+ * `refused` only on a CLEAR answer about the credentials:
+ *   • the sign-in answered 200 or 401 WITH A JSON BODY and issued no token — the shape of "wrong
+ *     username or password" from a JSON login endpoint; or
+ *   • the Route Workbench token step answered 401/403 to a login that DID get a token (a real
+ *     account with no Route Workbench access).
+ * Everything else is `unknown`: a 429 (rate limit), 408, 403 (Spring's "Invalid CSRF Token" is a
+ * 403), 404/405, a non-JSON page, a 5xx, a missing login page, no answer. A recorded refusal takes
+ * a login out of service until somebody re-enters it, so a rate limit read as a wrong password
+ * quietly puts a dispatcher back on the shared login — the review of this change ran exactly that
+ * case. What NuVizz actually sends for a wrong password is not readable from this repo; if it is
+ * something other than 200/401-with-JSON, the check reports `unknown` (never a false refusal) and
+ * the recorded status/message says what it was.
  */
 export function classifyPortalLogin(steps: any[], gotToken: boolean): { verdict: CheckVerdict; detail: string | null } {
   if (gotToken) return { verdict: 'ok', detail: null };
@@ -335,11 +356,11 @@ export function classifyPortalLogin(steps: any[], gotToken: boolean): { verdict:
   }
   const st = Number(ul.status) || 0;
   if (!ul.jwt) {
-    if (st >= 200 && st < 500) {
-      const said = ul.msg ? String(ul.msg).slice(0, 160) : null;
+    const said = ul.msg ? String(ul.msg).slice(0, 160) : null;
+    if ((st === 200 || st === 401) && ul.json === true) {
       return { verdict: 'refused', detail: said ? `NuVizz said: ${said}` : `NuVizz would not sign this login in (HTTP ${st})` };
     }
-    return { verdict: 'unknown', detail: `the NuVizz sign-in answered ${st || 'nothing'}` };
+    return { verdict: 'unknown', detail: `the NuVizz sign-in answered ${st || 'nothing'}${said ? ` (${said})` : ''} — not a clear answer about the password` };
   }
   const at = list.find((s) => s && s.step === 'authtoken');
   const ast = Number(at?.status) || 0;

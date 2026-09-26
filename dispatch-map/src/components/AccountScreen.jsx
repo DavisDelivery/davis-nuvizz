@@ -42,9 +42,22 @@ import { useSortable, SortableTh } from '../lib/useSortable.jsx';
 
 // ── small pieces ─────────────────────────────────────────────────────────────
 
+// DESKTOP CONTROLS ARE SIZED BY PADDING, NEVER BY A min-h UTILITY. index.css lifts every button
+// and input to 44px under `pointer: coarse` — an iPad gets this desktop layout on a finger — and a
+// `min-h-[36px]` class outranks that element rule and pins the control at 36px. The tablet guard
+// caught exactly that on the first draft of this screen. The phone view sets its own 48px floor.
 const inputCls = (m) => (m
   ? 'mt-1 w-full min-h-[48px] rounded-xl border border-slate-300 bg-white px-4 text-base text-slate-900 placeholder-slate-400 focus:border-sky-500 focus:outline-none disabled:bg-slate-100'
-  : 'mt-1 w-full min-h-[38px] rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-sky-500 focus:ring-1 focus:ring-sky-500 focus:outline-none disabled:bg-slate-100');
+  : 'mt-1 w-full py-2 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-sky-500 focus:ring-1 focus:ring-sky-500 focus:outline-none disabled:bg-slate-100');
+
+// THE NuVizz FIELDS ARE NOT A LOGIN FOR THIS SITE, and a browser that offers to save them as one
+// would later autofill a NuVizz password into this site's sign-in box. So they sit OUTSIDE any
+// <form> (Enter still saves — onEnter below), carry autocomplete="off", and the attributes the
+// common password managers honour to stay out. No markup can force every browser to comply; this is
+// the most a page can do. The sign-in, first-admin and change-password forms stay real forms:
+// those ARE this site's login, and a password manager saving them is exactly right.
+const NO_SAVE = { autoComplete: 'off', 'data-1p-ignore': 'true', 'data-lpignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other' };
+const onEnter = (fn) => (e) => { if (e.key === 'Enter' && !e.nativeEvent?.isComposing) { e.preventDefault(); fn(); } };
 
 const BTN = {
   primary: 'bg-sky-600 text-white hover:bg-sky-700 active:bg-sky-700 border border-sky-600',
@@ -54,7 +67,7 @@ const BTN = {
 };
 
 function Btn({ m, kind = 'secondary', busy = false, disabled = false, className = '', children, ...rest }) {
-  const size = m ? 'min-h-[48px] px-4 rounded-xl text-[15px]' : 'min-h-[36px] px-3 rounded-lg text-sm';
+  const size = m ? 'min-h-[48px] px-4 rounded-xl text-[15px]' : 'px-3 py-1.5 rounded-lg text-sm';
   return (
     <button type="button" {...rest} disabled={disabled || busy}
       className={`inline-flex items-center justify-center gap-1.5 font-semibold disabled:opacity-40 ${size} ${BTN[kind] || BTN.secondary} ${className}`}>
@@ -447,28 +460,28 @@ function NuvizzLoginPanel({ m, target, targetName, login, mode, site, onUpdated 
         </div>
       )}
       {editing && (
-        <form onSubmit={save} className="flex flex-col gap-3">
+        <div onKeyDown={onEnter(save)} className="flex flex-col gap-3">
           <p className="text-[12px] text-slate-500 leading-snug">
             {self ? 'The username and password you use to sign in to NuVizz.' : `${targetName || target}'s NuVizz username and password.`}{' '}
             Stored encrypted and never shown again — not even to an admin. Saving asks NuVizz first{costTxt}; a login NuVizz refuses is not saved.
           </p>
           <div className={m ? 'flex flex-col gap-3' : 'grid grid-cols-2 gap-3'}>
             <Field m={m} label="NuVizz username">
-              <input type="text" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck="false" data-lpignore="true"
+              <input type="text" name="nuvizz-login-user" {...NO_SAVE} autoCapitalize="none" autoCorrect="off" spellCheck="false"
                 value={nvUser} onChange={(e) => setNvUser(e.target.value)} disabled={!!busy || !keyReady} className={inputCls(m)} />
             </Field>
             <Field m={m} label="NuVizz password">
-              <input type="password" autoComplete="new-password" data-lpignore="true"
+              <input type="password" name="nuvizz-login-secret" {...NO_SAVE}
                 value={nvPass} onChange={(e) => setNvPass(e.target.value)} disabled={!!busy || !keyReady} className={inputCls(m)} />
             </Field>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Btn m={m} kind="primary" type="submit" busy={busy === 'save'} disabled={!keyReady || !nvUser.trim() || !nvPass}>
+            <Btn m={m} kind="primary" onClick={save} busy={busy === 'save'} disabled={!keyReady || !nvUser.trim() || !nvPass}>
               {busy === 'save' ? 'Asking NuVizz…' : `Save & test${costTxt}`}
             </Btn>
             {saved && <Btn m={m} kind="ghost" onClick={() => { setEditing(false); setNvPass(''); setErr(''); }}>Cancel</Btn>}
           </div>
-        </form>
+        </div>
       )}
       {err && <Notice tone="bad">{err}</Notice>}
       {note && !err && <Notice tone="info">{note}</Notice>}
@@ -546,10 +559,10 @@ function AddPersonForm({ m, mailConfigured, mode, site, onCreated, onClose }) {
 
   return (
     <Card m={m} title="Add a person" icon={<UserPlus size={16} className="text-slate-500" />}>
-      <form onSubmit={submit} className="flex flex-col gap-3">
+      <div onKeyDown={onEnter(submit)} className="flex flex-col gap-3">
         <div className={m ? 'flex flex-col gap-3' : 'grid grid-cols-2 gap-3'}>
           <Field m={m} label="Username" hint="What they type to sign in. Lower-case letters, digits, - or _">
-            <input type="text" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck="false"
+            <input type="text" name="new-person-username" {...NO_SAVE} autoCapitalize="none" autoCorrect="off" spellCheck="false"
               value={username} onChange={(e) => setUsername(e.target.value)} disabled={busy} className={inputCls(m)} />
           </Field>
           <Field m={m} label="Name" hint="How they show on screen">
@@ -579,20 +592,20 @@ function AddPersonForm({ m, mailConfigured, mode, site, onCreated, onClose }) {
           </div>
           <div className={m ? 'flex flex-col gap-3' : 'grid grid-cols-2 gap-3'}>
             <Field m={m} label="NuVizz username">
-              <input type="text" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck="false" data-lpignore="true"
+              <input type="text" name="nuvizz-login-user" {...NO_SAVE} autoCapitalize="none" autoCorrect="off" spellCheck="false"
                 value={nvUser} onChange={(e) => setNvUser(e.target.value)} disabled={busy} className={inputCls(m)} />
             </Field>
             <Field m={m} label="NuVizz password">
-              <input type="password" autoComplete="new-password" data-lpignore="true" value={nvPass} onChange={(e) => setNvPass(e.target.value)} disabled={busy} className={inputCls(m)} />
+              <input type="password" name="nuvizz-login-secret" {...NO_SAVE} value={nvPass} onChange={(e) => setNvPass(e.target.value)} disabled={busy} className={inputCls(m)} />
             </Field>
           </div>
         </div>
         {err && <Notice tone="bad">{err}</Notice>}
         <div className="flex flex-wrap gap-2">
-          <Btn m={m} kind="primary" type="submit" busy={busy} disabled={!username.trim()}>{busy ? 'Adding…' : 'Add this person'}</Btn>
+          <Btn m={m} kind="primary" onClick={submit} busy={busy} disabled={!username.trim()}>{busy ? 'Adding…' : 'Add this person'}</Btn>
           <Btn m={m} kind="ghost" onClick={onClose}>Cancel</Btn>
         </div>
-      </form>
+      </div>
     </Card>
   );
 }

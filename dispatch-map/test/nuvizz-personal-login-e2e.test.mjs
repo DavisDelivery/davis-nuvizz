@@ -318,3 +318,46 @@ test('too many tests of one account are refused before NuVizz is asked', async (
     assert.equal(nv.calls.length, before);
   });
 });
+
+// ── one person, one NuVizz login ─────────────────────────────────────────────
+
+test('a NuVizz login already saved for someone else is refused — named, and NuVizz is never asked', async () => {
+  await world({}, async ({ nv }) => {
+    await loginPost('owner', { action: 'save', username: 'mike', nuvizzUsername: 'msmith', nuvizzPassword: 'mike-pw' });
+    nv.calls.length = 0;
+    const res = await loginPost('jane', { action: 'save', nuvizzUsername: 'MSmith', nuvizzPassword: 'mike-pw' });
+    assert.equal(res.status, 409);
+    assert.match((await res.json()).error, /already saved for Mike Smith/);
+    assert.equal(nv.calls.length, 0);
+  });
+});
+
+test('the shared login is not a dispatcher\'s personal login; the admin may save it as their own', async () => {
+  await world({}, async ({ fake, nv }) => {
+    const res = await loginPost('jane', { action: 'save', nuvizzUsername: 'sharednv', nuvizzPassword: 'shared-pw' });
+    assert.equal(res.status, 409);
+    assert.match((await res.json()).error, /shared NuVizz login the board has been using/);
+    assert.equal(nv.calls.length, 0, 'refused before any NuVizz call');
+    const own = await loginPost('owner', { action: 'save', nuvizzUsername: 'sharednv', nuvizzPassword: 'shared-pw' });
+    assert.equal(own.status, 200);
+    assert.equal(fake.store.get('app_users/owner').nuvizzUsername, 'sharednv');
+  });
+});
+
+test('off: the login door neither saves nor tests — no NuVizz call — but seeing and removing still work', async () => {
+  await world({}, async ({ nv }) => {
+    await loginPost('jane', { action: 'save', nuvizzUsername: 'jdoe', nuvizzPassword: 'jane-pw' });
+    nv.calls.length = 0;
+    await withMode('off', async () => {
+      const save = await loginPost('jane', { action: 'save', nuvizzUsername: 'jdoe', nuvizzPassword: 'jane-pw' });
+      assert.equal(save.status, 409);
+      assert.match((await save.json()).error, /switched off/);
+      assert.equal((await loginPost('jane', { action: 'test' })).status, 409);
+      assert.equal(nv.calls.length, 0);
+      const seen = await (await loginGet('jane')).json();
+      assert.equal(seen.mode, 'off');
+      assert.equal(seen.login.saved, true);
+      assert.equal((await loginPost('jane', { action: 'remove' })).status, 200);
+    });
+  });
+});

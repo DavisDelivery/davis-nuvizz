@@ -11,6 +11,7 @@
 // server-side NUVIZZ_WRITE_ENABLED flag is set). A clientOpId makes a Save idempotent.
 
 import { apiFetch } from './api.js';
+import { noteWriteAnswer } from './nuvizz-login-notice.js';
 
 const WRITE_FN = '/.netlify/functions/nuvizz-write';
 
@@ -33,6 +34,10 @@ export async function callWrite(op, payload = {}, opts = {}) {
   try { j = await res.json(); } catch { j = { ok: false, error: `bad response (${res.status})` }; }
   if (typeof j.ok !== 'boolean') j.ok = res.ok;
   j.httpStatus = res.status;
+  // Whose NuVizz login this went out under, read at the one door every write passes: a login
+  // NuVizz just refused raises a whole-app bar (lib/nuvizz-login-notice.js). The answer handed
+  // back to the caller is untouched.
+  try { noteWriteAnswer(j); } catch { /* a notice must never break a write's answer */ }
   return j;
 }
 

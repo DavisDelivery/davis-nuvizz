@@ -66,8 +66,9 @@ export function resolveWriteCreds(): WriteCreds {
 /**
  * Creds for a write that goes out under a PERSON'S own NuVizz login (lib/nuvizz-identity.mts) —
  * the v7 Basic auth AND the Route Workbench portal login, from the same username and password,
- * so one Save is one person end to end. Same API base and company as the shared creds; it needs
- * no shared password, so it works on a deploy whose NUVIZZ_DAVIS_PASS is missing.
+ * so one Save is one person end to end. Same API base and company as the shared creds. (It needs
+ * no shared password itself — but the write endpoint still resolves the shared creds first and
+ * refuses without them, because every deploy that writes also scans with them.)
  */
 export function personalWriteCreds(nuvizzUser: string, password: string): WriteCreds {
   const { companyCode } = getCreds();

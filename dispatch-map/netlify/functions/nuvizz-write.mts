@@ -36,8 +36,9 @@
 
 import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, type WriteOp } from './lib/nuvizz-write-ops.mts';
 import { requireUser } from './lib/require-user.mts';
+import { bearerFromHeaders } from './lib/auth-core.mts';
 import { runOp, resolveWriteCreds, loadImportBlocked, personalWriteCreds } from './lib/nuvizz-write.mts';
-import { rwbEngineBlocked, takeRwbLoginRefusal } from './lib/nuvizz-rwb.mts';
+import { rwbEngineBlocked, takeRwbLoginRefusal, holdRwbLogin, rwbLoginHeld } from './lib/nuvizz-rwb.mts';
 import { personalLoginsMode, publicIdentity, type Identity } from './lib/nuvizz-identity.mts';
 import { resolveWriteIdentity, watchPersonalRefusals, refusalAfterWrite, markLoginRejected } from './lib/nuvizz-write-identity.mts';
 import { getUser, patchUser } from './lib/auth-store.mts';
@@ -312,7 +313,7 @@ export default async (req: Request): Promise<Response> => {
   const who = gate.user.authenticated ? gate.user.username : null;
   let identity: Identity = { kind: 'shared', appUser: who, why: 'off', note: null };
   if (MUTATING_OPS.has(op)) {
-    identity = await resolveWriteIdentity(mode, gate.user, { getUser });
+    identity = await resolveWriteIdentity(mode, gate.user, { getUser }, { tokenPresented: !!bearerFromHeaders(req.headers) });
     if (identity.kind === 'refused') {
       return J({ ok: false, op, tenant, live, error: identity.error, identity: publicIdentity(identity, mode), ops }, identity.status);
     }
@@ -336,18 +337,27 @@ export default async (req: Request): Promise<Response> => {
   const reqr = getNuvizzRequester();
   const callsBefore = reqr.getStats().totalThisInstance;
   const callsSince = () => reqr.getStats().totalThisInstance - callsBefore;
-  // Watches for NuVizz refusing a PERSONAL login mid-write (a no-op pass-through for the shared one).
-  const watch = watchPersonalRefusals(reqr, identity.kind === 'personal' ? creds.auth : null);
+  // Watches for NuVizz refusing a PERSONAL login mid-write — and stops sending it once it has (a
+  // no-op pass-through for the shared login). One brake for the whole Save: a v7 refusal holds the
+  // portal side too, and a login the portal side already holds is not sent to the v7 API either.
+  const personalRwb = identity.kind === 'personal' ? creds.rwb : null;
+  const watch = watchPersonalRefusals(reqr, identity.kind === 'personal' ? creds.auth : null, {
+    onRefused: () => holdRwbLogin(personalRwb, `the NuVizz API answered 401 to the NuVizz login saved as ${identity.kind === 'personal' ? identity.nuvizzUser : ''}`),
+    isHeld: () => rwbLoginHeld(personalRwb),
+  });
   // After the write, the one question the refusal watch exists for: did NuVizz just refuse this
   // person's saved login? If so it is recorded on their account, so the NEXT write — on any
   // instance — stops using it rather than trying it again (lib/nuvizz-rwb.mts: a stale password
   // tried on every Save is how a dispatcher gets locked out of NuVizz itself).
   const noteRefusal = async (): Promise<string | null> => {
     if (identity.kind !== 'personal') return null;
-    const reason = refusalAfterWrite(identity, watch.refusedStatus(), takeRwbLoginRefusal(identity.nuvizzUser));
+    const reason = refusalAfterWrite(identity, watch.refusedStatus(), takeRwbLoginRefusal(personalRwb));
     if (!reason) return null;
-    await markLoginRejected(identity.appUser, reason, { patchUser });
-    console.warn(`[nuvizz-write] NuVizz refused the personal login of user=${identity.appUser} (nuvizz=${identity.nuvizzUser}) — marked; reason=${reason}`);
+    const marked = await markLoginRejected(identity.appUser, reason, { patchUser });
+    // Said as it happened. If the mark did not land, other instances will still try this login
+    // until it does — this instance holds it (lib/nuvizz-rwb.mts), but a log that claims "marked"
+    // over a failed write is the report-an-intent-as-an-outcome mistake this repo keeps naming.
+    console.warn(`[nuvizz-write] NuVizz refused the personal login of user=${identity.appUser} (nuvizz=${identity.nuvizzUser}) — ${marked ? 'marked on the account' : 'MARK FAILED (held in this instance only)'}; withheld=${watch.withheld()}; reason=${reason}`);
     return reason;
   };
   let result: any;

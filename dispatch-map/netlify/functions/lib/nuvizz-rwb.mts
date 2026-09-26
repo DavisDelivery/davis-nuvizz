@@ -194,14 +194,36 @@ export function rwbSessionKey(cfg: { loginBase: string; companyCode: string; use
 // this module behaves exactly as it did before personal logins existed.
 const refusedLogins = new Map<string, { at: number; detail: string }>();
 export const REFUSAL_HOLD_MS = 10 * 60 * 1000;
+// Keyed by the LOGIN (rwbSessionKey), not by the NuVizz username alone: a refusal belongs to the
+// exact username-and-password that was refused, and must not be picked up by a request carrying a
+// different one.
 const refusalsToReport = new Map<string, { at: string; detail: string }>();
 
-/** The refusal a Save's portal sign-in hit for this NuVizz username, once — or null. */
-export function takeRwbLoginRefusal(nuvizzUser: string): { at: string; detail: string } | null {
-  const k = String(nuvizzUser || '');
+/** The refusal a Save's portal sign-in hit for THIS login, once — or null. */
+export function takeRwbLoginRefusal(auth: RwbAuth | null | undefined): { at: string; detail: string } | null {
+  if (!auth) return null;
+  const k = rwbSessionKey(rwbConfig(auth));
   const r = refusalsToReport.get(k) || null;
   refusalsToReport.delete(k);
   return r;
+}
+
+/**
+ * Hold a personal login that NuVizz refused somewhere ELSE — the v7 API answering 401 to the same
+ * username and password (lib/nuvizz-write-identity.mts). One Save, one brake: without this, a v7
+ * refusal early in a Save leaves the portal free to try the same stale password again a moment
+ * later, one more wrong attempt toward a NuVizz lockout.
+ */
+export function holdRwbLogin(auth: RwbAuth | null | undefined, detail: string): void {
+  if (!auth) return;
+  refusedLogins.set(rwbSessionKey(rwbConfig(auth)), { at: Date.now(), detail: String(detail || 'refused') });
+}
+
+/** Is this personal login being held after a refusal (portal or API), in this instance? */
+export function rwbLoginHeld(auth: RwbAuth | null | undefined): boolean {
+  if (!auth) return false;
+  const cfg = rwbConfig(auth);
+  return heldRefusal(cfg, rwbSessionKey(cfg)) != null;
 }
 
 /** Test hook: forget every session, every preference latch and every held refusal. */
@@ -254,7 +276,9 @@ async function portalLogin(requester: RwbRequesterLike, cfg: RwbConfig): Promise
   fd.set('companyCode', cfg.companyCode); fd.set('username', cfg.username); fd.set('password', cfg.password); fd.set('appCode', 'portal');
   const ul = await go(requester, jar, 'POST', `${cfg.loginBase}/loginreg/auth/userLogin`, { headers: { origin: cfg.loginBase, referer: `${cfg.loginBase}/loginreg/`, ...csrfHdr }, body: fd, route: '/rwb/userLogin', tenant });
   const jwt = ul.data && ((ul.data.data && ul.data.data.jwtToken) || ul.data.jwtToken);
-  steps.push({ step: 'userLogin', status: ul.status, jwt: !!jwt, msg: ul.data && ul.data.message });
+  // `json`: whether the sign-in answered with a JSON body at all — a clear "wrong password" is JSON;
+  // a rate-limit page or an HTML error is not, and must not be read as one (classifyPortalLogin).
+  steps.push({ step: 'userLogin', status: ul.status, jwt: !!jwt, msg: ul.data && ul.data.message, json: ul.data != null && typeof ul.data === 'object' });
   if (!jwt) return { error: cfg.personal ? `login failed (no JWT) — NuVizz did not accept the NuVizz login saved as ${cfg.username}` : 'login failed (no JWT) — check NUVIZZ_RWB_USER/PASS', steps };
 
   const at = await go(requester, jar, 'POST', `${cfg.portalBase}/deliverit/instance/ndv2/openapi/loginreg/authtoken/${cfg.company}`, {
@@ -292,7 +316,7 @@ async function session(requester: RwbRequesterLike, cfg: RwbConfig): Promise<{ a
       if (c.verdict === 'refused') {
         const detail = c.detail || 'refused';
         refusedLogins.set(key, { at: Date.now(), detail });
-        refusalsToReport.set(cfg.username, { at: new Date().toISOString(), detail });
+        refusalsToReport.set(key, { at: new Date().toISOString(), detail });
       }
     }
     return { error: r.error || 'login failed' };
@@ -660,11 +684,12 @@ export async function rwbSequenceRoutes(
  * check, the sign-in, the Route Workbench token — 4 calls, all through the metered requester), so
  * "tested OK" means "a Save would get in", not something near it.
  *
- * A login it accepts is cached as that login's session, so the check is not thrown away: the
- * person's next Save on this warm instance skips the sign-in. A login it clearly REFUSES is held
- * exactly like a refused Save's (heldRefusal) — and a held login is answered from the hold WITHOUT
- * asking NuVizz again, because pressing Test three times on the same wrong password is how a
- * NuVizz account gets locked.
+ * A login it accepts is cached as that login's session in THIS module instance. That does not
+ * carry over to a Save: the check runs in auth-nuvizz-login and a Save in nuvizz-write, which are
+ * separate functions, so the Save signs in again — the cache is harmless, not a saving. A login it
+ * clearly REFUSES is held exactly like a refused Save's (heldRefusal), and a held login is
+ * answered from the hold WITHOUT asking NuVizz again, because pressing Test three times on the
+ * same wrong password is how a NuVizz account gets locked.
  *
  * Never throws: an open breaker or a network failure is `unknown`, not a wrong password.
  */

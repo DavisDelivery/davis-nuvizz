@@ -117,6 +117,8 @@ import { validateNewRoute, resolveRouteOrigin, originLine, newRouteSeed, newRout
 import { clipForToast } from './lib/write-error.js';
 import UatBench from './components/UatBench.jsx';
 import AccountScreen from './components/AccountScreen.jsx';
+import NuvizzLoginBar from './components/NuvizzLoginBar.jsx';
+import { onLoginNotice } from './lib/nuvizz-login-notice.js';
 // The Claude shadow tab lives in its own directory so scripts/check-shadow-isolation.mjs can
 // prove what it reaches: its own files, lib/api.js and lib/session.js, and nothing else.
 import ClaudeShadowScreen from './shadow/ClaudeShadowScreen.jsx';
@@ -30316,6 +30318,10 @@ function Shell() {
   const denials = usePermissionDenials();
   const [roleRefusal, setRoleRefusal] = useState(null);
   useEffect(() => onAuthEvent((e) => { if (e.kind === 'forbidden') setRoleRefusal(e); }), []);
+  // NuVizz refused this person's own saved NuVizz login during a write (v1.75.0) — raised from the
+  // write's answer at the one client write door (lib/nuvizzWrite.js → lib/nuvizz-login-notice.js).
+  const [loginNotice, setLoginNotice] = useState(null);
+  useEffect(() => onLoginNotice(setLoginNotice), []);
   // THE NOTCH INSET BELONGS TO WHATEVER IS ACTUALLY AT THE TOP, AND TO EXACTLY ONE THING.
   // On a home-screen iPhone every bar that adds env(safe-area-inset-top) adds ~47px, so two
   // of them stack two notches of dead space above a board that is already telling a
@@ -30323,7 +30329,7 @@ function Shell() {
   // each one is handed "is everything above you absent?" rather than guessing. The header
   // is last in that chain, so it carries the inset only when no bar is up — which is the
   // ordinary case, and the reason nobody noticed the header was taking it unconditionally.
-  const headerAtTop = !updateAvailable && !denials.length && !roleRefusal && !LEGACY_FLAG_ONLY;
+  const headerAtTop = !updateAvailable && !denials.length && !roleRefusal && !LEGACY_FLAG_ONLY && !loginNotice;
   // send-sms is gated at dispatcher. A text to a customer that a viewer believes went out —
   // "we're running late, we'll be there by 2" — and did not is a customer standing at a dock
   // waiting on a truck nobody told them about. Resolved here and handed down, because
@@ -30519,6 +30525,11 @@ function Shell() {
           all things happening to THIS morning; a deploy-config mistake is not. Renders nothing
           unless only the retired flag is set. */}
       <LegacyLoginFlagBar isMobile={isMobile} atTop={!updateAvailable && !denials.length && !roleRefusal} />
+      {/* A person's own NuVizz login, refused by NuVizz during a write — a whole-app condition for
+          that person, so it lives with the bars above and not inside any one screen. */}
+      <NuvizzLoginBar notice={loginNotice} isMobile={isMobile}
+        atTop={!updateAvailable && !denials.length && !roleRefusal && !LEGACY_FLAG_ONLY}
+        onOpen={() => { setLoginNotice(null); openTab('users'); }} onDismiss={() => setLoginNotice(null)} />
       {isMobile ? (
         <MobileAppBar
           version={APP_VERSION}

@@ -33,10 +33,17 @@ export interface IdentityDeps {
  * Nothing is read at all when the switch is off or nobody is signed in — the shared login needs
  * no account, and the off switch must cost exactly what the code before it cost.
  */
-export async function resolveWriteIdentity(mode: PersonalLoginsMode, principal: Principal | null, deps: IdentityDeps): Promise<Identity> {
+export async function resolveWriteIdentity(
+  mode: PersonalLoginsMode, principal: Principal | null, deps: IdentityDeps,
+  opts: { tokenPresented?: boolean } = {},
+): Promise<Identity> {
   const none = () => null;
+  // A request that carried a session token and still arrived as the pre-login caller is a
+  // signed-in person whose account the gate could not read (require-user.mts, legacy mode) —
+  // not somebody who never signed in. See ResolveInput.tokenUnverified.
+  const tokenUnverified = !!opts.tokenPresented && !principal?.authenticated;
   if (mode === 'off' || !principal?.authenticated) {
-    return resolveIdentity({ mode, principal, doc: null, open: none });
+    return resolveIdentity({ mode, principal, doc: null, open: none, tokenUnverified });
   }
   let doc: any = null;
   let docUnavailable = false;
@@ -55,29 +62,56 @@ export interface RequesterLike {
 }
 
 /**
- * Step 2. A pass-through requester that notices a 401 on a v7 call carrying THIS person's Basic
- * auth. Only 401: a 403 is NuVizz saying "this login may not do that" (a permission), which a
- * re-typed password would not fix, so it must not take a working login out of service.
+ * Step 2. A requester around the real one that notices a 401 on a v7 call carrying THIS person's
+ * Basic auth — and, from then on, STOPS SENDING IT. Only 401: a 403 is NuVizz saying "this login
+ * may not do that" (a permission), which a re-typed password would not fix, so it must not take a
+ * working login out of service.
  *
- * Portal (Route Workbench) calls carry a portal token, not the Basic header, so they never match
- * here — an expired portal token is handled inside lib/nuvizz-rwb.mts by one fresh sign-in, and a
- * sign-in NuVizz refuses is reported by that module instead (takeRwbLoginRefusal).
+ * WHY IT STOPS, NOT JUST NOTICES. The first draft only observed, and the review measured what that
+ * costs: a Save of five loads keyed by number sent the stale password FIVE times, one per load
+ * read; five loads known only by id sent it fifteen. Each is a wrong attempt at NuVizz, and enough
+ * of them lock the person out of NuVizz itself. So after the first refusal every further request
+ * carrying that exact header is answered HERE with a 401 that says it was not sent — the engine
+ * fails the rest of the Save the same way it would have, without asking NuVizz again. The same
+ * holds when the portal side already refused this login (`isHeld`), and a v7 refusal is handed to
+ * the portal side (`onRefused`) so it does not try the password either: one brake for the Save.
+ *
+ * Portal (Route Workbench) calls carry a portal token, not this header, so they pass straight
+ * through — lib/nuvizz-rwb.mts brakes its own sign-ins (heldRefusal).
+ *
+ * The answered-here 401 is never counted as a NuVizz call: nothing was sent.
  */
-export function watchPersonalRefusals<R extends RequesterLike>(requester: R, personalAuth: string | null): { requester: R; refusedStatus: () => number | null } {
+export function watchPersonalRefusals<R extends RequesterLike>(
+  requester: R, personalAuth: string | null,
+  hooks: { onRefused?: (status: number) => void; isHeld?: () => boolean } = {},
+): { requester: R; refusedStatus: () => number | null; withheld: () => number } {
   let refused: number | null = null;
-  if (!personalAuth) return { requester, refusedStatus: () => null };
+  let withheld = 0;
+  if (!personalAuth) return { requester, refusedStatus: () => null, withheld: () => 0 };
+  const notSent = () => new Response(JSON.stringify({
+    message: 'Not sent: NuVizz already refused this NuVizz login during this Save, so it was not tried again (a wrong password tried repeatedly can lock the NuVizz account).',
+  }), { status: 401, headers: { 'Content-Type': 'application/json' } });
   const wrapped: any = {
     ...requester,
     async request(url: string, opts: any, meta: any) {
-      const resp = await requester.request(url, opts, meta);
       const h = opts?.headers || {};
       const sent = h.Authorization ?? h.authorization;
-      if (resp && resp.status === 401 && sent === personalAuth) refused = 401;
+      const mine = sent === personalAuth;
+      if (mine && (refused != null || (hooks.isHeld ? hooks.isHeld() : false))) {
+        if (refused == null) refused = 401;   // held by the portal side: the same refusal, for the same Save
+        withheld++;
+        return notSent();
+      }
+      const resp = await requester.request(url, opts, meta);
+      if (mine && resp && resp.status === 401 && refused == null) {
+        refused = 401;
+        try { hooks.onRefused?.(401); } catch { /* the brake below still holds for this Save */ }
+      }
       return resp;
     },
     getStats: requester.getStats ? () => requester.getStats!() : undefined,
   };
-  return { requester: wrapped as R, refusedStatus: () => refused };
+  return { requester: wrapped as R, refusedStatus: () => refused, withheld: () => withheld };
 }
 
 /** Step 3, PURE. One reason, or null. The portal's own words win: they say what NuVizz said. */

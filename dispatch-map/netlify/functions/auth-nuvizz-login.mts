@@ -35,7 +35,7 @@
 
 import { requireUser, readJsonBody, jsonResponse, denied, throttled } from './lib/require-user.mts';
 import { normalizeUsername, roleAtLeast } from './lib/auth-core.mts';
-import { getUser, patchUser, storeReady } from './lib/auth-store.mts';
+import { getUser, listUsers, patchUser, storeReady } from './lib/auth-store.mts';
 import {
   personalLoginsMode, normalizeNuvizzUsername, nuvizzPasswordProblem, loginKey, loginKeyReady,
   sealNuvizzPassword, openNuvizzPassword, publicNuvizzLogin, classifyApiCheck, describeCheck,
@@ -89,8 +89,11 @@ export async function runLoginCheck(nuvizzUser: string, password: string): Promi
       const resp = await reqr.request(br.url, { method: br.method, headers: br.headers, maxRetries: 0 }, { ...br.meta, source: 'login-check' });
       apiStatus = resp.status;
       api = classifyApiCheck(resp.status);
-      if (api === 'refused') apiDetail = `the NuVizz API answered ${resp.status} to this login`;
-      else if (api === 'unknown') apiDetail = `the NuVizz API answered ${resp.status} — no clear answer either way`;
+      if (api === 'refused') {
+        apiDetail = resp.status === 403
+          ? 'the NuVizz API let this login in but refused it access to loads (403) — it cannot make changes'
+          : `the NuVizz API refused this login (HTTP ${resp.status})`;
+      } else if (api === 'unknown') apiDetail = `the NuVizz API answered ${resp.status} — not a clear answer about the password`;
     } catch (e: any) {
       apiDetail = e instanceof NuvizzCircuitOpenError
         ? "the day's NuVizz call ceiling is reached, so the API could not be asked"
@@ -145,10 +148,32 @@ export default async (req: Request): Promise<Response> => {
 
   const action = String(body.action || '');
 
+  // THE SWITCH COVERS THIS DOOR TOO. NUVIZZ_PERSONAL_LOGINS=off is how personal logins are put
+  // back, and "put back" includes not spending NuVizz calls testing them and not sending typed
+  // passwords to NuVizz at all (CLAUDE.md: one switch reverts every side at once). Seeing a saved
+  // login and removing one stay allowed — neither talks to NuVizz.
+  if ((action === 'save' || action === 'test') && personalLoginsMode() === 'off') {
+    return bad('Personal NuVizz logins are switched off on this site (NUVIZZ_PERSONAL_LOGINS=off), so nothing is saved or tested — every change uses the shared login.', 409);
+  }
+
   // ── save ──────────────────────────────────────────────────────────────────
   if (action === 'save') {
     const nuvizzUser = normalizeNuvizzUsername(body.nuvizzUsername);
     if (!nuvizzUser) return bad('NuVizz username: 1–120 characters, no spaces and no colon');
+    // ONE PERSON, ONE NuVizz LOGIN — the whole point of the change. Two people saving the same
+    // NuVizz login is the shared login again under two names, so it is refused here and names who
+    // already holds it. Compared without case: whether NuVizz itself folds case is not readable
+    // from this repo, and the cautious reading is that "JDoe" and "jdoe" are one account.
+    const lc = nuvizzUser.toLowerCase();
+    const holder = (await listUsers()).find((u) => u.username !== target && String(u.nuvizzUsername || '').toLowerCase() === lc);
+    if (holder) return bad(`That NuVizz login is already saved for ${holder.displayName || holder.username}. Each person needs their own NuVizz login.`, 409);
+    // THE SHARED LOGIN IS NOT A PERSONAL ONE for anybody but an admin. A dispatcher who saved it
+    // would satisfy "required" while every change still went out under the shared name. An admin
+    // may (the shared login has been the owner's own); the list shows whose it is either way.
+    const sharedNames = [process.env.NUVIZZ_DAVIS_USER, process.env.NUVIZZ_RWB_USER].map((v) => String(v || '').trim().toLowerCase()).filter(Boolean);
+    if (sharedNames.includes(lc) && doc.role !== 'admin') {
+      return bad(`That is the shared NuVizz login the board has been using. ${doc.displayName || target} needs their own NuVizz login — ask whoever manages NuVizz users to create one.`, 409);
+    }
     const problem = nuvizzPasswordProblem(body.nuvizzPassword);
     if (problem) return bad(problem.charAt(0).toUpperCase() + problem.slice(1));
     const password = String(body.nuvizzPassword);

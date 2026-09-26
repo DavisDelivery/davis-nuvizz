@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   rwbConfigReady, rwbSequenceStops, rwbAddStopsToRoute, rwbCheckLogin,
-  takeRwbLoginRefusal, _resetRwbSessions, rwbSessionKey, REFUSAL_HOLD_MS,
+  takeRwbLoginRefusal, _resetRwbSessions, rwbSessionKey, REFUSAL_HOLD_MS, holdRwbLogin, rwbLoginHeld,
 } from '../netlify/functions/lib/nuvizz-rwb.mts';
 
 const ENV_KEYS = ['NUVIZZ_RWB_ENABLED', 'NUVIZZ_RWB_USER', 'NUVIZZ_RWB_PASS', 'NUVIZZ_RWB_LOGIN_BASE', 'NUVIZZ_RWB_PORTAL_BASE'];
@@ -137,10 +137,11 @@ test('a refused personal login is tried ONCE, reported, and then held — no sec
     const first = await rwbSequenceStops(p.requester, 'r1', ['s1'], ORIGIN, [], {}, stale);
     assert.equal(first.ok, false);
     assert.equal(signIns(p.calls).length, 1, 'the preference call and the preview must not BOTH sign in with a wrong password');
-    const rep = takeRwbLoginRefusal('jdoe');
+    assert.equal(takeRwbLoginRefusal(JANE), null, 'keyed by the exact login: a different password does not pick it up');
+    const rep = takeRwbLoginRefusal(stale);
     assert.ok(rep, 'the refusal is handed to the write endpoint');
     assert.match(rep.detail, /Invalid username or password/);
-    assert.equal(takeRwbLoginRefusal('jdoe'), null, 'reported once');
+    assert.equal(takeRwbLoginRefusal(stale), null, 'reported once');
 
     p.calls.length = 0;
     const second = await rwbSequenceStops(p.requester, 'r1', ['s1'], ORIGIN, [], {}, stale);
@@ -166,10 +167,39 @@ test('an OUTAGE at sign-in is not a refusal: nothing is held, the next Save trie
     const p = makePortal({ signInStatus: 503 });
     const r = await rwbSequenceStops(p.requester, 'r1', ['s1'], ORIGIN, [], {}, JANE);
     assert.equal(r.ok, false);
-    assert.equal(takeRwbLoginRefusal('jdoe'), null);
+    assert.equal(takeRwbLoginRefusal(JANE), null);
     const before = signIns(p.calls).length;
     await rwbSequenceStops(p.requester, 'r1', ['s1'], ORIGIN, [], {}, JANE);
     assert.ok(signIns(p.calls).length > before, 'tried again');
+  });
+});
+
+test('a RATE LIMIT at sign-in is not a refusal: nothing held, nothing reported, the next Save tries again', async () => {
+  await withRwb({}, async () => {
+    const p = makePortal({ signInStatus: 429 });
+    const r = await rwbSequenceStops(p.requester, 'r1', ['s1'], ORIGIN, [], {}, JANE);
+    assert.equal(r.ok, false);
+    assert.equal(takeRwbLoginRefusal(JANE), null, 'a working login must not be taken out of service by a 429');
+    assert.equal(rwbLoginHeld(JANE), false);
+    const before = signIns(p.calls).length;
+    await rwbSequenceStops(p.requester, 'r1', ['s1'], ORIGIN, [], {}, JANE);
+    assert.ok(signIns(p.calls).length > before);
+  });
+});
+
+test('a login held from the API side is not sent to the portal either — one brake per Save', async () => {
+  await withRwb({}, async () => {
+    const p = makePortal();
+    assert.equal(rwbLoginHeld(JANE), false);
+    holdRwbLogin(JANE, 'the NuVizz API answered 401 to the NuVizz login saved as jdoe');
+    assert.equal(rwbLoginHeld(JANE), true);
+    assert.equal(rwbLoginHeld(MIKE), false, 'held per login');
+    const r = await rwbSequenceStops(p.requester, 'r1', ['s1'], ORIGIN, [], {}, JANE);
+    assert.equal(r.ok, false);
+    assert.equal(p.calls.length, 0, 'no sign-in with a password the API just refused');
+    assert.match(r.message, /API answered 401/);
+    holdRwbLogin(null, 'x');   // nothing to hold: no throw
+    assert.equal(rwbLoginHeld(null), false);
   });
 });
 
@@ -181,7 +211,7 @@ test('the SHARED login is never held — its behaviour is exactly what it was', 
     assert.ok(before >= 1);
     await rwbSequenceStops(p.requester, 'r1', ['s1'], ORIGIN);
     assert.ok(signIns(p.calls).length > before, 'the shared login is tried again on the next Save, as before');
-    assert.equal(takeRwbLoginRefusal('Chad'), null, 'and never reported as a personal refusal');
+    assert.equal(takeRwbLoginRefusal({ username: 'Chad', password: 'wrong' }), null, 'and never reported as a personal refusal');
   });
 });
 

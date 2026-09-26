@@ -197,6 +197,21 @@ test('an account that could not be READ is not "nothing saved" — different sen
   assert.match(req.error, /try the Save again/);
 });
 
+test('a token the gate could not verify is a signed-in person with a store hiccup — not "not signed in"', () => {
+  // require-user.mts, legacy mode: a store read that throws lets the request through as the
+  // pre-login caller. Telling that dispatcher to sign in (required) is the wrong fix.
+  const req = resolveIdentity({ mode: 'required', principal: LEGACY, doc: null, tokenUnverified: true, open: opener(KEY) });
+  assert.equal(req.kind, 'refused');
+  assert.equal(req.why, 'unavailable');
+  assert.equal(req.status, 503);
+  assert.doesNotMatch(req.error, /sign in under/);
+  const pref = resolveIdentity({ mode: 'preferred', principal: LEGACY, doc: null, tokenUnverified: true, open: opener(KEY) });
+  assert.equal(pref.kind, 'shared');
+  assert.equal(pref.why, 'unavailable');
+  // No token at all is still plain "not signed in".
+  assert.equal(resolveIdentity({ mode: 'required', principal: LEGACY, doc: null, open: opener(KEY) }).why, 'not-signed-in');
+});
+
 test('the legacy principal is never treated as an account, whatever its username says', () => {
   const id = resolveIdentity({ mode: 'preferred', principal: LEGACY, doc: savedDoc({ username: 'legacy' }), open: opener(KEY) });
   assert.equal(id.kind, 'shared');
@@ -219,25 +234,37 @@ test('Basic auth is user:password, base64', () => {
 
 // ── reading NuVizz's answer ──────────────────────────────────────────────────
 
-test('API check: 401/403 is a refusal; any other answer means the login got past the door', () => {
+test('API check: 401/403 is a refusal; only a controller\'s answer (2xx, 400, 404) means the login got in', () => {
   assert.equal(classifyApiCheck(401), 'refused');
   assert.equal(classifyApiCheck(403), 'refused');
-  for (const s of [200, 204, 400, 404, 409]) assert.equal(classifyApiCheck(s), 'ok', String(s));
+  for (const s of [200, 204, 400, 404]) assert.equal(classifyApiCheck(s), 'ok', String(s));
 });
 
-test('API check: an outage is never recorded as a wrong password', () => {
-  for (const s of [0, null, undefined, NaN, 500, 502, 503]) assert.equal(classifyApiCheck(s), 'unknown', String(s));
+test('API check: a rate limit, a timeout or an outage says nothing about the password — either way', () => {
+  // 429 read as "accepted" would save a mistyped password as Working; read as "refused" it would
+  // take a good login out of service. It is neither.
+  for (const s of [0, null, undefined, NaN, 405, 408, 409, 429, 500, 502, 503]) assert.equal(classifyApiCheck(s), 'unknown', String(s));
 });
 
 test('portal check: a token is ok', () => {
   assert.deepEqual(classifyPortalLogin([], true), { verdict: 'ok', detail: null });
 });
 
-test('portal check: the sign-in answered and issued no token → refused, quoting NuVizz', () => {
-  const r = classifyPortalLogin([{ step: 'bootstrap', status: 200, csrfFound: true }, { step: 'checkCompanyLogin', status: 200 }, { step: 'userLogin', status: 200, jwt: false, msg: 'Invalid username or password' }], false);
+test('portal check: the sign-in answered 200/401 WITH JSON and issued no token → refused, quoting NuVizz', () => {
+  const r = classifyPortalLogin([{ step: 'bootstrap', status: 200, csrfFound: true }, { step: 'checkCompanyLogin', status: 200 }, { step: 'userLogin', status: 200, jwt: false, msg: 'Invalid username or password', json: true }], false);
   assert.equal(r.verdict, 'refused');
   assert.match(r.detail, /Invalid username or password/);
-  assert.equal(classifyPortalLogin([{ step: 'userLogin', status: 401, jwt: false }], false).verdict, 'refused');
+  assert.equal(classifyPortalLogin([{ step: 'userLogin', status: 401, jwt: false, json: true }], false).verdict, 'refused');
+});
+
+test('portal check: a rate limit, a CSRF 403, a 404/405 or a non-JSON page is NOT a wrong password', () => {
+  // The review ran each of these through the first draft and every one came back "refused" —
+  // which takes a working login out of service until somebody re-enters a password that was fine.
+  for (const [status, json, msg] of [[429, true, 'Too Many Requests'], [408, true, null], [403, true, 'Invalid CSRF Token'], [404, false, null], [405, false, null], [400, true, 'Bad Request'], [200, false, null], [401, false, null]]) {
+    const r = classifyPortalLogin([{ step: 'userLogin', status, jwt: false, msg, json }], false);
+    assert.equal(r.verdict, 'unknown', `${status} json=${json}`);
+    assert.match(r.detail, /not a clear answer about the password/);
+  }
 });
 
 test('portal check: signed in but no Route Workbench access → refused, and says which', () => {
