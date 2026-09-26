@@ -32,6 +32,9 @@
 // is a deliberate, separate env change (see the checklist at the bottom of this file) —
 // matching how NUVIZZ_LOAD_IMPORT was rolled out (double-gated, OFF until sign-off).
 
+import { createHash } from 'node:crypto';
+import { classifyPortalLogin, type CheckVerdict } from './nuvizz-identity.mts';
+
 // Structurally the same shape as nuvizz-write.mts's RequesterLike (not imported directly —
 // that would be a circular import — but TS structural typing makes any compatible object
 // interchangeable). Every RWB call rides the SAME metered, counted, breaker-guarded
@@ -51,12 +54,25 @@ export function rwbEngineBlocked(): boolean {
 /** True only when the RWB portal login is fully configured (enabled AND creds present).
  * Callers gate on this BEFORE issuing any v7 membership write (insertStops/removeStops),
  * so an enabled-but-credentialless deploy can never leave a load half-mutated (order
- * unset) — the empty-creds refusal happens before the first network call, not after. */
-export function rwbConfigReady(): boolean {
+ * unset) — the empty-creds refusal happens before the first network call, not after.
+ *
+ * `auth` — a PERSONAL portal login (lib/nuvizz-identity.mts). When one is passed it is the
+ * ONLY login considered: an incomplete personal login is NOT ready, rather than quietly
+ * becoming the shared one. See rwbConfig. */
+export function rwbConfigReady(auth?: RwbAuth | null): boolean {
   if (rwbEngineBlocked()) return false;
-  const c = rwbConfig();
+  const c = rwbConfig(auth);
   return !!c.username && !!c.password;
 }
+
+/**
+ * A PERSON'S OWN NuVizz portal login, for the Route Workbench calls made on their behalf
+ * (Chad, 2026-09-26: "...with their personal nuvizz login information instead of every
+ * dispatcher using mine"). Absent ⇒ the shared NUVIZZ_RWB_USER/PASS, exactly as before this
+ * existed — every entry point below takes it as an optional LAST argument, so a caller that
+ * passes nothing gets byte-for-byte the old behaviour.
+ */
+export interface RwbAuth { username: string; password: string }
 
 interface RwbConfig {
   loginBase: string;
@@ -65,17 +81,22 @@ interface RwbConfig {
   company: string;
   username: string;
   password: string;
+  /** true when the login is a person's own (the RwbAuth override), false for the shared env one. */
+  personal: boolean;
 }
 
-function rwbConfig(): RwbConfig {
-  return {
+function rwbConfig(auth?: RwbAuth | null): RwbConfig {
+  const base = {
     loginBase: process.env.NUVIZZ_RWB_LOGIN_BASE || 'https://loginqa.nuvizz.com',
     portalBase: process.env.NUVIZZ_RWB_PORTAL_BASE || 'https://uat.nuvizz.com',
     companyCode: process.env.NUVIZZ_RWB_COMPANY_CODE || 'davisv5',
     company: (process.env.NUVIZZ_RWB_COMPANY || 'DAVISV5').toUpperCase(),
-    username: process.env.NUVIZZ_RWB_USER || '',
-    password: process.env.NUVIZZ_RWB_PASS || '',
   };
+  // A personal login REPLACES the shared one entirely — it never falls back to it field by
+  // field. An override with an empty password is therefore an unready config (refused before
+  // any call), not a half-shared one that signs in as Chad under the dispatcher's name.
+  if (auth) return { ...base, username: String(auth.username || ''), password: String(auth.password || ''), personal: true };
+  return { ...base, username: process.env.NUVIZZ_RWB_USER || '', password: process.env.NUVIZZ_RWB_PASS || '', personal: false };
 }
 
 // Per-host cookie jar (SESSION cookie only matters within the login+authtoken handshake).
@@ -137,8 +158,97 @@ async function go(requester: RwbRequesterLike, jar: ReturnType<typeof makeJar>, 
 // Warm-instance session cache — Netlify functions stay warm between invocations in the
 // same process, so a login (~4 calls) is skipped on every Save within a warm instance
 // as long as the token is still fresh (~15 min real life; cached for 12 to be safe).
-let cachedSession: { authToken: string; jar: ReturnType<typeof makeJar>; ref: string; at: number } | null = null;
+//
+// ONE SESSION PER LOGIN, NEVER ONE FOR EVERYBODY. This was a single variable while every Save
+// used the one shared login. With personal logins, a single slot would hand the NEXT dispatcher
+// whose Save reached this warm instance the PREVIOUS dispatcher's portal session — their route
+// saved under someone else's name, which is precisely the attribution this change exists to
+// fix, and invisible, because the Save would succeed. So the cache is keyed by the login itself
+// (rwbSessionKey): login host, company, username and a fingerprint of the password, so a
+// re-entered password is a new login rather than a stale session wearing the new one's name.
+type RwbSession = { authToken: string; jar: ReturnType<typeof makeJar>; ref: string; at: number };
+const sessions = new Map<string, RwbSession>();
 const SESSION_TTL_MS = 12 * 60 * 1000;
+// A dispatch office is a handful of logins; the cap only stops a warm instance's map from
+// growing without bound. The oldest session goes first — it costs a re-login, never a wrong one.
+const SESSION_CAP = 64;
+
+export function rwbSessionKey(cfg: { loginBase: string; companyCode: string; username: string; password: string }): string {
+  const fp = createHash('sha256').update(String(cfg.password)).digest('hex').slice(0, 16);
+  return `${cfg.loginBase}|${cfg.companyCode}|${cfg.username}|${fp}`;
+}
+
+// ── A REFUSED PERSONAL LOGIN IS NOT RETRIED ──────────────────────────────────
+//
+// THE BAD NIGHT THIS PREVENTS. A dispatcher changes their NuVizz password in the portal and
+// forgets the copy saved here. Every Save then attempts a portal sign-in with the old one — and
+// a Save is up to two sign-ins (the preference call and the first preview each open a session).
+// NuVizz, like any login, locks an account after enough wrong passwords, so a few Saves at 8:45pm
+// would lock the dispatcher out of NuVizz ITSELF, portal and phone app, in the middle of routing.
+//
+// So a PERSONAL login NuVizz clearly refused (classifyPortalLogin — an outage never counts) is
+// held here and not tried again for REFUSAL_HOLD_MS in this instance; the Save fails at once with
+// a sentence saying why. The write endpoint picks the refusal up (takeRwbLoginRefusal) and records
+// it on the person's account, which is what stops every OTHER instance using it too, until the
+// login is re-entered. The SHARED login is deliberately untouched by this: with the switch off,
+// this module behaves exactly as it did before personal logins existed.
+const refusedLogins = new Map<string, { at: number; detail: string }>();
+export const REFUSAL_HOLD_MS = 10 * 60 * 1000;
+// Keyed by the LOGIN (rwbSessionKey), not by the NuVizz username alone: a refusal belongs to the
+// exact username-and-password that was refused, and must not be picked up by a request carrying a
+// different one.
+const refusalsToReport = new Map<string, { at: string; detail: string }>();
+
+/** The refusal a Save's portal sign-in hit for THIS login, once — or null. */
+export function takeRwbLoginRefusal(auth: RwbAuth | null | undefined): { at: string; detail: string } | null {
+  if (!auth) return null;
+  const k = rwbSessionKey(rwbConfig(auth));
+  const r = refusalsToReport.get(k) || null;
+  refusalsToReport.delete(k);
+  return r;
+}
+
+/**
+ * Hold a personal login that NuVizz refused somewhere ELSE — the v7 API answering 401 to the same
+ * username and password (lib/nuvizz-write-identity.mts). One Save, one brake: without this, a v7
+ * refusal early in a Save leaves the portal free to try the same stale password again a moment
+ * later, one more wrong attempt toward a NuVizz lockout.
+ */
+export function holdRwbLogin(auth: RwbAuth | null | undefined, detail: string): void {
+  if (!auth) return;
+  refusedLogins.set(rwbSessionKey(rwbConfig(auth)), { at: Date.now(), detail: String(detail || 'refused') });
+}
+
+/** Is this personal login being held after a refusal (portal or API), in this instance? */
+export function rwbLoginHeld(auth: RwbAuth | null | undefined): boolean {
+  if (!auth) return false;
+  const cfg = rwbConfig(auth);
+  return heldRefusal(cfg, rwbSessionKey(cfg)) != null;
+}
+
+/** Test hook: forget every session, every preference latch and every held refusal. */
+export function _resetRwbSessions(): void {
+  sessions.clear();
+  refusedLogins.clear();
+  refusalsToReport.clear();
+  prefSet.clear();
+}
+
+function heldRefusal(cfg: RwbConfig, key: string): string | null {
+  if (!cfg.personal) return null;
+  const held = refusedLogins.get(key);
+  if (!held) return null;
+  const age = Date.now() - held.at;
+  if (age >= REFUSAL_HOLD_MS) { refusedLogins.delete(key); return null; }
+  const mins = Math.max(1, Math.round(age / 60000));
+  return `NuVizz refused the NuVizz login saved as ${cfg.username} ${mins} min ago (${held.detail}) — not tried again, so NuVizz does not lock the account. Re-enter it under Account & logins.`;
+}
+
+function credsMissingMessage(cfg: RwbConfig): string {
+  return cfg.personal
+    ? 'the personal NuVizz login is incomplete (no username or password) — refused before any write'
+    : 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)';
+}
 
 async function portalLogin(requester: RwbRequesterLike, cfg: RwbConfig): Promise<{ authToken?: string; jar?: ReturnType<typeof makeJar>; ref?: string; error?: string; steps: any[] }> {
   const jar = makeJar();
@@ -166,8 +276,10 @@ async function portalLogin(requester: RwbRequesterLike, cfg: RwbConfig): Promise
   fd.set('companyCode', cfg.companyCode); fd.set('username', cfg.username); fd.set('password', cfg.password); fd.set('appCode', 'portal');
   const ul = await go(requester, jar, 'POST', `${cfg.loginBase}/loginreg/auth/userLogin`, { headers: { origin: cfg.loginBase, referer: `${cfg.loginBase}/loginreg/`, ...csrfHdr }, body: fd, route: '/rwb/userLogin', tenant });
   const jwt = ul.data && ((ul.data.data && ul.data.data.jwtToken) || ul.data.jwtToken);
-  steps.push({ step: 'userLogin', status: ul.status, jwt: !!jwt, msg: ul.data && ul.data.message });
-  if (!jwt) return { error: 'login failed (no JWT) — check NUVIZZ_RWB_USER/PASS', steps };
+  // `json`: whether the sign-in answered with a JSON body at all — a clear "wrong password" is JSON;
+  // a rate-limit page or an HTML error is not, and must not be read as one (classifyPortalLogin).
+  steps.push({ step: 'userLogin', status: ul.status, jwt: !!jwt, msg: ul.data && ul.data.message, json: ul.data != null && typeof ul.data === 'object' });
+  if (!jwt) return { error: cfg.personal ? `login failed (no JWT) — NuVizz did not accept the NuVizz login saved as ${cfg.username}` : 'login failed (no JWT) — check NUVIZZ_RWB_USER/PASS', steps };
 
   const at = await go(requester, jar, 'POST', `${cfg.portalBase}/deliverit/instance/ndv2/openapi/loginreg/authtoken/${cfg.company}`, {
     headers: { 'content-type': 'application/json', origin: cfg.portalBase, referer: ref },
@@ -181,12 +293,35 @@ async function portalLogin(requester: RwbRequesterLike, cfg: RwbConfig): Promise
   return { authToken, jar, ref, steps };
 }
 
+function keepSession(key: string, s: RwbSession): RwbSession {
+  sessions.delete(key);                                   // re-insert = newest, for the eviction order
+  if (sessions.size >= SESSION_CAP) {
+    const oldest = sessions.keys().next().value;
+    if (oldest !== undefined) sessions.delete(oldest);
+  }
+  sessions.set(key, s);
+  return s;
+}
+
 async function session(requester: RwbRequesterLike, cfg: RwbConfig): Promise<{ authToken: string; jar: ReturnType<typeof makeJar>; ref: string } | { error: string }> {
-  if (cachedSession && Date.now() - cachedSession.at < SESSION_TTL_MS) return cachedSession;
+  const key = rwbSessionKey(cfg);
+  const hit = sessions.get(key);
+  if (hit && Date.now() - hit.at < SESSION_TTL_MS) return hit;
+  const held = heldRefusal(cfg, key);
+  if (held) return { error: held };
   const r = await portalLogin(requester, cfg);
-  if (r.error || !r.authToken || !r.jar || !r.ref) return { error: r.error || 'login failed' };
-  cachedSession = { authToken: r.authToken, jar: r.jar, ref: r.ref, at: Date.now() };
-  return cachedSession;
+  if (r.error || !r.authToken || !r.jar || !r.ref) {
+    if (cfg.personal) {
+      const c = classifyPortalLogin(r.steps, false);
+      if (c.verdict === 'refused') {
+        const detail = c.detail || 'refused';
+        refusedLogins.set(key, { at: Date.now(), detail });
+        refusalsToReport.set(key, { at: new Date().toISOString(), detail });
+      }
+    }
+    return { error: r.error || 'login failed' };
+  }
+  return keepSession(key, { authToken: r.authToken, jar: r.jar, ref: r.ref, at: Date.now() });
 }
 
 async function rwbAuthedCall(requester: RwbRequesterLike, cfg: RwbConfig, method: string, path: string, form: Record<string, string> | null, retried = false): Promise<{ ok: boolean; status: number; body: any; error?: string }> {
@@ -200,7 +335,7 @@ async function rwbAuthedCall(requester: RwbRequesterLike, cfg: RwbConfig, method
   const routeLabel = path.split('/').filter((s) => !/^[0-9a-f]{24}$/.test(s)).pop();
   const r = await go(requester, sess.jar, method, url, { headers: { authorization: basic, cookie: 'Instance=ndv2', referer: sess.ref, origin: cfg.portalBase, accept: 'application/json, text/plain, */*', 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty' }, body, route: `/rwb/${routeLabel}`, tenant: cfg.company });
   if (r.status === 401 && !retried) {
-    cachedSession = null; // token expired mid-instance-life — one retry with a fresh login
+    sessions.delete(rwbSessionKey(cfg)); // token expired mid-instance-life — one retry with a fresh login
     return rwbAuthedCall(requester, cfg, method, path, form, true);
   }
   return { ok: r.status >= 200 && r.status < 300, status: r.status, body: r.data ?? r.text?.slice(0, 2000) };
@@ -245,14 +380,24 @@ async function rwbAddStopsPerStop(requester: RwbRequesterLike, cfg: RwbConfig, r
 // which disables the workbench's auto re-sequence. We do our OWN optimization in dispatch-map and
 // send seqMode:'Manual', so we set this once per warm instance to guarantee the saved order is
 // exactly what we sent. Best-effort: a failure here never fails the actual save.
-let rwbPrefSet = false;
-/** Test hook: clears the once-per-instance preference flag. */
-export function _resetRwbPref(): void { rwbPrefSet = false; }
+//
+// PER LOGIN, NOT PER INSTANCE. It is a Route Workbench PREFERENCE, saved against the portal user
+// who sets it — and whether NuVizz scopes it to the user or the company cannot be read from this
+// repo. When every Save was the shared login, one latch per instance was exactly right. With
+// personal logins it would be wrong in the dangerous direction: the first dispatcher's Save sets
+// it for THEIR user and latches, and every other dispatcher's route on that warm instance is then
+// saved with NuVizz's auto re-sequence possibly still ON for them — a stop order the dispatcher
+// built, quietly rearranged by the vendor. So the latch is keyed like the session: one call per
+// login per warm instance. If the preference is company-wide, the extra calls are harmless.
+const prefSet = new Set<string>();
+/** Test hook: clears the once-per-login preference latches. */
+export function _resetRwbPref(): void { prefSet.clear(); }
 export async function rwbEnsurePreference(requester: RwbRequesterLike, cfg: RwbConfig): Promise<number> {
-  if (rwbPrefSet) return 0;
+  const key = rwbSessionKey(cfg);
+  if (prefSet.has(key)) return 0;
   try {
     const r = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/saveRwbPreference?preference=RWB_RTE_EXRTESEC&value=OFF', null);
-    if (r.ok) rwbPrefSet = true;  // only latch on success so a transient failure retries next save
+    if (r.ok) prefSet.add(key);  // only latch on success so a transient failure retries next save
     return 1;
   } catch { return 1; }
 }
@@ -265,10 +410,10 @@ export async function rwbEnsurePreference(requester: RwbRequesterLike, cfg: RwbC
  * of 40. If either batched call is rejected, we FALL BACK to the proven per-stop validate+add so a save
  * never fails just because the batched shape wasn't accepted.
  */
-export async function rwbAddStopsToRoute(requester: RwbRequesterLike, routePlanId: string, stopIds: string[]): Promise<{ ok: boolean; message: string; calls: number; steps: any[]; mode?: string }> {
-  const cfg = rwbConfig();
+export async function rwbAddStopsToRoute(requester: RwbRequesterLike, routePlanId: string, stopIds: string[], auth?: RwbAuth | null): Promise<{ ok: boolean; message: string; calls: number; steps: any[]; mode?: string }> {
+  const cfg = rwbConfig(auth);
   if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server', calls: 0, steps: [] };
-  if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
+  if (!cfg.username || !cfg.password) return { ok: false, message: credsMissingMessage(cfg), calls: 0, steps: [] };
   const ids = [...new Set(stopIds.map(String).filter(Boolean))];
   if (!ids.length) return { ok: true, message: 'no stops to add', calls: 0, steps: [] };
   const steps: any[] = [];
@@ -350,8 +495,8 @@ function routeWindow(dttm: string | undefined, timeZone = 'America/New_York'): {
  * in the visit sequence, and its _DO (the return to depot) at the tail. Routes with no pickup
  * orders produce a byte-identical payload to before.
  */
-export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId: string, orderedStopIds: string[], origin: { lat: number; lng: number }, pickupLegIds: string[] = [], extras: { totals?: any; isStandingRoute?: boolean; resequence?: boolean } = {}): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
-  const r = await rwbSequenceRoutes(requester, [{ routePlanId, orderedStopIds, origin, pickupLegIds, ...extras }]);
+export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId: string, orderedStopIds: string[], origin: { lat: number; lng: number }, pickupLegIds: string[] = [], extras: { totals?: any; isStandingRoute?: boolean; resequence?: boolean } = {}, auth?: RwbAuth | null): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
+  const r = await rwbSequenceRoutes(requester, [{ routePlanId, orderedStopIds, origin, pickupLegIds, ...extras }], auth);
   const ids = [...new Set(orderedStopIds.map(String).filter(Boolean))];
   return { ok: r.ok, message: r.ok ? `Sequenced ${ids.length} stop(s) via RWB.` : r.message, calls: r.calls, steps: r.steps };
 }
@@ -474,10 +619,11 @@ async function rwbPreviewRoute(
 export async function rwbSequenceRoutes(
   requester: RwbRequesterLike,
   routes: Array<{ routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number }; pickupLegIds?: string[]; totals?: any; isStandingRoute?: boolean; resequence?: boolean }>,
+  auth?: RwbAuth | null,
 ): Promise<{ ok: boolean; message: string; calls: number; steps: any[]; failedRoutePlanId?: string; wroteBefore?: boolean }> {
-  const cfg = rwbConfig();
+  const cfg = rwbConfig(auth);
   if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server (NUVIZZ_RWB_ENABLED must be explicitly set)', calls: 0, steps: [] };
-  if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
+  if (!cfg.username || !cfg.password) return { ok: false, message: credsMissingMessage(cfg), calls: 0, steps: [] };
   if (!routes.length) return { ok: true, message: 'no routes to sequence', calls: 0, steps: [] };
   for (const r of routes) {
     if (![...new Set(r.orderedStopIds.map(String).filter(Boolean))].length) {
@@ -530,6 +676,42 @@ export async function rwbSequenceRoutes(
     return { ok: false, message: sr.error || `saveComparedRouteData failed (${why})`, calls, steps };
   }
   return { ok: true, message: `Sequenced ${routes.length} route(s) in one save.`, calls, steps };
+}
+
+/**
+ * rwbCheckLogin — does NuVizz's portal accept this person's login, and will it open the Route
+ * Workbench for it? Exactly the sign-in a Save performs (portalLogin: the login page, the company
+ * check, the sign-in, the Route Workbench token — 4 calls, all through the metered requester), so
+ * "tested OK" means "a Save would get in", not something near it.
+ *
+ * A login it accepts is cached as that login's session in THIS module instance. That does not
+ * carry over to a Save: the check runs in auth-nuvizz-login and a Save in nuvizz-write, which are
+ * separate functions, so the Save signs in again — the cache is harmless, not a saving. A login it
+ * clearly REFUSES is held exactly like a refused Save's (heldRefusal), and a held login is
+ * answered from the hold WITHOUT asking NuVizz again, because pressing Test three times on the
+ * same wrong password is how a NuVizz account gets locked.
+ *
+ * Never throws: an open breaker or a network failure is `unknown`, not a wrong password.
+ */
+export async function rwbCheckLogin(requester: RwbRequesterLike, auth: RwbAuth): Promise<{ verdict: CheckVerdict; detail: string | null; steps: any[] }> {
+  if (rwbEngineBlocked()) return { verdict: 'skipped', detail: 'the Route Workbench engine is switched off on this site (NUVIZZ_RWB_ENABLED)', steps: [] };
+  const cfg = rwbConfig(auth);
+  if (!cfg.username || !cfg.password) return { verdict: 'skipped', detail: 'no NuVizz username or password to test', steps: [] };
+  const key = rwbSessionKey(cfg);
+  const held = heldRefusal(cfg, key);
+  if (held) return { verdict: 'refused', detail: held, steps: [] };
+  let r: Awaited<ReturnType<typeof portalLogin>>;
+  try { r = await portalLogin(requester, cfg); }
+  catch (e: any) { return { verdict: 'unknown', detail: `NuVizz could not be asked: ${String(e?.message || e).slice(0, 160)}`, steps: [] }; }
+  const got = !r.error && !!r.authToken && !!r.jar && !!r.ref;
+  const c = classifyPortalLogin(r.steps, got);
+  if (got) {
+    keepSession(key, { authToken: r.authToken!, jar: r.jar!, ref: r.ref!, at: Date.now() });
+    refusedLogins.delete(key);
+  } else if (c.verdict === 'refused') {
+    refusedLogins.set(key, { at: Date.now(), detail: c.detail || 'refused' });
+  }
+  return { verdict: c.verdict, detail: c.detail, steps: r.steps };
 }
 
 // ── PRODUCTION SWITCH CHECKLIST (mirrors the v7 DAVIS switch elsewhere in this repo) ──

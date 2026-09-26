@@ -142,6 +142,14 @@ export interface WriteCreds {
   companyCode: string;
   /** 'Basic …' header value. */
   auth: string;
+  /**
+   * The Route Workbench (portal) login for the SAME person as `auth` — set only when the write
+   * goes out under a dispatcher's own NuVizz login (lib/nuvizz-identity.mts). Absent ⇒ the
+   * shared NUVIZZ_RWB_USER/PASS, as before. It rides on the creds object because the creds
+   * object is what already reaches every call in a Save: one Save, one person, on both the v7
+   * API and the portal — never Chad on one and the dispatcher on the other.
+   */
+  rwb?: { username: string; password: string } | null;
 }
 
 export interface BuiltRequest {
