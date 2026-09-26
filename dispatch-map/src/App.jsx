@@ -180,7 +180,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.74.4';
+const APP_VERSION = '1.74.5';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -234,7 +234,8 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.74.4', 'THE CLAUDE MAP, REDONE AROUND ONE RULE: CLICK A ROUTE AND YOU SEE THAT ROUTE. Chad, 2026-09-26, on the map: \u201cvery hard to see whats what here\u201d \u2026 \u201cI want map to be more interactive where I click on a route it shows me the route and stops on it\u201d \u2026 \u201ctoo hard to understand what is what what dispatch did vs claude.\u201d He was right: opening a route painted eight trucks at once on two maps, a click on a stop opened a card instead of the route, and at first open every truck was the same grey framed around the farthest stops. NOW: (1) click any stop or any line on either map and that truck\u2019s route opens \u2014 dispatch\u2019s version on the left, Claude\u2019s on the right, stops numbered in order, every other truck faded to small grey dots (click one to open it instead); a row in the routes list does the same. (2) Each map is titled for the opened route \u2014 who drove it, and that side\u2019s stops, spots, pounds and miles \u2014 so what dispatch did and what Claude did is read off the top of each map. (3) On dispatch\u2019s map a red ring marks a stop Claude took off that truck (hollow when Claude left it unplanned); on Claude\u2019s map a green ring marks a stop Claude brought on. A legend under the maps says so. (4) The trucks Claude traded with come on only when asked: \u201cShow the N trucks Claude traded with\u201d, on the map and in the route panel; opening a route no longer colours them uninvited. (5) With nothing open, every truck wears its own colour (a wheel of 24, the same on both maps; the dot beside each route in the list is that colour) and the map opens on the middle 94% of the stops plus the terminal, saying how many lie beyond. (6) Filters on the map, both views, in flow: Satellite view, Hide terminal marker, Unplanned only, Hide place labels, Show routes, Hide stem-out line \u2014 the dispatch Map\u2019s rows where they mean something here (Shiplify data cannot be here: the shadow screen reaches only its own endpoint, and the map says so). The choices last the visit. \u201cAll routes\u201d goes back to the whole day. Every stop\u2019s title still names its truck. PUT IT BACK: revert this commit.'],
+  ['1.74.5', 'THE CLAUDE MAP, REDONE AROUND ONE RULE: CLICK A ROUTE AND YOU SEE THAT ROUTE. Chad, 2026-09-26, on the map: \u201cvery hard to see whats what here\u201d \u2026 \u201cI want map to be more interactive where I click on a route it shows me the route and stops on it\u201d \u2026 \u201ctoo hard to understand what is what what dispatch did vs claude.\u201d He was right: opening a route painted eight trucks at once on two maps, a click on a stop opened a card instead of the route, and at first open every truck was the same grey framed around the farthest stops. NOW: (1) click any stop or any line on either map and that truck\u2019s route opens \u2014 dispatch\u2019s version on the left, Claude\u2019s on the right, stops numbered in order, every other truck faded to small grey dots (click one to open it instead); a row in the routes list does the same. (2) Each map is titled for the opened route \u2014 who drove it, and that side\u2019s stops, spots, pounds and miles \u2014 so what dispatch did and what Claude did is read off the top of each map. (3) On dispatch\u2019s map a red ring marks a stop Claude took off that truck (hollow when Claude left it unplanned); on Claude\u2019s map a green ring marks a stop Claude brought on. A legend under the maps says so. (4) The trucks Claude traded with come on only when asked: \u201cShow the N trucks Claude traded with\u201d, on the map and in the route panel; opening a route no longer colours them uninvited. (5) With nothing open, every truck wears its own colour (a wheel of 24, the same on both maps; the dot beside each route in the list is that colour) and the map opens on the middle 94% of the stops plus the terminal, saying how many lie beyond. (6) Filters on the map, both views, in flow: Satellite view, Hide terminal marker, Unplanned only, Hide place labels, Show routes, Hide stem-out line \u2014 the dispatch Map\u2019s rows where they mean something here (Shiplify data cannot be here: the shadow screen reaches only its own endpoint, and the map says so). The choices last the visit. \u201cAll routes\u201d goes back to the whole day. Every stop\u2019s title still names its truck. PUT IT BACK: revert this commit.'],
+  ['1.74.4', 'THE ROUTES TO BUILD ARE A LIST, EACH WITH ITS OWN BOX / TRACTOR, AND IT SAYS WHEN THE CHOICE IS REMEMBERED. Chad, on the Build Panel line that read \u201c2 routes to build: ALLEN C, JOHN\u201d: \u201cTHIS SHOULD BUILD AS A LIST AND ALLOW ME TO SET BOX OR TRACTOR AND SHOULD REMEMBER MY SELECTION.\u201d Step 2 \u00b7 Plan onto now lists every route the Build will make on its own row with Box and Tractor beside it. A tap sets that route for this build AND saves the choice for the load\u2019s NAME in the shared memory (routing_load_vehicles), so ALLEN C is a tractor tomorrow and next week on every dispatcher\u2019s screen \u2014 the same handler as the button on the ticked load in the list above, so the two can never disagree. Under each route it says where the answer came from: \u2713 remembered only when the shared memory READ BACK holds that choice for that name; \u201cset for this build \u2014 not saved yet\u201d while a save has not landed or was refused; otherwise NuVizz\u2019s own truck on the load today, the name, or the default. A remembered choice that disagrees with the truck NuVizz has on the load today still says so, on the row. The picker above is unchanged. Build Panel only: the Route Workbench is not touched. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.74.3', 'MONDAY\u2019S LOADS REACH THE LOADS PANEL AND COMPARE ON A FRIDAY AND A WEEKEND NOW. Chad, Saturday, Monday\u2019s board with CHE, DARVIN, DENIS SALKIC, MARCUS, SCOTT and VICTOR planned and none of them opening in Compare: \u201cThe roster scan from the refresh should of picked them up and also every roster scan on friday should be picking up monday and tuesdays loads\u201d \u2014 then \u201cmondays loads are in there \u2026 run up to 10 scans to figure this out.\u201d HE WAS RIGHT, AND THE SCANS HAD RUN: Friday pulled Monday and Tuesday and skipped the weekend exactly as he wants, and so did his Saturday refresh. Every one of those pulls asked NuVizz for the day as an offset from today \u2014 +3d from Friday, +2d from Saturday \u2014 and NuVizz answers that shape with HTTP 200 and an EMPTY list, no error. Monday\u2019s roster had 24 empty pulls in a row, Tuesday\u2019s 10; every pull on file that ever returned loads used 0d (today). MEASURED WITH FOUR CALLS, NOT REASONED: the stop list asked with only the period changed gave +/-30d \u2192 2,301 rows, +2d \u2192 0, +/-2d \u2192 0; the load list asked +/-7d gave 959 loads, 90 of them departing Monday 9/28 \u2014 CHE, DARVIN, DENIS SALKIC, MARCUS, SCOTT, VICTOR, the empty TRAILER 1\u20136 and the rest \u2014 with the Load Latest Departure column filled on all 959, and its counts for 9/22\u20139/25 equal to what the 0d pulls stored for those days. Monday\u2019s loads were created about nine days ahead; the only thing wrong was the period. THE FIX: today still asks 0d. Any other day within a week asks +/-7d \u2014 still ONE call \u2014 and keeps the loads whose Load Latest Departure is that day. A window that comes back at its row cap is refused rather than written short (a roster write replaces the day), and so is a grid with no departure column. Beyond a week nothing was measured, so it asks the old way. Both the scan and the Loads endpoint use the one function, so the Loads panels, the empty shells and the load number a Compare card saves to all come from it. FEWER CALLS, NOT MORE: a future day that captured nothing was re-pulled every roster hour; captured, it is pulled once a day. ALSO: the one-call load-list diagnostic (nuvizz-load-columns, confirm=1) takes &period= and &max= and says how many loads depart each day \u2014 the tool that measured this. PUT IT BACK: ROSTER_WINDOW_PULL=off returns every roster pull to the offset at once. NOT CHANGED: the Route Workbench, the Build Panel, the scan schedule, and which days are pulled. 13 new tests; seven mutations of the rule, each seen to fail.'],
   ['1.74.2', 'THE COMPARE ROW SHOWS AUTO-DETECTED HOURS TOO, AND SAYS SO. Chad, 2026-09-25, on TITAN ELECTRIC reading \u201c11M LATE\u201d with nothing beside it: \u201cwhy are titan electrics hours not displayed in the compare panel\u201d, then \u201cyes i want the proposed fix.\u201d ANSWERED FROM THE RECORD: TITAN\u2019s 7:00a\u20133:30p was read from Uline\u2019s order text (\u201cRH 7AM-3 30PM\u201d, provenance auto), and v1.56.1 gave the row chip to dispatcher-TYPED hours only. An auto window the map calls ordinary drew nothing \u2014 so the row said LATE without the time it was late against, which is the one thing a dispatcher needs next. NOW every window on file gets its chip, and every chip whose hours were NOT typed carries a quiet \u201c\u00b7 auto\u201d, so a time read from an order is never mistaken for one a dispatcher confirmed. Typed chips are unchanged. The map pins are untouched. A Route Workbench change, made because Chad approved it; the commit carries his sentence. VITE_COMPARE_AUTO_HOURS=off puts the row back to typed-only (build-time, so it is a redeploy). 7 new tests, one mutation-checked.'],
   ['1.74.1', 'A WEIGHT LIMIT RAISED TO DISPATCH\u2019S OWN LOAD IS COUNTED AND SAID. From the review of 1.74.0: a limit typed under what dispatch loaded on a truck is raised to that load for that truck (the same rule as skid caps and day length, so the driven column stays feasible) \u2014 and on those loads it binds nothing, so \u201cLoads over weight 0\u201d read as more than it was. Every result now counts the raises per class (lbsRaised: raised, of, heaviest) and carries each load\u2019s lbsNote and lbsRaisedFrom; the \u201cWhat this measures\u201d list gains a sentence when any were raised (\u201cThe box-truck limit of 8,000 lb was raised on 5 of 40 box-truck loads to what dispatch loaded (the heaviest to 9,323 lb)\u2026\u201d); and the day\u2019s scorecard says which limits it ran with and how many were raised, instead of leaving that inside the collapsed block. The Router-settings form says whose limits these are: the backtest\u2019s only, with the live builder\u2019s on the Build panel\u2019s truck card. Additive; nothing about how a day is built or scored changes. PUT IT BACK: revert this commit.'],
@@ -26365,7 +26366,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     for (const r of planPickRows) {
       if (!planTargetKeys.has(r.rowKey) || r.ambiguous) continue;
       const v = loadVehicleFor(r);
-      if (v.profile) out.push({ ...r, profile: v.profile, vehicleClass: v.cls, vehicleSource: v.source });
+      if (v.profile) out.push({ ...r, profile: v.profile, vehicleClass: v.cls, vehicleSource: v.source, vehicleAssigned: v.assigned, vehicleConflict: v.conflict });
     }
     return out;
   }, [planPickRows, planTargetKeys, loadVehicleFor]);
@@ -27202,8 +27203,53 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
                       );
                     })}
                 </div>
+                {/* THE ROUTES TO BUILD ARE A LIST, AND EACH ONE SAYS WHAT IT RUNS. Chad, on the line
+                    that read "2 routes to build: ALLEN C, JOHN": "THIS SHOULD BUILD AS A LIST AND
+                    ALLOW ME TO SET BOX OR TRACTOR AND SHOULD REMEMBER MY SELECTION." The picker above
+                    scrolls, so a ticked load's own Box/Tractor could sit out of sight while this line
+                    named it; here every route the Build will make is one row with its buttons. The
+                    buttons are the SAME handler as the picker's (pickLoadVehicle: this build AND the
+                    shared per-name memory), so the two can never disagree. "remembered" is printed
+                    only when the shared memory READ BACK holds that class for the name — a tap whose
+                    save has not landed, or was refused, says so instead of claiming it stuck. */}
                 {planTargets.length > 0 && (
-                  <div className="text-[11px] text-slate-600 bg-slate-50 rounded p-1.5"><b>{planTargets.length}</b> route{planTargets.length === 1 ? '' : 's'} to build: {planTargets.map((t) => t.display).join(', ')}</div>
+                  <div className="bg-slate-50 rounded p-1.5 space-y-1" data-plan-build-list={planTargets.length}>
+                    <div className="text-[11px] text-slate-600"><b>{planTargets.length}</b> route{planTargets.length === 1 ? '' : 's'} to build</div>
+                    <ul className="border rounded bg-white divide-y divide-slate-100">
+                      {planTargets.map((t) => {
+                        const saved = !!t.vehicleClass && loadVehicleByKey.get(loadVehicleKey(t.display)) === t.vehicleClass;
+                        const how = saved ? 'remembered'
+                          : t.vehicleSource === 'picked' ? 'set for this build — not saved yet'
+                            : t.vehicleSource === 'assigned' ? `NuVizz has a ${t.vehicleClass === 'tractor' ? 'tractor' : 'box truck'} on it today`
+                              : t.vehicleSource === 'name' ? `from the name — ${isMobile ? 'tap' : 'click'} to set`
+                                : `default — ${isMobile ? 'tap' : 'click'} to set`;
+                        return (
+                          <li key={t.rowKey} className="px-1.5 py-1 text-[12px]" data-plan-build-row={t.display}>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-medium truncate flex-1 min-w-0">{t.display}</span>
+                              <div className="flex rounded border border-slate-300 overflow-hidden text-[10px] shrink-0"
+                                role="group" aria-label={`Vehicle for ${t.display} (routes to build)`}
+                                data-build-vehicle={t.vehicleClass || ''} data-build-vehicle-source={t.vehicleSource} data-build-vehicle-saved={saved ? '1' : '0'}>
+                                {loadVehicleChoices(profiles).map((c, i) => (
+                                  <button key={c.cls} type="button" disabled={c.disabled} title={c.title}
+                                    aria-pressed={t.vehicleClass === c.cls}
+                                    onClick={() => pickLoadVehicle(t, c.cls)}
+                                    className={`px-1.5 py-0.5 font-semibold disabled:opacity-40 ${i ? 'border-l border-slate-300' : ''} ${t.vehicleClass === c.cls ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                                    style={t.vehicleClass === c.cls ? { background: BRAND } : undefined}>{c.label}</button>
+                                ))}
+                              </div>
+                            </div>
+                            <div className={`text-[10px] ${saved ? 'text-emerald-700' : 'text-slate-500'}`}>{saved ? '✓ ' : ''}{how}</div>
+                            {t.vehicleConflict && (
+                              <div className="text-[10px] text-amber-700">
+                                NuVizz has a {t.vehicleAssigned === 'tractor' ? 'tractor' : 'box truck'} on {t.display} today — {isMobile ? 'tap' : 'click'} <b>{t.vehicleAssigned === 'tractor' ? 'Tractor' : 'Box'}</b> to plan it that way.
+                              </div>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
                 )}
               </>
             )}
