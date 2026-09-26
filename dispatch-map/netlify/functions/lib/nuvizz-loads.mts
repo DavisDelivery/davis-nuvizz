@@ -26,6 +26,7 @@ import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
 // looksLikeLoadNbr moved to nuvizz-list.mts (v1.12.0): the board write-grace needs the same
 // question answered, and a third copy of it is how two readers of one fact drift apart.
 import { OPENAPI_BASE, linkVal, periodForDate, isHashLikeId, looksLikeLoadNbr } from './nuvizz-list.mts';
+import { etDayString } from './firestore.mts';
 export { looksLikeLoadNbr };
 
 // The saved load-list def the portal uses for the Loads grid (HAR-captured). Override
@@ -347,8 +348,102 @@ export async function loadRosterForDate(targetDateUTC: string): Promise<RosterLo
  * cost) and stored beside the roster so ?explain=1 can show it without a call. CLAUDE.md: build
  * the free diagnostic first.
  */
+// ── A FUTURE DAY'S ROSTER IS ASKED FOR AS A WINDOW, AND READ OFF EACH ROW'S OWN DAY ─────────
+//
+// Chad, Saturday 2026-09-26, Monday's board showing CHE, DARVIN, DENIS SALKIC, MARCUS, SCOTT
+// and VICTOR with stops on them and Monday's roster reading 0 loads: "The roster scan from the
+// refresh should of picked them up and also every roster scan on friday should be picking up
+// monday and tuesdays loads" — then "mondays loads are in there … run up to 10 scans to figure
+// this out."
+//
+// MEASURED, NOT REASONED (four calls). The roster asked for a future day as a relative offset —
+// "+2d" for Monday from Saturday, "+3d" from Friday — and NuVizz answers that shape with HTTP
+// 200, 21 column definitions and ZERO rows: no error, just nothing. Monday's roster document
+// had 24 empty pulls in a row; Tuesday's 10; every pull on file that ever returned loads used
+// "0d". The stop list's saved search, asked the same question with only the period changed:
+// "+/-30d" → 2,301 rows, "+2d" → 0, "+/-2d" → 0. And the load list itself, asked "+/-7d" →
+// 959 loads, 90 of them on Monday 9/28 by their Load Latest Departure (schEndTime) — CHE,
+// DARVIN, DENIS SALKIC, MARCUS, SCOTT and VICTOR among them, the empty TRAILER 1–6 too — and
+// that column blank on none of the 959. Its per-day counts for 9/22–9/25 equal what the "0d"
+// pulls stored for those days (98, 101, 101, 100). The loads existed all along — created about
+// nine days ahead — and every Friday pull of Monday missed them on the period string alone.
+//
+// So: TODAY keeps "0d", the one shape proven every day. Any other day within a week asks for
+// "+/-7d" — ONE call either way — and keeps the rows whose schEndTime is that day. Beyond a
+// week nothing has been measured, so the old shape is kept and the pull records that it was
+// not windowed rather than pretending. A window that comes back AT its row cap may be missing
+// loads, and a roster write is a REPLACE, so a truncated window THROWS and the held roster
+// stands. A grid with no Load Latest Departure column cannot be filtered to a day, and writing
+// the whole window as one day's roster would put a fortnight of trailers on Monday — it throws
+// too.
+//
+// ROSTER_WINDOW_PULL=off puts every roster pull back on the relative-offset period at once (the
+// scan and the Loads endpoint share this function). Default ON; anything malformed leaves it on.
+
+/** "9/2/26 11:59 PM" / "09/28/2026" / "2026-09-28T…" → "2026-09-28"; anything else → null. */
+export function gridDay(v: any): string | null {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/.exec(s);
+  if (!us) return null;
+  const m = Number(us[1]); const d = Number(us[2]);
+  const y = us[3].length === 2 ? 2000 + Number(us[3]) : Number(us[3]);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+export function rosterWindowEnabled(env: any = process.env): boolean {
+  const v = String(env?.ROSTER_WINDOW_PULL ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** The window every non-today pull within a week sends. Measured honoured on 2026-09-26. */
+export const ROSTER_WINDOW_PERIOD = '+/-7d';
+/** How far either side of today the window reaches — the days a windowed pull can answer for. */
+export const ROSTER_WINDOW_DAYS = 7;
+/** Row cap for a window pull. ~100 loads a weekday → ~1,000 for ±7d (959 measured). */
+export const ROSTER_WINDOW_MAX = Math.max(1000, Math.min(5000, Number(process.env.NUVIZZ_ROSTER_WINDOW_MAX) || 3000));
+
+export interface RosterPullPlan {
+  period: string;
+  /** The day each row must carry in schEndTime to be kept; null = keep every row (the "0d" pull). */
+  day: string | null;
+  pageSize: number;
+}
+
+/** PURE. What one roster pull for `targetDate` sends, given NuVizz's ET today. */
+export function rosterPullPlan(targetDate: string, etToday: string, enabled: boolean = true): RosterPullPlan {
+  const legacy: RosterPullPlan = { period: periodForDate(targetDate, etToday), day: null, pageSize: LOAD_MAX_RESULT };
+  if (!enabled) return legacy;
+  const off = Math.round((Date.parse(targetDate + 'T00:00:00Z') - Date.parse(etToday + 'T00:00:00Z')) / 86400000);
+  if (!Number.isFinite(off) || off === 0) return legacy;                 // today: "0d", proven daily
+  if (Math.abs(off) > ROSTER_WINDOW_DAYS) return legacy;                 // unmeasured beyond a week
+  return { period: ROSTER_WINDOW_PERIOD, day: targetDate, pageSize: ROSTER_WINDOW_MAX };
+}
+
+/**
+ * PURE. Keep only the grid rows whose Load Latest Departure (schEndTime) falls on `day`.
+ * Throws when the grid has rows but no such column — a window can never be written as one day.
+ */
+export function filterLoadGridToDay(j: any, day: string): { grid: any; windowRows: number } {
+  const colDefs: Record<string, any> = (j && j.filterData && j.filterData[0]) || {};
+  const cols = Object.keys(colDefs);
+  const values: any[] = Array.isArray(j?.values) ? j.values : [];
+  const ix = cols.findIndex((k) => k === 'schEndTime' || /latest departure/i.test(String(colDefs[k]?.columnName ?? '')));
+  if (ix < 0) {
+    if (!values.length) return { grid: j, windowRows: 0 };
+    throw new Error(`load window: no Load Latest Departure column among ${cols.length} — cannot read a row's day, refusing to write the window as ${day}`);
+  }
+  const kept = values.filter((row) => gridDay(linkVal(row?.[ix])) === day);
+  return { grid: { ...j, values: kept }, windowRows: values.length };
+}
+
 export interface RosterPullMeta {
   period: string; httpStatus: number; cols: number; rows: number; kept: number;
+  /** Set when the pull was a window read down to one day: the day kept. Absent on older documents. */
+  day?: string | null;
   /**
    * How many kept rows carry a driver. The point is the ZERO case: `kept: 106, drivers: 0` is
    * the saved search having lost its Driver Name column, and without this number that failure
@@ -359,27 +454,34 @@ export interface RosterPullMeta {
    */
   drivers: number;
 }
-export async function loadRosterPull(targetDateUTC: string): Promise<{
+export async function loadRosterPull(targetDateUTC: string, etToday: string = etDayString()): Promise<{
   loads: RosterLoad[];
   pull: RosterPullMeta;
 }> {
   const { companyCode } = getCreds();
   const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
   const url = `${OPENAPI_BASE}/entity/filterdata/${LOAD_ENTITY}/${companyCode}`;
-  const period = periodForDate(targetDateUTC);
-  const body = JSON.stringify(buildLoadBody(period));
+  const plan = rosterPullPlan(targetDateUTC, etToday, rosterWindowEnabled());
+  const period = plan.period;
+  const body = JSON.stringify(buildLoadBody(period, plan.pageSize));
   const resp = await getNuvizzRequester().request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata(roster)', tenant: companyCode });
   if (!resp.ok) throw new Error(`load roster filterdata ${resp.status}`);
-  const j: any = await resp.json();
-  const cols = Object.keys((j && j.filterData && j.filterData[0]) || {}).length;
-  const rows = Array.isArray(j?.values) ? j.values.length : 0;
+  const raw: any = await resp.json();
+  const cols = Object.keys((raw && raw.filterData && raw.filterData[0]) || {}).length;
+  const rows = Array.isArray(raw?.values) ? raw.values.length : 0;
+  // A window at its cap may be missing loads; the caller's write is a REPLACE. Throw, keep what is held.
+  if (plan.day && rows >= plan.pageSize) {
+    throw new Error(`load window ${period} returned ${rows} rows — AT the ${plan.pageSize} cap, probably truncated; not writing ${targetDateUTC}`);
+  }
+  const j = plan.day ? filterLoadGridToDay(raw, plan.day).grid : raw;
   const loads = normalizeLoads(j);
   const drivers = loads.filter((l) => l.driver).length;
-  const pull: RosterPullMeta = { period, httpStatus: resp.status, cols, rows, kept: loads.length, drivers };
+  const pull: RosterPullMeta = { period, httpStatus: resp.status, cols, rows, kept: loads.length, drivers, day: plan.day };
   // One line per pull, and it names the date AND the period so a reader can see with their own
-  // eyes whether "+2d" is the day the dispatcher had on screen.
-  console.log(`[roster] ${targetDateUTC} period=${period} http=${resp.status} cols=${cols} rows=${rows} kept=${loads.length} drivers=${drivers}`
-    + (rows > 0 && loads.length === 0 ? ' ← ROWS CAME BACK AND THE PARSER KEPT NONE' : '')
+  // eyes which day was asked for and how the answer was cut down to it.
+  console.log(`[roster] ${targetDateUTC} period=${period}${plan.day ? ` window→${plan.day}` : ''} http=${resp.status} cols=${cols} rows=${rows} kept=${loads.length} drivers=${drivers}`
+    + (!plan.day && rows > 0 && loads.length === 0 ? ' ← ROWS CAME BACK AND THE PARSER KEPT NONE' : '')
+    + (plan.day && rows > 0 && loads.length === 0 ? ` ← THE WINDOW HAD ${rows} LOADS AND NONE DEPART ${plan.day}` : '')
     + (cols === 0 ? ' ← NO COLUMN DEFS: not the grid shape the code expects' : '')
     + (loads.length > 0 && drivers === 0 ? ' ← NOT ONE LOAD CARRIES A DRIVER: the saved search has probably lost its Driver Name column' : ''));
   return { loads, pull };
