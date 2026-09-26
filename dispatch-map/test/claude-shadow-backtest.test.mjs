@@ -296,6 +296,9 @@ test('weight is a hard limit — the first production plan put 10,084 lb on a 10
   const p = buildBacktestProblem(input({ caps }));
   const box = p.loads.find((l) => l.cls !== 'tractor');
   assert.equal(box.maxLbs, 9200, 'the 10,000 lb rating less the 800 lb of the unlocated stop that rode on it');
+  // The limit is a number Chad typed, so a route reading 9,200 under a typed 10,000 says where the 800 went.
+  assert.equal(box.lbsNote, '800 of 10000 lb held back for 1 stop on it with no location');
+  assert.equal(p.loads.find((l) => l.cls === 'tractor').lbsNote, null, 'nothing held back, nothing raised: no note');
   const seqr = makeSequencer(p, CFG);
   const own = evaluateAssignment(p, { loads: p.loads.map((l) => ({ load: l.id, stops: l.dispatch })), unplanned: [] }, CFG, seqr);
   assert.ok(!own.summary.hardViolations.some((v) => /lb limit/.test(v)), own.summary.hardViolations.join('; '));
@@ -310,7 +313,7 @@ test('weight is a hard limit — the first production plan put 10,084 lb on a 10
   const op = buildBacktestProblem(input({ caps, rows: over.map((r, i) => (i >= 4 && i < 8 ? { ...r, weight: 2600 } : r)) }));
   const obox = op.loads.find((l) => l.cls !== 'tractor');
   assert.equal(obox.maxLbs, 10400);
-  assert.match(obox.lbsNote, /raised from 9200 to 10400 lb/);
+  assert.equal(obox.lbsNote, `800 of 10000 lb held back for 1 stop on it with no location; raised from 9200 to 10400 lb — dispatch loaded that much on ${obox.route} / ${obox.driver} on 2026-09-23`);
 });
 
 test('coordinates: null, blank, 0,0 and out-of-range are not a place', () => {
@@ -346,4 +349,18 @@ test('what the day could not tell is written on the result: no roster captured, 
   assert.ok(['applied', 'off'].includes(p.stampGate));
   assert.ok(p.approximations.some((a) => /load roster was not captured/.test(a)));
   assert.ok(p.approximations.some((a) => /15 min on site/.test(a)));
+});
+
+test('weight limits from Router settings: the problem is held to the typed limits, records them, and falls back to the profiles when they are missing or malformed', () => {
+  const caps = { drivers: {}, routes: { GAINESVILLE: { name: 'GAINESVILLE', cap: 40 }, DULUTH: { name: 'DULUTH', cap: 40 } } };
+  const dflt = buildBacktestProblem(input({ caps }));
+  assert.deepEqual(dflt.lbsLimits, { box_truck: 10000, tractor: 30000 }, 'no settings: the engine\u2019s profiles');
+  assert.match(dflt.approximations.find((a) => /Weight limits/.test(a)), /box 10,000 lb, tractor 30,000 lb/);
+  const typed = buildBacktestProblem(input({ caps, lbsLimits: { box_truck: 12000, tractor: 26000 } }));
+  assert.deepEqual(typed.lbsLimits, { box_truck: 12000, tractor: 26000 });
+  const box = typed.loads.find((l) => l.cls !== 'tractor');
+  assert.equal(box.maxLbs, 12000 - 800, 'the typed box limit, less the 800 lb of the unlocated stop that rode on it');
+  assert.match(typed.approximations.find((a) => /Weight limits/.test(a)), /box 12,000 lb, tractor 26,000 lb/);
+  const bad = buildBacktestProblem(input({ caps, lbsLimits: { box_truck: 0, tractor: 'x' } }));
+  assert.deepEqual(bad.lbsLimits, { box_truck: 10000, tractor: 30000 }, 'a malformed limit is the default, never 0');
 });

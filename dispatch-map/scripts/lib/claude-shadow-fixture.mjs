@@ -82,9 +82,10 @@ const result = (i, driven, claude) => ({
 });
 export const CLAUDE_SHADOW_BACKTESTS = {
   ok: true, enabled: true, model: 'claude-opus-5-5', refused: null, nuvizzCalls: 0,
-  settings: { capRule: 'tighter', costPerMile: 2.1, costPerDriveHour: 38.5, effort: 'high', maxRounds: 8, maxUsd: 5, maxTokens: 32000 },
-  defaults: { capRule: 'tighter', costPerMile: null, costPerDriveHour: null, effort: 'high', maxRounds: 8, maxUsd: 5, maxTokens: 32000 },
-  bounds: { maxRounds: [2, 20], maxUsd: [0.5, 50], maxTokens: [8000, 64000], costPerMile: [0, 50], costPerDriveHour: [0, 500] },
+  settings: { capRule: 'tighter', costPerMile: 2.1, costPerDriveHour: 38.5, effort: 'high', maxRounds: 8, maxUsd: 5, maxTokens: 32000, lbsBox: 10000, lbsTractor: 30000 },
+  pinned: { lbsBox: false, lbsTractor: true },
+  defaults: { capRule: 'tighter', costPerMile: null, costPerDriveHour: null, effort: 'high', maxRounds: 8, maxUsd: 5, maxTokens: 32000, lbsBox: 10000, lbsTractor: 30000 },
+  bounds: { maxRounds: [2, 20], maxUsd: [0.5, 50], maxTokens: [8000, 64000], costPerMile: [0, 50], costPerDriveHour: [0, 500], lbsBox: [1000, 80000], lbsTractor: [1000, 80000] },
   efforts: ['low', 'medium', 'high'], capRules: ['tighter', 'driver', 'route'],
   spend: { usd: 1284.37, runs: 312 },
   ceiling: { usd: 25, spent24h: 24.87, holding: true },   // the longest queued status: "waiting on the 24-hour ceiling"
