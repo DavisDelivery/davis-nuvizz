@@ -154,6 +154,7 @@ for (const [i, l] of CLAUDE_SHADOW_MAP.loads.entries()) {
 }
 const metric = (stops, miles) => ({ stops, spots: stops * 2.5, miles, driveMin: Math.round(miles * 1.9), over: false, blocked: 0 });
 export const CLAUDE_SHADOW_DAY_RESULT = {
+  lbsLimits: { box_truck: 10000, tractor: 30000 }, lbsRaised: { box_truck: { raised: 2, of: 5, heaviest: 10400 }, tractor: { raised: 0, of: 3, heaviest: 0 } },
   ...result(0, 4381.6, 3902.2),
   effort: 'high', planFrom: 'submitted', capRule: 'tighter', loosePerSkid: 10,
   approximations: ['Truck class is the driver’s CURRENT MarginIQ type, not what it was on the day.', 'Delivery windows are not a constraint here: most stored windows are the vendor’s 08:00–20:00 default.'],

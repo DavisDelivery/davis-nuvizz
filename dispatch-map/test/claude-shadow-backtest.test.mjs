@@ -364,3 +364,23 @@ test('weight limits from Router settings: the problem is held to the typed limit
   const bad = buildBacktestProblem(input({ caps, lbsLimits: { box_truck: 0, tractor: 'x' } }));
   assert.deepEqual(bad.lbsLimits, { box_truck: 10000, tractor: 30000 }, 'a malformed limit is the default, never 0');
 });
+
+// v1.74.1. A limit typed under what dispatch loaded is raised to dispatch's own load on that truck,
+// so on those loads it binds nothing — the result counts them, per class, and says so.
+test('weight limits: a limit raised to dispatch\u2019s own load is counted per class and said in the approximations', () => {
+  const caps = { drivers: {}, routes: {}, days: { count: 0, first: null, last: null } };
+  const none = buildBacktestProblem(input({ caps }));
+  assert.deepEqual(none.lbsRaised, { box_truck: { raised: 0, of: 1, heaviest: 0 }, tractor: { raised: 0, of: 1, heaviest: 0 } });
+  assert.ok(!none.approximations.some((a) => /was raised on/.test(a)), 'nothing raised, nothing said');
+  assert.ok(none.loads.every((l) => l.lbsRaisedFrom === null));
+  // Box limit typed at 1,000 lb: the box load carried 3,200 lb located + 800 lb unlocated, so its
+  // limit reads 200 after the hold-back and is raised to 3,200.
+  const low = buildBacktestProblem(input({ caps, lbsLimits: { box_truck: 1000, tractor: 26000 } }));
+  const box = low.loads.find((l) => l.cls !== 'tractor');
+  assert.equal(box.lbsRaisedFrom, 200);
+  assert.equal(box.maxLbs, 3200);
+  assert.deepEqual(low.lbsRaised, { box_truck: { raised: 1, of: 1, heaviest: 3200 }, tractor: { raised: 0, of: 1, heaviest: 0 } });
+  const said = low.approximations.find((a) => /was raised on/.test(a));
+  assert.match(said, /^The box-truck limit of 1,000 lb was raised on 1 of 1 box-truck load to what dispatch loaded \(the heaviest to 3,200 lb\)/);
+  assert.ok(!low.approximations.some((a) => /tractor limit of/.test(a)), 'the tractor limit was not raised, so no tractor sentence');
+});

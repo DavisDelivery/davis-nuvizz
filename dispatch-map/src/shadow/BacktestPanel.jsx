@@ -266,6 +266,7 @@ function RouterSettings({ v, onSave }) {
             <button onClick={() => setOpen(false)} className="rounded-lg border bg-white px-3 text-xs min-h-[44px]">Cancel</button>
           </div>
           <p className="col-span-2 md:col-span-3 text-[11px] text-slate-500">Cost is left blank until you enter a rate: nothing in the app says what a mile or a driver-hour costs Davis, so no dollar saving is shown until you do.</p>
+          <p className="col-span-2 md:col-span-3 text-[11px] text-slate-500">The two weight limits govern the backtest only; the live route builder’s limit is the truck card in the Build panel (2 · Plan onto → Trucks). A limit under what dispatch loaded on a truck is raised to that load for that truck, and the result says on how many loads that happened.</p>
         </div>
       )}
     </div>
@@ -273,6 +274,23 @@ function RouterSettings({ v, onSave }) {
 }
 
 // ── one day, in full ────────────────────────────────────────────────────────
+
+// v1.74.1: which weight limits a finished day was held to, and on how many loads the limit was
+// raised to dispatch's own load (where it then bound nothing) — said beside the scorecard, because
+// "Loads over weight 0" reads as more than it is on a day the limit sat under what dispatch ran.
+function LimitsLine({ r }) {
+  const L = r.lbsLimits || {};
+  const raised = r.lbsRaised;
+  const part = (cls, word) => {
+    const x = raised?.[cls];
+    return x && x.raised ? ` (raised on ${x.raised} of ${x.of} to what dispatch loaded)` : '';
+  };
+  return (
+    <p className="text-[11px] text-slate-600 mt-1">
+      Weight limits this day ran with: box ≤{int(L.box_truck)} lb{part('box_truck')} · tractor ≤{int(L.tractor)} lb{part('tractor')}.
+    </p>
+  );
+}
 
 function Scorecard({ r, phone }) {
   const c = r.columns;
@@ -462,6 +480,7 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
             <span className="text-slate-600">{int(r.agreement?.stopsMoved)} stops moved to another truck · stops riding together agree {typeof r.agreement?.coLoadRecall === 'number' ? `${r.agreement.coLoadRecall}%` : '—'}</span>
           </div>
           <Scorecard r={r} phone={phone} />
+          {r.lbsLimits && <LimitsLine r={r} />}
           {r.unplanned?.length > 0 && <div className="text-xs text-rose-700">Claude left {r.unplanned.length} stop{r.unplanned.length === 1 ? '' : 's'} unplanned: {r.unplanned.slice(0, 8).map((u) => `${u.n ? `#${u.n}${u.name ? ` ${u.name}` : ''}` : `backtest stop ${u.stop}`} (${u.reason})`).join('; ')}</div>}
           {stale && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">This day was backtested again after you opened it, so its routes would not match the numbers above. Close the day and open it again.</div>}
           <button onClick={() => setShowMap((x) => !x)} aria-expanded={showMap} disabled={!m || stale}
