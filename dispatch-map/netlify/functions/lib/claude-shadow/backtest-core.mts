@@ -59,7 +59,8 @@ export const TRAILER_BLOCKER_KEYS = new Set([
 export const PROFILE_MAX_SKIDS: Record<string, number> = { box_truck: 14, tractor: 28 };
 // …and their weight ratings (truck-profiles.mts DEFAULT_TRUCK_PROFILES maxWeightLbs; pinned by test).
 // The first production plan put 10,084 lb on a box truck: skid spots alone never looked at weight.
-export const PROFILE_MAX_LBS: Record<string, number> = { box_truck: 10000, tractor: 44000 };
+// Chad, 2026-09-26: “10,000 pound limit on box trucks and 30,000 on tractors is the weight limits.” Pinned to the engine's DEFAULT_TRUCK_PROFILES by a test.
+export const PROFILE_MAX_LBS: Record<string, number> = { box_truck: 10000, tractor: 30000 };
 
 export type CapRule = 'tighter' | 'driver' | 'route';
 export const CAP_RULES: CapRule[] = ['tighter', 'driver', 'route'];

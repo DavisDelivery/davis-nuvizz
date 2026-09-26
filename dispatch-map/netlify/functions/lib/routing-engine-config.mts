@@ -31,7 +31,8 @@ import { getDoc, setDoc } from './firestore.mts';
 // 2.12.0: per-DRIVER skid caps — each driver is bounded by their own history
 // (clamped at the class cap), not the fleet p95 of 22.
 // 2.11.0: per-trip PAYLOAD caps — a box trip may not exceed 10,000 lb, a tractor
-// trip 44,000 (the truck-profiles.mts ratings the Phase 1 solver already gates on).
+// trip 30,000 (the truck-profiles.mts ratings the Phase 1 solver already gates on;
+// the tractor figure was 44,000 until Chad, 2026-09-26: “10,000 pound limit on box trucks and 30,000 on tractors is the weight limits.”)
 // 2.10.0: execution-evidence gate — replays count only rows with a same-day delivery stamp
 // (DAWSONVILLE/CRUMPTON 07-28: next-day Estes freight sealed into the day inflated actuals).
 export const ENGINE_VERSION = '2.13.0';
@@ -169,7 +170,7 @@ export interface EngineConfig {
   // tail of trips dispatch had really run, so it split loads that demonstrably
   // fit, which is what "phantom splits" meant. These caps are the opposite kind
   // of number: a fixed PHYSICAL payload rating of the truck class, the same
-  // 10,000 / 44,000 lb already enforced on the live route builder's box_26 /
+  // 10,000 / 30,000 lb already enforced on the live route builder's box_26 /
   // tractor_53 profiles (truck-profiles.mts). A load over the rating was never
   // legal to build, so splitting it is a correction, not a phantom.
   // Per TRIP, not per day: a driver may run two 10,000 lb loads through a Buford
@@ -435,13 +436,13 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     skid_cap_driver_headroom: num('SKID_CAP_DRIVER_HEADROOM', 0),
     // Phase 2.11 — per-trip payload ratings, taken from the SAME truck profiles
     // the live route builder already gates on (truck-profiles.mts: box_26 =
-    // 10,000 lb, tractor_53 = 44,000 lb) so the two systems can't drift apart on
+    // 10,000 lb, tractor_53 = 30,000 lb) so the two systems can't drift apart on
     // what a truck may legally carry. A 26ft straight truck at 26,000 lb GVWR
     // has ~10,000 lb of payload — this is the vehicle's rating, not a statistic
     // mined from what dispatch happened to do, which is exactly why it is safe
     // to make hard where the 2.1.1 learned ceiling was not.
     weight_cap_box_lb: num('WEIGHT_CAP_BOX_LB', 10_000),
-    weight_cap_tractor_lb: num('WEIGHT_CAP_TRACTOR_LB', 44_000),
+    weight_cap_tractor_lb: num('WEIGHT_CAP_TRACTOR_LB', 30_000),
     // Phase 2.13 — w_candidate_rank GRADUATED to 2 (see the 2.13.0 note at the
     // top: +6.7pts agreement on the benchmark, 15/16 days better, at ~baseline
     // split behavior; 4/8 buy more agreement but over-split). habit_rank_aware

@@ -10,13 +10,13 @@
 // sits below their own heaviest real trips by construction — that is what made
 // phantom splits — so nothing derived from the envelope is allowed to split
 // anything, and these tests still pin exactly that. What may split a trip is a
-// truck's PAYLOAD RATING (box 10,000 / tractor 44,000 lb, from truck-profiles
+// truck's PAYLOAD RATING (box 10,000 / tractor 30,000 lb, from truck-profiles
 // .mts), because a load over the rating was never legal to build in the first
 // place. See routing-weight-cap.test.mjs. The envelope's weight_p85 / weight_max
 // remain data and constrain nothing.
 //
 // Every driver below is a TRACTOR, and the heaviest bag here is 14,000 lb —
-// under the 44,000 lb tractor rating — so these cases are untouched by 2.11 and
+// under the 30,000 lb tractor rating — so these cases are untouched by 2.11 and
 // still prove the learned ceiling is gone.
 import test from 'node:test';
 import assert from 'node:assert/strict';
