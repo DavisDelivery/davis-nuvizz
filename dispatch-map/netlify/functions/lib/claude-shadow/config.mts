@@ -44,3 +44,16 @@ export function shadowModel(env: Record<string, any> = process.env): ModelChoice
 export function anthropicKeyConfigured(env: Record<string, any> = process.env): boolean {
   return String(env?.ANTHROPIC_API_KEY ?? '').trim() !== '';
 }
+
+// HARD CAPS (v1.75.0). Chad, 2026-09-26: "i like hard caps on even the learned behavior and a ui to
+// adjust them all against their learned behaviors." With this ON, a backtest holds a truck to its cap
+// and its weight limit, full stop: a learned skid cap is held down to the class ceiling unless a
+// person set that driver's or route's cap, and where dispatch loaded past a cap or a limit the load
+// reads as OVER on dispatch's side instead of the cap quietly rising to meet it. OFF puts the old
+// rule back (caps and limits raised to what dispatch loaded, no ceilings). House shape: default ON,
+// an explicit off-word turns it off, anything else leaves it ON — a typo must never silently
+// soften every cap.
+export function hardCapsEnabled(env: Record<string, any> = process.env): boolean {
+  const v = String(env?.SHADOW_HARD_CAPS ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}

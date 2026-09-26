@@ -532,3 +532,22 @@ test('an opened route says on each side what happened to each stop, and titles e
   assert.match(tc.line, /^2 stops · 2 spots · 200 lb/);
   assert.equal(paneTitle(m, 'nope', 'driven'), null);
 });
+
+// v1.75.0 REVIEW — "Dispatch: loads over cap 5" must lead to the five rows.
+test('a load DISPATCH ran past a cap or a weight limit that now holds is flagged on its route row, so the count leads to it', async () => {
+  const { routeFlags, routeCompare } = await import('../src/shadow/backtest-map-core.js');
+  const m = {
+    date: '2026-09-23', stops: [{ id: 1, n: 'A', lat: 34, lng: -84, spots: 2.5, lbs: 800 }],
+    loads: [{ id: 'L1', route: 'TRAILER 6', driver: 'Garry Pitts', cls: 'tractor', orderSource: 'driven', cols: {
+      driven: { stops: 1, spots: 46.4, cap: 37, weight: 31000, maxLbs: 30000, over: true, overWeight: true, miles: 10, driveMin: 20 },
+      claude: { stops: 1, spots: 36, cap: 37, weight: 29000, maxLbs: 30000, over: false, overWeight: false, miles: 9, driveMin: 18 },
+    } }],
+    plans: { driven: { L1: [1] }, reseq: { L1: [1] }, claude: { L1: [1] } }, unplanned: [], excluded: { noCoords: [] },
+  };
+  const f = routeFlags(m, routeCompare(m, 'L1'));
+  const cap = f.find((x) => x.key === 'cap-d');
+  assert.ok(cap, JSON.stringify(f));
+  assert.match(cap.text, /Dispatch ran this at 46\.4 skid spots on a cap of 37; the cap held/);
+  assert.equal(cap.level, 'amber');
+  assert.match(f.find((x) => x.key === 'lbs-d').text, /Dispatch loaded 31,000 lb against the 30,000 lb limit; the limit held/);
+});

@@ -30,6 +30,8 @@ export const CLAUDE_SHADOW_STATUS = {
   settings: {
     loosePerSkid: 8.5, loosePerSkidAt: '2026-09-24T14:00:00.000Z', loosePerSkidBy: 'a-dispatcher-with-a-long-name',
     defaultLoosePerSkid: 10, ratioPending: true, bounds: { cap: [1, 60], loosePerSkid: [1, 100] },
+    ceilingBox: null, ceilingBoxAt: null, ceilingBoxBy: null, ceilingTractor: 46, ceilingTractorAt: '2026-09-26T20:00:00Z', ceilingTractorBy: 'dispatcher',
+    ceilings: { box_truck: 22, tractor: 46, sources: { box_truck: 'default', tractor: 'yours' } }, defaultCeilings: { box_truck: 22, tractor: 37 }, hardCaps: true, classesKnown: true,
   },
   learnLast: {
     at: '2026-09-24T08:30:04.000Z', trigger: 'nightly', by: null, ok: false, refused: null,
@@ -41,8 +43,8 @@ export const CLAUDE_SHADOW_STATUS = {
     trips: { total: 5210, used: 3870, skipped: { shared: 41, rosterUnknown: 1012, uncounted: 83, noFreight: 202, noDriver: 2 } },
     rowsLeftOut: { openAtSeal: 311, otherDay: 147, noStamp: 58, unknownStatus: 0 },
     drivers: [
-      { key: 'CHRISTOPHER MONTGOMERY-WASHINGTON', name: 'Christopher Montgomery-Washington', trips: 61, days: 58, p50: 14.2, p85: 18.6, p95: 21.4, max: 26.3, cap: 21.4,
-        yourCap: null, yourCapBy: null, yourCapAt: null, capUsed: 21.4, capSource: 'learned',
+      { key: 'CHRISTOPHER MONTGOMERY-WASHINGTON', name: 'Christopher Montgomery-Washington', trips: 61, days: 58, p50: 14.2, p85: 18.6, p95: 24.4, max: 26.3, cap: 24.4,
+        yourCap: null, yourCapBy: null, yourCapAt: null, capUsed: 22, capSource: 'learned', cls: 'box_truck', clipped: true, ceiling: 22,
         routes: [{ name: 'GAINESVILLE / DAWSONVILLE 2', trips: 30 }, { name: 'COLIN/DJ 1', trips: 20 }, { name: 'ULINE APPT SUWANEE', trips: 11 }],
         fullest: { date: '2026-09-12', route: 'GAINESVILLE / DAWSONVILLE 2', driver: 'Christopher Montgomery-Washington', skids: 17, loose: 93, spots: 26.3 } },
       { key: 'BEN PAINTSIL', name: 'Ben Paintsil', trips: 5, days: 5, p50: 9, p85: 11, p95: 12, max: 12, cap: null,
@@ -53,7 +55,7 @@ export const CLAUDE_SHADOW_STATUS = {
     ],
     routes: [
       { key: 'GAINESVILLE / DAWSONVILLE 2', name: 'GAINESVILLE / DAWSONVILLE 2', trips: 44, days: 44, p50: 15, p85: 19.3, p95: 22, max: 26.3, cap: 22,
-        yourCap: null, yourCapBy: null, yourCapAt: null, capUsed: 22, capSource: 'learned',
+        yourCap: null, yourCapBy: null, yourCapAt: null, capUsed: 22, capSource: 'learned', cls: null, clipped: false, ceiling: null,
         drivers: [{ name: 'Christopher Montgomery-Washington', trips: 30 }, { name: 'Ben Paintsil', trips: 14 }],
         fullest: { date: '2026-09-12', route: 'GAINESVILLE / DAWSONVILLE 2', driver: 'Christopher Montgomery-Washington', skids: 17, loose: 93, spots: 26.3 } },
     ],
@@ -154,7 +156,8 @@ for (const [i, l] of CLAUDE_SHADOW_MAP.loads.entries()) {
 }
 const metric = (stops, miles) => ({ stops, spots: stops * 2.5, miles, driveMin: Math.round(miles * 1.9), over: false, blocked: 0 });
 export const CLAUDE_SHADOW_DAY_RESULT = {
-  lbsLimits: { box_truck: 10000, tractor: 30000 }, lbsRaised: { box_truck: { raised: 2, of: 5, heaviest: 10400 }, tractor: { raised: 0, of: 3, heaviest: 0 } },
+  lbsLimits: { box_truck: 10000, tractor: 30000 }, lbsRaised: { box_truck: { raised: 0, of: 5, heaviest: 0 }, tractor: { raised: 0, of: 3, heaviest: 0 } },
+  capMode: 'hard', ceilings: { box_truck: 22, tractor: 37 }, capsHeld: { box_truck: { held: 1, of: 4 }, tractor: { held: 2, of: 3 } }, dispatchOver: { cap: 0, lbs: 0, capLearned: 2 },
   ...result(0, 4381.6, 3902.2),
   effort: 'high', planFrom: 'submitted', capRule: 'tighter', loosePerSkid: 10,
   approximations: ['Truck class is the driver’s CURRENT MarginIQ type, not what it was on the day.', 'Delivery windows are not a constraint here: most stored windows are the vendor’s 08:00–20:00 default.'],
@@ -167,6 +170,9 @@ export const CLAUDE_SHADOW_DAY_RESULT = {
   })),
 };
 CLAUDE_SHADOW_DAY_RESULT.at = AT;
+// Dispatch's scorecard row counts every load it ran past a cap (2) — the limits line explains both as past only a driver's own learned cap.
+// reseq measures the same assignment as driven, so it carries the same count.
+CLAUDE_SHADOW_DAY_RESULT.columns = { ...CLAUDE_SHADOW_DAY_RESULT.columns, driven: { ...CLAUDE_SHADOW_DAY_RESULT.columns.driven, overCap: 2 }, reseq: { ...CLAUDE_SHADOW_DAY_RESULT.columns.reseq, overCap: 2 } };
 
 /**
  * What a layout guard answers for a claude-shadow request: the backtest view, one day's result, one

@@ -8,8 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installFirestoreFake } from './_firestore-fake.mjs';
 import {
-  validateSettingsChange, withOverrides, capDocId, capDocPath, capsFromDocs, ratioInForce,
-  CAP_BOUNDS, LOOSE_PER_SKID_BOUNDS, CAPS_COLLECTION, SETTINGS_LOG_COLLECTION,
+  validateSettingsChange, withOverrides, capDocId, capDocPath, capsFromDocs, ratioInForce, CAP_BOUNDS, LOOSE_PER_SKID_BOUNDS, CAPS_COLLECTION, SETTINGS_LOG_COLLECTION, DEFAULT_CEILINGS, ceilingsInForce, clipCap,
 } from '../netlify/functions/lib/claude-shadow/settings-core.mts';
 import { saveSettings, readSettings } from '../netlify/functions/lib/claude-shadow/settings.mts';
 import { CAPACITY_PATH, SETTINGS_PATH, LEARN_VERSION } from '../netlify/functions/lib/claude-shadow/learn-core.mts';
@@ -332,4 +331,98 @@ test('TWO SAVES IN THE SAME MILLISECOND both keep their change-log row — CI hi
   await saveSettings({ caps: [{ kind: 'route', name: 'BEN 1', cap: null }] }, 'b', deps);
   const logs = [...store.entries()].filter(([k]) => k.startsWith(`${SETTINGS_LOG_COLLECTION}/`)).map(([, v]) => [v.before, v.after]);
   assert.deepEqual(logs.sort(), [[20, null], [null, 20]].sort());
+});
+
+
+// ── v1.75.0 THE CEILINGS ──────────────────────────────────────────────────────────────────────────
+// Chad: "i like hard caps on even the learned behavior and a ui to adjust them all against their
+// learned behaviors."
+test('CEILINGS: a stored number in range is the ceiling, else the engine\u2019s hard cap; a change is validated like a cap and blank is refused', () => {
+  assert.deepEqual(DEFAULT_CEILINGS, { box_truck: 22, tractor: 37 });
+  assert.deepEqual(ceilingsInForce(null), { box_truck: 22, tractor: 37, sources: { box_truck: 'default', tractor: 'default' } });
+  assert.deepEqual(ceilingsInForce({ ceilingTractor: 46 }), { box_truck: 22, tractor: 46, sources: { box_truck: 'default', tractor: 'yours' } });
+  assert.equal(ceilingsInForce({ ceilingBox: 0 }).box_truck, 22, 'zero is not a ceiling');
+  assert.equal(ceilingsInForce({ ceilingBox: '90' }).box_truck, 22, 'out of range keeps the default');
+  const ok = validateSettingsChange({ ceilingTractor: '46', ceilingBox: null });
+  assert.equal(ok.ok, true, ok.errors.join());
+  assert.deepEqual(ok.normalized.ceilings, { ceilingTractor: 46, ceilingBox: null });
+  assert.deepEqual(ok.normalized.caps, []);
+  const bad = validateSettingsChange({ ceilingBox: '' });
+  assert.equal(bad.ok, false);
+  assert.match(bad.errors[0], /the box-truck ceiling is blank/);
+  assert.equal(validateSettingsChange({ ceilingTractor: 0 }).ok, false, 'a truck that holds nothing');
+  assert.equal(validateSettingsChange({ ceilingTractor: 61 }).ok, false);
+});
+
+test('CLIP: a learned cap above the class ceiling is held to it; a cap a person set stands; no class or no ceilings, nothing changes', () => {
+  const C = { box_truck: 22, tractor: 37 };
+  assert.deepEqual(clipCap(41, 'learned', 'tractor', C), { cap: 37, clipped: true, ceiling: 37 });
+  assert.deepEqual(clipCap(41, 'yours', 'tractor', C), { cap: 41, clipped: false, ceiling: 37 });
+  assert.deepEqual(clipCap(30, 'learned', 'tractor', C), { cap: 30, clipped: false, ceiling: 37 });
+  assert.deepEqual(clipCap(41, 'learned', null, C), { cap: 41, clipped: false, ceiling: null });
+  assert.deepEqual(clipCap(41, 'learned', 'tractor', null), { cap: 41, clipped: false, ceiling: null });
+  assert.deepEqual(clipCap(null, null, 'tractor', C), { cap: null, clipped: false, ceiling: 37 });
+});
+
+test('THE TABLE SAYS THE CAP IN FORCE: a driver whose class is known shows the learned cap held to the ceiling; a route (class unknown) shows the learned cap', () => {
+  const model = { drivers: [{ key: 'BEN_PAINTSIL', name: 'Ben Paintsil', cap: 41, trips: 30 }, { key: 'AARON_MITCHELL', name: 'Aaron Mitchell', cap: 12, trips: 20 }], routes: [{ key: 'TRAILER_6', name: 'TRAILER 6', cap: 46.4, trips: 40 }] };
+  const caps = { drivers: {}, routes: {} };
+  const classOf = (key, name) => (name === 'Ben Paintsil' ? 'tractor' : name === 'Aaron Mitchell' ? 'box_truck' : null);
+  const v = withOverrides(model, caps, {}, { box_truck: 22, tractor: 37 }, classOf);
+  const ben = v.drivers.find((r) => r.name === 'Ben Paintsil');
+  assert.equal(ben.cls, 'tractor'); assert.equal(ben.capUsed, 37); assert.equal(ben.clipped, true); assert.equal(ben.ceiling, 37); assert.equal(ben.capSource, 'learned');
+  const aaron = v.drivers.find((r) => r.name === 'Aaron Mitchell');
+  assert.equal(aaron.capUsed, 12); assert.equal(aaron.clipped, false); assert.equal(aaron.ceiling, 22);
+  const t6 = v.routes[0];
+  assert.equal(t6.cls, null); assert.equal(t6.capUsed, 46.4); assert.equal(t6.clipped, false); assert.equal(t6.ceiling, null, 'a route pools trucks: its ceiling is known only when a day is built');
+  // A cap of Chad's own on Ben is his number, above the ceiling or not.
+  const w = withOverrides(model, { drivers: { BEN_PAINTSIL: { name: 'Ben Paintsil', cap: 46, by: 'dispatcher', at: 'x' } }, routes: {} }, {}, { box_truck: 22, tractor: 37 }, classOf);
+  const b2 = w.drivers.find((r) => r.name === 'Ben Paintsil');
+  assert.equal(b2.capUsed, 46); assert.equal(b2.capSource, 'yours'); assert.equal(b2.clipped, false);
+  // No ceilings (hard caps off): nothing held.
+  const off = withOverrides(model, caps, {}, null, classOf);
+  assert.equal(off.drivers.find((r) => r.name === 'Ben Paintsil').capUsed, 41);
+  // Settings unknown: every row unknown, class still shown.
+  const u = withOverrides(model, null, { unknown: true }, { box_truck: 22, tractor: 37 }, classOf);
+  assert.equal(u.drivers[0].capSource, 'unknown'); assert.equal(u.drivers.find((r) => r.name === 'Ben Paintsil').cls, 'tractor');
+});
+
+// v1.75.0 REVIEW — the capacity card says what a backtest will hold, and a malformed field never reads as a ceiling.
+test('a ceiling is a number or a plain decimal: a stored true, [5] or 0x10 falls to the default, never to 1, 5 or 16', async () => {
+  const { ceilingsInForce, DEFAULT_CEILINGS } = await import('../netlify/functions/lib/claude-shadow/settings-core.mts');
+  for (const bad of [true, [5], '0x10', '', null, 'NaN', 0, 1e9]) {
+    const c = ceilingsInForce({ ceilingBox: bad, ceilingTractor: bad });
+    assert.equal(c.box_truck, DEFAULT_CEILINGS.box_truck, JSON.stringify(bad));
+    assert.equal(c.sources.box_truck, 'default');
+  }
+  const ok = ceilingsInForce({ ceilingBox: '24', ceilingTractor: 46 });
+  assert.deepEqual([ok.box_truck, ok.tractor, ok.sources.box_truck], [24, 46, 'yours']);
+});
+
+test('the card’s truck class is the backtest’s: roster first, then the one pinned driver — Junior Thomas reads tractor with no roster record', async () => {
+  const { classOfFrom } = await import('../netlify/functions/lib/claude-shadow/settings-core.mts');
+  const { employeeClassMap, CLASS_OVERRIDE } = await import('../netlify/functions/lib/driver-class.mts');
+  const classOf = classOfFrom(employeeClassMap([{ vehicleType: 'tractor', fullName: 'Ben Paintsil' }]), CLASS_OVERRIDE);
+  assert.equal(classOf('BEN PAINTSIL', 'Ben  Paintsil'), 'tractor');
+  assert.equal(classOf('JUNIOR THOMAS', 'Junior  Thomas'), 'tractor', 'pinned (CLASS_OVERRIDE), as the backtest pins him');
+  assert.equal(classOf('NOBODY', 'Nobody'), null);
+  assert.equal(classOfFrom(null, CLASS_OVERRIDE), null, 'a roster that could not be read knows no class — it never guesses');
+});
+
+test('a route row carries both ceilings, so the card can say what its number is held to on each truck when a day is built', async () => {
+  const { withOverrides } = await import('../netlify/functions/lib/claude-shadow/settings-core.mts');
+  const m = withOverrides({ drivers: [], routes: [{ key: 'TRAILER 6', name: 'TRAILER 6', cap: 46.4 }] }, { drivers: {}, routes: {} }, {}, { box_truck: 22, tractor: 37 }, null);
+  const r = m.routes[0];
+  assert.equal(r.capUsed, 46.4, 'a route’s class is unknown until a day is built, so its number is shown before the ceiling');
+  assert.deepEqual(r.routeCeilings, { box_truck: 22, tractor: 37 });
+  const d = withOverrides({ drivers: [{ key: 'X', name: 'X', cap: 30 }], routes: [] }, { drivers: {}, routes: {} }, {}, { box_truck: 22, tractor: 37 }, () => 'box_truck').drivers[0];
+  assert.equal(d.routeCeilings, null);
+  assert.equal(d.capUsed, 22);
+});
+
+test('SHADOW_HARD_CAPS has the house shape: on by default, off only by an off-word, and anything malformed leaves it on', async () => {
+  const { hardCapsEnabled } = await import('../netlify/functions/lib/claude-shadow/config.mts');
+  assert.equal(hardCapsEnabled({}), true);
+  for (const off of ['off', 'OFF', ' 0 ', 'false', 'no']) assert.equal(hardCapsEnabled({ SHADOW_HARD_CAPS: off }), false, off);
+  for (const on of ['on', '1', 'yes', 'true', 'of', 'nope', '']) assert.equal(hardCapsEnabled({ SHADOW_HARD_CAPS: on }), true, on);
 });

@@ -468,3 +468,38 @@ test('weight limits: a queued day runs with the limits it was queued with, and t
   // The next day queued picks up the change.
   assert.equal(routerSettingsFrom(await d.getDoc(ROUTER_SETTINGS_PATH)).lbsBox, 9000);
 });
+
+// v1.75.0 REVIEW — a day hard caps make unplannable is refused at $0, and a roster that cannot be
+// read never becomes "every driver drives a box truck".
+test('a day whose held caps cannot carry its stops fails BEFORE round 1 — no model call, $0, and the reason on the job', async () => {
+  const { capDocPath } = await import('../netlify/functions/lib/claude-shadow/settings-core.mts');
+  const seed = seedDay();
+  seed[capDocPath('route', 'A')] = { kind: 'route', key: 'A', name: 'A', cap: 1 };
+  seed[capDocPath('route', 'B')] = { kind: 'route', key: 'B', name: 'B', cap: 1 };
+  const st = store(seed);
+  const m = model([reply([])]);
+  const d = deps(st, m, clock());
+  await enqueueBacktests([D], 'disp', d);
+  const out = await workerTick(d);
+  assert.equal(out.failed, 'infeasible', JSON.stringify(out));
+  assert.equal(m.calls.length, 0, 'nothing was spent');
+  const job = [...st.docs.entries()].find(([p]) => p.startsWith('claude_shadow_jobs/') && p.split('/').length === 2)[1];
+  assert.equal(job.status, 'failed');
+  assert.equal(job.usd, 0);
+  assert.match(job.error, /^not run — the caps that hold carry 2 skid spots and the stops that must ride need 8/);
+});
+
+test('an employees roster that cannot be read stops the build — retried by the next tick — instead of briefing every tractor as a box truck', async () => {
+  const st = store(seedDay());
+  const listDocs = st.listDocs;
+  st.listDocs = async (coll, opts) => { if (coll === 'employees') throw new Error('listDocs employees failed: 429 quota'); return listDocs(coll, opts); };
+  const m = model([reply([])]);
+  const d = deps(st, m, clock());
+  await enqueueBacktests([D], 'disp', d);
+  const out = await workerTick(d);
+  assert.equal(out.transient, 1, JSON.stringify(out));
+  assert.match(out.error, /the employees roster could not be read, so no truck class is known/);
+  assert.equal(m.calls.length, 0);
+  const job = [...st.docs.entries()].find(([p]) => p.startsWith('claude_shadow_jobs/') && p.split('/').length === 2)[1];
+  assert.notEqual(job.status, 'failed', 'a throttle is not a verdict');
+});

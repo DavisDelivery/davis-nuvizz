@@ -50,6 +50,10 @@ import { CAPACITY_PATH, LEARN_LAST_PATH, DEFAULT_LOOSE_PER_SKID } from './lib/cl
 import { planLearn, learnRefusal, runLearn } from './lib/claude-shadow/learn.mts';
 import { withOverrides, ratioInForce, CAP_BOUNDS, LOOSE_PER_SKID_BOUNDS } from './lib/claude-shadow/settings-core.mts';
 import { readSettings, saveSettings } from './lib/claude-shadow/settings.mts';
+import { ceilingsInForce, DEFAULT_CEILINGS, classOfFrom } from './lib/claude-shadow/settings-core.mts';
+import { hardCapsEnabled } from './lib/claude-shadow/config.mts';
+import { employeeClassMap, CLASS_OVERRIDE } from './lib/driver-class.mts';
+import { listDocs as listDocsFs } from './lib/firestore.mts';
 import { backtestView, backtestResult, backtestMap, enqueueBacktests, cancelJob, saveRouterSettings, routerRefusal } from './lib/claude-shadow/backtest.mts';
 
 export const PROBE_LAST_PATH = 'claude_shadow_meta/probe_last';
@@ -112,14 +116,26 @@ export default async (req: Request): Promise<Response> => {
     }
     // Three independent reads; one failing must not blank the other two.
     const read = (path: string) => getDoc(path).then((d) => ({ d, e: null as string | null }), (e) => ({ d: null, e: String(e?.message || e) }));
-    const [probe, learned, learnLast, settings] = await Promise.all([read(PROBE_LAST_PATH), read(CAPACITY_PATH), read(LEARN_LAST_PATH), readSettings()]);
+    // v1.75.0: the employees roster (truck class per driver, 0 NuVizz) so each driver's row can say
+    // the ceiling the backtest holds its learned cap to. A roster that cannot be read leaves the
+    // class unknown on every row, never guessed.
+    const [probe, learned, learnLast, settings, employees] = await Promise.all([
+      read(PROBE_LAST_PATH), read(CAPACITY_PATH), read(LEARN_LAST_PATH), readSettings(),
+      listDocsFs('employees', { mask: ['vehicleType', 'externalIds', 'fullName', 'firstName', 'lastName', 'aliases'] }).catch(() => null as any[] | null),
+    ]);
     const note = probe.e ? `could not read ${PROBE_LAST_PATH}: ${probe.e}` : probe.d ? null : 'no test call has been recorded yet';
     const model = learned.d;
+    const ceilings = ceilingsInForce(settings.settings);
+    const hard = hardCapsEnabled();
+    const empClass = employees ? employeeClassMap(employees) : null;
+    // The backtest's own order (settings-core classOfFrom): the roster, then the one pinned class
+    // (CLASS_OVERRIDE), so a pinned driver's row shows the cap a backtest will actually hold.
+    const classOf = classOfFrom(empClass, CLASS_OVERRIDE);
     return J({
-      // Each driver's and route's cap RESOLVED — yours if you set one, else the learned one. When the
-      // settings cannot be read, every row says "unknown" rather than presenting "no cap of yours"
-      // as a fact, and the editor stays shut.
-      ...statusBody(probe.d, note, withOverrides(model, settings.caps, { unknown: !!settings.error }), learnLast.d),
+      // Each driver's and route's cap RESOLVED — yours if you set one, else the learned one held to
+      // the class ceiling (hard caps on). When the settings cannot be read, every row says "unknown"
+      // rather than presenting "no cap of yours" as a fact, and the editor stays shut.
+      ...statusBody(probe.d, note, withOverrides(model, settings.caps, { unknown: !!settings.error }, hard ? { box_truck: ceilings.box_truck, tractor: ceilings.tractor } : null, classOf), learnLast.d),
       learnedNote: learned.e ? `could not read ${CAPACITY_PATH}: ${learned.e}` : model ? null : 'nothing has been learned yet',
       learnLastNote: learnLast.e ? `could not read ${LEARN_LAST_PATH}: ${learnLast.e}` : null,
       settings: {
@@ -131,6 +147,13 @@ export default async (req: Request): Promise<Response> => {
         // not landed yet. Said on screen, not hidden.
         ratioPending: !settings.error && !!model && ratioInForce(settings.settings) !== model.loosePerSkid,
         bounds: { cap: CAP_BOUNDS, loosePerSkid: LOOSE_PER_SKID_BOUNDS },
+        // v1.75.0: the ceilings in force (yours or the default), and whether caps are hard at all.
+        ceilingBox: settings.settings?.ceilingBox ?? null, ceilingBoxAt: settings.settings?.ceilingBoxAt ?? null, ceilingBoxBy: settings.settings?.ceilingBoxBy ?? null,
+        ceilingTractor: settings.settings?.ceilingTractor ?? null, ceilingTractorAt: settings.settings?.ceilingTractorAt ?? null, ceilingTractorBy: settings.settings?.ceilingTractorBy ?? null,
+        ceilings: { box_truck: ceilings.box_truck, tractor: ceilings.tractor, sources: ceilings.sources },
+        defaultCeilings: DEFAULT_CEILINGS,
+        hardCaps: hard,
+        classesKnown: !!empClass,
       },
       settingsNote: settings.error ? `could not read the capacity settings: ${settings.error} — which caps are yours is not known right now` : null,
     });
