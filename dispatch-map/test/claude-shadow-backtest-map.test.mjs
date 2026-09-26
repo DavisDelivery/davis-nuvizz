@@ -7,11 +7,12 @@
 // follows the truck, eight at a time, never repainting one you are looking at.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBacktestProblem, compareBacktest, backtestMapPayload } from '../netlify/functions/lib/claude-shadow/backtest-core.mts';
+import { buildBacktestProblem, compareBacktest, backtestMapPayload, tourLegs, tourCost } from '../netlify/functions/lib/claude-shadow/backtest-core.mts';
 import { backtestMap, jobPath, resultPath } from '../netlify/functions/lib/claude-shadow/backtest.mts';
 import { effectiveEngineConfig } from '../netlify/functions/lib/routing-engine-config.mts';
 import {
   whereIs, planLoads, truckRows, stopStory, storiesAt, orderNote, toggleTruck, pickTrucks, planGeo, boundsOf, MAX_SELECTED, SELECT_COLORS,
+  routeCompare, routeRows, sortRoutes, freightOf, customerSplits, focusBounds, focusPicks, fmtHm,
 } from '../src/shadow/backtest-map-core.js';
 
 const D = '2026-09-23';
@@ -197,4 +198,254 @@ test('REVIEW: every stop’s title names its truck and driver — colour alone n
       assert.ok(f.properties.title.includes(`${l.route} (${l.driver})`), f.properties.title);
     }
   }
+});
+
+// ── ROUTE BY ROUTE (v1.73.0). Chad: "a way to pull up one route and see the differences on a route by
+// route basis … the routes, the stop counts on them, the skid counts on them, the weights, the loose
+// pieces, everything." What these pin: every number on a route is the STORED measurement or a sum
+// of stored stops; the leg-by-leg walk adds back up to the scored miles and minutes; a crossed stop
+// shows where it went and where it came from; and the routes are walked problems-first.
+
+test('ROUTES: each route’s numbers per plan are the stored measurement, and every stop carries its skids, loose pieces and customer key', () => {
+  const { p, r } = built();
+  const m = backtestMapPayload(p, r, CFG);
+  for (const l of r.loads) {
+    const ml = m.loads.find((x) => x.id === l.id);
+    for (const col of ['driven', 'reseq', 'claude']) {
+      if (!l[col]) { assert.equal(ml.cols[col], null); continue; }
+      for (const k of ['stops', 'spots', 'cap', 'weight', 'miles', 'driveMin', 'routeMin', 'driverMin', 'maxMin', 'overTime', 'maxLbs', 'overWeight']) {
+        assert.deepEqual(ml.cols[col][k], l[col][k], `${l.id} ${col} ${k}`);
+      }
+    }
+    assert.equal(ml.cap, p.loads.find((x) => x.id === l.id).cap);
+  }
+  const s0 = p.stops[0], ms0 = m.stops.find((x) => x.id === s0.id);
+  assert.equal(ms0.skids, s0.skids);
+  assert.equal(ms0.loose, s0.loose);
+  assert.equal(ms0.k, s0.k);
+  assert.equal(m.serviceMin, p.serviceMin);
+});
+
+test('ROUTES: the leg-by-leg walk of a stored order adds back up to the scored miles and drive minutes, exactly', () => {
+  const { p, r } = built();
+  const m = backtestMapPayload(p, r, CFG);
+  for (const l of m.loads) {
+    for (const col of ['driven', 'claude']) {
+      const c = l.cols[col];
+      if (!c) continue;
+      assert.equal(c.legsOk, true, `${l.id} ${col} legs add up`);
+      assert.equal(c.legs.length, c.stops);
+      const order = m.plans[col][l.id];
+      const t = tourLegs(p, order, CFG), cost = tourCost(p, order, CFG);
+      assert.equal(t.miles, cost.miles);
+      assert.equal(t.driveMin, cost.driveMin);
+      assert.ok(c.homeMi > 0, 'the drive home is shown');
+    }
+  }
+  // Without the run's own config there are no legs — never a walk with today's settings instead.
+  const bare = backtestMapPayload(p, r);
+  assert.equal(bare.loads[0].cols.driven.legs, undefined);
+});
+
+test('ROUTES: one route both ways — a crossed stop shows where it went, where Claude’s came from, and the trade partner', () => {
+  const { p, r } = built();
+  const m = backtestMapPayload(p, r, CFG);
+  const north = m.loads.find((l) => l.route === 'NORTH');
+  const cmp = routeCompare(m, north.id);
+  assert.equal(cmp.change, 'traded');
+  assert.equal(cmp.kept, 2);
+  assert.equal(cmp.removed.length, 2);
+  assert.equal(cmp.added.length, 2);
+  for (const x of cmp.removed) { assert.equal(x.status.kind, 'moved'); assert.equal(x.status.to.route, 'SOUTH'); }
+  for (const x of cmp.added) { assert.equal(x.status.kind, 'added'); assert.equal(x.status.from.route, 'SOUTH'); }
+  assert.deepEqual(cmp.partners.map((x) => [x.route, x.gave, x.took]), [['SOUTH', 2, 2]]);
+  // Freight is the sum of the stored stops on each version.
+  const sum = (ids, k) => ids.reduce((a, id) => a + (m.stops.find((s) => s.id === id)[k] || 0), 0);
+  assert.equal(cmp.freight.driven.lbs, sum(m.plans.driven[north.id], 'lbs'));
+  assert.equal(cmp.freight.claude.skids, sum(m.plans.claude[north.id], 'skids'));
+  assert.equal(cmp.freight.driven.orders, 4);
+  // Elapsed = drive so far + the on-site minutes of the stops before it (not a clock time).
+  const legs = north.cols.driven.legs;
+  assert.equal(cmp.dispatch[0].elapsedMin, Math.round(legs[0].min));
+  assert.equal(cmp.dispatch[2].elapsedMin, Math.round(legs[0].min + legs[1].min + legs[2].min + m.serviceMin * 2));
+  // Kept stops name their place on the other side.
+  const k = cmp.dispatch.find((x) => x.status.kind === 'kept');
+  assert.equal(m.plans.claude[north.id][k.status.otherSeq - 1], k.stop.id);
+  assert.equal(routeCompare(m, 'nope'), null);
+});
+
+test('ROUTES: a truck Claude parked, a stop it left unplanned, a customer it split — each flagged on the route', () => {
+  const { p } = built();
+  const all = p.stops.map((s) => s.id);
+  const left = all[0];
+  const plan = { loads: [{ load: 'L1', stops: all.filter((id) => id !== left) }], unplanned: [{ stop: left, reason: 'no room' }] };
+  const r = { ...compareBacktest(p, plan, CFG, { perMile: null, perDriveHour: null }), at: 'x', jobId: 'bt__x' };
+  const m = backtestMapPayload(p, r, CFG);
+  const parked = routeCompare(m, 'L2');
+  assert.equal(parked.change, 'parked');
+  assert.ok(parked.flags.some((f) => f.key === 'parked'));
+  const owner = m.loads.find((l) => m.plans.driven[l.id].includes(left));
+  assert.ok(routeCompare(m, owner.id).flags.some((f) => f.key === 'unplanned' && f.level === 'red'));
+  // A customer split: give two of L1's stops one customer key, then put one of them on L2.
+  const m2 = JSON.parse(JSON.stringify(backtestMapPayload(p, r, CFG)));
+  const [a, b] = m2.plans.claude.L1;
+  m2.stops.find((s) => s.id === a).k = 'SAME DOCK';
+  m2.stops.find((s) => s.id === b).k = 'SAME DOCK';
+  m2.plans.claude.L1 = m2.plans.claude.L1.filter((id) => id !== b);
+  m2.plans.claude.L2 = [b];
+  assert.deepEqual(customerSplits(m2, 'claude').get('SAME DOCK'), ['L1', 'L2']);
+  assert.ok(routeCompare(m2, 'L1').flags.some((f) => f.key === 'split'));
+});
+
+test('ROUTES: near and over a limit are flagged on Claude’s version — 95% is amber, over is red', () => {
+  const { p, r } = built();
+  const m = backtestMapPayload(p, r, CFG);
+  const L = m.loads[0];
+  L.cols.claude = { ...L.cols.claude, spots: 0.96 * L.cols.claude.cap, over: false, weight: 100, maxLbs: 10000, overWeight: false, driverMin: 100, maxMin: 600, overTime: false };
+  const near = routeCompare(m, L.id).flags.find((f) => f.key === 'cap');
+  assert.equal(near.level, 'amber');
+  L.cols.claude = { ...L.cols.claude, overWeight: true, weight: 10400, overTime: true, driverMin: 700 };
+  const f = routeCompare(m, L.id).flags;
+  assert.equal(f.find((x) => x.key === 'lbs').level, 'red');
+  assert.equal(f.find((x) => x.key === 'day').level, 'red');
+});
+
+test('ROUTES: freight counts orders AND addresses, and says how many orders had no count recorded', () => {
+  const m = {
+    stops: [
+      { id: 1, k: 'ACME', lat: 1, lng: 1, skids: 2, loose: 10, spots: 3, lbs: 500 },
+      { id: 2, k: 'ACME', lat: 1, lng: 1, skids: 0, loose: 0, spots: 0, lbs: 0 },
+      { id: 3, k: 'OTHER', lat: 2, lng: 2, skids: 1.5, loose: 0, spots: 1.5, lbs: 250 },
+    ],
+  };
+  assert.deepEqual(freightOf(m, [1, 2, 3]), { orders: 3, addresses: 2, skids: 3.5, loose: 10, spots: 4.5, lbs: 750, noCount: 1 });
+});
+
+test('ROUTES: walked problems first — red, then amber, then most traded, then order-only, then unchanged; ties by miles saved', () => {
+  const row = (id, o) => ({ id, route: id, driver: '', inn: 0, out: 0, deltaMi: 0, red: 0, amber: 0, change: 'same', ...o });
+  const rows = [
+    row('SAME'), row('ORDER', { change: 'reordered', deltaMi: -9 }), row('TRADE2', { change: 'traded', inn: 1, out: 1 }),
+    row('TRADE9', { change: 'traded', inn: 5, out: 4 }), row('AMBER', { amber: 1, change: 'traded', inn: 1 }), row('RED', { red: 1 }),
+  ];
+  assert.deepEqual(sortRoutes(rows).map((x) => x.id), ['RED', 'AMBER', 'TRADE9', 'TRADE2', 'ORDER', 'SAME']);
+  assert.deepEqual(sortRoutes(rows, 'route').map((x) => x.id), ['AMBER', 'ORDER', 'RED', 'SAME', 'TRADE2', 'TRADE9']);
+  assert.equal(sortRoutes(rows, 'miles')[0].id, 'ORDER');
+  assert.equal(sortRoutes(rows, 'traded')[0].id, 'TRADE9');
+});
+
+test('ROUTES: opening a route colours it first and its biggest trade partners after, and says how many got no colour', () => {
+  const partners = Array.from({ length: 10 }, (_, i) => ({ loadId: `P${i}`, gave: 10 - i, took: 0 }));
+  const f = focusPicks({ load: { id: 'ME' }, partners });
+  assert.equal(f.next.get('ME'), 0);
+  assert.equal(f.next.size, MAX_SELECTED);
+  assert.equal(f.next.get('P0'), 1);
+  assert.equal(f.left, 3);
+  const { p, r } = built();
+  const m = backtestMapPayload(p, r, CFG);
+  const b = focusBounds(m, m.loads[0].id);
+  assert.ok(b.north > b.south && b.east > b.west);
+  assert.equal(fmtHm(125), '2:05');
+  // Missing is never zero (Number(null) is 0, and 0 is finite — CLAUDE.md's own example).
+  for (const v of [null, undefined, '', 'x']) assert.equal(fmtHm(v), '—', String(v));
+  assert.equal(fmtHm(0), '0:00');
+});
+
+test('ROUTES: every route becomes one row with both versions’ freight and the scored numbers', () => {
+  const { p, r } = built();
+  const m = backtestMapPayload(p, r, CFG);
+  const rows = routeRows(m);
+  assert.equal(rows.length, m.loads.length);
+  for (const row of rows) {
+    const L = m.loads.find((l) => l.id === row.id);
+    assert.equal(row.d.miles, L.cols.driven.miles);
+    assert.equal(row.c.miles, L.cols.claude.miles);
+    assert.equal(row.deltaMi, Math.round((L.cols.claude.miles - L.cols.driven.miles) * 10) / 10);
+    assert.equal(row.inn + row.out, 4);
+  }
+});
+
+// ── review of the route view (2026-09-26): what a dispatcher would have been misled by ──
+
+test('REVIEW ROUTES: near a limit only counts when Claude made it tighter — the same load as yours is information, and does not sort first', () => {
+  const { p, r } = built();
+  const m = backtestMapPayload(p, r, CFG);
+  const L = m.loads[0];
+  L.cols.driven = { ...L.cols.driven, spots: 0.97 * L.cols.driven.cap, cap: L.cols.driven.cap };
+  L.cols.claude = { ...L.cols.claude, spots: 0.97 * L.cols.claude.cap, over: false };
+  const same = routeCompare(m, L.id).flags.find((f) => f.key === 'cap');
+  assert.equal(same.level, 'info');
+  assert.match(same.text, /no tighter than yours/);
+  L.cols.claude = { ...L.cols.claude, spots: 0.99 * L.cols.claude.cap };
+  assert.equal(routeCompare(m, L.id).flags.find((f) => f.key === 'cap').level, 'amber');
+});
+
+test('REVIEW ROUTES: a customer split you also split is information; a split only Claude made is flagged', () => {
+  const { p, r } = built();
+  const m = JSON.parse(JSON.stringify(backtestMapPayload(p, r, CFG)));
+  const [a] = m.plans.claude.L1, [b] = m.plans.claude.L2;
+  m.stops.find((s) => s.id === a).k = 'SAME DOCK';
+  m.stops.find((s) => s.id === b).k = 'SAME DOCK';
+  const dispatchSplitToo = customerSplits(m, 'driven').has('SAME DOCK');
+  const f = routeCompare(m, 'L1').flags.find((x) => x.key === 'split');
+  assert.equal(f.level, dispatchSplitToo ? 'info' : 'amber');
+  // Put both on one dispatch truck: now the split is Claude's alone.
+  for (const [id, ids] of Object.entries(m.plans.driven)) m.plans.driven[id] = ids.filter((x) => x !== a && x !== b);
+  m.plans.driven.L1.push(a, b);
+  assert.equal(routeCompare(m, 'L1').flags.find((x) => x.key === 'split').level, 'amber');
+});
+
+test('REVIEW ROUTES: a parked truck with a stop left unplanned says both, and a parked truck is not "most miles saved"', () => {
+  const { p } = built();
+  const all = p.stops.map((s) => s.id);
+  const owner = p.loads.find((l) => l.route === 'SOUTH');
+  const left = owner.dispatch[0];
+  const plan = { loads: [{ load: p.loads.find((l) => l.route === 'NORTH').id, stops: all.filter((id) => id !== left) }], unplanned: [{ stop: left, reason: 'no room' }] };
+  const r = { ...compareBacktest(p, plan, CFG, { perMile: null, perDriveHour: null }), at: 'x', jobId: 'bt__x' };
+  const m = backtestMapPayload(p, r, CFG);
+  const parked = routeCompare(m, owner.id);
+  const f = parked.flags.find((x) => x.key === 'parked');
+  assert.match(f.text, /3 of its 4 orders ride other trucks, 1 left unplanned/);
+  const rows = routeRows(m);
+  assert.equal(rows.find((x) => x.id === owner.id).deltaMi, null, 'no comparable miles for a parked truck');
+  assert.notEqual(sortRoutes(rows, 'miles')[0].id, owner.id);
+});
+
+test('REVIEW ROUTES: a stop on none of Claude’s trucks (and not unplanned) is a change and a red flag — never "same stops"', () => {
+  const { p, r } = built();
+  const m = JSON.parse(JSON.stringify(backtestMapPayload(p, r, CFG)));
+  // Claude's L1 = dispatch's L1 exactly, but one of dispatch's L1 stops is dropped from every Claude truck.
+  const d1 = m.plans.driven.L1;
+  for (const id of Object.keys(m.plans.claude)) m.plans.claude[id] = m.plans.claude[id].filter((x) => !d1.includes(x));
+  m.plans.claude.L1 = d1.slice(1);
+  const cmp = routeCompare(m, 'L1');
+  assert.notEqual(cmp.change, 'same');
+  assert.notEqual(cmp.change, 'reordered');
+  assert.equal(cmp.removed.length, 1);
+  assert.equal(cmp.removed[0].status.kind, 'missing');
+  assert.ok(cmp.flags.some((x) => x.key === 'missing' && x.level === 'red'));
+});
+
+test('REVIEW ROUTES: an order with no map point is tied to ITS truck — even when two drivers ran one route name', () => {
+  seq = 0;
+  const rows = [
+    row('ATL1', 'Ann Lee', 34.30, -83.82), row('ATL1', 'Ann Lee', 34.31, -83.83), { ...row('ATL1', 'Ann Lee', null, null) },
+    row('ATL1', 'Bo Tan', 34.02, -84.12), row('ATL1', 'Bo Tan', 34.03, -84.11),
+  ];
+  const p = buildBacktestProblem({
+    date: D, rows, roster: null, stamp: 'x', learnDaysBefore: [], caps: null, loosePerSkid: 10, capRule: 'tighter',
+    employees: [], notes: new Map(), depot: DEPOT, at: '2026-09-25T00:00:00Z', cfg: CFG,
+  });
+  const ann = p.loads.find((l) => l.driver === 'Ann Lee'), bo = p.loads.find((l) => l.driver === 'Bo Tan');
+  assert.equal(p.excluded.noCoords.length, 1);
+  assert.equal(p.excluded.noCoords[0].load, ann.id);
+  const plan = { loads: [{ load: ann.id, stops: ann.dispatch }, { load: bo.id, stops: bo.dispatch }], unplanned: [] };
+  const r = { ...compareBacktest(p, plan, CFG, { perMile: null, perDriveHour: null }), at: 'x', jobId: 'bt__x' };
+  const m = backtestMapPayload(p, r, CFG);
+  assert.equal(routeCompare(m, ann.id).noCoords.length, 1);
+  assert.equal(routeCompare(m, bo.id).noCoords.length, 0, 'Bo’s truck does not inherit Ann’s unmapped order');
+  // A day stored before the load id was recorded: matched by name, and the flag says it cannot tell which truck.
+  const old = JSON.parse(JSON.stringify(m));
+  delete old.excluded.noCoords[0].load;
+  const f = routeCompare(old, bo.id).flags.find((x) => x.key === 'nocoords');
+  assert.match(f.text, /2 trucks ran ATL1, and the stored record cannot say which/);
 });

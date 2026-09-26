@@ -27,7 +27,7 @@ import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { claudeShadowFixtureFor, guardOpenBacktestDay } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, guardOpenBacktestDay, guardOpenFirstRoute } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -66,11 +66,11 @@ const SCREENS = [
 // AT REST IS NOT ENOUGH, and the phone guard learned this the expensive way. Every defect
 // Chad photographed needed a tap first: the Status menu is not in the DOM until it is opened.
 const PROBES = {
-  // A BACKTESTED DAY, OPENED (v1.72.0). The map itself is measured by verify-shadow-map.mjs on the
-  // keyed build — this guard runs on CI's first build, which has no Google Maps key.
+  // A BACKTESTED DAY, OPENED, WITH ONE ROUTE OPENED (v1.72.0, v1.73.0). The map itself is measured by
+  // verify-shadow-map.mjs on the keyed build — this guard runs on CI's first build, which has no Maps key.
   claudeshadow: [{
-    name: 'a backtested day open',
-    open: async (page) => guardOpenBacktestDay(page),
+    name: 'a backtested day open, one route opened',
+    open: async (page) => (await guardOpenBacktestDay(page)) && guardOpenFirstRoute(page),
   }],
   routing: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
   map: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],

@@ -113,7 +113,10 @@ const mapStops = Array.from({ length: 40 }, (_, i) => ({
   lat: i === 1 ? 33.95 : 33.95 + (i % 8) * 0.06, lng: i === 1 ? -84.2 : -84.2 + Math.floor(i / 8) * 0.07,
   city: i % 3 ? 'LAWRENCEVILLE' : 'SUGAR HILL', zip: '30043',
   name: i === 0 || i === 1 ? 'NORTH GEORGIA BUILDING SUPPLY AND MILLWORK COMPANY' : `CUSTOMER NUMBER ${i + 1}`,
-  spots: 2.5, lbs: 1840, noTractor: i === 7,
+  // Skids and loose as the day recorded them; one order with neither recorded (it reads 0).
+  skids: i === 9 ? 0 : 2 + (i % 3), loose: i === 9 ? 0 : (i % 4) * 12, spots: 2.5, lbs: 1840, noTractor: i === 7,
+  // The customer's location key: ids 0 and 1 are one customer at one dock.
+  k: i === 1 ? 'K0' : `K${i}`,
 }));
 const byLoad = (off) => Object.fromEntries(mapLoads.map((l, k) => [l.id, mapStops.filter((s) => (s.id + off) % 8 === k).map((s) => s.id)]));
 const claudePlan = byLoad(3);
@@ -121,12 +124,33 @@ claudePlan.L1 = [...claudePlan.L1, ...claudePlan.L8];  // a truck Claude did not
 delete claudePlan.L8;
 const UNPLANNED_ID = 7;                               // no-tractor, dispatch sent it on a tractor
 for (const k of Object.keys(claudePlan)) claudePlan[k] = claudePlan[k].filter((id) => id !== UNPLANNED_ID);
+// Each route's stored numbers per plan (v1.73.0), the scorecard's own measurement, with the leg-by-leg
+// walk the route view shows: long numbers, a route near its skid cap and one past its driver's day.
+const legsFor = (n) => Array.from({ length: n }, (_, j) => ({ mi: j === 0 ? 41.3 : 3.2 + j, min: j === 0 ? 48.5 : 6.1 + j }));
+const colFor = (ids, i, side) => (ids && ids.length ? {
+  stops: ids.length, spots: ids.length * 2.5, cap: 18.1 + i, util: Math.round(((ids.length * 2.5) / (18.1 + i)) * 1000) / 10,
+  weight: ids.length * 1840, maxLbs: i === 5 ? 44000 : 10000, overWeight: ids.length * 1840 > (i === 5 ? 44000 : 10000),
+  miles: 176.7 + i * 11 - (side === 'claude' ? 40 : 0), driveMin: 214 + i * 9, routeMin: 214 + i * 9 + 15 * ids.length,
+  driverMin: i === 3 && side === 'claude' ? 640 : 214 + i * 9 + 15 * ids.length, maxMin: 600, overTime: i === 3 && side === 'claude', over: ids.length * 2.5 > 18.1 + i, blocked: 0,
+  ...(side === 'reseq' ? {} : { legs: legsFor(ids.length), homeMi: 38.4 + i, legsOk: true }),
+} : null);
 export const CLAUDE_SHADOW_MAP = {
   date: day(0), at: AT, depot: { lat: 34.14838, lng: -83.95948 },
-  stops: mapStops, loads: mapLoads,
+  loosePerSkid: 10, serviceMin: 15,
+  stops: mapStops,
+  loads: mapLoads.map((l, i) => ({
+    ...l, clsSource: i === 1 ? 'default' : 'roster', cap: 18.1 + i, capSource: 'learned', capNote: i === 2 ? 'raised to what dispatch delivered on this route' : null,
+    maxMin: 600, maxMinNote: null, maxLbs: i === 5 ? 44000 : 10000, lbsNote: null,
+    why: 'Canton / Ball Ground / Jasper / Ellijay run as one loop from the north end, then down 575 — one truck to the far corner, not two.',
+    cols: {},
+  })),
+  excluded: { noCoords: [{ n: 'DAVIS00299999', route: LONG_ROUTES[0] }] },
   plans: { driven: byLoad(0), reseq: byLoad(0), claude: claudePlan },
   unplanned: [{ id: UNPLANNED_ID, reason: 'no box truck has room for a no-tractor stop this size' }],
 };
+for (const [i, l] of CLAUDE_SHADOW_MAP.loads.entries()) {
+  l.cols = { driven: colFor(CLAUDE_SHADOW_MAP.plans.driven[l.id], i, 'driven'), reseq: colFor(CLAUDE_SHADOW_MAP.plans.reseq[l.id], i, 'reseq'), claude: colFor(CLAUDE_SHADOW_MAP.plans.claude[l.id], i, 'claude') };
+}
 const metric = (stops, miles) => ({ stops, spots: stops * 2.5, miles, driveMin: Math.round(miles * 1.9), over: false, blocked: 0 });
 export const CLAUDE_SHADOW_DAY_RESULT = {
   ...result(0, 4381.6, 3902.2),
@@ -190,6 +214,8 @@ export const CLAUDE_SHADOW_FAKE_MAPS = `(() => {
   const ns = new Proxy(Object.assign(m, known), { get: (t, p) => (p === 'then' ? undefined : p in t ? t[p] : (typeof p === 'string' && /^[A-Z]/.test(p) ? class { constructor() { return inst(); } } : inst())) });
   g.maps = ns; ns.importLibrary = async () => ns;
   window.__guardMapCount = () => n;
+  // What a map drew and how it styled it: [{ kind, loadId, seq, label }] for the visible maps.
+  window.__guardDrawn = () => all.filter((x) => x.el && x.el.isConnected && x.el.offsetParent).map((mp) => mp.data.f.map((f) => { const st = typeof mp.data.s === 'function' ? mp.data.s(f) : {}; return { kind: f.p.kind, loadId: f.p.loadId, seq: f.p.seq, label: st && st.label ? st.label.text : null }; }));
   window.__guardTapStop = () => {
     const mp = all.find((x) => x.el && x.el.isConnected && x.el.offsetParent);
     const f = mp && mp.data.f.find((x) => x.p.kind === 'stop' && x.p.stopId === 1);
@@ -203,13 +229,31 @@ export const CLAUDE_SHADOW_FAKE_MAPS = `(() => {
 /** Is this request Google's Maps script? (A predicate, so a guard can route and unroute exactly it.) */
 export const isGoogleMapsScript = (url) => { try { return new URL(String(url)).hostname === 'maps.googleapis.com'; } catch { return false; } };
 
-// ── GUARD STEPS for the backtested day. Shared by the layout guards and verify-shadow-map so they walk
-// the screen the same way. Each step PROVES it arrived (a probe that quietly no-ops measures the
-// screen it started on under another name), and waits for its proof rather than a fixed pause.
+// ── GUARD STEPS for the backtested day (v1.72.0 map, v1.73.0 routes). Shared by the layout guards and
+// verify-shadow-map so they walk the screen the same way. Each step PROVES it arrived (a probe that
+// quietly no-ops measures the screen it started on under another name), waits for its proof rather
+// than a fixed pause, and looks for that proof INSIDE the shadow's own sections: on a phone the Shadow
+// view sits over the Routing screen, which has "Routes (…)" text of its own — a loose text match
+// passed before the day's routes had loaded, and CI's slower runners lost that race every time.
 const seen = async (loc, ms = 8000) => { try { await loc.first().waitFor({ state: 'visible', timeout: ms }); return true; } catch { return false; } };
+const ROUTE_BUTTON = 'section[aria-label="Routes"] button:not([aria-label])';
+const ROUTE_PANEL = 'section[aria-label^="Route "]:not([aria-label="Routes"])';
+// When a step fails, say which and what the page showed — "could not open" alone cannot be fixed.
+const why = async (page, step) => {
+  const st = await page.evaluate(([rb, rp]) => ({
+    routesSection: !!document.querySelector('section[aria-label="Routes"]'),
+    routeButtons: document.querySelectorAll(rb).length,
+    panel: [...document.querySelectorAll(rp)].map((x) => x.getAttribute('aria-label')),
+    dayOpen: !!document.querySelector('button[aria-label="Close the day"]'),
+  }), [ROUTE_BUTTON, ROUTE_PANEL]).catch((e) => ({ error: String(e).slice(0, 120) }));
+  console.log(`      guard step failed: ${step} — ${JSON.stringify(st)}`);
+  if (process.env.GUARD_SHOT_DIR) await page.screenshot({ path: `${process.env.GUARD_SHOT_DIR}/guard-fail-${Date.now()}.png` }).catch(() => {});
+  return false;
+};
 
-/** Open the backtested day's row (the phone's summary button or the desktop's Open) and wait for it to open. */
+/** Open the backtested day's row (the phone's summary button or the desktop's Open) and wait for its routes. */
 export async function guardOpenBacktestDay(page, date = '2026-09-23') {
+  if (!(await seen(page.locator(`input[aria-label="Pick ${date}"]`), 8000))) return why(page, `the ${date} row never appeared`);
   const opened = await page.evaluate((d) => {
     const cb = document.querySelector(`input[aria-label="Pick ${d}"]`);
     let row = cb && cb.parentElement;
@@ -219,16 +263,24 @@ export async function guardOpenBacktestDay(page, date = '2026-09-23') {
     }
     return false;
   }, date);
-  if (!opened) return false;
-  return seen(page.getByRole('button', { name: /map: claude vs dispatch/i }));
+  if (!opened) return why(page, 'the day row has no Open button');
+  return (await seen(page.locator(ROUTE_BUTTON))) || why(page, "the day's routes never appeared");
+}
+
+/** Open the first route in the routes list and wait for its numbers, inside the route itself. */
+export async function guardOpenFirstRoute(page) {
+  const b = page.locator(ROUTE_BUTTON).first();
+  if (!(await seen(b))) return why(page, 'no route in the list to open');
+  await b.click();
+  return (await seen(page.locator(ROUTE_PANEL).getByText(/^Skid spots \/ cap$/))) || why(page, 'the opened route never showed its numbers');
 }
 
 /** Open the map (Google stood in — needs a build WITH a Maps key) and tap the stop two orders share. */
 export async function guardOpenMapAndTapStop(page) {
-  const btn = page.getByRole('button', { name: /map: claude vs dispatch/i }).first();
-  if (!(await btn.isVisible().catch(() => false))) return false;
+  const btn = page.getByRole('button', { name: /^map: yours|^maps: yours/i }).first();
+  if (!(await seen(btn))) return why(page, 'no map button');
   await btn.click();
-  if (!(await seen(page.getByText(/^Trucks \(\d+\)/)))) return false;
-  if (!(await page.evaluate(() => window.__guardTapStop?.() === true))) return false;
-  return seen(page.getByText(/stops at this address/));
+  if (!(await seen(page.locator('[aria-label="Claude map"], [aria-label="Dispatch — as driven map"]')))) return why(page, 'the map never appeared');
+  if (!(await page.evaluate(() => window.__guardTapStop?.() === true))) return why(page, 'no stop to tap on the map');
+  return (await seen(page.getByText(/stops at this address/))) || why(page, 'the stop card never opened');
 }

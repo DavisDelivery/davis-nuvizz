@@ -480,7 +480,12 @@ export async function backtestMap(date: string, deps: BtDeps = LIVE) {
   if (typeof stored?.problemJson !== 'string') return { status: 404, body: { ok: false, error: `the stops stored with ${date}'s backtest are not on file — re-run the day to map it` } };
   let problem: BtProblem;
   try { problem = JSON.parse(stored.problemJson); } catch { return { status: 500, body: { ok: false, error: 'the stored day could not be read' } }; }
-  return { status: 200, body: { ok: true, map: backtestMapPayload(problem, r), nuvizzCalls: 0 } };
+  // The run's own estimator config, for the leg-by-leg walk. Without it the route view simply has
+  // no legs — it never walks a stored order with today's settings in place of the run's.
+  let cfg: any = null;
+  try { cfg = typeof stored.cfgJson === 'string' ? JSON.parse(stored.cfgJson) : null; } catch { cfg = null; }
+  if (!(Number(cfg?.road_factor) > 0)) cfg = null;
+  return { status: 200, body: { ok: true, map: backtestMapPayload(problem, r, cfg), nuvizzCalls: 0 } };
 }
 
 export async function saveRouterSettings(change: any, by: string | null, deps: BtDeps = LIVE) {
