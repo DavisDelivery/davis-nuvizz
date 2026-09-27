@@ -35,8 +35,16 @@ import { summarizeLoadColumns, tallyLoadDays } from './lib/load-columns.mts';
 import { isFirestoreEnabled, getDoc, setDoc, etDayString } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
 
+// '+', '-' and '/' each get their own letter, so '+1d', '-1d' and '+/-1d' are three documents.
+// (p, m and s are outside the period grammar below, so no two periods can share a name.)
+const periodKey = (period: string) => period.replace(/\+/g, 'p').replace(/-/g, 'm').replace(/\//g, 's');
 const opsPath = (date: string, period?: string | null) =>
-  `nuvizz_ops/load_columns__${date}${period ? `__p_${period.replace(/[^0-9a-z]+/gi, '_')}` : ''}`;
+  `nuvizz_ops/load_columns__${date}${period ? `__p_${periodKey(period)}` : ''}`;
+// Before 2026-09-27 every run of those three became '_', which filed '+1d', '-1d' and '+/-1d'
+// under ONE document. A probe stored that way is still read back — but only for the period its
+// own record says it answered, never for the others that shared its name.
+const legacyOpsPath = (date: string, period: string) =>
+  `nuvizz_ops/load_columns__${date}__p_${period.replace(/[^0-9a-z]+/gi, '_')}`;
 // The period grammar NuVizz's filter speaks: digits, d, +, -, / — nothing else reaches the body.
 const PERIOD_RE = /^[+\-/0-9d]{1,8}$/;
 
@@ -60,7 +68,11 @@ export default async (req: Request): Promise<Response> => {
 
   // The stored answer first — reading it costs nothing and is the everyday path.
   if (!confirm) {
-    const prev = isFirestoreEnabled() ? await getDoc(opsPath(date, periodAsked)).catch(() => null) : null;
+    let prev = isFirestoreEnabled() ? await getDoc(opsPath(date, periodAsked)).catch(() => null) : null;
+    if (!prev && periodAsked && isFirestoreEnabled()) {
+      const old: any = await getDoc(legacyOpsPath(date, periodAsked)).catch(() => null);
+      if (old && old.period === periodAsked) prev = old;
+    }
     if (prev) return J({ ok: true, date, source: 'stored', ...prev });
     return J({ ok: false, date, error: 'no stored summary for this date — add &confirm=1 to spend ONE NuVizz call' }, 428);
   }
