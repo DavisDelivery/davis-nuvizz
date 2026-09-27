@@ -154,7 +154,8 @@ export function decideWrite(
     !dismissed.has('uline_straight_truck'); // user explicitly said this customer isn't ST-only
 
   // Hours: three guards decide whether the FIELD gets written (the audit trail rides along
-  // whenever a write happens for other reasons).
+  // whenever a write happens for other reasons — but only on hours the scanner owns, because
+  // that trail IS the provenance fingerprint below; see the M4.4 block).
   //   lock       — the dispatcher owns the field; never touch it.
   //   provenance — only overwrite hours the scanner itself wrote (auto_sources fingerprint)
   //                or an empty field. Legacy per-day data (M2.x strings, hand-shaped maps
