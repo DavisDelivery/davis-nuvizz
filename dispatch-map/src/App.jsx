@@ -31,6 +31,7 @@ import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
 import { snapshotSharedWindows, snapshotStopTimeliness, snapshotOnTime } from './lib/driver-snapshot-timeliness.js';
+import { scrubStop } from './lib/debug-capture-scrub.js';
 import { routeLoadLine, podPhotoFetchOffer, podPhotoPullOutcome, podSectionVisible, isPodImageExt, foldFreshStop, stopRecordIdentity, trackStopRecord } from './lib/stop-card-sections.js';
 import { mergeStopHistory } from './lib/stop-history.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
@@ -12802,40 +12803,8 @@ function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose,
 // "Debug this view" bundles what the dispatcher is looking at so a coding agent
 // can see the data behind a bad behavior. We ship coordinates + state, not a
 // screenshot (the Google map is WebGL and iOS Safari has no getDisplayMedia).
-// Customer names/addresses/contacts and the raw NuVizz payload are scrubbed.
-function scrubStop(s, seq, note) {
-  if (!s) return null;
-  return {
-    seq: seq == null ? undefined : seq,
-    stopNbr: s.stopNbr,
-    pro: s.pro,
-    loadNbr: s.loadNbr,
-    status: s.status,
-    normalizedStatus: s.normalizedStatus,
-    isPlanned: s.isPlanned,
-    isUnplanned: s.isUnplanned,
-    isTerminal: s.isTerminal,
-    carryover: s.carryover,
-    driverName: s.driverName,
-    driverUserName: s.driverUserName,
-    routeSeq: s.routeSeq,
-    loadStopSeq: s.loadStopSeq,
-    plannedEtaDTTM: s.plannedEtaDTTM,
-    arrivalDTTM: s.arrivalDTTM,
-    deliveredDTTM: s.deliveredDTTM,
-    cartons: s.cartons,
-    pallets: s.pallets,
-    volume: s.volume,
-    weight: s.weight,
-    lat: s.lat,
-    lng: s.lng,
-    matchKey: s.matchKey,
-    hasNote: !!note,
-    flag: note?.priority_flag ?? null,
-    // dropped (PII / huge): businessName, addr1, addr2, city, state, zip,
-    // contact, origin, stopDetails, allComments, raw
-  };
-}
+// Customer names/addresses/contacts and the raw NuVizz payload are scrubbed — see
+// lib/debug-capture-scrub.js (scrubStop), which also replaces the matchKey with a digest.
 
 // Reconstruct a Google Static Maps URL from the live viewport + visible pins, so
 // a reviewer can see the same view without WebGL. Uses a __MAPS_KEY__ placeholder
@@ -14467,7 +14436,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       notes_meta: { loaded_count: notes.size },
       warnings: [
         'static_map_url embeds the Maps key as __MAPS_KEY__ — swap it in locally to view; no real secret is included.',
-        'Customer names/addresses/contacts and the raw NuVizz payload are scrubbed from stops; only the join matchKey + coords remain.',
+        'Customer names/addresses/contacts and the raw NuVizz payload are scrubbed from stops; only coords and matchKeyDigest (a digest of the location key — equal digests mean the same location) remain.',
       ],
       user_note: note || '',
     };
