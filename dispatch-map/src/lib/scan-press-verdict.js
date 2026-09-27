@@ -59,18 +59,25 @@ const ago = (sec) => (sec == null ? 'a moment' : sec < 90 ? plural(sec, 'second'
 export function scanPressVerdict({ updated, refusal = null, run = null, waitedSec = 0 } = {}) {
   if (updated) return { kind: 'landed', message: null, done: true };
 
-  if (refusal) {
+  // Did a run start at or after this press? Both sides are durations, so no clock is compared
+  // with another clock. The slack absorbs the round trip and the poll interval.
+  const age = run && Number.isFinite(Number(run.startedAgeSec)) ? Number(run.startedAgeSec) : null;
+  const mine = age != null && age <= waitedSec + 20;
+
+  // A REAL RUN OF THIS PRESS OUTRANKS A REFUSAL. The caller matches a refusal to this press on
+  // a ~2-minute window (the server gives its age in whole minutes), so a refusal can be someone
+  // else's: a session that expired at 06:00:10, then a dispatcher whose press at 06:00:40
+  // started a scan. Checking the refusal first told that dispatcher "Scan did not run" on the
+  // first poll while their scan ran. The gate files a refusal on the run ledger too, as a
+  // finished row with outcome 'refused' — that row is not a scan, so it never outranks one.
+  const ranMine = mine && run.outcome !== 'refused';
+  if (refusal && !ranMine) {
     return {
       kind: 'refused',
       message: `Scan did not run. ${refusal.message || `Refused (${refusal.reason || 'no reason given'}).`}`,
       done: true,
     };
   }
-
-  // Did a run start at or after this press? Both sides are durations, so no clock is compared
-  // with another clock. The slack absorbs the round trip and the poll interval.
-  const age = run && Number.isFinite(Number(run.startedAgeSec)) ? Number(run.startedAgeSec) : null;
-  const mine = age != null && age <= waitedSec + 20;
 
   if (mine && run.finished) {
     // It ran and finished, and the board still did not move. That is a real answer, not a wait.
