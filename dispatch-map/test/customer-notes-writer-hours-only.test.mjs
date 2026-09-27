@@ -230,3 +230,32 @@ test('a legacy string day with real text DOES carry a claim', () => {
   const d = write(scannedStop({ hoursResult: HOURS }), { receiving_hours: { mon: '6AM-2PM' } });
   assert.equal(d, null);
 });
+
+// THE FINGERPRINT IS A CLAIM OF OWNERSHIP (Sep 27 audit, B-08). Scan 1 correctly refused to write
+// over hours somebody typed (no lock, no trail) — but stamped auto_sources.receiving_hours anyway.
+// Scan 2 read that stamp as "the scanner wrote these" and replaced the typed 06:00–11:00 with
+// the order's range on all seven days. Reproduced with two decideWrite calls; pinned here.
+test('the audit fingerprint must not make the NEXT scan own hours a person typed', () => {
+  const hit = { flagValue: 'uline_straight_truck', matchedSource: 'orderInstructions', matchedText: 'STRAIGHT TRUCK ONLY', matchedPattern: 'p' };
+  const stop = scannedStop({ hoursResult: HOURS, scanResults: [hit] });
+  const typed = { receiving_hours: { mon: { open: '06:00', close: '11:00' } } };
+  const d1 = write(stop, typed);
+  assert.ok(d1, 'the equipment flag still writes');
+  assert.equal('receiving_hours' in d1.payload, false, 'scan 1 leaves the typed hours alone');
+  assert.equal(d1.payload.auto_sources?.receiving_hours, undefined, 'no fingerprint on hours the scanner did not write');
+  assert.equal(d1.payload.auto_matches?.receiving_hours, undefined, 'and no match trail either — provenance falls back to it');
+  const d2 = write(stop, { ...typed, auto_sources: d1.payload.auto_sources, auto_matches: d1.payload.auto_matches });
+  assert.equal(!!(d2 && 'receiving_hours' in d2.payload), false, 'scan 2 leaves the typed hours alone too');
+});
+
+test('the fingerprint is still stamped where the scanner owns the field, and under a lock (disclosure only)', () => {
+  const owned = write(scannedStop({ hoursResult: HOURS }), undefined);
+  assert.deepEqual(owned.payload.auto_sources.receiving_hours, ['orderInstructions']);
+  const locked = write(
+    scannedStop({ hoursResult: HOURS, scanResults: [{ flagValue: 'uline_straight_truck', matchedSource: 'orderInstructions', matchedText: 'STRAIGHT TRUCK ONLY', matchedPattern: 'p' }] }),
+    { receiving_hours: { mon: { open: '06:00', close: '11:00' } }, manual_overrides: { receiving_hours: true } },
+  );
+  assert.ok(locked, 'the equipment flag writes');
+  assert.equal('receiving_hours' in locked.payload, false, 'the lock holds');
+  assert.deepEqual(locked.payload.auto_sources.receiving_hours, ['orderInstructions'], 'the trail is kept for the dispatcher to see');
+});

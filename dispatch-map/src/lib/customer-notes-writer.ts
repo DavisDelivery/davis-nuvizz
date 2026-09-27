@@ -287,19 +287,27 @@ export function decideWrite(
     if (hoursWouldChange && intendedHours) {
       payload.receiving_hours = intendedHours;
     }
-    // Audit trail regardless of override.
-    payload.auto_sources = {
-      ...payload.auto_sources,
-      receiving_hours: [stop.hoursResult.matchedSource],
-    };
-    payload.auto_matches = {
-      ...payload.auto_matches,
-      receiving_hours: [{
-        source: stop.hoursResult.matchedSource,
-        text: stop.hoursResult.matchedText,
-        pattern: 'hours_range',
-      }],
-    };
+    // THE FINGERPRINT IS A CLAIM OF OWNERSHIP: `scannerOwnsHours` above reads
+    // auto_sources.receiving_hours as "the scanner wrote these", and hours-provenance.js labels
+    // the card "Auto-detected" from the same key (falling back to auto_matches). So it is
+    // stamped only where the scanner owns the field, or where a lock outranks it and the trail
+    // is disclosure only. Hours somebody typed with no lock and no trail stay un-fingerprinted:
+    // stamping them here on a REFUSED write is what let the NEXT scan read them as its own
+    // and replace a typed 07:00–15:00 with the order's 8AM-2PM on all seven days.
+    if (scannerOwnsHours || overrideHours) {
+      payload.auto_sources = {
+        ...payload.auto_sources,
+        receiving_hours: [stop.hoursResult.matchedSource],
+      };
+      payload.auto_matches = {
+        ...payload.auto_matches,
+        receiving_hours: [{
+          source: stop.hoursResult.matchedSource,
+          text: stop.hoursResult.matchedText,
+          pattern: 'hours_range',
+        }],
+      };
+    }
   }
 
   // Closed days: union with anything previously detected (don't drop days
