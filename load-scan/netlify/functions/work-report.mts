@@ -160,7 +160,9 @@ export default async (req: Request): Promise<Response> => {
     // alignment the 8pm rollover was chosen to give.
     let loads: any[] = [];
     try {
-      const stops = (await readStops(TENANT, shiftDay)).map(toManifestStop);
+      // Wrapped, never `.map(toManifestStop)`: map passes the index as `warn`,
+      // and the first skids + loose mismatch then threw and emptied the board.
+      const stops = (await readStops(TENANT, shiftDay)).map((s: any) => toManifestStop(s));
       loads = groupIntoLoads(stops).map((l: any) => ({
         loadNbr: l.loadNbr,
         routeName: l.routeName ?? null,
