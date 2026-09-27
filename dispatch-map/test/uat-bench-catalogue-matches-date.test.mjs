@@ -121,3 +121,30 @@ test('the list reloaded after a Seed is the day now in the box, even if the test
   assert.match(textOf(tableRows(tree)), /WEDNESDAY CUSTOMER/);
   assert.doesNotMatch(textOf(tableRows(tree)), /TUESDAY CUSTOMER/, 'Tuesday\'s reload never lands under Wednesday');
 });
+
+test('a Seed or Clear the server refuses keeps its reason on screen after the list reloads', async () => {
+  // Found in review (2026-09-27): run() set the refusal as the error and then reloaded the list,
+  // and the reload cleared the error line — so a refused Seed read "Seeded 0 · 0 UAT call(s)" and
+  // a refused Clear "Cancelled 0 · 0 UAT call(s)", with nothing saying why.
+  for (const [label, op, body] of [
+    ['Seed into UAT', 'seed', { ok: false, error: 'uat-seed: NUVIZZ_WRITE_ENABLED is not true on this site' }],
+    ['Clear the bench', 'clear', { ok: false, error: 'uat-seed: refused: NUVIZZ_DAVIS_COMPANY_CODE is DAVIS' }],
+  ]) {
+    const b = mountBench();
+    const seededTue = { ...TUE, seeded: { count: 1, orders: [] } };
+    catalogueCalls(b)[0].answer(seededTue);
+    let tree = await b.settle();
+    tableRows(tree)[0].props.onClick();
+    const saved = globalThis.window;
+    globalThis.window = { confirm: () => true };
+    try { button(b.render(), label).props.onClick(); } finally { globalThis.window = saved; }
+    const post = b.calls.find((c) => c.method === 'POST');
+    assert.equal(post.body.op, op);
+    post.answer(body, 403);
+    await b.settle();
+    catalogueCalls(b)[1].answer(seededTue);
+    tree = await b.settle();
+    assert.ok(errorBanner(tree), `${op}: the refusal is on screen after the reload`);
+    assert.equal(textOf(errorBanner(tree)), body.error);
+  }
+});

@@ -100,9 +100,11 @@ export default function UatBench() {
         : { op, date, stopNbrs: [...picked], label: label.trim() || null };
       const j = await call(body);
       setResult({ op, ...j });
-      if (!j?.ok && j?.error) setErr(j.error);
       // The day in the box NOW — the tester may have moved while this ran.
       if (op === 'seed' || op === 'clear') await loadCatalogue(dateRef.current);
+      // AFTER the reload, which clears the error line: a refusal's reason is the only thing on
+      // screen that says why nothing was seeded or cleared.
+      if (!j?.ok && j?.error) setErr(j.error);
     } catch (e) {
       setErr(e?.message || 'could not reach the server');
     } finally { setBusy(null); }
