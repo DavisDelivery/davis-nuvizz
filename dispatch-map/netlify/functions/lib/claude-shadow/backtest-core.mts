@@ -53,7 +53,7 @@ export const LEARN_DAY_MASK = ['date', 'learnVersion', 'roster', 'stampGate', 'c
 // module's graph; test/claude-shadow-backtest.test.mjs fails the day the two differ.
 export const TRAILER_BLOCKER_KEYS = new Set([
   'no_tractor_trailer', 'box_truck_only', 'straight_truck_only',
-  'uline_straight_truck', 'no_53', '26ft_max', 'no_overhead_clearance',
+  'uline_straight_truck', 'no_53', 'no_53ft', '26ft_max', 'no_overhead_clearance',
 ]);
 // The default truck profiles' skid counts (truck-profiles.mts DEFAULT_TRUCK_PROFILES: box_26 14,
 // tractor_53 28), the last fallback when neither a learned cap nor yours exists. Pinned by test.

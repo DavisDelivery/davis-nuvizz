@@ -61,9 +61,10 @@ import type { CostMatrix } from './score.mts';
 
 // The customer_notes restriction keys that forbid a tractor/trailer (v1 reduces
 // all equipment to the single "tractor-capable?" axis the roster class supports).
+// 'no_53ft' is the spelling the app's "No 53ft" dropdown writes; 'no_53' the older one.
 export const TRAILER_BLOCKER_KEYS = new Set([
   'no_tractor_trailer', 'box_truck_only', 'straight_truck_only',
-  'uline_straight_truck', 'no_53', '26ft_max', 'no_overhead_clearance',
+  'uline_straight_truck', 'no_53', 'no_53ft', '26ft_max', 'no_overhead_clearance',
 ]);
 export function restrictionsBlockTractor(restrictions: any[]): boolean {
   for (const r of restrictions || []) if (TRAILER_BLOCKER_KEYS.has(String(r))) return true;
