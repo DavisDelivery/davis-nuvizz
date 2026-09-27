@@ -4,6 +4,8 @@
 //   GET ?explain=1[&from=&to=&days=&horizon=&board=&history=&static=]
 //                                       → per date, production's counts beside the mirror's;
 //                                         reads both databases, writes NOTHING, spends nothing.
+//   GET ?sync=1                         → the live sync's last tick (uat-mirror-sync-background)
+//   GET ?sync=explain                   → what the next live-sync tick would copy; no writes.
 //
 // The *-background function that does the copying answers 202 and discards its result, so
 // this is the only way to see it. Mirror only, like everything that reads production from
@@ -14,6 +16,8 @@ import { isFirestoreEnabled, getDoc, listDocs, etDayString } from './lib/firesto
 import { listProdDocs, getProdDoc, prodMirrorReadEnabled } from './lib/prod-mirror-read.mts';
 import { requireUser } from './lib/require-user.mts';
 import { planRefresh, explainRefresh, progressPath, onOff, type RefreshDeps } from './lib/uat-mirror-refresh.mts';
+import { liveSyncEnabled, planUnits, runSync, runPath as syncRunPath, SYNC_SCHEDULE } from './lib/uat-live-sync.mts';
+import { realSyncDeps } from './lib/uat-live-sync-io.mts';
 
 const TENANT = 'davis';
 const EXPLAIN_MAX_DAYS = 14;
@@ -65,6 +69,27 @@ export default async (req: Request): Promise<Response> => {
       return J({ ok: true, database: firestoreDatabaseName(), clamped_to_days: clamped ? EXPLAIN_MAX_DAYS : null, ...res });
     } catch (e: any) {
       return J({ ok: false, error: e?.message || 'explain failed' }, 500);
+    }
+  }
+
+  // ── THE LIVE SYNC (lib/uat-live-sync.mts, every 10 minutes) ──────────────────────────────
+  //   ?sync=1        the last tick's report, unit by unit — one read of the mirror
+  //   ?sync=explain  what the next tick WOULD copy and remove, right now. Reads both databases
+  //                  (stamps only — a few bytes a document), writes NOTHING, spends nothing.
+  if (q('sync') === '1') {
+    const run = await getDoc(syncRunPath(TENANT)).catch((e: any) => ({ _read_error: e?.message || String(e) }));
+    return J({ ok: true, database: firestoreDatabaseName(), live_sync: liveSyncEnabled(), schedule: SYNC_SCHEDULE, run: run || null, nuvizz_calls: 0 });
+  }
+  if (q('sync') === 'explain') {
+    if (!liveSyncEnabled()) return J({ ok: false, refused: 'UAT_LIVE_SYNC=off or UAT_PROD_MIRROR=off — there is no live sync to explain', database: firestoreDatabaseName() });
+    const today = etDayString();
+    try {
+      // 20 s of the function's 26: a unit the budget does not reach is named in `deferred`
+      // rather than timing the whole answer out.
+      const report = await runSync(realSyncDeps(), planUnits(today, { tenant: TENANT }), { tenant: TENANT, today, dry: true, budgetMs: 20_000 });
+      return J({ ok: true, database: firestoreDatabaseName(), ...report, writes: 0 });
+    } catch (e: any) {
+      return J({ ok: false, error: e?.message || 'sync explain failed' }, 500);
     }
   }
 

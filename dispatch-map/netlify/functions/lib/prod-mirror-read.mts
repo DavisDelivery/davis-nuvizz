@@ -90,3 +90,70 @@ export async function getProdDoc(
   if (!resp.ok) throw new Error(`prod-mirror-read get ${docPath} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
   return docToObject(await resp.json());
 }
+
+// ── STAMPED READS, FOR THE LIVE SYNC (lib/uat-live-sync.mts) ─────────────────────────────────
+//
+// Chad, 2026-09-26: "any update i make to production should automatically be here as well but
+// any change to uat should not automatically go to production without explicit approval."
+//
+// Copying only what production CHANGED needs the one fact Firestore keeps for every document
+// and docToObject throws away: its updateTime. These two readers return it. They are the same
+// shape as the two above — bare GETs through prodUrl, refused off a mirror before any network
+// call — so the file's three constraints (no writer, (default) only, mirror only) hold for them
+// exactly as for the rest.
+
+/**
+ * The field a stamp listing masks to. No production document carries it, so the listing comes
+ * back as names and updateTimes only — a few bytes a document instead of the whole row. A read
+ * is still billed per document; the saving is bandwidth, which on a board of stops carrying
+ * the vendor's raw payload is most of the cost of looking.
+ */
+export const STAMP_ONLY_FIELD = 'uat_sync_stamp_only';
+
+export interface ProdStamp { _id: string; updateTime: string }
+
+/** One paged, read-only listing of a production collection: document ids and updateTimes. */
+export async function listProdDocStamps(
+  collectionPath: string,
+  opts: { env?: Record<string, any> } = {},
+): Promise<ProdStamp[]> {
+  refuseUnlessMirror(opts.env || process.env);
+  const token = await getAccessToken();
+  const out: ProdStamp[] = [];
+  let pageToken: string | null = null;
+  do {
+    const url = prodUrl(collectionPath);
+    url.searchParams.set('pageSize', '300');
+    url.searchParams.append('mask.fieldPaths', STAMP_ONLY_FIELD);
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (resp.status === 404) return out;
+    if (!resp.ok) throw new Error(`prod-mirror-read stamps ${collectionPath} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+    const body: any = await resp.json();
+    for (const d of body.documents || []) {
+      const parts = String(d?.name || '').split('/');
+      const id = parts[parts.length - 1];
+      if (id && d?.updateTime) out.push({ _id: id, updateTime: String(d.updateTime) });
+    }
+    pageToken = body.nextPageToken || null;
+  } while (pageToken);
+  return out;
+}
+
+/**
+ * One read-only GET of a production document WITH its updateTime. null when it does not exist.
+ * `data` is {} (not null) for a document that exists with no fields, so "there and empty" is
+ * never confused with "gone".
+ */
+export async function getProdDocStamped(
+  docPath: string,
+  opts: { env?: Record<string, any> } = {},
+): Promise<{ data: any; updateTime: string } | null> {
+  refuseUnlessMirror(opts.env || process.env);
+  const token = await getAccessToken();
+  const resp = await fetch(prodUrl(docPath), { headers: { Authorization: `Bearer ${token}` } });
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error(`prod-mirror-read get ${docPath} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+  const raw: any = await resp.json();
+  return { data: docToObject(raw) || {}, updateTime: String(raw?.updateTime || '') };
+}
