@@ -111,6 +111,7 @@ import {
   rowsFromAoa, summarizeShiplify, shiplifyBatchId, chunkRowsBySize, decodeIndexLine, SHIPLIFY_SHEET,
 } from './lib/shiplify-import.js';
 import { eligibilityChanged } from './lib/trailer-block.js';
+import { changedNoteFields } from './lib/customer-note-edit.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops, hoursSummary } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
@@ -39343,6 +39344,11 @@ function StopLookupScreen() {
   // The stored document AS IT STOOD WHEN THE FORM OPENED. Kept only so the save can tell
   // whether THIS edit moved the vehicle mark — see eligibilityChanged in the save below.
   const [editWas, setEditWas] = useState(null);
+  // WHAT THE FORM OPENED ON — emptyNote's defaults plus the stored document — so the save can
+  // send only what the rep changed against it (changedNoteFields). Writing the whole draft
+  // handed every field back with its open-time value and undid anything another writer did
+  // while the form was open: an unsubscribe, a pin moved to the right door.
+  const [editSeed, setEditSeed] = useState(null);
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editErr, setEditErr] = useState(null);
@@ -39572,10 +39578,13 @@ function StopLookupScreen() {
       // the form still opens, because its LAYOUT is worth measuring and needs nothing from
       // Firestore, but Save is refused and the panel says why. firebase.js makes `db` null on
       // purpose for exactly this: "a visible dead control is the safe direction".
+      setEditSeed(base);
       if (!db) { setEditDraft(base); setEditWas(null); return; }
       const snap = await getDoc(doc(db, 'customer_notes', dock.key));
       // The stored document wins field by field; `base` only fills what has never been set.
-      setEditDraft(snap.exists() ? { ...base, ...snap.data() } : base);
+      const seed = snap.exists() ? { ...base, ...snap.data() } : base;
+      setEditDraft(seed);
+      setEditSeed(seed);
       setEditWas(snap.exists() ? snap.data() : null);
     } catch (e) {
       reportDenied('customer_notes', e);
@@ -39618,7 +39627,11 @@ function StopLookupScreen() {
       const draft = editDraft;
       const existing = editWas;
       await setDoc(ref, {
-        ...draft,
+        // ONLY WHAT THE REP CHANGED against what the form opened on. `{ merge: true }` protects
+        // just the keys absent from the payload, so `...draft` here wrote every field back with
+        // its open-time value — re-subscribing a customer who unsubscribed while the rep typed,
+        // dragging a corrected pin back to the wrong building (audit 2026-09-27, app-A4-3).
+        ...changedNoteFields(draft, editSeed),
         match_key: key,
         raw_name: draft.raw_name || editDock.name || '',
         raw_address: draft.raw_address || [editDock.addr1, editDock.city, editDock.state, editDock.zip].filter(Boolean).join(', '),
@@ -39660,7 +39673,7 @@ function StopLookupScreen() {
       reportDenied('customer_notes', e, 'write');
       setEditErr(`Not saved: ${e.message || e}`);
     } finally { setEditSaving(false); }
-  }, [editDock, editDraft, editWas, notesGate.reason]);
+  }, [editDock, editDraft, editWas, editSeed, notesGate.reason]);
 
   /** The rep picked one of several matching businesses. */
   const pickCustomer = useCallback((m) => {
