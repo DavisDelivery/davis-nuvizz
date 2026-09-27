@@ -388,7 +388,14 @@ export async function explainManifestEmails(deps: IngestDeps & { deep?: boolean 
     catch (e: any) { mailboxes.push({ name: src.name, error: e?.message || 'list failed', emails: [] }); continue; }
 
     const rows: any[] = [];
+    // THE CAP IS SPENT ONLY ON WHAT THE REAL LOOP MARKS — checked or ignored. A retry (the
+    // attachments could not be listed, or the diff failed, e.g. the board is not scanned yet)
+    // is left unmarked there and uses no slot, so it uses none here either. Counting every
+    // email reached told Chad tonight's report would go unread while the real pass filed it.
     let wouldProcess = 0;
+    // Slots counted on a shallow "would be READ" whose outcome only deep=1 can see: if one of
+    // those turns out to be a retry, the real pass reaches further than this one says.
+    let unconfirmed = 0;
     for (const email of orderOldestFirst(emails)) {
       const id = String(email?.id ?? '');
       if (!id) continue;
@@ -421,10 +428,12 @@ export async function explainManifestEmails(deps: IngestDeps & { deep?: boolean 
         rows.push(row); continue;
       }
       if (!reached) {
-        row.verdict = `UNREAD THIS PASS — the ${MAX_EMAILS_PER_RUN}-email cap was already spent on older mail`;
+        row.verdict = unconfirmed
+          ? `UNREAD THIS PASS — the ${MAX_EMAILS_PER_RUN}-email cap was already spent on older mail, if all ${unconfirmed} older `
+            + `"would be READ" email${unconfirmed === 1 ? '' : 's'} read cleanly (one that has to RETRY uses no slot — add deep=1 to settle it)`
+          : `UNREAD THIS PASS — the ${MAX_EMAILS_PER_RUN}-email cap was already spent on older mail`;
         rows.push(row); continue;
       }
-      wouldProcess += 1;
 
       let atts: MailAttachment[] = [];
       try { atts = await (src.attachments ? src.attachments(email) : Promise.resolve(email.attachments)); }
@@ -434,9 +443,11 @@ export async function explainManifestEmails(deps: IngestDeps & { deep?: boolean 
       }
       const pdfs = atts.filter(isPdfAttachment);
       row.pdfs = pdfs.map((a) => a.filename || a.id);
-      if (!pdfs.length) { row.verdict = 'would be IGNORED — no PDF attachment'; rows.push(row); continue; }
+      if (!pdfs.length) { wouldProcess += 1; row.verdict = 'would be IGNORED — no PDF attachment'; rows.push(row); continue; }
 
       if (!deps.deep) {
+        wouldProcess += 1;
+        unconfirmed += 1;
         row.verdict = 'would be READ this pass (add deep=1 to see what the diff says)';
         rows.push(row); continue;
       }
@@ -467,11 +478,17 @@ export async function explainManifestEmails(deps: IngestDeps & { deep?: boolean 
       }
       row.tried = tried;
       const good = tried.find((x) => x.ok);
+      // Same precedence as the real loop: filed, else any failed attempt is a retry (it is
+      // left unmarked), and only an email whose every PDF is not the report is ignored.
+      const failed = tried.filter((x) => !x.ok && (x.result || !x.notManifest));
       row.verdict = good
         ? `would be CHECKED and filed (${good.orders} orders)`
-        : tried.some((x) => x.notManifest)
-          ? 'would be IGNORED — the PDF is not the freight report'
-          : `would RETRY — ${tried.map((x) => x.error || x.result).filter(Boolean)[0] || 'the diff did not succeed'}`;
+        : failed.length
+          ? `would RETRY — ${failed.map((x) => x.error || x.result).filter(Boolean)[0] || 'the diff did not succeed'}`
+          : tried.some((x) => x.notManifest)
+            ? 'would be IGNORED — the PDF is not the freight report'
+            : `would RETRY — ${tried.map((x) => x.error || x.result).filter(Boolean)[0] || 'the diff did not succeed'}`;
+      if (good || (!failed.length && tried.some((x) => x.notManifest))) wouldProcess += 1;
       rows.push(row);
     }
 
