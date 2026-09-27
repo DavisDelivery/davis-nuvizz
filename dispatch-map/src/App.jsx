@@ -35804,6 +35804,14 @@ function useQueuePush(today, reload) {
   const [logged, setLogged] = React.useState(null);   // { ok, tried } for the last run
   const stopRef = React.useRef(false);
   const [budget, setBudget] = React.useState(null);   // { current, ceiling, live }
+  // EVERY NUVIZZ ANSWER IS KEPT HERE, whichever button produced it, marked as a vendor answer and
+  // named — the board half can drop a row off the list on the very reload that follows, and a
+  // verdict kept only on the row went with it: a refusal read as success (audit 2026-09-27).
+  const stamp = (row, verdict) => ({ ...verdict, vendor: true, who: [row?.businessName, row?.stopNbr].filter(Boolean).join(' · ') });
+  const noteVerdict = React.useCallback((row, verdict) => {
+    if (!row?.key || !verdict) return;
+    setResults((prev) => ({ ...prev, [row.key]: stamp(row, verdict) }));
+  }, []);
 
   // THE BUDGET IS READ FOR FREE. A dry run returns the ops snapshot and the live flag before
   // the write-enable gate and without touching NuVizz, so the button can say what a run costs
@@ -35853,7 +35861,7 @@ function useQueuePush(today, reload) {
           await new Promise((r) => setTimeout(r, 0));
           continue;
         }
-        acc[row.key] = pushed;
+        acc[row.key] = stamp(row, pushed);
         setResults({ ...acc });
         if (pushed?.fatal) {
           // Continuing produces N identical failures, spends nothing useful, and buries the one
@@ -35875,7 +35883,7 @@ function useQueuePush(today, reload) {
     reload();
   }, [today, reload, readBudget]);
 
-  return { running, results, fatal, logged, budget, runGroup, stop: () => { stopRef.current = true; }, setResults };
+  return { running, results, fatal, logged, budget, runGroup, stop: () => { stopRef.current = true; }, setResults, noteVerdict };
 }
 
 /** Shared furniture both queue views render: the cost/budget line and the run banner. Text, not
@@ -36032,7 +36040,7 @@ function QueueSelectAllBox({ d, q, className = 'accent-blue-700 w-4 h-4' }) {
 }
 
 /** One row's inline editor. Shared logic; each view decides where it sits. */
-function useQueueRowEdit(row, google, today, reload) {
+function useQueueRowEdit(row, google, today, reload, onVerdict) {
   const [open, setOpen] = React.useState(false);
   // SEEDED WITH THE FIX, NOT THE FAULT. Opening on the broken split and calling the button
   // "Correct" is how a dispatcher presses it, sees the same wrong address, and concludes the
@@ -36074,10 +36082,13 @@ function useQueueRowEdit(row, google, today, reload) {
       if (pushed) parts.push(pushed.text);
       if (geoErr) parts.push('The address is saved but the pin could not be moved — it still points at the old spot, so this row stays on the queue.');
       setMsg({ kind: pushed?.fatal ? 'warn' : (geoErr || QUEUE_WARN_KINDS.has(pushed?.kind)) ? 'warn' : 'ok', text: parts.join(' ') || 'Saved on the board.' });
+      // The editor closes and the reload can drop this row off the list, so the vendor's answer
+      // also goes where it outlives both: the row's own line, or the summary bar once it is gone.
+      if (pushed) onVerdict?.(row, pushed);
       if (!geoErr && !pushed?.fatal) setOpen(false);
       reload();
     } catch (e) { setMsg({ kind: 'warn', text: String(e?.message || e) }); } finally { setBusy(false); }
-  }, [row, f, google, today, reload]);
+  }, [row, f, google, today, reload, onVerdict]);
   return { open, setOpen, f, setF, busy, msg, save, mapOpen, setMapOpen, usePin };
 }
 
@@ -36254,7 +36265,9 @@ function ProblemQueueMobile({ nonce, today }) {
   const toggleLog = React.useCallback((date) => setOpenLog((prev) => {
     const n = new Set(prev); if (n.has(date)) n.delete(date); else n.add(date); return n;
   }), []);
-  if (q.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
+  // Only the FIRST load blanks the screen. A reload after a save used to unmount every row, and
+  // with them each open editor, its typed text and the message saying what NuVizz did.
+  if (q.loading && !q.data) return <div className="text-xs text-slate-500">Loading the board…</div>;
   if (q.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{q.err}</div>;
   return (
     <div className="space-y-3">
@@ -36294,7 +36307,7 @@ function ProblemQueueMobile({ nonce, today }) {
 }
 
 function QueueRowMobile({ row, q, today }) {
-  const e = useQueueRowEdit(row, q.google, today, q.reload);
+  const e = useQueueRowEdit(row, q.google, today, q.reload, q.push.noteVerdict);
   const verdict = q.push.results[row.key];
   const pushable = queueRowPushable(row);
   return (
@@ -36337,7 +36350,9 @@ function ProblemQueueDesktop({ nonce, today }) {
   const toggleLog = React.useCallback((date) => setOpenLog((prev) => {
     const n = new Set(prev); if (n.has(date)) n.delete(date); else n.add(date); return n;
   }), []);
-  if (q.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
+  // Only the FIRST load blanks the screen. A reload after a save used to unmount every row, and
+  // with them each open editor, its typed text and the message saying what NuVizz did.
+  if (q.loading && !q.data) return <div className="text-xs text-slate-500">Loading the board…</div>;
   if (q.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{q.err}</div>;
   return (
     <div className="space-y-4">
@@ -36385,7 +36400,7 @@ function ProblemQueueDesktop({ nonce, today }) {
 }
 
 function QueueRowDesktop({ row, q, today }) {
-  const e = useQueueRowEdit(row, q.google, today, q.reload);
+  const e = useQueueRowEdit(row, q.google, today, q.reload, q.push.noteVerdict);
   const verdict = q.push.results[row.key];
   const pushable = queueRowPushable(row);
   return (
@@ -36646,6 +36661,17 @@ function QueueRowEditor({ e, row, pushable, stacked }) {
   );
 }
 
+/** PURE. NuVizz answers worth a second look for rows no longer on the list. The board half fixed
+ *  them, so the reload dropped them — and their own line with them. Only vendor answers (a
+ *  board-only "pin not moved" row stays on the list and says so itself), and only the ones that
+ *  need the portal: a warning kind, or a run-stopping refusal. */
+function queueVerdictsOffList(results, rows) {
+  const listed = new Set((rows || []).map((r) => r.key));
+  return Object.entries(results || {})
+    .filter(([key, v]) => v && v.vendor && !listed.has(key) && (v.fatal || QUEUE_WARN_KINDS.has(v.kind)))
+    .map(([key, v]) => ({ key, who: v.who || key, text: v.text }));
+}
+
 /** Counts, the group push, and what it costs BEFORE anyone presses it. */
 function QueueSummaryBar({ q, stacked }) {
   const sum = q.data?.summary || {};
@@ -36655,6 +36681,7 @@ function QueueSummaryBar({ q, stacked }) {
   const pushWorth = q.selected.filter(worthPushing).length;
   const b = q.push.budget;
   const overBudget = !!(b && b.ceiling && pushWorth * 3 > Math.max(0, b.ceiling - b.current));
+  const offList = queueVerdictsOffList(q.push.results, q.allRows);
   return (
     <div className="rounded-xl border bg-white p-3 space-y-2">
       <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
@@ -36712,6 +36739,17 @@ function QueueSummaryBar({ q, stacked }) {
         <div className="text-[11px] text-amber-700">Live writes are switched off on the server, so a push would reach nothing. Corrections still save to the board.</div>
       )}
       {q.push.fatal && <div className="text-[11px] rounded p-2 bg-amber-50 border border-amber-200 text-amber-900 break-words">Run stopped: {q.push.fatal}</div>}
+      {/* WHAT NUVIZZ SAID ABOUT ROWS THAT ARE GONE. A refused push used to vanish with its row,
+          which reads as done while the driver's manifest keeps the old address. In flow, in
+          both views. */}
+      {offList.length > 0 && (
+        <div className="text-[11px] rounded p-2 bg-amber-50 border border-amber-200 text-amber-900 break-words space-y-1">
+          <div className="font-semibold">
+            {offList.length === 1 ? 'This order is' : `These ${offList.length} orders are`} fixed on the board and off this list, but NuVizz did not take the correction cleanly — check {offList.length === 1 ? 'it' : 'them'} in the portal before the truck goes:
+          </div>
+          {offList.map((v) => <div key={v.key}><span className="font-semibold">{v.who}</span> — {v.text}</div>)}
+        </div>
+      )}
       {/* Only when a row did NOT reach the log. A clean run says nothing — a line that appears
           every time is one nobody reads, and this exists to be noticed. */}
       {q.push.logged && q.push.logged.ok < q.push.logged.tried && (

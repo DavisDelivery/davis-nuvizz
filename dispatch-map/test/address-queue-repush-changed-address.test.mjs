@@ -27,9 +27,16 @@ function fnSource(name) {
   const next = APP.indexOf('\nfunction ', start + 1);
   return APP.slice(start, next > 0 ? next : undefined);
 }
+/** One top-level function and nothing after it — fnSource runs on to the next `function`, and
+ *  would carry any `const` declared in between along with it. */
+function fnOnly(name) {
+  const start = APP.indexOf(`function ${name}(`);
+  assert.ok(start > 0, `${name} not found in App.jsx`);
+  return APP.slice(start, APP.indexOf('\n}\n', start) + 2);
+}
 const queueClientOpId = (() => {
   // eslint-disable-next-line no-new-func
-  try { return new Function(`'use strict';\n${fnSource('queueClientOpId')}\nreturn queueClientOpId;`)(); } catch { return null; }
+  try { return new Function(`'use strict';\n${fnOnly('queueClientOpId')}\nreturn queueClientOpId;`)(); } catch { return null; }
 })();
 
 const ROW = { key: 'no_pin__007174397', signal: 'no_pin', stopNbr: '007174397', stopId: '999' };
