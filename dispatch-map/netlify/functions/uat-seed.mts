@@ -211,7 +211,7 @@ export default async (req: Request): Promise<Response> => {
         if (prior) {
           await deleteDoc(`${indexBase(prior)}/stops/${p.uatStopNbr}`);
           struckDays.add(prior);
-          warnings.push(`${p.uatStopNbr} was seeded for ${prior} before — it is one order in the UAT tenant, so its row on ${prior}'s UAT board was removed and it now stands on ${date}.`);
+          warnings.push(`${p.uatStopNbr} was seeded for ${prior} before — it is one order in the UAT tenant, so its row on ${prior}'s UAT board was removed before re-seeding it for ${date}.`);
         }
         await setDoc(`${LEDGER}/${p.uatStopNbr}`, {
           uatStopNbr: p.uatStopNbr, prodStopNbr: p.prodStopNbr, boardDate: date,
