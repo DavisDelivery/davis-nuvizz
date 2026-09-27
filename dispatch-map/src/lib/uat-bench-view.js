@@ -51,6 +51,24 @@ export function seedHeadline(result) {
   return `Seeded ${r.seeded ?? 0}${nFailed ? `, ${nFailed} failed` : ''} · ${r.callsUsed ?? 0} UAT call(s)${board}`;
 }
 
+/**
+ * PURE. Is this production row freight still waiting for a route? The SERVER'S rule, word for
+ * word (prod-catalogue.mts, unplannedTotal), so the "un-planned only" list is the rows the count
+ * counts. A cancelled or unable-to-deliver order with no route is written isPlanned:false AND
+ * isUnplanned:false (lib/nuvizz-list.mts: "neither planned nor unplanned: it is done"), and
+ * `!isPlanned` alone called it plannable — the bug that once put PRO 007151447-2 on a truck.
+ */
+export function isUnplannedRow(r) {
+  return r?.isUnplanned === true || (r?.isPlanned === false && r?.isUnplanned !== false);
+}
+
+/** PURE. What the "In production" cell says about a row that is not on a load: "un-planned" for
+ *  open freight, otherwise the order's own status ("cancelled", "exception", …). */
+export function notPlannedLabel(r) {
+  if (isUnplannedRow(r)) return 'un-planned';
+  return String(r?.normalizedStatus ?? '').trim().toLowerCase() || 'not open';
+}
+
 /** PURE. Free-text match over the fields a dispatcher would actually type. An empty query
  *  shows everything rather than nothing — a filter that hides the list when you clear it is
  *  a filter people stop using. */

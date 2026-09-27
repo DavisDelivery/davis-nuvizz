@@ -32,7 +32,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Beaker, Check, RefreshCw, Trash2, Eye, AlertTriangle, Loader2 } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
 // Pure core, thin edges: every judgement about a row lives in the lib and is tested there.
-import { rowSubtitle, windowLabel, matchesQuery, benchToday, seedHeadline, BENCH_MAX } from '../lib/uat-bench-view.js';
+import { rowSubtitle, windowLabel, matchesQuery, benchToday, seedHeadline, isUnplannedRow, notPlannedLabel, BENCH_MAX } from '../lib/uat-bench-view.js';
 
 const FN = '/.netlify/functions/uat-seed';
 
@@ -80,7 +80,7 @@ export default function UatBench() {
     const all = Array.isArray(cat?.rows) ? cat.rows : [];
     return all
       .filter((r) => matchesQuery(r, query))
-      .filter((r) => (onlyUnplanned ? (r?.isUnplanned === true || r?.isPlanned === false) : true))
+      .filter((r) => (onlyUnplanned ? isUnplannedRow(r) : true))
       .sort((a, b) => String(a?.city || '').localeCompare(String(b?.city || '')) || String(a?.businessName || '').localeCompare(String(b?.businessName || '')));
   }, [cat, query, onlyUnplanned]);
 
@@ -213,7 +213,7 @@ export default function UatBench() {
                       <td className="px-2 py-1.5 text-slate-600">{[r.addr1, r.city].filter(Boolean).join(', ')}</td>
                       <td className={`px-2 py-1.5 ${windowLabel(r) === 'no window' ? 'text-slate-400 italic' : 'text-slate-700'}`}>{windowLabel(r)}</td>
                       <td className="px-2 py-1.5 text-[11px]">
-                        {r.isPlanned ? <span className="text-slate-600">on {r.routeName || r.loadNbr || 'a load'}</span> : <span className="text-emerald-700">un-planned</span>}
+                        {r.isPlanned ? <span className="text-slate-600">on {r.routeName || r.loadNbr || 'a load'}</span> : <span className={isUnplannedRow(r) ? 'text-emerald-700' : 'text-slate-500'}>{notPlannedLabel(r)}</span>}
                       </td>
                     </tr>
                   );
@@ -242,7 +242,7 @@ export default function UatBench() {
                   <span className="block text-[11px] mt-0.5">
                     <span className={windowLabel(r) === 'no window' ? 'text-slate-400 italic' : 'text-slate-700'}>{windowLabel(r)}</span>
                     <span className="text-slate-300"> · </span>
-                    {r.isPlanned ? <span className="text-slate-500">on {r.routeName || 'a load'}</span> : <span className="text-emerald-700">un-planned</span>}
+                    {r.isPlanned ? <span className="text-slate-500">on {r.routeName || 'a load'}</span> : <span className={isUnplannedRow(r) ? 'text-emerald-700' : 'text-slate-500'}>{notPlannedLabel(r)}</span>}
                   </span>
                 </span>
               </button>
