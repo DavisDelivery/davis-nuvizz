@@ -7717,12 +7717,17 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
           right on the operational point as well as the cosmetic one — this is a control you
           press once a day, when you walk in and put the board on the office TV, and a
           once-a-day control that sits permanently on the map is paying rent on the one
-          surface where every pixel is freight. */}
+          surface where every pixel is freight.
+          The press does ONE thing. It used to call `setBarOpen(false)` first, left over from
+          the app-bar dropdown; that name no longer exists, so every press threw before the
+          wall opened. Folding this card on the way out is not a substitute either: entering
+          the wall unmounts this MapScreen in the same render, so the fold is discarded and
+          the wall reads the card's state from localStorage (checked in a browser). */}
       {onEnterTv && (
         <div className="mt-1.5 pt-1.5 border-t border-slate-200">
           <button
             type="button"
-            onClick={() => { setCollapsed(true); onEnterTv(); }}
+            onClick={() => onEnterTv()}
             className="w-full inline-flex items-center justify-center gap-1.5 rounded border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
             title="Full-screen wall display — map, board status and the open flags, sized to read across a room"
           >

@@ -8,9 +8,10 @@
 // the panel. `setBarOpen` exists nowhere any more, so every press threw a ReferenceError before
 // onEnterTv() ran, and the office TV never went full-screen. Only typing /tv still worked.
 //
-// What happens now: the press folds the Filters card shut (the card-mode twin of the bar
-// dropdown closing, so the wall does not come up with a 240px panel over the map) and opens the
-// wall display.
+// What happens now: the press opens the wall display, and does nothing else. It does NOT try to
+// fold the Filters card first: entering the wall unmounts the desktop MapScreen in the same
+// render, so a fold set here is discarded and never reaches the wall (the wall's MapScreen reads
+// the card's state from localStorage when it mounts).
 //
 // This RUNS the real FilterToolbar out of App.jsx (JSX compiled with the repo's esbuild), with
 // only its child controls and icons stubbed, and presses the button.
@@ -63,13 +64,11 @@ const tvButtons = (tree) => [...walk(tree)].filter((n) => n.type === 'button' &&
 
 test('a dispatcher pressing "Fullscreen TV view" under Filters puts the board on the wall display', () => {
   let entered = 0;
-  const collapsedTo = [];
-  const tree = openDesktopFilters({ onEnterTv: () => { entered += 1; }, setCollapsed: (v) => collapsedTo.push(v) });
+  const tree = openDesktopFilters({ onEnterTv: () => { entered += 1; }, setCollapsed: () => {} });
   const buttons = tvButtons(tree);
   assert.equal(buttons.length, 1, 'the open desktop Filters card carries exactly one TV button');
   assert.doesNotThrow(() => buttons[0].props.onClick(), 'pressing the button must not throw');
   assert.equal(entered, 1, 'the press opens the wall display');
-  assert.deepEqual(collapsedTo, [true], 'the Filters card folds shut, so the wall does not come up with the panel open over the map');
 });
 
 test('the wall display itself, which passes no onEnterTv, shows no TV button', () => {
