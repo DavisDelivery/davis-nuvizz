@@ -1334,6 +1334,22 @@ export interface ScanResult {
 
 // Full scan for one date: planned (load scan) + unplanned (number-space scan),
 // deduped (load-sourced wins), normalized. Used by the background writer.
+/**
+ * PURE. The descent's rows for orders the load scan did NOT already find — the load-sourced
+ * (planned) row wins. A load row is the raw Load.stops entry, `{ stop: {stopNbr…}, … }`, so it
+ * is keyed the way normalizeStop resolves it (`raw.stop || raw`); keying on `s.stopNbr` read
+ * undefined for every wrapped row and let a planned order come back a second time, unplanned.
+ */
+export function unplannedNotOnLoads(loadStops: any[], unplannedStops: any[]): any[] {
+  const seen = new Set<string>(
+    (loadStops || []).map((s: any) => (s?.stop ?? s)?.stopNbr).filter(Boolean).map(String),
+  );
+  return (unplannedStops || []).filter((u: any) => {
+    const nbr = u?.stop?.stopNbr;
+    return !!nbr && !seen.has(String(nbr));
+  });
+}
+
 export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts; includeUnplanned?: boolean; includeLoads?: boolean; loadTargets?: number[] | null; forwardLoad?: { start: number; known?: number[] } | null; forwardUnplanned?: { start: number } | null } = {}): Promise<ScanResult> {
   const includeUnplanned = opts.includeUnplanned !== false; // default true
   const includeLoads = opts.includeLoads !== false;         // default true
@@ -1378,11 +1394,7 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
   const [loadStops, descent] = await Promise.all([loadScan, unplannedScan]);
   const unplannedStops = descent.records;
 
-  const seen = new Set<string>(loadStops.map((s: any) => s.stopNbr).filter(Boolean));
-  const extraUnplanned = unplannedStops.filter((u: any) => {
-    const nbr = u?.stop?.stopNbr;
-    return nbr && !seen.has(nbr);
-  });
+  const extraUnplanned = unplannedNotOnLoads(loadStops, unplannedStops);
 
   const stops = [...loadStops, ...extraUnplanned].map(normalizeStop);
   const unplannedCount = stops.filter((s) => !s.isPlanned).length;
