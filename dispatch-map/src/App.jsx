@@ -82,7 +82,7 @@ import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, set
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
 import { buildLabelsHtml } from './lib/label-html.js';
-import { filterLabelRows } from './lib/label-shippers.js';
+import { filterLabelRows, labelRowsForPick } from './lib/label-shippers.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
 import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS, compareAutoHoursEnabled } from './lib/time-marks.js';
@@ -32467,7 +32467,7 @@ function LabelsScreen() {
     try { localStorage.setItem(LABELS_SHIPPER, key); } catch { /* a remembered shipper is a convenience */ }
   }, []);
 
-  const rows = useMemo(() => (data?.shipper?.key === shipper ? data.rows || [] : []), [data, shipper]);
+  const rows = useMemo(() => labelRowsForPick(data, date, shipper), [data, date, shipper]);
   const shown = useMemo(() => filterLabelRows(rows, filter), [rows, filter]);
   const chosen = useMemo(() => rows.filter((r) => selected.has(r.stopNbr)), [rows, selected]);
   const pagesOf = (list) => list.reduce((n, r) => n + (r.pages || 0), 0);

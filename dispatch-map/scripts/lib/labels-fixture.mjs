@@ -54,8 +54,12 @@ export const LABELS_BY_SHIPPER = {
 
 /** The stub every guard installs: the day's shippers, or one shipper's orders. */
 export function labelsAnswer(url) {
+  // The endpoint answers for the day it was asked, and the screen lists only an answer for the
+  // day it is showing — so the stub echoes the asked day, whatever day the guard runs on.
+  const d = /[?&]date=(\d{4}-\d{2}-\d{2})/.exec(String(url));
+  const day = d ? { date: d[1] } : {};
   const m = /[?&]shipper=([^&]+)/.exec(String(url));
-  if (!m) return LABELS_DAY;
+  if (!m) return { ...LABELS_DAY, ...day };
   const key = decodeURIComponent(m[1]).toUpperCase();
-  return LABELS_BY_SHIPPER[key] || { ...base, shipper: { key, name: key }, rows: [], pages: 0, reads: { orders: 0, savedFound: 0, notesRead: 0 }, errors: {} };
+  return { ...(LABELS_BY_SHIPPER[key] || { ...base, shipper: { key, name: key }, rows: [], pages: 0, reads: { orders: 0, savedFound: 0, notesRead: 0 }, errors: {} }), ...day };
 }
