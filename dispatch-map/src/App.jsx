@@ -27813,7 +27813,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
               with the Board Flags chip stacked above it. */}
           <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{limeAsOfOn && <LimeAsOfNotice />}{flagsOverlay()}{statusCard()}</div>
-          {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
+          {mapsError && <div role="alert" className="absolute inset-x-4 top-[60%] -translate-y-1/2 z-40 pointer-events-none mx-auto max-w-md bg-red-50 border border-red-300 text-red-800 text-[13px] rounded-lg shadow px-3 py-2"><b>Google Maps failed to load</b> — {mapsError}</div>}
           {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-slate-900/90 text-white text-[11px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={12} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
           {/* Ninja status — while armed, tapping a stop on the map adds it to the active route. Shown
               here so it's clear even with the bottom sheet collapsed (the sheet drops on arm). */}
@@ -28050,7 +28050,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
             which is the one failure on this map nobody can see happening. */}
         <div className="absolute top-32 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{limeAsOfOn && <LimeAsOfNotice />}{flagsOverlay()}</div>
         {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} satellite={routeSatellite} onToggleSatellite={() => setRouteSatellite((v) => !v)} map3dOn={routeMap3d.on} onToggle3d={MAP_3D_ON ? () => (routeMap3d.on ? routeMap3d.close() : routeMap3d.open()) : null} />}
-        {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
+        {mapsError && <div role="alert" className="absolute inset-x-4 top-[60%] -translate-y-1/2 z-40 pointer-events-none mx-auto max-w-md bg-red-50 border border-red-300 text-red-800 text-[13px] rounded-lg shadow px-3 py-2"><b>Google Maps failed to load</b> — {mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
         {viewing && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[12px] rounded shadow px-3 py-1.5 flex items-center gap-3 max-w-[80%]">
