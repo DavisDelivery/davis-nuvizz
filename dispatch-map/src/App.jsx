@@ -17210,9 +17210,13 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // THE AGE MOVES WITH THE CLOCK. rosterFreshness measures against now, so memoising it on the
   // envelope alone froze "cached 1m ago" and the "(before today)" flag at fetch time — still
   // saying so at 3 PM, and never going stale overnight. A minute tick while the line is shown.
+  // The roster is fetched whenever the Loads view is selected, open or not, so the line can
+  // come into view hours after its last computation: tick once on showing it, not only after
+  // the first minute.
   const [rosterTick, setRosterTick] = useState(0);
   useEffect(() => {
     if (view !== 'loads' || !open) return undefined;
+    setRosterTick((n) => n + 1);
     const t = setInterval(() => setRosterTick((n) => n + 1), 60000);
     return () => clearInterval(t);
   }, [view, open]);
