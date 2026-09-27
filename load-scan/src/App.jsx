@@ -14,7 +14,7 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, findDavisStop, davisPieceId, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode, activeScans, pieceAlreadyAboard } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, findDavisStop, davisPieceId, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode, activeScans, pieceAlreadyAboard, queueHasFreightAboard } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
@@ -1149,7 +1149,9 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // Nothing aboard means nothing to protect. Drop any stamp so the next
       // first piece records the order the route says NOW — otherwise a load
       // whose freight was all voided keeps defending an order nobody loaded to.
-      if (v && !(activeScans(scans).length > 0 || handConfirms.length > 0)) {
+      // Judged from the QUEUE: `scans` is still [] on mount and on a truck switch,
+      // and reading it here deleted the stamp every time the screen opened.
+      if (v && !queueHasFreightAboard(await store.queuedFor(activeLoad, date))) {
         await store.clearLoadedSequence(activeLoad, date);
         if (alive) setLoadedSeq(null);
         return;

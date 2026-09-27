@@ -715,3 +715,16 @@ export function pieceAlreadyAboard(pair, liveOgs) {
   const og = String(pair?.og ?? '').trim().toUpperCase();
   return !!og && !!liveOgs && liveOgs.has(og);
 }
+
+/**
+ * Is any freight on the truck, judged from the QUEUE rows (scans and hand-confirms)?
+ *
+ * The loaded-sequence stamp is dropped only when the trailer is empty. That was
+ * decided from ScanScreen's React state, which starts as [] and is filled a beat
+ * later, so every reopen of a half-loaded truck read "empty" and deleted the stamp.
+ * The queue is the truck; it has no unhydrated moment.
+ */
+export function queueHasFreightAboard(rows) {
+  const list = rows || [];
+  return activeScans(list.filter((r) => r?.kind !== 'hand')).length > 0 || list.some((r) => r?.kind === 'hand');
+}
