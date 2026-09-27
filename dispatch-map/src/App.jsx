@@ -38067,11 +38067,14 @@ function CustomerRangeBar({ sel, setSel, range, today, stacked, yearOn, onYear }
 /** Two or more real businesses matched what was typed. Counts included, because the sweep
  *  that produced them has already been paid for and an uninformed choice is a wasted one. */
 function CustomerChooser({ matches, query, onPick, incomplete }) {
+  // A match with `stops: null` was never counted (the year's chooser) — it gets no count line,
+  // because "nothing in this window" is a claim, and nothing measured it.
+  const counted = matches.some((m) => m.stops != null);
   return (
     <div className="space-y-2">
       <div className="rounded-xl border bg-white p-3">
         <div className="text-sm font-semibold text-slate-800">{matches.length} businesses match &ldquo;{query}&rdquo;.</div>
-        <div className="text-xs text-slate-500 mt-0.5">Pick the one you mean. The counts are for the window below.</div>
+        <div className="text-xs text-slate-500 mt-0.5">Pick the one you mean.{counted ? ' The counts are for the window below.' : ''}</div>
       </div>
       {incomplete && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800">
@@ -38085,8 +38088,8 @@ function CustomerChooser({ matches, query, onPick, incomplete }) {
             <div className="min-w-0 flex-1">
               <div className="font-semibold text-slate-800 break-words">{m.name}</div>
               <div className="text-[11px] text-slate-500">
-                {m.stops ? `${m.stops} stop${m.stops === 1 ? '' : 's'} in this window` : 'nothing in this window'}
-                {m.lastDate ? ` · last ${formatDateForDisplay(m.lastDate)}` : ''}
+                {[m.stops == null ? null : m.stops ? `${m.stops} stop${m.stops === 1 ? '' : 's'} in this window` : 'nothing in this window',
+                  m.lastDate ? `last ${formatDateForDisplay(m.lastDate)}` : null].filter(Boolean).join(' · ')}
               </div>
             </div>
             {m.today > 0 && (

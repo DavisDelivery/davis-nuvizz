@@ -394,9 +394,11 @@ export default async (req: Request): Promise<Response> => {
       return J({
         ok: true, nuvizzCalls: 0, mode: 'customer-choose', query: nameRaw, today, year,
         complete: matchedR.read,
+        // stops/today are NULL, not 0: the year counts nothing for the chooser, and a 0 here
+        // printed "nothing in this window" under every business a rep could pick.
         matches: names.map((k) => {
           const first = mine.find((c: any) => customerNameKey(c?.name) === k);
-          return { name: first?.name || nameRaw, nameKey: k, stops: 0, today: 0, lastDate: first?.lastDate ?? null, source: 'rollup' };
+          return { name: first?.name || nameRaw, nameKey: k, stops: null, today: null, lastDate: first?.lastDate ?? null, source: 'rollup' };
         }),
         note: 'Firestore only — nothing here spent a NuVizz call.',
       });
