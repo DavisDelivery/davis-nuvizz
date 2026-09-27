@@ -416,6 +416,142 @@ export function haversineKm(a, b) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
+// ── AN OVAL, WHERE THE WORK RUNS ALONG A ROAD ───────────────────────────────
+//
+// Chad asked at the very start for "circles or ovals of where their general work area is", and on
+// 2026-09-27, with the rings on the live map: "if for some drivers an oval would be a better shape
+// than a circle, use that instead."
+//
+// "BETTER" IS A MEASUREMENT, NOT A LOOK. A ring claims that most of a driver's work — the 70% of
+// his stops the circle's radius is drawn round — sits inside it. Work strung out along a road (the
+// towns up I-985, out GA-316, along I-85) gets a circle as wide as the road is long, and most of
+// that width is ground he never touches. An oval that holds the SAME share of his stops on less
+// ground is the better claim, and that is the whole test:
+//
+//   • THE SHAPE comes from how his stops spread about the circle's own centre (their covariance):
+//     the long way is the way they string out, the stretch is how much further they go that way.
+//   • THE SIZE is the circle's own rule: the oval of that shape holding 70% of his stops, and never
+//     narrower than the 2.5km the circle is never smaller than.
+//   • IT IS DRAWN ONLY WHEN IT IS PLAINLY BETTER — the same share on at most 70% of the circle's
+//     ground, and at least half as long again as it is wide. A town whose work is round keeps its
+//     circle: a nearly-round oval would say nothing the circle does not, and would change from
+//     week to week on noise.
+//   • AND ONLY WITH ENOUGH WORK TO SHOW A DIRECTION — 60 stops (three a day for four weeks) at 12
+//     different places. An oval claims more than a circle does (which way), so it needs more to go
+//     on; below that the direction is mostly noise, and a smaller ring stays round.
+//
+// THE CENTRE DOES NOT MOVE AND NOTHING ELSE CHANGES. Who gets a ring, the 30km rule and the
+// coverage test are all decided on the circle exactly as before; only the outline drawn differs.
+//
+// THESE NUMBERS ARE SET FROM GEOMETRY AND NOT YET CHECKED AGAINST DAVIS'S OWN HISTORY — unlike the
+// 30km rule above, which was measured on it. Tried on made-up work, 80 tries of each shape at 60
+// to 400 stops: a round town came out an oval at most 2 times in 80, and never from 100 stops up;
+// a string of three or four towns along a road, 77 times in 80 or more; two towns 16km apart, 65
+// or more; a town with a quarter of its work trailing out along one road, at most 10 in 80 and
+// none by 400 stops. If a ring on the real map is the wrong shape, OVAL_RULE is the place to look.
+export const OVAL_RULE = Object.freeze({ minStops: 60, minPlaces: 12, minAspect: 1.5, maxArea: 0.7 });
+
+/**
+ * THE OVAL THAT COULD REPLACE A CLUSTER'S CIRCLE — see the note above.
+ *
+ * `points` are the cluster's stops as { lat, lng }, one per stop, repeats and all (the same stops the
+ * circle's radius is measured over); `centre` is the circle's centre. Returns null when there is too
+ * little work to show a direction; otherwise the fit, whether or not it is drawn:
+ *   { majorKm, minorKm, angleDeg, aspect, areaRatio, better }
+ * majorKm/minorKm are the HALF-lengths (the oval's "radii"); angleDeg is the long way, measured
+ * anticlockwise from east, 0 ≤ angleDeg < 180; areaRatio is the oval's ground over the circle's;
+ * `better` is whether it replaces the circle. Pure and deterministic — no seed, no search.
+ */
+export function fitOval(points = [], centre = null, opts = {}) {
+  const rule = { ...OVAL_RULE, ...(opts.rule || {}) };
+  const pctile = opts.radiusPercentile ?? 0.7;
+  const minKm = opts.minKm ?? 2.5;
+  if (!centre || !Number.isFinite(centre.lat) || !Number.isFinite(centre.lng)) return null;
+  const pts = (points || []).filter((p) => Number.isFinite(p?.lat) && Number.isFinite(p?.lng));
+  const n = pts.length;
+  if (n < rule.minStops) return null;
+  if (new Set(pts.map((p) => `${p.lat.toFixed(4)},${p.lng.toFixed(4)}`)).size < rule.minPlaces) return null;
+  // Flat km about the centre. Over the few tens of km a ring spans, that is the ground to well
+  // under 1%, and the oval is drawn back through the same two factors (ovalPath), so it sits on
+  // exactly the stops it was fitted to.
+  const kx = kmPerDegLng(centre.lat);
+  const xs = new Float64Array(n);
+  const ys = new Float64Array(n);
+  let sxx = 0, syy = 0, sxy = 0;
+  for (let i = 0; i < n; i++) {
+    const x = (pts[i].lng - centre.lng) * kx;
+    const y = (pts[i].lat - centre.lat) * KM_PER_DEG_LAT;
+    xs[i] = x; ys[i] = y;
+    sxx += x * x; syy += y * y; sxy += x * y;
+  }
+  // A street's width, (0.25km)², on the diagonal: stops that happen to fall on one straight line
+  // cannot make the spread singular. Against any real spread of several km it is nothing.
+  sxx = sxx / n + 0.0625; syy = syy / n + 0.0625; sxy /= n;
+  const mid = (sxx + syy) / 2;
+  const half = Math.sqrt(((sxx - syy) / 2) ** 2 + sxy * sxy);
+  const l1 = mid + half, l2 = mid - half;                 // spread the long way and the short way
+  const t = 0.5 * Math.atan2(2 * sxy, sxx - syy);          // the long way, radians anticlockwise from east
+  const c = Math.cos(t), s = Math.sin(t);
+  const along = new Float64Array(n);                       // how far out each stop is, in "ovals"
+  const round = new Float64Array(n);                       // …and in circles, measured the same way
+  for (let i = 0; i < n; i++) {
+    const u = xs[i] * c + ys[i] * s;
+    const v = ys[i] * c - xs[i] * s;
+    along[i] = (u * u) / l1 + (v * v) / l2;
+    round[i] = xs[i] * xs[i] + ys[i] * ys[i];
+  }
+  along.sort(); round.sort();
+  const at = Math.min(n - 1, Math.floor(pctile * n));    // the circle's own percentile
+  const k = Math.sqrt(along[at]);
+  const minorKm = Math.max(minKm, k * Math.sqrt(l2));
+  const majorKm = Math.max(minorKm, k * Math.sqrt(l1));
+  const R = Math.max(minKm, Math.sqrt(round[at]));
+  const aspect = majorKm / minorKm;
+  const areaRatio = (majorKm * minorKm) / (R * R);
+  return {
+    majorKm, minorKm,
+    angleDeg: (((t * 180) / Math.PI) % 180 + 180) % 180,
+    aspect, areaRatio,
+    better: aspect >= rule.minAspect && areaRatio <= rule.maxArea,
+  };
+}
+
+/**
+ * A usable oval off a ring, or null — so a drawer never has to trust the wire. A ring whose `oval`
+ * is missing or malformed is drawn as its circle, never as nothing.
+ */
+export function ovalOf(ring) {
+  const o = ring && ring.oval;
+  if (!o || !Number.isFinite(ring.lat) || !Number.isFinite(ring.lng)) return null;
+  const { majorKm, minorKm, angleDeg } = o;
+  if (![majorKm, minorKm, angleDeg].every(Number.isFinite) || !(minorKm > 0) || !(majorKm >= minorKm)) return null;
+  return { majorKm, minorKm, angleDeg };
+}
+
+/** The point on a ring's oval at parameter `t` (radians; 0 = the long way's end, π/2 = the short way's). */
+function ovalPoint(ring, o, t) {
+  const th = (o.angleDeg * Math.PI) / 180;
+  const u = o.majorKm * Math.cos(t);
+  const v = o.minorKm * Math.sin(t);
+  const x = u * Math.cos(th) - v * Math.sin(th);           // km east
+  const y = u * Math.sin(th) + v * Math.cos(th);           // km north
+  return { lat: ring.lat + y / KM_PER_DEG_LAT, lng: ring.lng + x / kmPerDegLng(ring.lat) };
+}
+
+/** The oval's outline as lat/lng points (a closed ring, first point not repeated), or null for a circle. */
+export function ovalPath(ring, steps = 72) {
+  const o = ovalOf(ring);
+  if (!o) return null;
+  return Array.from({ length: steps }, (_, i) => ovalPoint(ring, o, (2 * Math.PI * i) / steps));
+}
+
+/** Where the oval's long and short radii end, as lat/lng — what a map measures the oval by on screen. */
+export function ovalEnds(ring) {
+  const o = ovalOf(ring);
+  if (!o) return null;
+  return { major: ovalPoint(ring, o, 0), minor: ovalPoint(ring, o, Math.PI / 2) };
+}
+
 export function driverCircles(stops = [], opts = {}) {
   const cellKm = opts.cellKm || 9;          // grid coarse enough that one town is one cell
   const minShare = opts.minShare ?? 0.12;   // a cluster worth drawing at all
@@ -462,6 +598,9 @@ export function driverCircles(stops = [], opts = {}) {
   const maxRadiusKm = opts.maxRadiusKm ?? 30;
   const roster = opts.roster || null;
   const active = opts.active || null;
+  // Ovals where the work runs along a road (fitOval). `ovals: false` draws every ring round, which
+  // is how a test proves the circles themselves came through untouched.
+  const ovals = opts.ovals ?? true;
 
   const byDriver = new Map();
   for (const s of stops || []) {
@@ -517,7 +656,14 @@ export function driverCircles(stops = [], opts = {}) {
         // A PERCENTILE, not the maximum: one stop somebody took as a favour must not inflate a
         // circle by twenty miles and imply a territory nobody works.
         const r = dists[Math.min(dists.length - 1, Math.floor(pctile * dists.length))] || 0;
-        return { lat, lng, radiusKm: Math.max(2.5, r), stops: g.length, share: g.length / total };
+        const circle = { lat, lng, radiusKm: Math.max(2.5, r), stops: g.length, share: g.length / total };
+        // THE OUTLINE, AND ONLY THE OUTLINE: an oval where it holds the same share of his stops on
+        // plainly less ground (fitOval). Everything below — the 30km rule, coverage, who gets a
+        // ring at all — is still decided on the circle, so no driver gains or loses a ring by it.
+        const fit = ovals ? fitOval(g, circle, { radiusPercentile: pctile }) : null;
+        return fit && fit.better
+          ? { ...circle, oval: { majorKm: fit.majorKm, minorKm: fit.minorKm, angleDeg: fit.angleDeg } }
+          : circle;
       });
     const tight = circles.filter((c) => c.radiusKm <= maxRadiusKm);
     const shown = tight.reduce((t, c) => t + c.stops, 0);
@@ -817,7 +963,12 @@ export function territoryLayer(stops = [], opts = {}) {
         label: cs.label,
         colour: m.colourOf.get(d.key),
         stops: d.total,
-        circles: cs.circles.map((c) => ({ lat: round(c.lat, 5), lng: round(c.lng, 5), radiusKm: round(c.radiusKm, 2) })),
+        // `oval` only where one is drawn (fitOval). radiusKm stays either way: it is the circle the
+        // ring was earned on, and a drawer that cannot read the oval still has a true ring to draw.
+        circles: cs.circles.map((c) => ({
+          lat: round(c.lat, 5), lng: round(c.lng, 5), radiusKm: round(c.radiusKm, 2),
+          ...(c.oval ? { oval: { majorKm: round(c.oval.majorKm, 2), minorKm: round(c.oval.minorKm, 2), angleDeg: round(c.oval.angleDeg, 0) % 180 } } : {}),
+        })),
       });
     }
   }

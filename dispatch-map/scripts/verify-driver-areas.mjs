@@ -11,8 +11,8 @@
 // turning it off leaves NOTHING behind, that a map rebuild carries the rings across, that a
 // failed read says so in red, and that the office wall never shows or reads any of it. This
 // drives the real built bundle in a real browser with a stand-in google.maps that records every
-// Circle and gives the name overlay real panes and a real projection, so the names are actually
-// measured and placed.
+// Circle and Polygon (a ring whose work runs along a road is drawn as an oval) and gives the name
+// overlay real panes and a real projection, so the names are actually measured and placed.
 //
 // The bundle must be built with a Maps key or the app never asks for Maps at all:
 //   VITE_GOOGLE_MAPS_API_KEY=test-key VITE_GOOGLE_MAP_ID=<any> npm run build
@@ -59,7 +59,10 @@ const LAYER = {
     key: label.toUpperCase().replace(/ /g, '_'), label, colour: PALETTE[i % PALETTE.length], stops: 300 - i * 10,
     circles: i === 2
       ? [{ lat: 33.45, lng: -84.15, radiusKm: 9 }, { lat: 34.25, lng: -83.6, radiusKm: 7 }]
-      : [{ lat: 33.8 + (i % 4) * 0.12, lng: -84.35 + Math.floor(i / 4) * 0.18, radiusKm: 6 + (i % 5) * 3 }],
+      // Two drivers whose work runs along a road: their rings are OVALS (fitOval), drawn as Polygons.
+      : i === 4 || i === 9
+        ? [{ lat: 33.8 + (i % 4) * 0.12, lng: -84.35 + Math.floor(i / 4) * 0.18, radiusKm: 12, oval: { majorKm: 15, minorKm: 5, angleDeg: 35 + i * 10 } }]
+        : [{ lat: 33.8 + (i % 4) * 0.12, lng: -84.35 + Math.floor(i / 4) * 0.18, radiusKm: 6 + (i % 5) * 3 }],
   })),
   noRing: [{ key: 'RASKO_SULJIC', label: 'Rasko Suljic', stops: 240, mapped: 240, why: 'spread out' }],
   excluded: [{ label: 'Terry Gambrell', why: 'stopped running', stops: 70, lastSeen: '2026-09-02', daysSince: 23 }],
@@ -67,6 +70,7 @@ const LAYER = {
   rosterApplied: false, readMs: 1200, totalMs: 1400, nuvizzCalls: 0,
 };
 const RING_COUNT = LAYER.rings.reduce((t, r) => t + r.circles.length, 0);
+const OVAL_COUNT = LAYER.rings.reduce((t, r) => t + r.circles.filter((c) => c.oval).length, 0);
 
 try { if (!(await stat(DIST)).isDirectory()) throw new Error('not a dir'); }
 catch { console.error(`no build at ${DIST} — run \`npm run build\` first`); process.exit(1); }
@@ -84,12 +88,12 @@ const server = createServer(async (req, res) => {
 });
 await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 
-// The stand-in google.maps — verify-hide-place-labels.mjs's, plus a recorded Circle and an
-// OverlayView with REAL panes inside the map's div and a real (flat) projection, so the name
-// overlay really measures and places its names instead of drawing into nothing.
+// The stand-in google.maps — verify-hide-place-labels.mjs's, plus a recorded Circle and Polygon
+// and an OverlayView with REAL panes inside the map's div and a real (flat) projection, so the
+// name overlay really measures and places its names instead of drawing into nothing.
 const FAKE_MAPS = `
 (function () {
-  window.__maps = []; window.__circles = [];
+  window.__maps = []; window.__shapes = [];
   const evt = { addListenerOnce: () => ({ remove() {} }), addListener: () => ({ remove() {} }),
                 trigger: () => {}, clearInstanceListeners: () => {}, removeListener: () => {} };
   class LatLng {
@@ -166,13 +170,17 @@ const FAKE_MAPS = `
     setMap(m) { if (this.map && this.map.lines) this.map.lines.delete(this); this.map = m; if (m && m.lines) m.lines.add(this); }
     setOptions() {} addListener() { return { remove() {} }; }
   }
-  class Circle {
-    constructor(o) { this.opts = Object.assign({}, o || {}); this.map = null; this.listeners = 0; this.setMap(this.opts.map || null); window.__circles.push(this); }
+  // Every ring shape, in the order it was made — Circles and the ovals' Polygons in one list, so
+  // "every halo before every ring" is checked across both kinds.
+  class Shape {
+    constructor(kind, o) { this.kind = kind; this.opts = Object.assign({}, o || {}); this.map = null; this.listeners = 0; this.setMap(this.opts.map || null); window.__shapes.push(this); }
     setMap(m) { this.map = m || null; }
     getMap() { return this.map; }
     setOptions(o) { Object.assign(this.opts, o); }
     addListener() { this.listeners++; return { remove() {} }; }
   }
+  class Circle extends Shape { constructor(o) { super('Circle', o); } }
+  class Polygon extends Shape { constructor(o) { super('Polygon', o); } }
   // A flat projection centred on the map: good enough to lay names out, which is the point.
   const proj = (map) => {
     const W = (map.div && map.div.offsetWidth) || 800, H = (map.div && map.div.offsetHeight) || 600;
@@ -197,7 +205,7 @@ const FAKE_MAPS = `
   }
   class Geocoder { geocode(_r, cb) { if (cb) cb([], 'ZERO_RESULTS'); return Promise.resolve({ results: [] }); } }
   const maps = {
-    Map: FakeMap, Marker, Polyline, Circle, OverlayView, Geocoder, LatLng, LatLngBounds,
+    Map: FakeMap, Marker, Polyline, Circle, Polygon, OverlayView, Geocoder, LatLng, LatLngBounds,
     Size: function (w, h) { this.width = w; this.height = h; },
     Point: function (x, y) { this.x = x; this.y = y; },
     ControlPosition: { RIGHT_BOTTOM: 9, TOP_LEFT: 1, TOP_RIGHT: 3, LEFT_TOP: 5, RIGHT_TOP: 7, BOTTOM_CENTER: 11 },
@@ -262,7 +270,8 @@ const openFilters = async (page) => {
 const circles = (page) => page.evaluate(() => {
   // The wall's static picture never loads the Maps script at all, so there may be no stand-in.
   const latest = (window.__maps || []).at(-1);
-  return (window.__circles || []).map((c) => ({
+  return (window.__shapes || []).map((c) => ({
+    kind: c.kind, points: Array.isArray(c.opts.paths) ? c.opts.paths.length : 0,
     onMap: !!c.map, onLatest: c.map === latest, clickable: c.opts.clickable, zIndex: c.opts.zIndex,
     stroke: c.opts.strokeColor, weight: c.opts.strokeWeight, fill: c.opts.fillOpacity, listeners: c.listeners,
   }));
@@ -315,12 +324,21 @@ console.log('\nDriver areas — the Map tab, desktop (1440x950)');
 
     let cs = await circles(page);
     cs.length === 2 * RING_COUNT
-      ? ok(`${RING_COUNT} rings drawn, each over a white halo (${cs.length} circles)`)
-      : bad(`expected ${2 * RING_COUNT} circles (ring + halo for each of ${RING_COUNT}), drew ${cs.length}`);
+      ? ok(`${RING_COUNT} rings drawn, each over a white halo (${cs.length} shapes)`)
+      : bad(`expected ${2 * RING_COUNT} shapes (ring + halo for each of ${RING_COUNT}), drew ${cs.length}`);
     cs.every((c) => c.clickable === false && c.listeners === 0)
       ? ok('no ring takes a click — clickable:false, and nothing listens on one')
       : bad('a ring can take a click');
     cs.every((c) => c.onLatest) ? ok('every ring is on the live map') : bad('some rings are not on the live map');
+    // THE OVALS ARE OVALS: a Polygon along the oval's path for each ring the layer gives an oval,
+    // a Circle for every other — and the paint-only rules below hold for both.
+    const polys = cs.filter((c) => c.kind === 'Polygon');
+    polys.length === 2 * OVAL_COUNT && polys.every((c) => c.points >= 36)
+      ? ok(`the ${OVAL_COUNT} rings whose work runs along a road are drawn as ovals (${polys.length} Polygons, ${polys[0]?.points} points each)`)
+      : bad(`expected ${2 * OVAL_COUNT} oval Polygons with a full path, got ${polys.length} (${polys.map((c) => c.points).join(',')})`);
+    cs.filter((c) => c.kind === 'Circle').length === 2 * (RING_COUNT - OVAL_COUNT)
+      ? ok('and every other ring is a circle')
+      : bad(`expected ${2 * (RING_COUNT - OVAL_COUNT)} circles, got ${cs.filter((c) => c.kind === 'Circle').length}`);
     const half = cs.length / 2;
     cs.slice(0, half).every((c) => c.stroke === '#ffffff') && cs.slice(half).every((c) => c.stroke !== '#ffffff')
       ? ok('every halo is drawn before every ring, so no halo cuts another driver\'s line')
