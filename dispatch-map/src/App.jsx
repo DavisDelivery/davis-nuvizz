@@ -30,7 +30,7 @@ import { normalizeMatchKey, placeKeyOfStop } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
-import { routeLoadLine, podPhotoFetchOffer, podPhotoPullOutcome, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
+import { routeLoadLine, podPhotoFetchOffer, podPhotoPullOutcome, podSectionVisible, isPodImageExt, foldFreshStop, stopRecordIdentity, trackStopRecord } from './lib/stop-card-sections.js';
 import { mergeStopHistory } from './lib/stop-history.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
 import { noteContentKey, commitNoteDraft, contactSaveLine } from './lib/note-save.js';
@@ -9062,6 +9062,15 @@ function StopNotesList({ comments }) {
 function StopActivityTimeline({ stopNbr, stopId, onRefreshed }) {
   const [open, setOpen] = useState(false);
   const [st, setSt] = useState({ loading: false, events: null, error: null });
+  // A different ORDER under the same number (the Estes twin, a recurring PRO) does not
+  // remount this section — its key is the number — so forget the previous order's events
+  // and fold shut; re-opening asks NuVizz about the order now on the card.
+  const [record, setRecord] = useState(() => stopRecordIdentity({ stopNbr, stopId }));
+  const rec = trackStopRecord(record, stopRecordIdentity({ stopNbr, stopId }));
+  if (rec.record !== record) {
+    setRecord(rec.record);
+    if (rec.changed) { setOpen(false); setSt({ loading: false, events: null, error: null }); }
+  }
   useEffect(() => {
     if (!open || st.events || st.loading) return;
     let cancelled = false;
@@ -9409,10 +9418,15 @@ function liveStopFoldGuard(cardStopId, incoming) {
 // "2 orders share this number" badge is lit via dupNbrSuspect, and the refusal message is
 // returned for call sites that can show it. Merges return null.
 function useLiveStop(stop) {
-  const stopKey = stop?.stopNbr || stop?.pro;
   const [fresh, setFresh] = useState(null);
-  const [prevKey, setPrevKey] = useState(stopKey);
-  if (stopKey !== prevKey) { setPrevKey(stopKey); setFresh(null); }
+  // Keyed by RECORD (number + id-shaped stopId), not number alone: two orders sharing a
+  // number are different cards, and the first one's refresh must not paint over the second.
+  const [record, setRecord] = useState(() => stopRecordIdentity(stop));
+  const rec = trackStopRecord(record, stopRecordIdentity(stop));
+  if (rec.record !== record) {
+    setRecord(rec.record);
+    if (rec.changed) setFresh(null);
+  }
   const live = fresh ? { ...stop, ...fresh } : stop;
   // The identity the card is showing RIGHT NOW, on a ref — onRefreshed is a stable
   // callback, and a stale closure here would compare against the id the card opened
