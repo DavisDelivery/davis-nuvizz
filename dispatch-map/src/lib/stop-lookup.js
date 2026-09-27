@@ -493,10 +493,30 @@ export function whenIso(v) {
 // `equipment_restrictions`; every pin writer writes `location_override`. The old names are
 // kept only as fallbacks, so a document shaped the old way still reads.
 const BOXONLY_SAME_AS = new Set(['No tractor trailer', 'Box truck only']);
+const WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const WEEK_LABEL = { mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun' };
+
+/** The editor's closed_days as week-ordered day keys ('fri'), tolerant of 'Fri' / 'FRIDAY'. */
+function closedDayKeys(notes) {
+  const raw = Array.isArray(notes?.closed_days) ? notes.closed_days : [];
+  const set = new Set(raw.map((d) => s(d).toLowerCase().slice(0, 3)).filter((d) => WEEK.includes(d)));
+  return WEEK.filter((d) => set.has(d));
+}
 
 export function notesSummary(notes) {
   if (!notes || typeof notes !== 'object') return null;
   const flags = [];
+  // WHAT A REP MAY NOT PROMISE, FIRST (audit 2026-09-27, app-A4-1). The editor writes all four
+  // and none was read, so a DNS, appointment-only, closed-Friday customer read "Nothing on
+  // file" — and a rep promised the Friday redelivery. Worded the way the Map's own read-only
+  // card words them (ReadOnlyNoteView), so the two screens say the same thing.
+  if (notes.do_not_send) {
+    const barred = (Array.isArray(notes.dns_drivers) ? notes.dns_drivers : []).map(s).filter(Boolean);
+    flags.push({ key: 'dns', label: `Do not send${barred.length ? ` — not: ${barred.join(', ')}` : ''}`, tone: 'amber' });
+  }
+  const closed = closedDayKeys(notes);
+  if (closed.length) flags.push({ key: 'closed', label: `Closed ${closed.map((d) => WEEK_LABEL[d]).join(', ')}`, tone: 'amber' });
+  if (notes.appointment_required) flags.push({ key: 'appointment', label: 'Appointment required', tone: 'amber' });
   // THE VEHICLE MARK, the way the map draws it: 'box_only' is the dispatcher's dropdown, and a
   // trailer-blocking restriction counts too — unless the same dispatcher set 'tractor' (53'
   // fits), which drops every blocker on the map (drawnRestrictionKeys) and in the alert
@@ -517,9 +537,21 @@ export function notesSummary(notes) {
   const contacts = (Array.isArray(notes.contacts) ? notes.contacts : [])
     .map((c) => ({ name: s(c?.name) || null, phone: s(c?.phone) || null, email: s(c?.email) || null }))
     .filter((c) => c.name || c.phone || c.email);
+  // The appointment instruction rides with the dock instruction: both are free text a rep
+  // reads out, and both screens already print `text` as a pre-wrapped block.
+  const appt = s(notes.appointment_notes);
+  const text = [s(notes.dock_notes) || s(notes.notes) || s(notes.note), appt ? `Appointment: ${appt}` : '']
+    .filter(Boolean).join('\n');
+  // A CLOSED DAY HAS NO HOURS. The editor's closed toggle leaves that day's times in place, and
+  // the Map prints "Closed" over them; printing "Fri 8:00 AM–4:00 PM" here beside "Closed Fri"
+  // would invite exactly the promise the flag exists to stop.
+  let hours = notes.receiving_hours || notes.hours || null;
+  if (hours && typeof hours === 'object' && closed.length) {
+    hours = Object.fromEntries(Object.entries(hours).filter(([d]) => !closed.includes(s(d).toLowerCase().slice(0, 3))));
+  }
   return {
-    text: s(notes.dock_notes) || s(notes.notes) || s(notes.note) || null,
-    hours: notes.receiving_hours || notes.hours || null,
+    text: text || null,
+    hours,
     customerNbr: s(notes.customer_nbr) || s(notes.customerNbr) || null,
     // `last_updated` FIRST — it is the field every writer of customer_notes actually writes
     // (the Map, Routing, the address fixer, Stop lookup). `updated_at` was read here for weeks
