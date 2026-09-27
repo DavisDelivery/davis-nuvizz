@@ -34508,6 +34508,11 @@ const QUEUE_WARN_KINDS = new Set(['partial', 'refused', 'blocked', 'unknown', 'd
 function classifyPushResult(j) {
   const http = j?.httpStatus;
   const err = String(j?.error || '');
+  // A PERSONAL-LOGIN REFUSAL (NUVIZZ_PERSONAL_LOGINS=required) comes back as a 403 or 503 too,
+  // with `identity.as === 'refused'` and a sentence naming the fix. Read first, and quoted: it is
+  // not the write switch and not the breaker (audit 2026-09-27). Still fatal — every row after
+  // it would be refused the same way.
+  if (j?.identity?.as === 'refused') return { fatal: true, kind: 'identity', text: err || 'This write needs your own NuVizz login — add it under Account & logins.' };
   if (http === 403 && /^requires\s+\w+$/i.test(err)) return { fatal: true, kind: 'role', text: 'This account may not push to NuVizz.' };
   if (http === 403) return { fatal: true, kind: 'switch', text: 'Live writes are switched off on the server (NUVIZZ_WRITE_ENABLED). Nothing was sent — the board corrections are saved.' };
   if (http === 503) return { fatal: true, kind: 'breaker', text: 'The NuVizz call breaker is open — no further writes will go out today.' };
