@@ -16,7 +16,7 @@ import { btLoopProblem } from './backtest-core.mts';
 import {
   listJobs, jobPath, routerSettingsFrom, routerRefusal, ceilingView, ROUTER_SETTINGS_PATH, JOB_KINDS,
 } from './backtest.mts';
-import { readPlanDay, validatePlanParams, planOptions, planPreview, planResult, planMap, type PlanDeps } from './plan.mts';
+import { readPlanDay, validatePlanParams, planOptions, planPreview, planResult, planMap, planStops, nothingToPlace, type PlanDeps } from './plan.mts';
 import { planCapacity } from './plan-core.mts';
 
 export interface PlanJobDeps extends PlanDeps { firestoreOn: () => boolean }
@@ -51,6 +51,8 @@ export async function enqueuePlan(raw: any, by: string | null, deps: PlanJobDeps
     const c: any = p.counts || {};
     return { status: 422, body: { ok: false, error: `nothing to plan on ${params.date}: of ${c.onBoard ?? 0} stops on the board, ${c.planned ?? 0} are already on a load, ${c.finished ?? 0} finished, ${c.pickups ?? 0} pickups, ${c.noLocation ?? 0} with no location` } };
   }
+  const nothing = nothingToPlace(params, p);
+  if (nothing) return { status: 422, body: { ok: false, error: `not queued — ${nothing}` } };
   const lp = btLoopProblem(p, built.cfg);
   const at = deps.now().toISOString();
   const stored = {
@@ -58,7 +60,7 @@ export async function enqueuePlan(raw: any, by: string | null, deps: PlanJobDeps
     promptJson: JSON.stringify({ system: lp.system, tools: lp.tools, briefing: lp.briefing }), builtAt: at,
   };
   const bytes = utf8(stored.problemJson) + utf8(stored.cfgJson) + utf8(stored.promptJson);
-  if (bytes > MAX_STORED_PLAN_BYTES) return { status: 422, body: { ok: false, error: `this plan is too large to store (${p.stops.length} stops, ${Math.round(bytes / 1000)} KB) — narrow the look-back or plan unplanned stops only` } };
+  if (bytes > MAX_STORED_PLAN_BYTES) return { status: 422, body: { ok: false, error: `this plan is too large to store (${p.stops.length} stops, ${Math.round(bytes / 1000)} KB) — narrow the look-back, plan unplanned stops only, or plan a smaller section` } };
   const model = shadowModel(deps.env).model;
   const id = `pl__${params.date}__${at.replace(/[:.]/g, '-')}__${Math.random().toString(36).slice(2, 8)}`;
   // ONE PLAN OF A DAY AT A TIME, held by a create-only lock (the list check above is only a courtesy:
@@ -72,8 +74,11 @@ export async function enqueuePlan(raw: any, by: string | null, deps: PlanJobDeps
   }
   // THE BOARD FIRST, then the job: the worker only ever sees a plan job whose board is on file.
   await deps.shadowSet(`${jobPath(id)}/data/problem`, stored);
+  // The job keeps the section's SIZE, not its list, so the jobs list (read every 20 s while one runs) does
+  // not carry up to 1,400 stop numbers per plan; the stops the section took are frozen with the problem.
+  const jobParams = { ...params, section: null, sectionSize: params.section ? params.section.length : null };
   const made = await deps.shadowCreate(jobPath(id), {
-    kind: 'plan', date: params.date, params, status: 'queued', createdAt: at, updatedAt: at, by,
+    kind: 'plan', date: params.date, params: jobParams, status: 'queued', createdAt: at, updatedAt: at, by,
     settings: { model, effort: rs.effort, maxRounds: rs.maxRounds, maxUsd: rs.maxUsd, maxTokens: rs.maxTokens, capRule: rs.capRule, lbsBox: rs.lbsBox, lbsTractor: rs.lbsTractor },
     rounds: 0, usd: 0, ended: null, endNote: null,
     stats: { stops: p.stops.length, loads: p.loads.length, noCoords: p.excluded.noCoords.length, capModelDays: p.capModel.days, boardAt: built.boardAt },
@@ -124,3 +129,5 @@ export async function planPreviewNow(raw: any, deps: PlanJobDeps = LIVE) {
 }
 export async function planResultNow(id: string, deps: PlanJobDeps = LIVE) { return planResult(id, deps); }
 export async function planMapNow(id: string, deps: PlanJobDeps = LIVE) { return planMap(id, deps, jobPath); }
+/** The stop map (v1.78.0): every open delivery a plan of these settings would see, for picking a section. 0 spend. */
+export async function planStopsNow(raw: any, deps: PlanJobDeps = LIVE) { return planStops(raw, deps); }

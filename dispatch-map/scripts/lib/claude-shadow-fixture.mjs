@@ -229,6 +229,20 @@ export const CLAUDE_SHADOW_PLANS = {
   ],
 };
 
+// THE SECTION STOP MAP (v1.78.0) — its worst rows: the longest names, stops on loads in NuVizz, stops an
+// earlier section placed, no-tractor stops, and a carried-over order.
+export const CLAUDE_SHADOW_PLAN_STOPS = {
+  ok: true, date: PLAN_DAY, lookbackDays: 0, scope: 'unplanned', after: null, afterAt: null, boardAt: '2026-09-26T19:38:56.389Z', truncated: false, nuvizzCalls: 0,
+  stops: CLAUDE_SHADOW_MAP.stops.map((s, i) => ({
+    n: s.n, lat: s.lat, lng: s.lng, name: s.name, city: s.city, zip: s.zip, spots: s.spots, lbs: s.lbs, noTractor: i % 7 === 0,
+    day: i === 3 ? '2026-09-25' : PLAN_DAY,
+    onLoad: i % 5 === 0 ? LONG_ROUTES[0] : null,
+    earlier: i % 6 === 1 ? { route: LONG_ROUTES[1], driver: LONG_DRIVERS[1] } : null,
+    leftOff: i % 9 === 4 ? 'every picked box truck was at its skid cap and the tractors cannot take a no-tractor stop' : null,
+  })),
+  counts: { open: CLAUDE_SHADOW_MAP.stops.length, noLocation: 2, onLoad: 8, placed: 7 },
+};
+
 /**
  * What a layout guard answers for a claude-shadow request: the backtest view, one day's result, one
  * day's map, the planning area's reads, or the status body. POSTs are told apart by their action, the
@@ -244,6 +258,7 @@ export function claudeShadowFixtureFor(url, body = null) {
   if (action === 'plan') return { ok: true, jobId: `pl__${PLAN_DAY}__new`, stops: 544, loads: 9, capacity: CLAUDE_SHADOW_PLAN_PREVIEW.capacity, maxUsd: 5, model: 'claude-opus-5-5', nuvizzCalls: 0 };
   if (action === 'plan-result') return { ok: true, result: CLAUDE_SHADOW_PLAN_RESULT };
   if (action === 'plan-map') return { ok: true, map: CLAUDE_SHADOW_PLAN_MAP, nuvizzCalls: 0 };
+  if (action === 'plan-stops') return CLAUDE_SHADOW_PLAN_STOPS;
   if (String(url).includes('view=plans')) return CLAUDE_SHADOW_PLANS;
   return String(url).includes('view=backtests') ? CLAUDE_SHADOW_BACKTESTS : CLAUDE_SHADOW_STATUS;
 }
@@ -273,6 +288,7 @@ export const CLAUDE_SHADOW_FAKE_MAPS = `(() => {
       all.push(this); return tolerant(this);
     }
     fitBounds() {} setOptions() {} setMapTypeId(t) { this.t = t; } getMapTypeId() { return this.t || 'roadmap'; } getDiv() { return this.el; } getZoom() { return this.z; } setZoom(z) { this.z = z; } getCenter() { return this.c; }
+    getBounds() { return { getNorthEast: () => new LatLng(35.5, -82.5), getSouthWest: () => new LatLng(33, -85.5) }; }
     setCenter(c) { if (c) this.c = new LatLng(typeof c.lat === 'function' ? c.lat() : c.lat, typeof c.lng === 'function' ? c.lng() : c.lng); }
     addListener() { return { remove() {} }; }
   }
@@ -343,6 +359,30 @@ export async function guardOpenFirstRoute(page) {
   if (!(await seen(b))) return why(page, 'no route in the list to open');
   await b.click();
   return (await seen(page.locator(ROUTE_PANEL).getByText(/^Skid spots \/ cap$/))) || why(page, 'the opened route never showed its numbers');
+}
+
+/**
+ * THE SECTION STOP MAP (v1.78.0): in the planning area, choose "A section I pick on the map", open the
+ * drawer, and wait for the board's stops to be read into it. Proof: the drawer is up and says how many
+ * open deliveries the map has.
+ */
+export async function guardOpenStopPicker(page) {
+  // A guard that runs one screen's probes without a reload (the tablet guard) arrives here with the
+  // previous probe's ROUTE DRAWER still open over the page: close it the way a dispatcher would.
+  const rd = page.locator('[role="dialog"][aria-label^="Route drawer"]').first();
+  if (await rd.isVisible().catch(() => false)) {
+    await rd.getByRole('button', { name: 'Close the route drawer' }).first().click().catch(() => {});
+    try { await rd.waitFor({ state: 'hidden', timeout: 4000 }); } catch { return why(page, 'the route drawer left open by the previous probe would not close'); }
+  }
+  const mode = page.getByRole('button', { name: /A section I pick on the map/ }).first();
+  if (!(await seen(mode))) return why(page, 'no "A section I pick on the map" choice in the planning area');
+  await mode.click();
+  const open = page.getByRole('button', { name: /^Pick stops on the map/ }).first();
+  if (!(await seen(open))) return why(page, 'no "Pick stops on the map" button after choosing a section');
+  await open.click();
+  const dlg = page.locator('[role="dialog"][aria-label="Pick the stops for this section"]');
+  if (!(await seen(dlg))) return why(page, 'the stop map drawer never opened');
+  return (await seen(dlg.getByText(/open deliveries on the map/))) || why(page, 'the stop map never showed the board’s stops');
 }
 
 /** Open the map (Google stood in — needs a build WITH a Maps key) and tap the stop two orders share. */
