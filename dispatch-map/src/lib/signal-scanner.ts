@@ -654,7 +654,9 @@ const CLOSED_DAY_PATTERNS: { day: DayCode; patterns: RegExp[] }[] = [
 // "CLOSED FRI AT 12PM" is an EARLY CLOSE, not a closed day — the customer is open Friday
 // morning. The day-qualified hours scanner owns that form; marking the day closed here would
 // tell dispatch to skip a morning that is actually deliverable.
-const EARLY_CLOSE_TAIL = /^\s*AT\s+(?:NOON|[0-9])/i;
+// '@' is read exactly as AT, the same vocabulary the day-qualified close regexes in
+// scanHours use — otherwise "CLOSED FRIDAYS @ 12PM" was a Friday noon close AND a closed Friday.
+const EARLY_CLOSE_TAIL = /^\s*(?:AT|@)\s*(?:NOON|[0-9])/i;
 
 function scanClosedDays(rawText: string | null | undefined, source: SignalSource): ClosedDayScanResult[] {
   if (!rawText) return [];
