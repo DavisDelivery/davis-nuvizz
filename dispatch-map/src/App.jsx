@@ -72,7 +72,7 @@ import { reportDenied, deniedSurfaces, subscribeDenied } from './lib/permission-
 import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut as endSession, currentResetLink, scrubResetLink, fetchMe } from './lib/auth-client.js';
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
 import { formatCompletionPct } from './lib/completion-pct.js';
-import { isTvPath, tvRailRows, tvVerdict, tvFeedState, TV_RAIL_LIMIT } from './lib/tv-mode.js';
+import { isTvPath, tvRailRows, tvVerdict, tvFeedState, tvRollDate, TV_RAIL_LIMIT } from './lib/tv-mode.js';
 import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent, tvImageFailure, boundsOf, snapBounds } from './lib/tv-static-map.js';
 import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
@@ -13800,7 +13800,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const tvBootedAt = useRef(Date.now()).current;
   useEffect(() => {
     if (!tvMode) return undefined;
-    const t = setInterval(() => setTvClock(Date.now()), 30000);
+    // THE SAME TICK MOVES THE BOARD TO TODAY when midnight ET passes — see tvRollDate. A wall
+    // left up overnight otherwise shows yesterday's finished board as a live one.
+    const t = setInterval(() => {
+      setTvClock(Date.now());
+      setSelectedDate((d) => tvRollDate(d, todayInET()) ?? d);
+    }, 30000);
     return () => clearInterval(t);
   }, [tvMode]);
   // DID THE MAP ACTUALLY DRAW? A WHITE RECTANGLE IS NOT AN ERROR STATE, and that is the
@@ -15348,6 +15353,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           <div className={`px-5 py-2.5 rounded-xl text-3xl font-bold shrink-0 ${verdictTone}`}>{verdict.text}</div>
           <div className="ml-auto text-right shrink-0">
             <div className="text-4xl font-semibold tabular-nums leading-none">{clock}</div>
+            {/* WHICH DAY THIS BOARD IS. Without it, yesterday's finished board and today's
+                read the same from across the room. */}
+            <div className="text-lg text-slate-300 mt-1.5">{formatDateLong(selectedDate)}</div>
             {/* THE FRESHNESS LINE GOES RED WHEN IT IS OLD, and it is the only thing on this
                 screen that can tell the room the board has stopped moving. A wall display
                 whose feed died at 6am is otherwise a perfect morning, all day. */}
