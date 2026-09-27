@@ -485,19 +485,40 @@ export function whenIso(v) {
   return null;
 }
 
+// THE FIELDS THE WRITERS ACTUALLY WRITE (audit 2026-09-27). This read `notes`/`note`,
+// `no_tractor` and `pin_override`/`lat_override` for weeks, and nothing in the repo writes any
+// of them — only test fixtures did, which is why every test passed while a customer with a
+// dock instruction and a Box-truck-only mark read "Nothing on file". The shared editor
+// (App.jsx StopNotesEditor over emptyNote) writes `dock_notes`, `vehicle_eligibility` and
+// `equipment_restrictions`; every pin writer writes `location_override`. The old names are
+// kept only as fallbacks, so a document shaped the old way still reads.
+const BOXONLY_SAME_AS = new Set(['No tractor trailer', 'Box truck only']);
+
 export function notesSummary(notes) {
   if (!notes || typeof notes !== 'object') return null;
   const flags = [];
+  // THE VEHICLE MARK, the way the map draws it: 'box_only' is the dispatcher's dropdown, and a
+  // trailer-blocking restriction counts too — unless the same dispatcher set 'tractor' (53'
+  // fits), which drops every blocker on the map (drawnRestrictionKeys) and in the alert
+  // (dispatcherTrailerBlock). Labels are the dropdown's own words (TRAILER_BLOCKER_LABEL).
+  const elig = notes.vehicle_eligibility;
+  const boxOnly = elig === 'box_only' || notes.no_tractor === true;
+  const blockerKeys = elig === 'tractor' ? []
+    : (Array.isArray(notes.equipment_restrictions) ? notes.equipment_restrictions : []).filter((k) => isTrailerBlockerKey(k));
+  const blockerLabels = trailerBlockerLabels(blockerKeys).filter((l) => !(boxOnly && BOXONLY_SAME_AS.has(l)));
   if (notes.comms_opt_out === true) flags.push({ key: 'opt_out', label: 'No delivery emails', tone: 'slate' });
   if (notes.notify_cs === true) flags.push({ key: 'notify_cs', label: 'Notify customer service', tone: 'amber' });
-  if (notes.no_tractor === true) flags.push({ key: 'no_tractor', label: 'No tractor — box truck only', tone: 'amber' });
+  if (boxOnly) flags.push({ key: 'no_tractor', label: 'No tractor — box truck only', tone: 'amber' });
+  for (const label of blockerLabels) flags.push({ key: `restriction:${label}`, label, tone: 'amber' });
   if (notes.address_override) flags.push({ key: 'override', label: 'Address overridden here', tone: 'blue' });
-  if (notes.pin_override || notes.lat_override) flags.push({ key: 'pin', label: 'Pin moved by hand', tone: 'blue' });
+  const ov = notes.location_override;
+  const pinMoved = (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') || notes.pin_override || notes.lat_override;
+  if (pinMoved) flags.push({ key: 'pin', label: 'Pin moved by hand', tone: 'blue' });
   const contacts = (Array.isArray(notes.contacts) ? notes.contacts : [])
     .map((c) => ({ name: s(c?.name) || null, phone: s(c?.phone) || null, email: s(c?.email) || null }))
     .filter((c) => c.name || c.phone || c.email);
   return {
-    text: s(notes.notes) || s(notes.note) || null,
+    text: s(notes.dock_notes) || s(notes.notes) || s(notes.note) || null,
     hours: notes.receiving_hours || notes.hours || null,
     customerNbr: s(notes.customer_nbr) || s(notes.customerNbr) || null,
     // `last_updated` FIRST — it is the field every writer of customer_notes actually writes
@@ -553,6 +574,7 @@ export { TERMINAL as TERMINAL_STATUSES };
 // address on its row, so both questions are answerable off one screen.
 
 import { normNameOf } from './matchKey.js';
+import { isTrailerBlockerKey, trailerBlockerLabels } from './trailer-block.js';
 
 /**
  * PURE: the grouping key for a customer NAME — for counting and grouping only, NEVER for a
