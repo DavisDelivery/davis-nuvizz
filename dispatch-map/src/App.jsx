@@ -82,6 +82,7 @@ import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, set
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
 import { buildLabelsHtml } from './lib/label-html.js';
+import { singleOrderOpId, singleOrderCreatedMsg } from './lib/single-order-op.js';
 import { filterLabelRows, labelRowsForPick } from './lib/label-shippers.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
@@ -32865,8 +32866,10 @@ function NewOrderSingleScreen() {
 
   // The clientOpId is minted ONCE per ORDER (not per click): a retry after a lost response
   // replays the same id, so the server's idempotency ledger returns the prior success instead
-  // of creating a DUPLICATE order. Regenerated only after a confirmed success.
-  const opIdRef = useRef(newClientOpId());
+  // of creating a DUPLICATE order. Regenerated after a confirmed success — and whenever the
+  // request differs from the one last sent under it (lib/single-order-op.js), so the next order
+  // typed after a lost answer is not replayed as the old one.
+  const opIdRef = useRef({ id: newClientOpId(), sent: null });
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -32890,12 +32893,13 @@ function NewOrderSingleScreen() {
         origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() },
         serviceDate, timeZone: 'America/New_York',
       };
+      opIdRef.current = singleOrderOpId(opIdRef.current, { row: payloadRow, settings }, newClientOpId);
       let res;
-      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: opIdRef.current, createdBy: 'dispatcher' }); }
+      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: opIdRef.current.id, createdBy: 'dispatcher' }); }
       catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
       if (res.ok && res.result?.ok) {
         const nbr = res.result.entityNbr || payloadRow.stopNbr || '(number assigned by NuVizz)';
-        opIdRef.current = newClientOpId();   // next order = new idempotency key
+        opIdRef.current = { id: newClientOpId(), sent: null };   // next order = new idempotency key
         // The label (and the ticket New Order prints) carry the number NuVizz returned, or the
         // Order # typed when NuVizz echoes none — the number the order is filed under. No
         // number at all = no label, and the banner says so instead of printing a blank.
@@ -32907,7 +32911,7 @@ function NewOrderSingleScreen() {
           // REPLACED that order's details. Say so loudly; keep the form so it's reviewable.
           setResult({ ok: true, updated: true, msg: `⚠ Order ${nbr} ALREADY EXISTED — NuVizz UPDATED it (its address/details were replaced with what you entered). Verify in the portal if that wasn't intended.`, ...labelBits });
         } else {
-          setResult({ ok: true, msg: `✓ Order created — ${nbr}. It's now UNPLANNED; plan it onto a load in Routing.`, ...labelBits });
+          setResult({ ok: true, msg: singleOrderCreatedMsg(nbr, { idempotent: res.idempotent === true }), ...labelBits });
           setRow(EMPTY_ORDER_ROW);   // ready for the next order; keep origin + date
         }
         setListRefresh((k) => k + 1);
