@@ -33,7 +33,7 @@ import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaul
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { mergeStopHistory } from './lib/stop-history.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
-import { noteContentKey } from './lib/note-save.js';
+import { noteContentKey, commitNoteDraft } from './lib/note-save.js';
 import { readViewportSize } from './lib/viewport.js';
 import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
@@ -10563,6 +10563,10 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
   // resetting the draft mid-edit and silently wiping in-progress changes — the
   // root cause of "I set the hours but they didn't save".
   const dirtyRef = useRef(false);
+  // The stop on screen NOW — a save that lands after the dispatcher opened another stop must
+  // not close that stop's editor (the Save bar waits for the write, A1-S4-1).
+  const shownStopRef = useRef(stop?.stopNbr);
+  shownStopRef.current = stop?.stopNbr;
   // Re-init only when a DIFFERENT stop opens.
   useEffect(() => {
     setDraft(note || emptyNote(stop));
@@ -10691,9 +10695,10 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
             {/* DESKTOP save bar. Disabled rather than hidden for a role that may not write
                 customer_notes: the hours on screen are still worth reading, and a Save that
                 looks pressable and writes nothing is how a customer's receiving window gets
-                "saved" into thin air. */}
+                "saved" into thin air. Closes the editor only once the write LANDED (A1-S4-1):
+                a refused or failed save stays open, typed values intact, saveError beside it. */}
             <button
-              onClick={() => { dirtyRef.current = false; onSave(D); setEditing(false); }}
+              onClick={async () => { const at = stop?.stopNbr; if (await commitNoteDraft(onSave, D) && shownStopRef.current === at) { dirtyRef.current = false; setEditing(false); } }}
               disabled={saving || !!saveDenied}
               title={saveDenied || undefined}
               className="px-3 py-1.5 text-xs text-white font-semibold rounded inline-flex items-center gap-1 disabled:opacity-50"
@@ -12350,6 +12355,9 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
   // See StopSidebar: guards an open edit from being wiped by a background note
   // write (the root cause of an empty saved note / lost receiving hours).
   const dirtyRef = useRef(false);
+  // See StopSidebar: a save landing after another stop opened must not close its editor.
+  const shownStopRef = useRef(stop?.stopNbr);
+  shownStopRef.current = stop?.stopNbr;
 
   // Reset draft when a different stop opens.
   useEffect(() => {
@@ -12446,9 +12454,10 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
               Cancel
             </button>
             {/* PHONE save bar — its own component and its own markup per CLAUDE.md, so it
-                needs its own gate. Same rule as the desktop sidebar above. */}
+                needs its own gate. Same rule as the desktop sidebar above — including closing
+                only once the write LANDED (A1-S4-1). */}
             <button
-              onClick={() => { dirtyRef.current = false; onSave(D); setEditing(false); }}
+              onClick={async () => { const at = stop?.stopNbr; if (await commitNoteDraft(onSave, D) && shownStopRef.current === at) { dirtyRef.current = false; setEditing(false); } }}
               disabled={saving || !!saveDenied}
               title={saveDenied || undefined}
               className="px-4 py-2 text-sm text-white font-semibold rounded inline-flex items-center gap-1.5 disabled:opacity-50"
@@ -15230,6 +15239,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         updated_by: NOTES_UPDATED_BY,
       };
       await setDoc(doc(db, 'customer_notes', key), payload, { merge: true });
+      // The ONLY path that says "saved" (A1-S4-1): the Save bar closes the editor on this and
+      // nothing else, so a refusal above or a throw below stays on screen with its reason.
+      return true;
     } catch (e) {
       setSaveError(e.message);
     } finally {
@@ -16008,12 +16020,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             onAutoFixAddress={autoFixAddress}
             onOpenRoute={(loadNbr) => { setSelectedStop(null); setRouteMapView(false); setSelectedRoute(loadNbr); frameRoute(loadNbr); }}
             onSave={async (draft) => {
-              await handleSave(draft);
-              // handleSave clears saveError on success; close the drawer if
-              // there was no error this cycle. (saveError is checked on the
-              // next render, so we read the post-save state via a setTimeout
-              // tick — but simplest: leave the drawer open on save so the
-              // user can confirm the green state, and rely on the X to dismiss.)
+              // Pass the answer back: the drawer's Save bar closes the editor only on `true`
+              // (A1-S4-1). The drawer itself stays open after a save so the user can confirm
+              // the saved state, and the X dismisses it.
+              return handleSave(draft);
             }}
             saving={saving}
             saveError={saveError}
@@ -26022,6 +26032,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         updated_by: NOTES_UPDATED_BY,
       }, { merge: true });
       refreshStops({ silent: true });
+      return true; // the only "saved" answer — see handleSave (A1-S4-1)
     } catch (e) { setSaveNoteError(e.message); } finally { setSavingNote(false); }
   }, [notes, panelStop, refreshStops, notesGate.reason]);
   const cancelMoveLocation = useCallback(() => { setMovingStop(null); setMovedTo(null); }, []);

@@ -32,3 +32,21 @@ export function noteContentKey(note) {
     return `id:${note.id ?? ''}`;
   }
 }
+
+/**
+ * PRESS SAVE on a stop panel's notes editor: run the save and say whether it LANDED.
+ *
+ * The Save bar used to run `onSave(D); setEditing(false);` — closing the editor on the click,
+ * which also unmounted the only place saveError is printed. A refused or failed write then
+ * looked exactly like a saved one. The saves (the Map's handleSave, the Routing screen's
+ * saveStopNote) resolve `true` once the write has landed; ONLY that counts. A refusal
+ * (resolves undefined), a failure, a throw, or any other answer is "not saved", and the
+ * caller keeps the editor open with the typed values and the reason.
+ */
+export async function commitNoteDraft(save, draft) {
+  try {
+    return (await save(draft)) === true;
+  } catch {
+    return false;
+  }
+}
