@@ -49,13 +49,22 @@ export function haversineMatrix(depot: LatLng, stops: LatLng[]): Matrix {
   return { durationSec, distanceMeters };
 }
 
+// A5-S27-4: a pair Google cannot route (condition ROUTE_NOT_FOUND, no duration) or leaves out of
+// its answer takes the straight-line road estimate above instead of a free 0-second, 0-metre leg.
+// ROUTE_MATRIX_ESTIMATE_UNROUTABLE=off puts back the old reading. House shape: default ON, an
+// explicit off-word turns it off, anything malformed leaves it ON.
+export function unroutableEstimateEnabled(env: any = process.env): boolean {
+  const v = String(env?.ROUTE_MATRIX_ESTIMATE_UNROUTABLE ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
 function parseDuration(s: any): number {
   if (typeof s === 'number') return s;
   const m = String(s ?? '').match(/^(\d+(?:\.\d+)?)s$/);
   return m ? Math.round(Number(m[1])) : 0;
 }
 
-async function computeChunk(origins: LatLng[], destinations: LatLng[], apiKey: string): Promise<{ originIndex: number; destinationIndex: number; durationSec: number; distanceMeters: number }[]> {
+async function computeChunk(origins: LatLng[], destinations: LatLng[], apiKey: string): Promise<{ originIndex: number; destinationIndex: number; durationSec: number; distanceMeters: number; routed: boolean }[]> {
   const wp = (p: LatLng) => ({ waypoint: { location: { latLng: { latitude: p.lat, longitude: p.lng } } } });
   const resp = await fetchWithTimeout(ROUTES_URL, {
     method: 'POST',
@@ -74,6 +83,9 @@ async function computeChunk(origins: LatLng[], destinations: LatLng[], apiKey: s
     destinationIndex: e.destinationIndex ?? 0,
     durationSec: parseDuration(e.duration),
     distanceMeters: typeof e.distanceMeters === 'number' ? e.distanceMeters : 0,
+    // A real route carries a duration. No duration — or an explicit ROUTE_NOT_FOUND — is no route.
+    routed: (typeof e.duration === 'number' || /^\d+(?:\.\d+)?s$/.test(String(e.duration ?? '')))
+      && e.condition !== 'ROUTE_NOT_FOUND',
   }));
 }
 
@@ -81,8 +93,12 @@ async function computeChunk(origins: LatLng[], destinations: LatLng[], apiKey: s
 export async function buildMatrixViaGoogle(depot: LatLng, stops: LatLng[], apiKey: string): Promise<Matrix> {
   const nodes = [depot, ...stops];
   const n = nodes.length;
-  const durationSec = Array.from({ length: n }, () => new Array(n).fill(0));
-  const distanceMeters = Array.from({ length: n }, () => new Array(n).fill(0));
+  // Start from the road estimate so any pair without a real Google route keeps an honest cost.
+  const estimate = unroutableEstimateEnabled();
+  const base = estimate ? haversineMatrix(depot, stops) : null;
+  const durationSec = base ? base.durationSec : Array.from({ length: n }, () => new Array(n).fill(0));
+  const distanceMeters = base ? base.distanceMeters : Array.from({ length: n }, () => new Array(n).fill(0));
+  let fromGoogle = 0;
 
   const originChunk = Math.max(1, Math.floor(MAX_ELEMENTS / n));
   for (let o = 0; o < n; o += originChunk) {
@@ -90,9 +106,12 @@ export async function buildMatrixViaGoogle(depot: LatLng, stops: LatLng[], apiKe
     const elements = await computeChunk(originsSlice, nodes, apiKey);
     for (const e of elements) {
       const i = o + e.originIndex, j = e.destinationIndex;
-      if (i < n && j < n) { durationSec[i][j] = e.durationSec; distanceMeters[i][j] = e.distanceMeters; }
+      if (estimate && !e.routed) continue;
+      if (i < n && j < n) { durationSec[i][j] = e.durationSec; distanceMeters[i][j] = e.distanceMeters; if (i !== j) fromGoogle++; }
     }
   }
+  const estimated = n * (n - 1) - fromGoogle;
+  if (estimate && estimated > 0) console.warn(`google-route-matrix: ${estimated} of ${n * (n - 1)} legs had no Google route — road estimate used`);
   return { durationSec, distanceMeters };
 }
 
