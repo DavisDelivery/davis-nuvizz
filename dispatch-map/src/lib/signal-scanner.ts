@@ -532,8 +532,12 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
     matchedBits.push(m[0] + env.extraText);
     daySegRe.lastIndex += env.extraText.length; // the continuation is consumed, not re-scanned
   }
+  // CLOSED as well as CLOSE/CLOSES after the day: "FRIDAYS CLOSED @ 12PM" is the same Friday
+  // noon close as "CLOSED FRIDAYS @ 12PM", and the closed-day scanner hands both word orders to
+  // this tier (EARLY_CLOSE_TAIL). Reading only CLOSES here left that word order to the
+  // day-less CLOSE_ONLY wrapper, which stamped a noon close on all seven days.
   const dayCloseRes: RegExp[] = [
-    new RegExp(`\\b(${DAY_SPAN})\\s+CLOSES?\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'gi'),
+    new RegExp(`\\b(${DAY_SPAN})\\s+CLOSE[SD]?\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'gi'),
     new RegExp(`\\bCLOSE[SD]?\\s+(?:ON\\s+)?(${DAY_SPAN})\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'gi'),
   ];
   for (const re of dayCloseRes) {
