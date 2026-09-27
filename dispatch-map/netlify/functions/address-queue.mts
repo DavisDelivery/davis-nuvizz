@@ -34,6 +34,7 @@
 import { isFirestoreEnabled, readStops, listDocs, getDoc, updateDocFields, etDayString } from './lib/firestore.mts';
 import { QUEUE_STOP_FIELDS, QUEUE_NOTE_FIELDS } from './lib/board-fields.mts';
 import { withCustomerKeys } from './lib/customer-key.mts';
+import { mapEntryPatch } from './lib/firestore-field-path.mts';
 import { scanDatesFrom } from './lib/refresh-stops-core.mts';
 import { addressQueueEnabled, buildQueueRow, sortQueueRows, isDismissed } from './lib/address-queue.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -173,30 +174,35 @@ async function dismissOne(req: Request, J: (o: any, s?: number) => Response): Pr
     return J({ ok: false, error: 'a dismissal key is required, and it must be one the queue minted' }, 400);
   }
 
+  // ONE ENTRY OF THE `items` MAP, written as a nested body plus the dotted path in the mask.
+  // `{ ['items.' + key]: … }` sent a literal field NAMED "items.<key>" and no items map, so
+  // nothing landed where the GET looks and every waved-off row came straight back (audit
+  // 2026-09-27). See lib/firestore-field-path.mts.
+  const writeItem = (value: any) => {
+    const p = mapEntryPatch({ date }, 'items', key, value);
+    return updateDocFields(dismissalPath(date), p.data, p.fieldPaths);
+  };
   try {
     if (body?.undo === true) {
       // null, not a delete sentinel: the reader treats a null record as absent, and a key that
       // half-survived a delete while still matching its fingerprint would hide a row for ever.
-      await updateDocFields(dismissalPath(date), { date, [`items.${key}`]: null });
+      await writeItem(null);
       return J({ ok: true, undone: true, key, date });
     }
     const fp = String(body?.fp || '').trim();
     if (!fp) return J({ ok: false, error: 'a fingerprint is required — without it the row could never come back' }, 400);
-    await updateDocFields(dismissalPath(date), {
-      date,
-      [`items.${key}`]: {
-        fp,
-        signal: String(body?.signal || '').trim() || null,
-        stopNbr: String(body?.stopNbr || '').trim() || null,
-        // THE DEVICE, NEVER A VERIFIED PERSON. Every request from the production site today
-        // arrives with request.auth == null, so naming a human here would be a claim the
-        // system cannot read back — an intent reported as an outcome in a new costume. The
-        // screen labels these "Dispatcher 9F2A".
-        by: String(body?.by || '').trim() || null,
-        byName: String(body?.byName || '').trim() || null,
-        why: String(body?.why || '').trim().slice(0, 200) || null,
-        at: new Date().toISOString(),
-      },
+    await writeItem({
+      fp,
+      signal: String(body?.signal || '').trim() || null,
+      stopNbr: String(body?.stopNbr || '').trim() || null,
+      // THE DEVICE, NEVER A VERIFIED PERSON. Every request from the production site today
+      // arrives with request.auth == null, so naming a human here would be a claim the
+      // system cannot read back — an intent reported as an outcome in a new costume. The
+      // screen labels these "Dispatcher 9F2A".
+      by: String(body?.by || '').trim() || null,
+      byName: String(body?.byName || '').trim() || null,
+      why: String(body?.why || '').trim().slice(0, 200) || null,
+      at: new Date().toISOString(),
     });
     return J({ ok: true, dismissed: true, key, date });
   } catch (e: any) {

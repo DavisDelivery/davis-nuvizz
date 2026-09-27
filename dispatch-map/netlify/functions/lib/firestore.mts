@@ -270,15 +270,20 @@ export async function setDoc(path: string, data: any): Promise<boolean> {
  *
  * Creates the document if it is absent, which is the ordinary case for a customer who has
  * never had a note written.
+ *
+ * `fieldPaths` (optional): the mask, when it is not simply the top-level keys of `data` — a
+ * NESTED write such as one entry of a map. Build both with mapEntryPatch
+ * (lib/firestore-field-path.mts). A dotted KEY in `data` is not a nested path: the body
+ * would carry it as one literal field name, and nothing lands where a reader looks.
  */
-export async function updateDocFields(path: string, data: any): Promise<boolean> {
+export async function updateDocFields(path: string, data: any, fieldPaths?: string[]): Promise<boolean> {
   assertSafePath(path);
-  const keys = Object.keys(data || {});
+  const keys = fieldPaths && fieldPaths.length ? fieldPaths : Object.keys(data || {});
   if (!keys.length) return false;
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  // Repeated updateMask.fieldPaths params — one per field. Backticked field paths so a key
-  // containing a dot or a reserved word cannot be read as a nested path.
+  // Repeated updateMask.fieldPaths params — one per field. The top-level keys go as they are;
+  // a nested path comes in pre-quoted through `fieldPaths`.
   const mask = keys.map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}?${mask}`;
   const resp = await fsFetch(url, {
