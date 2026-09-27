@@ -136,7 +136,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W2.1 — critical and high (10 items)
 
-- [ ] **`dispatch-map/netlify/functions/nuvizz-driver-roster.mts:139`** — Driver roster read is ungated and returns every driver's CDL number, licence and phone  
+- [x] **`dispatch-map/netlify/functions/nuvizz-driver-roster.mts:139`** — Driver roster read is ungated and returns every driver's CDL number, licence and phone  
+      *Done v1.80.2:* The Drivers view's roster now needs a viewer sign-in once sign-in is switched on. It still shows each driver's name, status and phone, but it no longer sends anyone a driver's CDL number, licence state or licence expiry. The stored roster is unchanged, and the Update list refresh still needs a dispatcher.
       *Fix:* Gate the read branch at viewer (mirroring messaging-roster) and strip cdlNumber/licenseState/licenseExpirationDttm on the way out with the same publicRosterUser pattern the root proxy uses; add nuvizz-driver-roster to VIEWER_SET in test/function-gates.test.mj…  
       <sub>CRITICAL · security · X-authgates-3 · reproduced by running the code</sub>
 - [ ] **`netlify/functions/nuvizz.cjs:872`** — No auth gate on any endpoint; ~20 anonymous GETs to __refreshFleet trip the fleet-wide NuVizz breaker for the…  
@@ -145,16 +146,19 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`netlify/functions/nuvizz.cjs:1720`** — Root NuVizz proxy: __refreshFleet/__refreshLoad/nocache scans are ungated  
       *Fix:* Require a shared secret header (e.g. X-Refresh-Secret compared with the existing constant-time helper) on __refreshFleet, __refreshLoad, __refreshDrivers, nocache and manual-range paths, and send it from fleet-refresh-background.mjs; or hard-refuse those path…  
       <sub>CRITICAL · security · X-authgates-6 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/require-user.mts:85`** — 30s user cache refuses the fresh token issued right after a tokenVersion bump  
+- [x] **`dispatch-map/netlify/functions/lib/require-user.mts:85`** — 30s user cache refuses the fresh token issued right after a tokenVersion bump  
+      *Done v1.80.2:* After a password change, a password reset, 'sign out everywhere' or a role change, the new token the server hands back is accepted straight away. Before, any warm server copy that had cached the account in the last 30 seconds refused it as 'session revoked'. Old sessions are still refused, and a revoked phone that keeps polling costs no extra reads.
       *Fix:* In requireUser, when the cached doc's tokenVersion is LOWER than claims.tv (a token can only carry a tv the store once held), bypass the cache and re-read the store once before deciding; also drop the cache entry in bumpTokenVersion's callers. Add a test: bum…  
       <sub>High · logic · X-authgates-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/manifest-history.mts:83`** — ?pdf=1 skips the viewer gate for every JSON branch, not just the PDF one  
+- [x] **`dispatch-map/netlify/functions/manifest-history.mts:83`** — ?pdf=1 skips the viewer gate for every JSON branch, not just the PDF one  
+      *Done v1.80.2:* Only the link to a real night's manifest PDF (what 'Open in browser' and the share sheet use) still opens without signing in. Adding ?pdf=1 to any other request, such as the 30-night history, the rows view or the blob self-test, no longer gets past the sign-in check.
       *Fix:* Compute the exception exactly as the branch that needs it: `const wantsPdf = pdf === '1' && !!one && DATE_RE.test(one)` (or move the gate to sit immediately after the PDF branch returns), and add the `?pdf=1` without-date case to function-gates.test.mjs.  
       <sub>High · security · A5-S27-1 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/nuvizz-pod.mts:77`** — Unauthenticated POD endpoint spends up to 8 NuVizz calls per miss and can trip the scan breaker  
       *Fix:* Stop honouring a caller-supplied cc (or validate it against the two known company codes), short-circuit to a single host/company when the guid shape is invalid, and add a small per-IP throttle (lib/require-user.mts throttled()) so an anonymous miss loop canno…  
       <sub>High · security · X-security-2 · reproduced by running the code</sub>
-- [ ] **`load-scan/netlify/functions/load-assign.mts:62`** — Dispatcher gate trusts the 90-day token role; demoted/deactivated dispatcher keeps assigning and reading staf…  
+- [x] **`load-scan/netlify/functions/load-assign.mts:62`** — Dispatcher gate trusts the 90-day token role; demoted/deactivated dispatcher keeps assigning and reading staf…  
+      *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed in d26807b (#815, load-scan v0.93.0, 'A credential switched off this morning kept working for 90 days'). load-assign now does `const gate = await liveClaims(authenticate(req));` (37). liveClaims reads `driver_auth/<sub>`, refuses `cred.active === false`,
       *Fix:* In each dispatcher-gated handler, after authenticate, `getDoc(DRIVER_AUTH/claims.sub)` and refuse unless `active !== false && role === 'dispatcher'`, as driver-admin does (one Firestore read).  
       <sub>High · security · A6-S31-8 · reproduced by running the code</sub>
 - [ ] **`load-scan/netlify/functions/work-report.mts:120`** — Dispatcher role checked from the 90-day token, not the live credential  
@@ -182,7 +186,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W3.1 — critical and high (2 items)
 
-- [ ] **`dispatch-map/netlify/functions/lib/uline-forecast-store.mts:92`** — davisClosedFromEnv calls parseClosedList that is never imported — every forecast GET 500s  
+- [x] **`dispatch-map/netlify/functions/lib/uline-forecast-store.mts:92`** — davisClosedFromEnv calls parseClosedList that is never imported — every forecast GET 500s  
+      *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* `import { parseClosedList } from '../../../src/lib/davis-calendar.js';` was added at line 30 in e317822 (#873, v1.2.1), per `git log -S`. Ran davisClosedFromEnv({ULINE_DAVIS_CLOSED:'2026-09-07,2026-11-26'}) and it returns ['2026-09-07','2026-11-26'] with no Re
       *Fix:* Add `import { parseClosedList } from '../../../src/lib/davis-calendar.js';` to uline-forecast-store.mts (the same import manifest-run.mts uses), and add a one-line test that calls davisClosedFromEnv so a missing import cannot ship again.  
       <sub>High · logic · A5-S25-9 · reproduced by running the code</sub>
 - [ ] **`load-scan/netlify/functions/work-report.mts:156`** — `.map(toManifestStop)` passes the index as `warn`; any mismatch drops the whole board  
@@ -223,7 +228,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W6.1 — critical and high (10 items)
 
-- [ ] **`dispatch-map/netlify/functions/nuvizz-driver-route.mts:288`** — Driver snapshot defaults to the UTC day but the stop index is keyed by ET day  
+- [x] **`dispatch-map/netlify/functions/nuvizz-driver-route.mts:288`** — Driver snapshot defaults to the UTC day but the stop index is keyed by ET day  
+      *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* 9796bc2 (#839, v0.95.0) changed the default to `const date = url.searchParams.get('date') || etDayString();` (305) and imports etDayString from ./lib/firestore.mts (47). etDayString formats in America/New_York (firestore.mts:75-79), so the snapshot now reads t
       *Fix:* Import `etDayString` from ./lib/firestore.mts and default `date` (and `fetchHos`'s `today`) to it, matching nuvizz-pull-today-stops; optionally have App.jsx pass the board date explicitly.  
       <sub>High · date-time · A5-S28-1 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/nuvizz-driver-route.mts:302`** — Driver route snapshot defaults to the UTC day: reads tomorrow's board after 8pm ET  
@@ -393,7 +399,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`dispatch-map/netlify/functions/lib/nuvizz-write-ops.mts:428`** — Executed-stop guard matches words; NuVizz stopStatus is a numeric code — never fires live  
       *Fix:* Make isExecutedStopStatus accept the vendor's codes as well as words: treat '24','27','30','38','40','50','80','90','91' (and any code >= 24 that is not '99'/'10'/'20'/'05') as executed, or map the code through statusFromCode-style logic before the regex; add…  
       <sub>High · data-contract · A4-S20-8 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/nuvizz-write-ops.mts:1066`** — addressMatchesTyped fails on RD/ROAD, HWY/HIGHWAY etc. — landed corrections report as failed  
+- [x] **`dispatch-map/netlify/functions/lib/nuvizz-write-ops.mts:1066`** — addressMatchesTyped fails on RD/ROAD, HWY/HIGHWAY etc. — landed corrections report as failed  
+      *Done v1.80.2:* An address correction that NuVizz saved with the street word spelled out (Rd as ROAD, Hwy as HIGHWAY, NW as NORTHWEST, Ste as SUITE) is now reported as landed. The dispatcher is no longer told to fix an address in the portal that is already correct there.
       *Fix:* In `agrees`, compare tokens through a small street-type/directional synonym map (RD/ROAD, HWY/HIGHWAY, BLVD/BOULEVARD, LN/LANE, CT/COURT, PKWY/PARKWAY, PL/PLACE, CIR/CIRCLE, TER/TERRACE, E/W/S/N) in addition to the prefix rule, and add the RD->ROAD case the t…  
       <sub>High · logic · A4-S20-1 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/lib/nuvizz-write.mts:309`** — removeStopNbrs is never executed: an unplan-only card returns ok with zero calls  
@@ -408,7 +415,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W8.2 — critical and high (10 items)
 
-- [ ] **`dispatch-map/netlify/functions/nuvizz-manual-scan.mts:21`** — Sync manual scan forwards ?date=/?days= into the forced full-scan path at dispatcher  
+- [x] **`dispatch-map/netlify/functions/nuvizz-manual-scan.mts:21`** — Sync manual scan forwards ?date=/?days= into the forced full-scan path at dispatcher  
+      *Done v1.80.2:* Fixed in 9d2fdc6 without taking the scan away. When ?date= or ?days= is present (checked by presence, the same test as overrideParams), nuvizz-manual-scan.mts now requires admin; without them it stays dispatcher. This is the rule nuvizz-refresh-stops-background already applies to the same two parameters (OVERRIDE_PARAMS via gateScheduledOverride), so it follows an existing policy rather than a new one. App.jsx:4798 sends no query string, so the Scan-now fallback is unchanged. It is inert until AUTH_REQUIRED=true, because a request with no token is the legacy admin principal. Chad's hand-run ?date= scan and refresh-stops-date-guard's 'still FORWARDS ?date=' test both still work. New test, manual-scan-explicit-admin.test.mjs, runs on the Firestore fake with the scan kill switch on. Results: a dispatcher sending ?date=, ?days=, ?days= (empty) or both gets 403 with no NuVizz call and no Firestore write. A dispatcher's plain press and an admin's ?date= both get past the gate. Signed out gets 401. On the base file the dispatcher ?date= case returns 200 where 403 is expected. What is left for Chad: whether to also retire the explicit-date branch here (option a) or also require NUVIZZ_LIVE_READ_ENABLED. `git revert 9d2fdc6` undoes this. For the integrator: function-gates SPLIT could gain ['nuvizz-manual-scan','dispatcher','admin',/date/].
       *Fix:* Build the inner URL the way manualScanUrl() does in nuvizz-manual-scan-background (origin + pathname + manual=1, discarding date/days), or gate the explicit branch at admin and require NUVIZZ_LIVE_READ_ENABLED like nuvizz-pull-today-stops.  
       <sub>High · security · X-authgates-4 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/nuvizz-write.mts:231`** — A throw mid-batch discards applied NuVizz writes, skips the ledger, answers 400/503  
@@ -656,7 +664,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`dispatch-map/netlify/functions/lib/routing-cleanup-core.mts:479`** — Liftgate stop rides a truck with NO liftgate whenever the fleet is mixed  
       *Fix:* When `liftgateTrucks.length` is non-zero, restrict a liftgate stop to those trucks everywhere a placement is decided: set `as.candidates = liftgateTrucks.map(d => d.driver_key)` for it (the solver's relocate/swap honour isCandidate) AND add a `truckByKey.get(…  
       <sub>High · logic · A4-S23-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/routing-pipeline.mts:85`** — Appointment windows never apply: HH:MM regex cannot match the stored ISO scheduledFrom/To  
+- [x] **`dispatch-map/netlify/functions/lib/routing-pipeline.mts:85`** — Appointment windows never apply: HH:MM regex cannot match the stored ISO scheduledFrom/To  
+      *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed by 1bef823 (#912, v1.21.0), whose commit message names this exact defect. toSolverStops now lets the resolved clock win: `const tr = s.timeRestriction; if (tr) { … win = { startSec: midnight + (tr.openMin ?? 0) * 60, … }; strict = win.endSec > win.startS
       *Fix:* In hhmmToEpochSec/isPlaceholderTime match the clock off the stamp the way the client already does (`/(?:^|[T ])(\d{1,2}):(\d{2})/`), and — since time-restrictions.js documents that NuVizz stamps STRICT on 800/862 stops with an 08:00–20:00 all-day placeholder …  
       <sub>High · data-contract · A4-S24-1 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/lib/routing-repair.mts:87`** — Repair enforces deck length the constraints module turned off, then re-inserts spilled stops onto the wrong t…  
@@ -665,7 +674,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`dispatch-map/src/App.jsx:8677`** — Driver snapshot on-time % and 'N min late ⚠' judged against the load-wide shared window  
       *Fix:* Apply the same guard the route card uses: compute `loadDefaultWindow(stops)` over the snapshot stops and treat a stop whose `scheduledTime` equals that shared window as having no appointment (`classifyTimeliness` → null), so it is excluded from the on-time de…  
       <sub>High · data-contract · A1-S4-6 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:20495`** — Truck profile blur writes Number('')=0 to Firestore, which the solver reads as NO cap  
+- [x] **`dispatch-map/src/App.jsx:20495`** — Truck profile blur writes Number('')=0 to Firestore, which the solver reads as NO cap  
+      *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed by 1bef823 (#912, v1.21.0, item 6). The onBlur `saveProfile({ ...p, maxSkids: Number(e.target.value) })` inputs are gone (no match at HEAD). TruckProfileEditor holds a draft and only writes via `if (!check.valid || !check.dirty) return;` using profileDra
       *Fix:* Parse with a guard: ignore blur when the value is '' or not a finite positive number (e.g. `const n = Number(e.target.value); if (e.target.value.trim() === '' || !Number.isFinite(n) || n <= 0) return;`) and only save when the value actually changed.  
       <sub>High · null-handling · A2-S8-9 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/lib/routing-repair.mts:151`** — Phase A guard re-reads the shrinking stops.length, halving the budget and shipping invalid routes  
@@ -705,7 +715,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`dispatch-map/src/App.jsx:1725`** — useStops: a slow response for the previous date overwrites the newly selected date's board  
       *Fix:* Add a monotonically increasing request id (useRef) or an AbortController per refresh; capture it at the start of refresh() and skip every setX() when it no longer matches the latest — the same `cancelled` pattern the sibling hooks already use.  
       <sub>High · async-race · A1-S1-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:3473`** — Pickup 'PU' pin tag is never drawn — circleMarkerSvg ignores tag='PU'  
+- [x] **`dispatch-map/src/App.jsx:3473`** — Pickup 'PU' pin tag is never drawn — circleMarkerSvg ignores tag='PU'  
+      *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed in 78e5d21 (#851, v0.97.7, 'Pickups say so, on every marker they can draw'). circleMarkerSvg now reads `} else if (tag === 'AM' || tag === 'PM' || tag === 'PU') { centerIsPickupTag = tag === 'PU'; ... center = `<text ...>${tag}</text>`;`, and a corner ba
       *Fix:* In circleMarkerSvg (line 2979) accept `tag === 'PU'` alongside AM/PM (as unplannedDotSvg already does), or route pickups through unplannedDotSvg with the tag when unplanned; add a test that decodes stopMarkerIcon's URL for a PU stop and asserts the 'PU' text …  
       <sub>High · logic · A1-S2-1 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/src/lib/board-flags.js:1310`** — R6 no-driver card lost when a pickup at the same customer precedes the delivery  
@@ -850,7 +861,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W11.1 — critical and high (10 items)
 
-- [ ] **`dispatch-map/netlify/functions/auth-change-password.mts:48`** — Fresh post-change token is refused by require-user's 30s user cache on a warm instance  
+- [x] **`dispatch-map/netlify/functions/auth-change-password.mts:48`** — Fresh post-change token is refused by require-user's 30s user cache on a warm instance  
+      *Done v1.80.2:* A dispatcher who changes their password stays signed in on the new token instead of being signed straight back out, and the session they changed it from is revoked as promised. The fix is the same require-user change as X-authgates-1; this commit adds the end-to-end test.
       *Fix:* In require-user.mts, on a tokenVersion mismatch re-read the store bypassing the cache before refusing (cheap, only on the mismatch path), or export an `invalidateUserCache(username)` and call it from bumpTokenVersion/patchUser; the endpoints themselves need n…  
       <sub>High · async-race · A5-S25-10 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/src/App.jsx:7103`** — StopActivityTimeline shows the previous order's events after switching stops  
@@ -965,7 +977,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`load-scan/netlify/functions/lib/workreport.mts:145`** — Per-person rows judged against the whole load: two-person trucks all read 'short'  
       *Fix:* Compute `short`/`status`/complete-ness once per LOAD from the sum of all sessions' pieces (or from the scan doc's scannedCount), derive per-person rows from that, and count loadsStarted/loadsComplete over distinct loadNbr.  
       <sub>High · logic · A6-S31-5 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/App.jsx:1162`** — Gun: second same-PRO label within 3s has its PRO read dropped by the shared gate  
+- [x] **`load-scan/src/App.jsx:1162`** — Gun: second same-PRO label within 3s has its PRO read dropped by the shared gate  
+      *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed in ff94d17 (#848, load-scan v0.45.0, 'Scanning a multi-piece order stops asking permission'). That commit removed both `gate.current.allow(normalizePro(evaluated.pro))` in the booking path and the no-OG `gate.current.allow(pro7, now)`. HEAD now reads `if
       *Fix:* Register the post-booking cooldown only for camera engines (`if (engineName !== 'wedge') gate.current.allow(...)`), or key the gun's stutter guard on a shorter window/own gate instance.  
       <sub>High · logic · A6-S32-5 · reproduced by running the code</sub>
 - [ ] **`load-scan/src/App.jsx:3404`** — Offline truck switch for a loader opens the wrong cached manifest and shows 'No load'  
@@ -1029,13 +1042,15 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`dispatch-map/src/App.jsx:12706`** — Desktop status pill never shows halted-scanner banner; scanErr hidden when collapsed  
       *Fix:* Mirror the mobile markup: move the `{scanErr && ...}` div out of the `!statusCollapsed` block and add the same `{scanState?.halted && (...)}` banner after it in the desktop pill.  
       <sub>High · logic · A1-S5-1</sub>
-- [ ] **`dispatch-map/src/App.jsx:20010`** — Right-rail Loads click opens an EMPTY Compare card for a built load  
+- [x] **`dispatch-map/src/App.jsx:20010`** — Right-rail Loads click opens an EMPTY Compare card for a built load  
+      *Done before v1.77.1 (found no longer applicable — the code was replaced by the 2026-09-27 recheck, never ticked):* pickLoadToCompare is unchanged and still falls back to the bare number when no stop's loadNbr/routeName matches. But the path the finding described is gone. At bb379fc the rail got `rows={dayLoads}`, every roster load including built ones, and passed `r.loadNb
       *Fix:* In pickLoadToCompare, when no stop matches, look the number up in loadRosterRef.current (indexed by loadNbr/loadId) and retry the match on `p.routeName === entry.name` before falling back to the bare number; or have the rail pass `r.ambiguous ? (r.loadNbr || …  
       <sub>High · data-contract · A2-S7-1 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/src/App.jsx:20143`** — Engine-draft cards are created with loadNbr:null, so their Save is always refused  
       *Fix:* Import routeLoadNbr from lib/route-create.js and set `loadNbr: routeLoadNbr(key, selectedDate)` on the pushed card (and skip/rename the trip if it returns ''), or derive it in sendPendingCreates when `r.loadNbr` is empty.  
       <sub>High · data-contract · A2-S7-8 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:20930`** — Desktop Routing map ignores the grid Status/driver filter (prop only wired on mobile)  
+- [x] **`dispatch-map/src/App.jsx:20930`** — Desktop Routing map ignores the grid Status/driver filter (prop only wired on mobile)  
+      *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed in 9796bc2 (#839, v0.95.0): the desktop Routing BottomStopsTable now gets onStatusFilterChange like the mobile one.
       *Fix:* Add `onStatusFilterChange={setStatusFilterIds}` to the desktop BottomStopsTable call (after `onSearchMatchChange` at line 20943), matching the mobile call at line 20747.  
       <sub>High · logic · A2-S8-1</sub>
 - [ ] **`dispatch-map/src/App.jsx:3594`** — Status card says 'Orders paused until 10 AM' while the orders feed runs every 15 min  
@@ -1186,7 +1201,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`dispatch-map/netlify/functions/customer-comms-sweep-background.mts:56`** — Customer email cap is per-RUN, not per-day: 2x dailyCap still goes out in one calendar day  
       *Fix:* Compute the day's allowance from a calendar-day counter (sum of both dates' ledgers written today, or a `customer_comms_day_<etDay>` sent counter) rather than resetting `remaining` per invocation; pass `budgetCeiling = dailyCap - sentSoFarToday` into every sw…  
       <sub>High · logic · X-background-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/manifest-email-ingest.mts:73`** — Nightly manifest doc drops grade/coverage; the nav badge can never light for a real miss  
+- [x] **`dispatch-map/netlify/functions/lib/manifest-email-ingest.mts:73`** — Nightly manifest doc drops grade/coverage; the nav badge can never light for a real miss  
+      *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed in 10bbdb2 (#911, v1.20.1, 'The manifest verdict travels with the run'). toStoredEmailRun now includes `...(storedGradeEnabled() ? { shipDate: diff.shipDate ?? null, expectedDelivery: diff.expectedDelivery ?? null, coverage: diff.coverage ?? null, grade:
       *Fix:* Add `coverage: diff.coverage ?? null, grade: diff.grade ?? null` to toStoredEmailRun (and pin them in the 'stored shape matches' test at manifest-email-ingest.test.mjs 142-148); the client's gradeOf already prefers stored grade/coverage over the fallback.  
       <sub>High · data-contract · A3-S13-9 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/lib/manifest-extract.mts:213`** — intOrNull(null) returns 0: null header totals and null units become real zeros  
@@ -1319,3 +1335,4 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 | Date | Who | What |
 |---|---|---|
 | 2026-09-03 | Claude (code review) | Created from the full review of `bb379fc`: 338 confirmed findings sorted into 14 workstreams. |
+| 2026-09-27 | Claude (audit fixes, v1.80.2) | Ticked 16: X-authgates-3, X-authgates-1, A5-S27-1, A6-S31-8, A5-S25-9, A5-S28-1, A4-S20-1, X-authgates-4, A4-S24-1, A2-S8-9, A1-S2-1, A5-S25-10, A6-S32-5, A2-S7-1, A3-S13-9, A2-S8-1. |

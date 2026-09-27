@@ -33,7 +33,7 @@
 // The window rule is src/lib/history-range.js — the same module the screen resolves with, so
 // the header and the numbers under it can never describe different ranges.
 
-import { isFirestoreEnabled, readAddressChanges, recordAddressChanges, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readAddressChangesOrThrow, appendAddressChanges, etDayString } from './lib/firestore.mts';
 import {
   selectAddressChanges, summarizeAddressChanges, buildAddressChangeRow, addressHistoryEnabled,
   type AddressChangeKind, type AddressChangeSource,
@@ -87,7 +87,9 @@ export default async (req: Request): Promise<Response> => {
   try {
     // One document per day, read in parallel — the same shape and the same cap the flag
     // history uses, so a 60-day window is 60 gets and not a collection walk.
-    const reads = await Promise.all(dates.map((d) => readAddressChanges(TENANT, d).then((rows) => ({ d, rows }))));
+    // The THROWING read: a day that could not be read fails the answer below rather than
+    // reading as a day on which nothing changed (audit 2026-09-27).
+    const reads = await Promise.all(dates.map((d) => readAddressChangesOrThrow(TENANT, d).then((rows) => ({ d, rows }))));
     for (const { d, rows } of reads) {
       // The per-day count reports what the CALLER asked for, not the raw document — a strip
       // reading 40 above a list of 3 is a screen arguing with itself.
@@ -171,6 +173,11 @@ async function recordOne(req: Request, J: (o: any, s?: number) => Response): Pro
   // there. Nothing changed, so nothing is logged, and the client has nothing to fix.
   if (!row) return J({ ok: true, recorded: false, reason: 'no material change' });
 
-  const wrote = await recordAddressChanges(TENANT, date, [row]);
-  return J({ ok: true, recorded: wrote, row });
+  // THREE ANSWERS, NOT ONE BOOLEAN (audit 2026-09-27). A repeat is a correct refusal and says
+  // so; a read or write Firestore refused is a FAILURE — ok:false and a 5xx — so the browser
+  // cannot count a row that is not on file as logged.
+  const out = await appendAddressChanges(TENANT, date, [row]);
+  if (out.status === 'written') return J({ ok: true, recorded: true, row });
+  if (out.status === 'duplicate') return J({ ok: true, recorded: false, reason: 'already recorded', row });
+  return J({ ok: false, recorded: false, error: `the address log did not take this row: ${out.status === 'error' ? out.error : 'nothing was written'}`, row }, 500);
 }

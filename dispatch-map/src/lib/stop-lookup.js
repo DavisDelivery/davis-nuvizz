@@ -444,11 +444,25 @@ export function promptedOutcome(res) {
   return { ok: false, spent: true, reason: 'error', text: `NuVizz could not answer: ${r || 'unknown error'}.` };
 }
 
-/** PURE: the ledger row for the source this answer came from — one call, on request. */
-export function promptedSource({ day } = {}) {
+/**
+ * PURE: the call count of what is on screen after a prompted answer. EVERY call a prompted
+ * answer cost stays on it — a "NuVizz has nothing either" spent its call just as surely as a
+ * found order did, and a retry after an error adds to the first attempt rather than replacing
+ * it. Anything that is not a positive number counts as nothing.
+ */
+export function promptedCallsOnScreen(onScreen, answer) {
+  const n = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0);
+  return n(onScreen) + n(answer);
+}
+
+/** PURE: the ledger row for the source this answer came from — the calls it cost, on request.
+ *  `calls` is what the requester counted (a retried busy answer costs more than one); absent,
+ *  it is one. */
+export function promptedSource({ day, calls } = {}) {
+  const price = Number.isFinite(calls) && calls > 1 ? `${calls} calls` : 'one call';
   return {
     key: 'nuvizz', label: 'NuVizz, asked just now', where: '/stop/info', looked: true, skipped: false,
-    note: day ? `one call, on request — filed under ${day}` : 'one call, on request — no delivery day on it',
+    note: day ? `${price}, on request — filed under ${day}` : `${price}, on request — no delivery day on it`,
     count: 1, found: true, state: 'found',
   };
 }
@@ -485,20 +499,73 @@ export function whenIso(v) {
   return null;
 }
 
+// THE FIELDS THE WRITERS ACTUALLY WRITE (audit 2026-09-27). This read `notes`/`note`,
+// `no_tractor` and `pin_override`/`lat_override` for weeks, and nothing in the repo writes any
+// of them — only test fixtures did, which is why every test passed while a customer with a
+// dock instruction and a Box-truck-only mark read "Nothing on file". The shared editor
+// (App.jsx StopNotesEditor over emptyNote) writes `dock_notes`, `vehicle_eligibility` and
+// `equipment_restrictions`; every pin writer writes `location_override`. The old names are
+// kept only as fallbacks, so a document shaped the old way still reads.
+const BOXONLY_SAME_AS = new Set(['No tractor trailer', 'Box truck only']);
+const WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const WEEK_LABEL = { mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun' };
+
+/** The editor's closed_days as week-ordered day keys ('fri'), tolerant of 'Fri' / 'FRIDAY'. */
+function closedDayKeys(notes) {
+  const raw = Array.isArray(notes?.closed_days) ? notes.closed_days : [];
+  const set = new Set(raw.map((d) => s(d).toLowerCase().slice(0, 3)).filter((d) => WEEK.includes(d)));
+  return WEEK.filter((d) => set.has(d));
+}
+
 export function notesSummary(notes) {
   if (!notes || typeof notes !== 'object') return null;
   const flags = [];
+  // WHAT A REP MAY NOT PROMISE, FIRST (audit 2026-09-27, app-A4-1). The editor writes all four
+  // and none was read, so a DNS, appointment-only, closed-Friday customer read "Nothing on
+  // file" — and a rep promised the Friday redelivery. Worded the way the Map's own read-only
+  // card words them (ReadOnlyNoteView), so the two screens say the same thing.
+  if (notes.do_not_send) {
+    const barred = (Array.isArray(notes.dns_drivers) ? notes.dns_drivers : []).map(s).filter(Boolean);
+    flags.push({ key: 'dns', label: `Do not send${barred.length ? ` — not: ${barred.join(', ')}` : ''}`, tone: 'amber' });
+  }
+  const closed = closedDayKeys(notes);
+  if (closed.length) flags.push({ key: 'closed', label: `Closed ${closed.map((d) => WEEK_LABEL[d]).join(', ')}`, tone: 'amber' });
+  if (notes.appointment_required) flags.push({ key: 'appointment', label: 'Appointment required', tone: 'amber' });
+  // THE VEHICLE MARK, the way the map draws it: 'box_only' is the dispatcher's dropdown, and a
+  // trailer-blocking restriction counts too — unless the same dispatcher set 'tractor' (53'
+  // fits), which drops every blocker on the map (drawnRestrictionKeys) and in the alert
+  // (dispatcherTrailerBlock). Labels are the dropdown's own words (TRAILER_BLOCKER_LABEL).
+  const elig = notes.vehicle_eligibility;
+  const boxOnly = elig === 'box_only' || notes.no_tractor === true;
+  const blockerKeys = elig === 'tractor' ? []
+    : (Array.isArray(notes.equipment_restrictions) ? notes.equipment_restrictions : []).filter((k) => isTrailerBlockerKey(k));
+  const blockerLabels = trailerBlockerLabels(blockerKeys).filter((l) => !(boxOnly && BOXONLY_SAME_AS.has(l)));
   if (notes.comms_opt_out === true) flags.push({ key: 'opt_out', label: 'No delivery emails', tone: 'slate' });
   if (notes.notify_cs === true) flags.push({ key: 'notify_cs', label: 'Notify customer service', tone: 'amber' });
-  if (notes.no_tractor === true) flags.push({ key: 'no_tractor', label: 'No tractor — box truck only', tone: 'amber' });
+  if (boxOnly) flags.push({ key: 'no_tractor', label: 'No tractor — box truck only', tone: 'amber' });
+  for (const label of blockerLabels) flags.push({ key: `restriction:${label}`, label, tone: 'amber' });
   if (notes.address_override) flags.push({ key: 'override', label: 'Address overridden here', tone: 'blue' });
-  if (notes.pin_override || notes.lat_override) flags.push({ key: 'pin', label: 'Pin moved by hand', tone: 'blue' });
+  const ov = notes.location_override;
+  const pinMoved = (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') || notes.pin_override || notes.lat_override;
+  if (pinMoved) flags.push({ key: 'pin', label: 'Pin moved by hand', tone: 'blue' });
   const contacts = (Array.isArray(notes.contacts) ? notes.contacts : [])
     .map((c) => ({ name: s(c?.name) || null, phone: s(c?.phone) || null, email: s(c?.email) || null }))
     .filter((c) => c.name || c.phone || c.email);
+  // The appointment instruction rides with the dock instruction: both are free text a rep
+  // reads out, and both screens already print `text` as a pre-wrapped block.
+  const appt = s(notes.appointment_notes);
+  const text = [s(notes.dock_notes) || s(notes.notes) || s(notes.note), appt ? `Appointment: ${appt}` : '']
+    .filter(Boolean).join('\n');
+  // A CLOSED DAY HAS NO HOURS. The editor's closed toggle leaves that day's times in place, and
+  // the Map prints "Closed" over them; printing "Fri 8:00 AM–4:00 PM" here beside "Closed Fri"
+  // would invite exactly the promise the flag exists to stop.
+  let hours = notes.receiving_hours || notes.hours || null;
+  if (hours && typeof hours === 'object' && closed.length) {
+    hours = Object.fromEntries(Object.entries(hours).filter(([d]) => !closed.includes(s(d).toLowerCase().slice(0, 3))));
+  }
   return {
-    text: s(notes.notes) || s(notes.note) || null,
-    hours: notes.receiving_hours || notes.hours || null,
+    text: text || null,
+    hours,
     customerNbr: s(notes.customer_nbr) || s(notes.customerNbr) || null,
     // `last_updated` FIRST — it is the field every writer of customer_notes actually writes
     // (the Map, Routing, the address fixer, Stop lookup). `updated_at` was read here for weeks
@@ -553,6 +620,7 @@ export { TERMINAL as TERMINAL_STATUSES };
 // address on its row, so both questions are answerable off one screen.
 
 import { normNameOf } from './matchKey.js';
+import { isTrailerBlockerKey, trailerBlockerLabels } from './trailer-block.js';
 
 /**
  * PURE: the grouping key for a customer NAME — for counting and grouping only, NEVER for a
@@ -967,14 +1035,16 @@ function lineItem(d) {
   };
 }
 
-/** PURE: the comment trail, newest first, with who said it and when. */
+/** PURE: the comment trail, newest first, with who said it and when.
+ *  `addedBy` / `addedOn` FIRST — they are what the scan actually stores (StopComment, written
+ *  by extractAllComments in lib/nuvizz-scan.mts); the other names are kept as fallbacks. */
 function comments(stop) {
   const raw = Array.isArray(stop?.allComments) ? stop.allComments : [];
   return raw
     .map((c) => ({
       text: s(c?.comment ?? c?.text ?? c?.note),
-      by: s(c?.userName ?? c?.author ?? c?.createdBy) || null,
-      at: s(c?.createdTime ?? c?.commentDTTM ?? c?.at) || null,
+      by: s(c?.addedBy ?? c?.userName ?? c?.author ?? c?.createdBy) || null,
+      at: s(c?.addedOn ?? c?.createdTime ?? c?.commentDTTM ?? c?.at) || null,
       kind: s(c?.commentType ?? c?.type) || null,
     }))
     .filter((c) => c.text)

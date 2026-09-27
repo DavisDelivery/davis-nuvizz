@@ -63,7 +63,7 @@ import { rollbackTargets, rollbackRequestBody } from './lib/rollback-targets.js'
 // ONE rule decides whether a typed box is a PRO or a customer name, and the screen and the
 // endpoint (netlify/functions/stop-lookup.mts) both read it from here — so the box can never
 // be classified one way by the client and the other way by the server.
-import { classifyQuery, notesSummary } from './lib/stop-lookup.js';
+import { classifyQuery, notesSummary, promptedCallsOnScreen } from './lib/stop-lookup.js';
 import { DEVICE_SWITCHES, switchReport, encodeValue, describeValue } from './lib/device-switches.js';
 // The trainee's driver-area rings on the Map tab — the printed sheet's page one, drawn live.
 import { DRIVER_AREAS_URL, driverAreasStatus, makeDriverAreaOverlayClass } from './lib/driver-area-overlay.js';
@@ -111,6 +111,7 @@ import {
   rowsFromAoa, summarizeShiplify, shiplifyBatchId, chunkRowsBySize, decodeIndexLine, SHIPLIFY_SHEET,
 } from './lib/shiplify-import.js';
 import { eligibilityChanged } from './lib/trailer-block.js';
+import { changedNoteFields, answerHoldsDock, noteSaveChangedOnlyEnabled } from './lib/customer-note-edit.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops, hoursSummary } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
@@ -185,7 +186,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.80.1';
+const APP_VERSION = '1.80.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -239,6 +240,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.80.2', 'AUDIT FIXES, PART 1: ADDRESSES, CUSTOMER NOTES, STOP LOOKUP AND THE SIGN-IN GATES. From the Sep 27 audit of everything that shipped since the Sep 3 review, plus the Sep 3 checklist items still in the code: 35 fixes, each with a test named after what went wrong and each re-checked by a second reviewer who proved the test fails on the old code. ADDRESS EDIT: an address NuVizz took while also touching another field no longer crashes the modal with “out is not defined” — it shows the amber “the address is on the order” wording and logs the row — and a pin that could not be moved is still said after the NuVizz half lands. PROBLEM-ADDRESS QUEUE: the per-day Select all ticks only the rows it counts, so a row with no stop id (the wrong-twin guard off) or a delivered row can no longer ride a group push; a one-row NuVizz push keeps its answer on screen, so a refusal no longer looks like the row being done; re-pushing a corrected address sends the new address instead of replaying the old push; Wave off sticks for everyone; the badge updates whenever the queue loads; a personal-login refusal shows the real reason. ADDRESS LOG: a failed read no longer wipes the day’s ledger; a failed write is no longer counted as “already recorded”; a zip or suite correction, its reset and a later correction on one day are all kept; a zip that went missing is City/State, not Moved; a correction NuVizz stored as ROAD, HIGHWAY, NORTHWEST or SUITE reads as landed; a slow earlier search cannot overwrite the PRO now in the box. STOP LOOKUP: the customer card shows the dock instruction, closed days, appointment, do-not-send, box-only and a hand-moved pin — it was reading field names nothing writes and saying “Nothing on file”; a failed note read shows the reason instead of blanking the app; a note save writes only the fields changed, so it cannot undo an unsubscribe or a pin fix made in the meantime; two quick Edits cannot cross-load docks; a failed Firestore read is no longer reported as a miss, and no NuVizz call is offered on it; the order detail shows who wrote each comment and when, newest first, with no stray “00”; only the order pressed last is shown; the chooser counts each past delivery once and works in year mode; the call count is the calls actually spent. SIGN-IN: the driver roster no longer sends anyone a CDL number or licence details, and its read needs a viewer once AUTH_REQUIRED is on; ?pdf=1 no longer skips the viewer gate outside the real PDF link; the new token after a password change or role change is accepted straight away; the manual-scan fallback needs an admin when it is given ?date= or ?days= (the forced ~3,000-call scan), the rule the background scan already applies. CODE-REVIEW-FIXES.md: 6 items ticked here, and 10 more the recheck found fixed long ago but never ticked. The Build Panel and the Route Workbench are not touched.'],
   ['1.80.1', 'DRIVER AREAS: CHAD, BRANDI AND JESSICA ARE OFF THE RINGS. Chad, 2026-09-27: \u201cI don\u2019t want Chad Brandi Freddy or Jessica on the map in rings.\u201d Over the four weeks behind the map the history carries loads under three of those names \u2014 Chad Davis (208 deliveries, three rings), Jessica Sage (40, three) and Brandi Bradberry (23, three) \u2014 so the data drew them like route drivers. They are now taken out before anything is counted: no ring on the Map, and \u2014 because the printed driver-area sheet is the same pipeline \u2014 no ring, card or town-table row on the sheet either, and no share of anybody\u2019s ZIP. Matched on the person (the alias-folded key), never on letters, so a load under another spelling of one of them is still theirs and somebody whose name merely starts the same is untouched. The rings\u2019 JSON lists who was left off, so a missing name is never a mystery. FREDDY IS NOT ON THE LIST YET: no driver of that name is anywhere in the last four weeks of history (the nearest are Frank Okine, who has a ring, and Alfred Andi, who is on the roster but has not run in the window), so there was nobody to match \u2014 adding a name on a guess could take the wrong man off a trainee\u2019s map. Everybody else is drawn exactly as before. PUT IT BACK: revert this commit.'],
   ['1.80.0', 'STEP 4 \u00b7 ENGINE \u00b7 \u201cFILL MY LOADS\u201d FOLLOWS THE BUILD RULES. Chad: \u201cI want the 4. engine to be able to hand it routes and it build them with the data that is stored from the engine and build data.\u201d Asked which of four readings he meant, he picked A \u2014 the loads he ticks in 2 \u00b7 Plan onto, filled from whatever is still unplanned, Fill my loads fixed to follow the Build rules. Read off the code first, the two buttons disagreed on the same stop in five ways, each a way to put freight on the wrong truck: (1) WHICH TRUCK \u2014 the engine read one \u201cblocks a tractor\u201d bit off the restriction list and nothing else, so a red Box-only stop could ride a 53\u2032, a green Tractor-OK stop with an auto-detected blocker was kept off one, and step 3\u2019s \u201conly green on a 53\u2032\u201d did nothing here; (2) LIFTGATE \u2014 read off the list but never off the note\u2019s liftgate box, and only as \u201cdoes ANY picked truck have one\u201d, so a gated stop could land on the box without a gate; (3) HOW MUCH \u2014 a profile could only LOWER the learned cap (a typical full load, the 85th percentile of past trips, clamped to the truck class), so a 30-skid profile was cut to the class 22 while freight was called \u201cneeds another truck\u201d; (4) WHAT IS ALREADY ON IT \u2014 step 2 lists loads that already hold stops and each was offered a whole empty truck on top; (5) THE CLOCK \u2014 the order was geographic and only guessed at early closers by their place in the list. NOW the engine still decides what it is good at \u2014 who gets which stop by geography, the learned stop order, learned service minutes, and each truck\u2019s learned time of first delivery \u2014 and the Build decides what the Build decides: the SAME equipment rule (moved to one shared file both buttons import, so they cannot drift again), checked per truck against each load\u2019s profile; each load filled to its profile LESS what its card or board already carries; and each stop\u2019s time restriction (the Build\u2019s own resolver: appointment window \u2229 receiving hours) fitted into the learned order by the Build\u2019s own insertion rule, with an ETA on every clocked stop. The ETA\u2019s drive minutes come from the engine\u2019s fixed speed model (straight-line miles \u00d7 a road factor at a set speed per distance band), not from learning. Advisory flags a stop that still cannot make it; strict leaves it off, first offering it to any other picked load that reaches it in time. The panel says step 3\u2019s two toggles back before you press Fill, and the result says which rules actually ran. ONE THING IS STILL NOT THE SAME: the two buttons count skids differently \u2014 Fill my loads from cartons plus a share of loose freight, the Build from pallet-UOM line items \u2014 so \u201cthe same rules\u201d holds for equipment and the clock, not for how full a truck is. PUT IT BACK: FILL_MY_LOADS_BUILD_RULES=off \u2014 one switch, both sides: the server runs the old rules, step 4 asks the server which rules are on and shows its old words, and the result says \u201cEngine rules\u201d. RUN ON A SAMPLE NIGHT OF CHAD\u2019S OWN SHAPE (one box already carrying two stops, two 53s, \u201conly green on a 53\u2032\u201d on) BEFORE SHIPPING, the first cut failed four ways, all fixed here: green freight filled the box and six box-only stops were told \u201cevery truck you picked is full\u201d while the trailers still had 6 and 10 of their 28 skids free \u2014 now freight free to ride a trailer MAKES ROOM on the box first; a stop left for capacity now names the load it could ride and why the others cannot (\u201cJOHN is the only load it may ride and it is full \u2014 it is not marked green, so \u2018only green on a 53\u2032\u2019 keeps it off the trailers\u201d, or \u201cthe others: needs a liftgate\u201d); the fit line said \u201cit all fits\u201d on total skids \u2014 it now checks the freight each group of trucks is limited to (\u201cfits in total, not where the rules allow: 13 may ride only JOHN, which has room for 9\u201d); and one dock nobody could reach made a reachable one late \u2014 a hopeless dock now keeps its place and is still flagged or taken off. Room a strict removal frees goes back to freight that was waiting for it. AN INDEPENDENT REVIEW then compared old and new code on random boards \u2014 the Build button\u2019s repair step byte-identical on 1,000 of 1,000, the switched-off Fill my loads identical to the old code on 400 of 400 \u2014 and caught five more, all fixed and each pinned by a test: strict stopped after removing about half the late stops (a loop bound that shrank as it ran); ETAs skipped the wait at a stop already on the load that opens at 10, so the stop behind it read on time; a carry-over order from another day on the card went uncounted and a box could end over its profile (the browser now sends the freight it sees); an equipment refusal was also called \u201ctoo big\u201d and a stop that fits the empty truck but not the room left was told it \u201cneeds a bigger truck\u201d; and the engine\u2019s learned start is the first DELIVERY of the day, so it now anchors the first stop instead of being read as leaving the dock. AN AUDIT OF THE DAY\u2019S WORK then caught nine more, all fixed; each server-side fix has a test that fails with the fix removed, except the out-of-time one, whose test pins the outcome (nothing late rides) rather than the shortcut, and step 4\u2019s words were checked by rendering them: \u201croughly N trucks would clear it\u201d counted a full load as a zero-size truck (5 where 4 was right); strict\u2019s out-of-time path never tripped at a zero budget; the strict re-offer had no test that reached it (the old one\u2019s stop went to the other load in the first place \u2014 the new one, found by search, leaves a stop off saying \u201cno load reaches it\u201d while another load reaches it at 9:17 for a 10:00 close); a stale row still reading unplanned on a picked load had no test; \u201cX got nothing \u2014 the pool fit on the others\u201d was said with stops left over (now: the stops still left over are listed below with the reason); a carry-over the browser could not see either was counted without saying so; a stop on the load with no latitude started the clock from the equator (Number(null) is 0), so ETAs came out in the evening; the browser\u2019s null freight and latitude were turned into 0 on the way in; and the switch put the server back but not step 4\u2019s words. TIMING, measured in this container on the rules alone \u2014 not in production, and without the Firestore reads before them: 390 stops and 12 loads, 20.1s on the old rules and 21.8s strict; 400 stops, the most it accepts, 20.1s on the old rules and 22.1s strict. Past its own time budget strict still takes every late stop off. WHAT IT TOUCHES: the Build Panel\u2019s step 4, and the step-4 result box that shows above the Compare cards; the cards, staging, Save and the map are untouched. 35 tests in the new file; the 32 existing Fill my loads tests still pass, two of them now pinned to the switched-off rules they describe.'],
   ['1.79.0', 'PLAN IN SECTIONS: PICK THE STOPS ON A MAP IN A DRAWER, AND CLAUDE PLANS ONLY THOSE \u2014 THEN THE NEXT SECTION ON TOP OF IT. Chad, 2026-09-27: \u201cinstead of letting you do it all at once i would like the choice to do it in sections where i have a map in a drawer and can select the stops i want you to put the stops on.\u201d In Plan a day with Claude, How much at once now offers All of them (as before) or A section I pick on the map. Pick stops on the map opens a drawer \u2014 the whole screen on a phone, from the right on a desktop \u2014 with every open delivery the plan would read, from the same board read as a plan (0 NuVizz calls, 0 model spend). Tap a stop to pick it or take it off; move the map to an area and Add every stop in view; on a desktop, Box select and drag a box; or find a stop by name, city or ZIP. The picks add up at the top (stops, skid spots, pounds, no-tractor). A stop already on a load in NuVizz cannot be picked when planning unplanned stops only (it stays where it is), and one an earlier section placed cannot be picked at all. Preview and Plan then take only the picked stops, with the stops already on the picked loads kept as before. A finished plan offers Plan the next section: the same day, look-back and loads, built on that plan \u2014 the stops it put on a truck you pick again stay on that truck and count against its room (Claude is told they are there from the earlier section, and the evaluator holds them there); the stops it put on a truck you do not pick again are carried forward as placed; none is offered again. NuVizz outranks a section: a stop that is on a load in NuVizz now is where NuVizz has it, and one no longer open is dropped from the chain and counted. FIXED IN REVIEW, before it shipped: ONE DRIVER, ONE DAY \u2014 a section that hands a driver another truck while the earlier section\u2019s stops ride his first one (not picked) is refused at $0, naming the truck to pick again, so nobody is booked past his day or given two trucks. A plan with nothing for Claude to place is refused at preview and Plan, a section or not. A section keeps the choice of stops and at least the look-back of the plan it builds on, so carried-over orders are never read as gone. A stop that lost its map point stays with its truck, carried forward, its room held back. A roster load renamed in NuVizz is planned under its name now. The stops a section left off stay on the record and are marked on the next map with the reason. Pressing Plan makes the plan just queued the base of the next section. The day so far, across the sections, is listed on a result. On screen: the map frames the stops when they arrive, the count stays true while the board is re-read, re-tapping the day keeps the picks, Clear keeps the keyboard in the drawer, and the map fits a short screen. On the UAT site the stop map and the preview work; running a plan there is still refused, as before. A proposal only: nothing is sent, saved or staged. PUT IT BACK: revert this commit.'],
@@ -1301,6 +1303,9 @@ const WB_OWN_DAY_ROSTER_ON = wbOwnDayRosterEnabled(import.meta.env);
 // Auto-detected receiving hours on the Compare row, marked "· auto" (lib/time-marks.js timeMarkChip).
 // VITE_COMPARE_AUTO_HOURS=off puts the row back to typed-only. Build-time, so flipping it is a redeploy.
 const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
+// A Stop lookup note save writes only the fields the rep changed (lib/customer-note-edit.js).
+// VITE_NOTE_SAVE_CHANGED_ONLY=off puts back the whole-draft write. Build-time, so flipping it is a redeploy.
+const NOTE_SAVE_CHANGED_ONLY_ON = noteSaveChangedOnlyEnabled(import.meta.env);
 // THE WALL DISPLAY DRAWS ITS MAP AS A PICTURE — see lib/tv-static-map.js for why, and for the
 // house-shape switch. Read once at module load, like every other build-time flag here.
 // VITE_TV_STATIC_MAP=off puts the TV back on the live JS map; anything malformed leaves it ON.
@@ -7282,6 +7287,10 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       if (geoErr) {
         setPush({ kind: 'warn', text: `Address saved, but the pin could not be moved — ${geoErr.message}. It still points at the old spot, so this stop is now on the problem-address queue under “Pin not moved”. Drag it with “Correct pin location” to finish.` });
       }
+      // THE PIN WARNING OUTLIVES THE VENDOR HALF. `push` is one message slot, and the NuVizz
+      // answer below used to overwrite the warning above — a green "NuVizz now reads …" over a
+      // pin still on the old building (audit 2026-09-27). Carried into every message that follows.
+      const pinWarn = geoErr ? ` But the pin could not be moved — ${geoErr.message}. It still points at the old spot, so this stop is now on the problem-address queue under “Pin not moved”. Drag it with “Correct pin location” to finish.` : '';
 
       if (!(canPush && toNuvizz)) {
         // Board-only, exactly as this modal has always behaved. Not awaited into the happy
@@ -7307,13 +7316,16 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       // the one failure worth having a record of would be the one that left none. callWrite
       // resolves network errors rather than throwing, so nothing SHOULD land here; `should` is
       // not a reason to leave the hole open.
-      let landed = false, clean = false, why = '';
+      // `out` is declared HERE, beside the verdicts, because the landed-but-not-clean branch
+      // below reads `out.now` after this try has closed. Declared inside it, that branch threw
+      // "out is not defined" on the modal's most common vendor outcome (audit 2026-09-27).
+      let landed = false, clean = false, why = '', out = {};
       try {
         // stopId pins the write to THIS record: two NuVizz orders can share one number, and
         // re-addressing the other twin sends freight to a place nobody chose. The server
         // refuses rather than guess.
         const r = await setStopAddress(pro, fields, { stopId: stop?.stopId || undefined });
-        const out = r?.result || r || {};
+        out = r?.result || r || {};
         // TWO QUESTIONS, ASKED SEPARATELY. `landed` is whether the ADDRESS reached the order —
         // read back and proven server-side. `clean` is whether the write disturbed nothing
         // else. Reading `ok` for both is what printed "NuVizz did not take it … the driver's
@@ -7322,7 +7334,7 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
         landed = addressReachedNuvizz(r);
         clean = r?.ok === true;
         why = r?.error || out.error || 'the write failed.';
-        if (landed && clean) setPush({ kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order in NuVizz.' });
+        if (landed && clean) setPush({ kind: pinWarn ? 'warn' : 'ok', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order in NuVizz.'}${pinWarn}` });
       } catch (e) {
         why = e?.message || 'the write failed.';
       }
@@ -7335,9 +7347,9 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       // green success with a warning attached, never as a failed write — and it must not send
       // anybody to the portal to re-type an address that is already correct there.
       if (landed && !clean) {
-        setPush({ kind: 'warn', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order in NuVizz.'} The write also touched something else on the order, so check it in the portal before the truck goes: ${why}` });
+        setPush({ kind: 'warn', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order in NuVizz.'} The write also touched something else on the order, so check it in the portal before the truck goes: ${why}${pinWarn}` });
       } else if (!landed) {
-        setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${why} The driver's manifest still has the old address — fix the order in the portal.` });
+        setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${why} The driver's manifest still has the old address — fix the order in the portal.${pinWarn}` });
       }
       // Logged ONCE, after the vendor half resolves, so the row records what happened rather
       // than what was attempted. `nuvizz` is the outcome: see lib/address-log.js.
@@ -34312,7 +34324,7 @@ const ADDR_KINDS = [
   { key: 'cleared', label: 'Cleared', hint: 'The street line disappeared — nothing should do this', cls: 'bg-red-100 text-red-800 border-red-200' },
   { key: 'renamed', label: 'Renamed', hint: 'Same number and zip, different street line', cls: 'bg-amber-100 text-amber-800 border-amber-200' },
   { key: 'suite', label: 'Suite', hint: 'Only the unit/suite changed — matters on an inside delivery', cls: 'bg-amber-100 text-amber-800 border-amber-200' },
-  { key: 'region', label: 'City/State', hint: 'City or state changed with the street intact', cls: 'bg-sky-100 text-sky-800 border-sky-200' },
+  { key: 'region', label: 'City/State', hint: 'City or state changed, or the zip went missing, with the street intact', cls: 'bg-sky-100 text-sky-800 border-sky-200' },
   { key: 'filled', label: 'Filled in', hint: 'We had no street line and now we do', cls: 'bg-slate-100 text-slate-700 border-slate-200' },
   { key: 'formatting', label: 'Formatting', hint: 'The text moved, the freight did not', cls: 'bg-slate-100 text-slate-500 border-slate-200' },
 ];
@@ -34473,6 +34485,19 @@ function queueNoteText(row, fields, today) {
   return `Davis dispatch corrected the delivery address on ${today}: was "${was}" — now "${now}".`;
 }
 
+/** THE IDEMPOTENCY KEY FOR ONE QUEUE PUSH — the row AND the address being sent. The write ledger
+ *  replays any key that already succeeded, without calling NuVizz. Keyed on the row alone, a
+ *  re-push of a CORRECTED address (the zip fixed after a failed geocode) was answered with the
+ *  first push's result and never went out (audit 2026-09-27). A re-press of the same correction
+ *  still replays for free. Each field is kept apart, so moving text between the street and
+ *  suite lines — which is what a mis-split fix is — counts as a different address. */
+function queueClientOpId(row, fields) {
+  const s = JSON.stringify(['addr1', 'addr2', 'city', 'state', 'zip'].map((k) => String(fields?.[k] ?? '').trim()));
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return `op_queue_${row.key}_${h.toString(16).padStart(8, '0')}`;
+}
+
 /** A stop the SERVER will refuse anyway, judged here for free. The refusal costs a NuVizz call
  *  and carries no boolean to branch on — only prose — so spending one to be told no is waste. */
 const queueRowExecuted = (row) => ['DELIVERED', 'ARRIVED', 'EXCEPTION'].includes(String(row?.status || ''));
@@ -34501,6 +34526,11 @@ const QUEUE_WARN_KINDS = new Set(['partial', 'refused', 'blocked', 'unknown', 'd
 function classifyPushResult(j) {
   const http = j?.httpStatus;
   const err = String(j?.error || '');
+  // A PERSONAL-LOGIN REFUSAL (NUVIZZ_PERSONAL_LOGINS=required) comes back as a 403 or 503 too,
+  // with `identity.as === 'refused'` and a sentence naming the fix. Read first, and quoted: it is
+  // not the write switch and not the breaker (audit 2026-09-27). Still fatal — every row after
+  // it would be refused the same way.
+  if (j?.identity?.as === 'refused') return { fatal: true, kind: 'identity', text: err || 'This write needs your own NuVizz login — add it under Account & logins.' };
   if (http === 403 && /^requires\s+\w+$/i.test(err)) return { fatal: true, kind: 'role', text: 'This account may not push to NuVizz.' };
   if (http === 403) return { fatal: true, kind: 'switch', text: 'Live writes are switched off on the server (NUVIZZ_WRITE_ENABLED). Nothing was sent — the board corrections are saved.' };
   if (http === 503) return { fatal: true, kind: 'breaker', text: 'The NuVizz call breaker is open — no further writes will go out today.' };
@@ -35478,14 +35508,21 @@ function AddressHistoryScreen() {
     return p.toString();
   }, [searching, stopQ, range.from, range.to, today, kind, source, showNoise]);
 
+  // ONLY THE NEWEST REQUEST MAY PAINT. Each keystroke pause and each pill starts its own
+  // 60-day read, and they can answer out of order: a late empty answer for a half-typed PRO
+  // would overwrite the real one and read "No address changed for <PRO>". Same guard as
+  // LabelsScreen's reqRef.
+  const loadReqRef = React.useRef(0);
   const load = React.useCallback(async () => {
+    const id = ++loadReqRef.current;
     setLoading(true); setErr(null);
     try {
       const r = await apiFetch(`/.netlify/functions/address-history?${qs}`);
       const j = await r.json();
+      if (id !== loadReqRef.current) return;
       if (!j.ok) throw new Error(j.error || 'read failed');
       setData(j);
-    } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
+    } catch (e) { if (id === loadReqRef.current) setErr(String(e.message || e)); } finally { if (id === loadReqRef.current) setLoading(false); }
   }, [qs]);
   // Only the log and carrier sections read the change ledger. The queue has its own endpoint,
   // and firing this one behind it would be a Firestore read per keystroke for a screen nobody
@@ -35686,17 +35723,25 @@ function useAddressQueue(nonce) {
   const [loading, setLoading] = React.useState(true);
   const [err, setErr] = React.useState(null);
   const [showDismissed, setShowDismissed] = React.useState(false);
+  // THE LATEST LOAD WINS. The list stays up and usable through a reload, so a save on one row and
+  // a wave-off on the next can each start one — and the answer read BEFORE the wave-off can land
+  // AFTER it, putting the waved-off row back and the badge up by one. Only the newest call's
+  // answer, error or finish is applied.
+  const seq = React.useRef(0);
 
   const load = React.useCallback(async () => {
+    const mine = ++seq.current;
     setLoading(true); setErr(null);
     try {
       const r = await apiFetch(`/.netlify/functions/address-queue${showDismissed ? '?dismissed=1' : ''}`, { cache: 'no-store' });
       const j = await r.json();
+      if (mine !== seq.current) return;
       if (!j.ok) throw new Error(j.error || 'read failed');
       setData(j);
-      // Working the list down has to move the badge, or it goes stale and stops being read.
-      bustProblemAddressCount();
-    } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
+      // Working the list down has to move the badge, or it goes stale and stops being read. This
+      // answer IS the fresh count, so it goes straight to the badge — no second read.
+      publishProblemAddressCount(problemAddressTotal(j.summary, showDismissed));
+    } catch (e) { if (mine === seq.current) setErr(String(e.message || e)); } finally { if (mine === seq.current) setLoading(false); }
   }, [showDismissed]);
   React.useEffect(() => { load(); }, [load, nonce]);
 
@@ -35748,8 +35793,8 @@ async function saveQueueCorrection({ row, fields, google, push, today, clientOpI
   }
 
   // The note rides the SAME partialUpdate as the address — no extra vendor call. See
-  // nuvizzWrite.js. A stable clientOpId per ROW makes a re-press replay a succeeded row for
-  // free instead of re-firing it.
+  // nuvizzWrite.js. A clientOpId per ROW AND ADDRESS (queueClientOpId) makes a re-press replay a
+  // succeeded row for free instead of re-firing it, while a corrected address still goes out.
   const j = await setStopAddress(row.stopNbr, fields, {
     stopId: row.stopId || undefined,
     note: queueNoteText(row, fields, today),
@@ -35778,6 +35823,14 @@ function useQueuePush(today, reload) {
   const [logged, setLogged] = React.useState(null);   // { ok, tried } for the last run
   const stopRef = React.useRef(false);
   const [budget, setBudget] = React.useState(null);   // { current, ceiling, live }
+  // EVERY NUVIZZ ANSWER IS KEPT HERE, whichever button produced it, marked as a vendor answer and
+  // named — the board half can drop a row off the list on the very reload that follows, and a
+  // verdict kept only on the row went with it: a refusal read as success (audit 2026-09-27).
+  const stamp = (row, verdict) => ({ ...verdict, vendor: true, who: [row?.businessName, row?.stopNbr].filter(Boolean).join(' · ') });
+  const noteVerdict = React.useCallback((row, verdict) => {
+    if (!row?.key || !verdict) return;
+    setResults((prev) => ({ ...prev, [row.key]: stamp(row, verdict) }));
+  }, []);
 
   // THE BUDGET IS READ FOR FREE. A dry run returns the ops snapshot and the live flag before
   // the write-enable gate and without touching NuVizz, so the button can say what a run costs
@@ -35810,7 +35863,7 @@ function useQueuePush(today, reload) {
         // for nothing.
         const sendToVendor = push && worthPushing(row);
         const { pushed, geoErr, logged } = await saveQueueCorrection({
-          row, fields: correctedFields(row), google, push: sendToVendor, today, clientOpId: `op_queue_${row.key}`,
+          row, fields: correctedFields(row), google, push: sendToVendor, today, clientOpId: queueClientOpId(row, correctedFields(row)),
         });
         // `logged` is an OBJECT now, and every object is truthy — counting it directly would
         // report a perfect run whatever happened. A DECLINE is not a failure either: the
@@ -35827,7 +35880,7 @@ function useQueuePush(today, reload) {
           await new Promise((r) => setTimeout(r, 0));
           continue;
         }
-        acc[row.key] = pushed;
+        acc[row.key] = stamp(row, pushed);
         setResults({ ...acc });
         if (pushed?.fatal) {
           // Continuing produces N identical failures, spends nothing useful, and buries the one
@@ -35849,7 +35902,7 @@ function useQueuePush(today, reload) {
     reload();
   }, [today, reload, readBudget]);
 
-  return { running, results, fatal, logged, budget, runGroup, stop: () => { stopRef.current = true; }, setResults };
+  return { running, results, fatal, logged, budget, runGroup, stop: () => { stopRef.current = true; }, setResults, noteVerdict };
 }
 
 /** Shared furniture both queue views render: the cost/budget line and the run banner. Text, not
@@ -35873,8 +35926,16 @@ function queueCostLine(selected, budget) {
  * what updates it. Zero NuVizz calls either way.
  */
 let __addrQueueBadgeCache = null;
+const __addrQueueBadgeListeners = new Set();
 function useProblemAddressCount() {
   const [n, setN] = React.useState(() => __addrQueueBadgeCache);
+  // Every queue load hands this badge the count it just read (publishProblemAddressCount). It
+  // used to only null the cache, which nothing re-read until the browser reloaded — so a badge
+  // that read 9 at 7am still read 9 after all nine were fixed (audit 2026-09-27).
+  React.useEffect(() => {
+    __addrQueueBadgeListeners.add(setN);
+    return () => { __addrQueueBadgeListeners.delete(setN); };
+  }, []);
   React.useEffect(() => {
     if (__addrQueueBadgeCache != null) return undefined;
     let dead = false;
@@ -35883,8 +35944,9 @@ function useProblemAddressCount() {
         const r = await apiFetch('/.netlify/functions/address-queue', { cache: 'no-store' });
         const j = await r.json();
         if (!j?.ok) return;
-        const s = j.summary || {};
-        const total = Number(s.mis_split || 0) + Number(s.no_pin || 0) + Number(s.corrected_not_pinned || 0);
+        const total = problemAddressTotal(j.summary, false);
+        // A queue load that landed while this read was in flight is the newer count — keep it.
+        if (__addrQueueBadgeCache != null) return;
         __addrQueueBadgeCache = total;
         if (!dead) setN(total);
       } catch { /* a badge that fails to load must never break the navigation */ }
@@ -35893,8 +35955,19 @@ function useProblemAddressCount() {
   }, []);
   return n || 0;
 }
-/** Cleared when the screen reloads, so working the queue down is reflected in the badge. */
-function bustProblemAddressCount() { __addrQueueBadgeCache = null; }
+/** The badge's number from an address-queue summary: rows still to fix, never waved-off ones.
+ *  Asked with ?dismissed=1, the server counts a waved-off row into its signal AND into
+ *  `dismissed` (address-queue.mts), so that answer takes them back out. */
+function problemAddressTotal(summary, withDismissed) {
+  const s = summary || {};
+  const all = Number(s.mis_split || 0) + Number(s.no_pin || 0) + Number(s.corrected_not_pinned || 0);
+  return Math.max(0, all - (withDismissed ? Number(s.dismissed || 0) : 0));
+}
+/** A queue load's own answer IS the fresh count: hand it to every mounted badge, no second read. */
+function publishProblemAddressCount(total) {
+  __addrQueueBadgeCache = total;
+  for (const fn of __addrQueueBadgeListeners) fn(total);
+}
 
 /** The state every queue view shares. Kept here so the phone and desktop renders cannot
  *  disagree about what is selected or what a push returned. */
@@ -35909,7 +35982,10 @@ function useProblemQueue(nonce, today) {
   // cannot pin to one record (no stopId — the twin guard is disarmed without it). Those rows
   // stay pushable one at a time, as a deliberate act.
   const sweepable = React.useMemo(() => allRows.filter((r) => queueRowPushable(r) && !r.dismissed), [allRows]);
-  const selected = React.useMemo(() => allRows.filter((r) => picked.has(r.key)), [allRows, picked]);
+  // WHAT THE GROUP BUTTONS SPEND is only ever a row a push can be pinned to and nobody waved off
+  // — the rows that carry a checkbox. A key in `picked` for any other row (the day box used to
+  // put them there) must never reach runGroup: without a stopId the twin guard is disarmed.
+  const selected = React.useMemo(() => allRows.filter((r) => picked.has(r.key) && queueRowPushable(r) && !r.dismissed), [allRows, picked]);
   const toggle = React.useCallback((key) => setPicked((prev) => {
     const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n;
   }), []);
@@ -35922,7 +35998,12 @@ function useProblemQueue(nonce, today) {
   // instead of inverting into a different half.
   const sweepDay = React.useCallback((rows, on) => setPicked((prev) => {
     const next = new Set(prev);
-    for (const r of rows) { if (on) next.add(r.key); else next.delete(r.key); }
+    for (const r of rows) {
+      // Adds ONLY the rows the day box counts (dayPickState). It used to add the whole day, so
+      // "Select all 1" silently ticked no-stopId, delivered and waved-off rows (audit 2026-09-27).
+      if (on && !(queueRowPushable(r) && !r.dismissed)) continue;
+      if (on) next.add(r.key); else next.delete(r.key);
+    }
     return next;
   }), []);
   const dismiss = React.useCallback(async (row, undo) => {
@@ -35978,7 +36059,7 @@ function QueueSelectAllBox({ d, q, className = 'accent-blue-700 w-4 h-4' }) {
 }
 
 /** One row's inline editor. Shared logic; each view decides where it sits. */
-function useQueueRowEdit(row, google, today, reload) {
+function useQueueRowEdit(row, google, today, reload, onVerdict) {
   const [open, setOpen] = React.useState(false);
   // SEEDED WITH THE FIX, NOT THE FAULT. Opening on the broken split and calling the button
   // "Correct" is how a dispatcher presses it, sees the same wrong address, and concludes the
@@ -35986,7 +36067,12 @@ function useQueueRowEdit(row, google, today, reload) {
   const [f, setF] = React.useState(() => correctedFields(row));
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
-  React.useEffect(() => { setF(correctedFields(row)); }, [row]);
+  // RE-SEEDED WHEN THE ROW'S CORRECTION CHANGES, not whenever a reload hands back a new object.
+  // The list stays mounted through a reload now, so keyed on `row` an open editor kept its box
+  // open and quietly put the dispatcher's typing back to the seed — and the next Save pushed the
+  // seed to NuVizz, not what they typed. Keyed on content, an unchanged row leaves the draft alone.
+  const seed = JSON.stringify(correctedFields(row));
+  React.useEffect(() => { setF(JSON.parse(seed)); }, [seed]);
   // The map lives behind its own toggle rather than always-on: a Google map per row on a
   // 40-row day is 40 map instances, and the queue has to stay usable on a phone.
   const [mapOpen, setMapOpen] = React.useState(false);
@@ -36012,7 +36098,7 @@ function useQueueRowEdit(row, google, today, reload) {
     setBusy(true); setMsg(null);
     try {
       const { geoErr, pushed } = await saveQueueCorrection({
-        row, fields: f, google, push, today, clientOpId: `op_queue_${row.key}`,
+        row, fields: f, google, push, today, clientOpId: queueClientOpId(row, f),
       });
       // NEVER AN INTENT AS AN OUTCOME — quote what NuVizz stored, and say plainly when the pin
       // could not be moved rather than letting a corrected address sit on a stale pin silently.
@@ -36020,10 +36106,13 @@ function useQueueRowEdit(row, google, today, reload) {
       if (pushed) parts.push(pushed.text);
       if (geoErr) parts.push('The address is saved but the pin could not be moved — it still points at the old spot, so this row stays on the queue.');
       setMsg({ kind: pushed?.fatal ? 'warn' : (geoErr || QUEUE_WARN_KINDS.has(pushed?.kind)) ? 'warn' : 'ok', text: parts.join(' ') || 'Saved on the board.' });
+      // The editor closes and the reload can drop this row off the list, so the vendor's answer
+      // also goes where it outlives both: the row's own line, or the summary bar once it is gone.
+      if (pushed) onVerdict?.(row, pushed);
       if (!geoErr && !pushed?.fatal) setOpen(false);
       reload();
     } catch (e) { setMsg({ kind: 'warn', text: String(e?.message || e) }); } finally { setBusy(false); }
-  }, [row, f, google, today, reload]);
+  }, [row, f, google, today, reload, onVerdict]);
   return { open, setOpen, f, setF, busy, msg, save, mapOpen, setMapOpen, usePin };
 }
 
@@ -36200,7 +36289,9 @@ function ProblemQueueMobile({ nonce, today }) {
   const toggleLog = React.useCallback((date) => setOpenLog((prev) => {
     const n = new Set(prev); if (n.has(date)) n.delete(date); else n.add(date); return n;
   }), []);
-  if (q.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
+  // Only the FIRST load blanks the screen. A reload after a save used to unmount every row, and
+  // with them each open editor, its typed text and the message saying what NuVizz did.
+  if (q.loading && !q.data) return <div className="text-xs text-slate-500">Loading the board…</div>;
   if (q.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{q.err}</div>;
   return (
     <div className="space-y-3">
@@ -36240,7 +36331,7 @@ function ProblemQueueMobile({ nonce, today }) {
 }
 
 function QueueRowMobile({ row, q, today }) {
-  const e = useQueueRowEdit(row, q.google, today, q.reload);
+  const e = useQueueRowEdit(row, q.google, today, q.reload, q.push.noteVerdict);
   const verdict = q.push.results[row.key];
   const pushable = queueRowPushable(row);
   return (
@@ -36283,7 +36374,9 @@ function ProblemQueueDesktop({ nonce, today }) {
   const toggleLog = React.useCallback((date) => setOpenLog((prev) => {
     const n = new Set(prev); if (n.has(date)) n.delete(date); else n.add(date); return n;
   }), []);
-  if (q.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
+  // Only the FIRST load blanks the screen. A reload after a save used to unmount every row, and
+  // with them each open editor, its typed text and the message saying what NuVizz did.
+  if (q.loading && !q.data) return <div className="text-xs text-slate-500">Loading the board…</div>;
   if (q.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{q.err}</div>;
   return (
     <div className="space-y-4">
@@ -36331,7 +36424,7 @@ function ProblemQueueDesktop({ nonce, today }) {
 }
 
 function QueueRowDesktop({ row, q, today }) {
-  const e = useQueueRowEdit(row, q.google, today, q.reload);
+  const e = useQueueRowEdit(row, q.google, today, q.reload, q.push.noteVerdict);
   const verdict = q.push.results[row.key];
   const pushable = queueRowPushable(row);
   return (
@@ -36592,6 +36685,17 @@ function QueueRowEditor({ e, row, pushable, stacked }) {
   );
 }
 
+/** PURE. NuVizz answers worth a second look for rows no longer on the list. The board half fixed
+ *  them, so the reload dropped them — and their own line with them. Only vendor answers (a
+ *  board-only "pin not moved" row stays on the list and says so itself), and only the ones that
+ *  need the portal: a warning kind, or a run-stopping refusal. */
+function queueVerdictsOffList(results, rows) {
+  const listed = new Set((rows || []).map((r) => r.key));
+  return Object.entries(results || {})
+    .filter(([key, v]) => v && v.vendor && !listed.has(key) && (v.fatal || QUEUE_WARN_KINDS.has(v.kind)))
+    .map(([key, v]) => ({ key, who: v.who || key, text: v.text }));
+}
+
 /** Counts, the group push, and what it costs BEFORE anyone presses it. */
 function QueueSummaryBar({ q, stacked }) {
   const sum = q.data?.summary || {};
@@ -36601,6 +36705,7 @@ function QueueSummaryBar({ q, stacked }) {
   const pushWorth = q.selected.filter(worthPushing).length;
   const b = q.push.budget;
   const overBudget = !!(b && b.ceiling && pushWorth * 3 > Math.max(0, b.ceiling - b.current));
+  const offList = queueVerdictsOffList(q.push.results, q.allRows);
   return (
     <div className="rounded-xl border bg-white p-3 space-y-2">
       <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
@@ -36657,7 +36762,21 @@ function QueueSummaryBar({ q, stacked }) {
       {b && b.live === false && (
         <div className="text-[11px] text-amber-700">Live writes are switched off on the server, so a push would reach nothing. Corrections still save to the board.</div>
       )}
+      {/* The list no longer blanks to "Loading the board…" on a reload, so this is the only sign a
+          Refresh (or the reload after a save) is under way — and that the rows are about to move. */}
+      {q.loading && <div className="text-[11px] text-slate-500">Refreshing the list…</div>}
       {q.push.fatal && <div className="text-[11px] rounded p-2 bg-amber-50 border border-amber-200 text-amber-900 break-words">Run stopped: {q.push.fatal}</div>}
+      {/* WHAT NUVIZZ SAID ABOUT ROWS THAT ARE GONE. A refused push used to vanish with its row,
+          which reads as done while the driver's manifest keeps the old address. In flow, in
+          both views. */}
+      {offList.length > 0 && (
+        <div className="text-[11px] rounded p-2 bg-amber-50 border border-amber-200 text-amber-900 break-words space-y-1">
+          <div className="font-semibold">
+            {offList.length === 1 ? 'This order is' : `These ${offList.length} orders are`} fixed on the board and off this list, but NuVizz did not take the correction cleanly — check {offList.length === 1 ? 'it' : 'them'} in the portal before the truck goes:
+          </div>
+          {offList.map((v) => <div key={v.key}><span className="font-semibold">{v.who}</span> — {v.text}</div>)}
+        </div>
+      )}
       {/* Only when a row did NOT reach the log. A clean run says nothing — a line that appears
           every time is one nobody reads, and this exists to be noticed. */}
       {q.push.logged && q.push.logged.ok < q.push.logged.tried && (
@@ -37232,7 +37351,22 @@ function CustomerNotesEditPanel({ dock, draft, setDraft, loading, saving, err, o
 
           {loading
             ? <div className="text-sm text-slate-500">Reading what is on file…</div>
-            : (
+            : !draft
+              ? (
+                // THE READ FAILED (offline, or denied): there is no draft, so there is no form.
+                // Mounting the editor over a null draft threw on its first line and, with no
+                // error boundary, took the whole app to a white screen — board included — and
+                // the reason openEdit prepared never showed. Say it here instead. Cancel is on
+                // the title line below xl; at xl the rail is not drawn, so it is here.
+                <div className="space-y-2 max-w-2xl">
+                  <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-2 break-words">
+                    {err || 'This customer’s note could not be read, so there is nothing to edit yet. Nothing was changed.'}
+                  </div>
+                  <button onClick={onCancel}
+                    className="hidden xl:inline-flex items-center rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50">Cancel</button>
+                </div>
+              )
+              : (
               <>
                 {/* THE SAME EDITOR THE MAP USES. `drivers` is empty here on purpose — the barred-
                     driver list is chosen off the board's own roster, which this screen does not
@@ -37251,7 +37385,7 @@ function CustomerNotesEditPanel({ dock, draft, setDraft, loading, saving, err, o
         {/* THE RAIL — a monitor only. Sticky, so the buttons ride along with a form that is
             taller than the screen, and the dock is named beside them so the rep confirms what
             they are saving to without scrolling back up. */}
-        {!loading && (
+        {!loading && draft && (
           <aside className="hidden xl:block xl:sticky xl:top-4 space-y-3 rounded-lg border bg-slate-50 p-3">
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Saving to</div>
@@ -37527,7 +37661,7 @@ function OrderDetailBody({ data, onOpenHistory, wide }) {
           </DetailRow>}
       </DetailSection>
 
-      {(d.instructions || d.comments.length) && (
+      {(!!d.instructions || d.comments.length > 0) && (
         <DetailSection title="Instructions and notes on the order">
           {d.instructions && <DetailRow label="Instructions">{d.instructions}</DetailRow>}
           {d.comments.map((c, i) => (
@@ -37541,7 +37675,7 @@ function OrderDetailBody({ data, onOpenHistory, wide }) {
         </DetailSection>
       )}
 
-      {(d.contact || note?.contacts?.length) && (
+      {(!!d.contact || (note?.contacts?.length ?? 0) > 0) && (
         <DetailSection title="Who to call" note="Tap a number to dial it.">
           {d.contact && (
             <DetailRow label="On this order">
@@ -37570,7 +37704,9 @@ function OrderDetailBody({ data, onOpenHistory, wide }) {
           {d.source === 'sealed'
             ? 'From the sealed nightly record — this cannot change again.'
             : d.source === 'nuvizz'
-              ? 'Straight from NuVizz — one call, asked for just now.'
+              // The count this answer carries (shiplify-lookup-uat-6): a busy NuVizz retried is
+              // more than one call, and the chip, banner and ledger already say so.
+              ? (Number(data.nuvizzCalls) > 1 ? `Straight from NuVizz — ${Number(data.nuvizzCalls)} calls, asked for just now.` : 'Straight from NuVizz — one call, asked for just now.')
               : "From today's live board — still moving until tonight's capture seals it."}
         </div>
         <button onClick={onOpenHistory}
@@ -37638,6 +37774,18 @@ function OrderDetailPanel({ loading, err, data, stacked, onClose, onOpenHistory 
 function OrderDetailInner({ loading, err, data, onOpenHistory, wide }) {
   if (loading) return <div className="text-sm text-slate-500">Loading the order…</div>;
   if (err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3 break-words">{err}</div>;
+  // A READ THAT FAILED IS NOT A MISSING ORDER. The endpoint says `complete: false` (and why)
+  // when Firestore did not answer; "we hold no record" is only ever printed over a read that did.
+  if (data && !data.stop && (data.complete === false || data.error)) {
+    return (
+      <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+        <div className="text-sm font-semibold text-red-900">We could not read {data.stopNbr} on {formatDateLong(data.date)} just now.</div>
+        <div className="text-xs text-red-800 mt-1 break-words">
+          This is a failed read, not a missing order — close it and open it again to retry.{data.error ? ` (${data.error})` : ''}
+        </div>
+      </div>
+    );
+  }
   if (data && !data.stop) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
@@ -37922,11 +38070,14 @@ function CustomerRangeBar({ sel, setSel, range, today, stacked, yearOn, onYear }
 /** Two or more real businesses matched what was typed. Counts included, because the sweep
  *  that produced them has already been paid for and an uninformed choice is a wasted one. */
 function CustomerChooser({ matches, query, onPick, incomplete }) {
+  // A match with `stops: null` was never counted (the year's chooser) — it gets no count line,
+  // because "nothing in this window" is a claim, and nothing measured it.
+  const counted = matches.some((m) => m.stops != null);
   return (
     <div className="space-y-2">
       <div className="rounded-xl border bg-white p-3">
         <div className="text-sm font-semibold text-slate-800">{matches.length} businesses match &ldquo;{query}&rdquo;.</div>
-        <div className="text-xs text-slate-500 mt-0.5">Pick the one you mean. The counts are for the window below.</div>
+        <div className="text-xs text-slate-500 mt-0.5">Pick the one you mean.{counted ? ' The counts are for the window below.' : ''}</div>
       </div>
       {incomplete && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800">
@@ -37940,8 +38091,8 @@ function CustomerChooser({ matches, query, onPick, incomplete }) {
             <div className="min-w-0 flex-1">
               <div className="font-semibold text-slate-800 break-words">{m.name}</div>
               <div className="text-[11px] text-slate-500">
-                {m.stops ? `${m.stops} stop${m.stops === 1 ? '' : 's'} in this window` : 'nothing in this window'}
-                {m.lastDate ? ` · last ${formatDateForDisplay(m.lastDate)}` : ''}
+                {[m.stops == null ? null : m.stops ? `${m.stops} stop${m.stops === 1 ? '' : 's'} in this window` : 'nothing in this window',
+                  m.lastDate ? `last ${formatDateForDisplay(m.lastDate)}` : null].filter(Boolean).join(' · ')}
               </div>
             </div>
             {m.today > 0 && (
@@ -38521,17 +38672,21 @@ const LOOKUP_CLEAR = 'grid h-10 w-9 shrink-0 place-items-center rounded-md text-
 const LOOKUP_ORDER_HINT = 'Leading zeros are optional. A carrier PRO such as AVRT-0170416694, or a piece number such as 007157687-1, finds its order too.';
 
 /** THE PRICE OF WHAT IS ON SCREEN, read off the answer — not a slogan. Every Firestore answer
- *  says 0; the one prompted answer says 1 and that it was asked for. A dot and a word, not a
- *  green box: it is a fact to be able to check, not the headline of the page. */
+ *  says 0; a prompted answer says what the requester COUNTED (one, or more when a busy NuVizz
+ *  was retried) and that it was asked for. A dot and a word, not a green box: it is a fact to
+ *  be able to check, not the headline of the page. */
 function LookupCallsPill({ calls }) {
-  const spent = calls === 1;
+  const n = Number(calls) > 0 ? Number(calls) : 0;
+  const spent = n > 0;
   return (
     <span
-      title={spent ? 'This answer came from NuVizz, because it was asked for — one call.' : 'Everything on this screen is read from our own records. Nothing here spends a NuVizz call.'}
+      // "Asked", not "answered": the count now stays up after NuVizz had nothing too (app-A4-8),
+      // and over that miss the order on screen did NOT come from NuVizz.
+      title={spent ? `NuVizz was asked about this order, on request — ${n === 1 ? 'one call' : `${n} calls`} spent.` : 'Everything on this screen is read from our own records. Nothing here spends a NuVizz call.'}
       className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${
         spent ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-white text-slate-600 ring-slate-200'}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${spent ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-      {spent ? '1 NuVizz call — on request' : '0 NuVizz calls'}
+      {spent ? `${n} NuVizz call${n === 1 ? '' : 's'} — on request` : '0 NuVizz calls'}
     </span>
   );
 }
@@ -39214,6 +39369,16 @@ function StopLookupScreen() {
   // The stored document AS IT STOOD WHEN THE FORM OPENED. Kept only so the save can tell
   // whether THIS edit moved the vehicle mark — see eligibilityChanged in the save below.
   const [editWas, setEditWas] = useState(null);
+  // WHAT THE FORM OPENED ON — emptyNote's defaults plus the stored document — so the save can
+  // send only what the rep changed against it (changedNoteFields). Writing the whole draft
+  // handed every field back with its open-time value and undid anything another writer did
+  // while the form was open: an unsubscribe, a pin moved to the right door.
+  const [editSeed, setEditSeed] = useState(null);
+  // ONLY THE LATEST Edit PRESS MAY FILL THE FORM. Tapping Edit on one dock and at once on
+  // another leaves two reads in flight; if the first answers last, its document landed under
+  // the second dock's name and Save wrote it there — the wrong dock's hours and pin override
+  // onto this one (audit 2026-09-27, app-A4-5). Same shape as drvReqRef below.
+  const editReqRef = useRef(0);
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editErr, setEditErr] = useState(null);
@@ -39273,7 +39438,12 @@ function StopLookupScreen() {
   const [openLoad, setOpenLoad] = useState(null); // ONE load open at a time: each open map is a billed map load
   // A slower answer to an older week is DROPPED, never painted over a newer one — stepping the week
   // twice while the first read is still out must not leave last week's loads on this week's label.
+  // SHARED by every search that writes the answer (run, runPlace, runDriver): whichever was pressed
+  // LAST is the one on screen, so two quick date or range taps cannot leave the lit pill over rows
+  // from the other window (audit 2026-09-27, app-A4-4).
   const drvReqRef = useRef(0);
+  // The same rule for the order panel: tapping B while A is still loading must never show A under B.
+  const detailReqRef = useRef(0);
 
   const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
@@ -39283,6 +39453,7 @@ function StopLookupScreen() {
     // search is how a dock's hours get typed onto somebody else's dock.
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     try { localStorage.setItem(STOP_LOOKUP_LAST, term); } catch { /* private mode — a remembered box is a convenience, never a requirement */ }
+    const req = ++drvReqRef.current;
     try {
       // ONE RULE decides stop-vs-customer, and both sides read it from src/lib/stop-lookup.js,
       // so the box stays one box and the client can never classify a string one way while the
@@ -39306,6 +39477,7 @@ function StopLookupScreen() {
       }
       const r = await apiFetch(`/.netlify/functions/stop-lookup?${p.toString()}`);
       const j = await r.json();
+      if (req !== drvReqRef.current) return;
       if (!j.ok) throw new Error(j.error || 'lookup failed');
       setData(j);
       if (j.mode === 'customer-choose') setNameKey(null);
@@ -39321,7 +39493,7 @@ function StopLookupScreen() {
       // ledger is where the year says which sources it deliberately did not read.
       const yearBlank = j.mode === 'customer-year' && !j.view?.counted;
       setLedgerOpen(!!(stopBlank || custBlank || yearBlank));
-    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); setBusy(null); }
+    } catch (e) { if (req === drvReqRef.current) { setErr(String(e.message || e)); setData(null); } } finally { if (req === drvReqRef.current) { setLoading(false); setBusy(null); } }
   }, [remember]);
 
   /** Search whatever is in the box, with the current window and pinned customer. */
@@ -39336,7 +39508,7 @@ function StopLookupScreen() {
     });
   }, [run, range, nameKey, yearOn, today]);
 
-  const closeOrder = useCallback(() => { setDetail(null); setDetailData(null); setDetailErr(null); }, []);
+  const closeOrder = useCallback(() => { detailReqRef.current += 1; setDetail(null); setDetailData(null); setDetailErr(null); }, []);
 
   /**
    * AN ORDER TAPPED ANYWHERE ON THIS SCREEN OPENS UNDER ITS OWN ROW.
@@ -39357,12 +39529,14 @@ function StopLookupScreen() {
     if (detail && detail.stopNbr === id && detail.date === day) { closeOrder(); return; }
     setDetail({ stopNbr: id, date: day });
     setDetailLoading(true); setDetailErr(null); setDetailData(null);
+    const req = ++detailReqRef.current;
     try {
       const r = await apiFetch(`/.netlify/functions/stop-lookup?detail=${encodeURIComponent(id)}&date=${encodeURIComponent(day)}`);
       const j = await r.json();
+      if (req !== detailReqRef.current) return;
       if (!j.ok) throw new Error(j.error || 'could not load the order');
       setDetailData(j);
-    } catch (e) { setDetailErr(String(e.message || e)); } finally { setDetailLoading(false); }
+    } catch (e) { if (req === detailReqRef.current) setDetailErr(String(e.message || e)); } finally { if (req === detailReqRef.current) setDetailLoading(false); }
   }, [detail, closeOrder]);
 
   /** "Open this order's full history" — the one case where leaving the customer IS the ask,
@@ -39403,17 +39577,24 @@ function StopLookupScreen() {
     const term = String(data?.dossier?.query || data?.query || '').trim();
     if (!term || asking) return;
     setAsking(true); setPromptMsg(null);
+    // The answer this ask is ABOUT. A search started while NuVizz is thinking replaces it, and
+    // then this reply belongs to nothing on screen.
+    const seen = drvReqRef.current;
     try {
       const r = await apiFetch(`/.netlify/functions/stop-lookup-prompted?stop=${encodeURIComponent(term)}`, { cache: 'no-store' });
       const j = await r.json();
+      if (seen !== drvReqRef.current) return;
       if (!j.ok) throw new Error(j.error || 'NuVizz could not be asked');
+      // EVERY CALL IT COST STAYS ON THE COUNT, found or not — the header chip reads it, and a
+      // "NuVizz has nothing either" under a chip saying "0 NuVizz calls" is a spend nobody sees.
       if (j.prompted?.ok && j.dossier) {
-        setData(j); setLedgerOpen(false); setPromptMsg(j.prompted);
-        if (j.detail) { setDetail({ stopNbr: j.detail.stopNbr, date: j.detail.date }); setDetailData(j.detail); setDetailErr(null); setDetailLoading(false); }
+        setData({ ...j, nuvizzCalls: promptedCallsOnScreen(data?.nuvizzCalls, j.nuvizzCalls) }); setLedgerOpen(false); setPromptMsg(j.prompted);
+        if (j.detail) { detailReqRef.current += 1; setDetail({ stopNbr: j.detail.stopNbr, date: j.detail.date }); setDetailData(j.detail); setDetailErr(null); setDetailLoading(false); }
       } else {
+        setData((cur) => (cur ? { ...cur, nuvizzCalls: promptedCallsOnScreen(cur.nuvizzCalls, j.nuvizzCalls) } : cur));
         setPromptMsg(j.prompted || { attempted: true, ok: false, reason: 'error', text: 'No answer came back.' });
       }
-    } catch (e) { setPromptMsg({ attempted: true, ok: false, reason: 'error', text: String(e.message || e) }); }
+    } catch (e) { if (seen === drvReqRef.current) setPromptMsg({ attempted: true, ok: false, reason: 'error', text: String(e.message || e) }); }
     finally { setAsking(false); }
   }, [data, asking]);
 
@@ -39429,6 +39610,7 @@ function StopLookupScreen() {
   const openEdit = useCallback(async (dock) => {
     if (!dock?.key) return;
     if (notesGate.reason) { setEditErr(notesGate.reason); return; }
+    const req = ++editReqRef.current;
     setEditDock(dock); setEditErr(null); setEditDraft(null); setEditLoading(true);
     // `base` first, always. It is emptyNote's shape — seven days of { open, close } strings —
     // and it is what keeps every <input type="time"> CONTROLLED on a customer who has never
@@ -39443,16 +39625,21 @@ function StopLookupScreen() {
       // the form still opens, because its LAYOUT is worth measuring and needs nothing from
       // Firestore, but Save is refused and the panel says why. firebase.js makes `db` null on
       // purpose for exactly this: "a visible dead control is the safe direction".
+      setEditSeed(base);
       if (!db) { setEditDraft(base); setEditWas(null); return; }
       const snap = await getDoc(doc(db, 'customer_notes', dock.key));
+      if (req !== editReqRef.current) return;   // a later Edit press owns the form now
       // The stored document wins field by field; `base` only fills what has never been set.
-      setEditDraft(snap.exists() ? { ...base, ...snap.data() } : base);
+      const seed = snap.exists() ? { ...base, ...snap.data() } : base;
+      setEditDraft(seed);
+      setEditSeed(seed);
       setEditWas(snap.exists() ? snap.data() : null);
     } catch (e) {
       reportDenied('customer_notes', e);
+      if (req !== editReqRef.current) return;
       setEditErr(`Could not read this customer's note: ${e.message || e}`);
       setEditDraft(null); setEditWas(null);
-    } finally { setEditLoading(false); }
+    } finally { if (req === editReqRef.current) setEditLoading(false); }
   }, [notesGate.reason]);
 
   const cancelEdit = useCallback(() => {
@@ -39475,6 +39662,11 @@ function StopLookupScreen() {
   const saveEdit = useCallback(async () => {
     if (!editDock?.key || !editDraft) return;
     if (notesGate.reason) { setEditErr(notesGate.reason); return; }
+    // THE FORM THIS SAVE BELONGS TO. The Edit buttons stay live while a save is in flight, so a
+    // rep can open (and start typing in) another dock's form before this one returns. Closing
+    // "the form" on success then shut THAT form and threw its typing away, straight after its
+    // Save button had read "Saving…" — which looks exactly like a save that worked.
+    const req = editReqRef.current;
     setEditSaving(true); setEditErr(null);
     try {
       if (!db) throw new Error('Firestore is not configured in this build.');
@@ -39489,7 +39681,12 @@ function StopLookupScreen() {
       const draft = editDraft;
       const existing = editWas;
       await setDoc(ref, {
-        ...draft,
+        // ONLY WHAT THE REP CHANGED against what the form opened on. `{ merge: true }` protects
+        // just the keys absent from the payload, so `...draft` here wrote every field back with
+        // its open-time value — re-subscribing a customer who unsubscribed while the rep typed,
+        // dragging a corrected pin back to the wrong building (audit 2026-09-27, app-A4-3).
+        // VITE_NOTE_SAVE_CHANGED_ONLY=off puts back the whole-draft write (see the lib's header).
+        ...(NOTE_SAVE_CHANGED_ONLY_ON ? changedNoteFields(draft, editSeed) : draft),
         match_key: key,
         raw_name: draft.raw_name || editDock.name || '',
         raw_address: draft.raw_address || [editDock.addr1, editDock.city, editDock.state, editDock.zip].filter(Boolean).join(', '),
@@ -39520,18 +39717,22 @@ function StopLookupScreen() {
       // exists to prevent, arriving one line later.
       setData((cur) => {
         if (!cur) return cur;
+        // …BUT ONLY IF THAT CARD IS STILL THIS CUSTOMER'S. A new search while the write was in
+        // flight put somebody else's answer on screen; painting this note onto it is the wrong
+        // customer's dock instruction in front of the rep (audit 2026-09-27, app-A4-5).
+        if (!answerHoldsDock(cur, key)) return cur;
         if (cur.view) return { ...cur, noteKey: key, view: { ...cur.view, notes: summary } };
         if (cur.dossier) return { ...cur, dossier: { ...cur.dossier, notes: summary } };
         return cur;
       });
-      setEditDock(null); setEditDraft(null); setEditWas(null);
+      if (req === editReqRef.current) { setEditDock(null); setEditDraft(null); setEditWas(null); }
     } catch (e) {
       // 'write' — a refused WRITE and a refused READ are different sentences in the
       // permission banner, and a dispatcher told "read denied" goes looking in the wrong place.
       reportDenied('customer_notes', e, 'write');
       setEditErr(`Not saved: ${e.message || e}`);
     } finally { setEditSaving(false); }
-  }, [editDock, editDraft, editWas, notesGate.reason]);
+  }, [editDock, editDraft, editWas, editSeed, notesGate.reason]);
 
   /** The rep picked one of several matching businesses. */
   const pickCustomer = useCallback((m) => {
@@ -39573,9 +39774,11 @@ function StopLookupScreen() {
     setLoading(true); setBusy('place'); setErr(null); setPromptMsg(null); closeOrder();
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     try { localStorage.setItem(STOP_LOOKUP_PLACE, JSON.stringify(f)); } catch { /* a remembered box is a convenience */ }
+    const req = ++drvReqRef.current;
     try {
       const r = await apiFetch(`/.netlify/functions/stop-lookup?${placeParams(f, placeSelOf(selNow, todayInET()))}`);
       const j = await r.json();
+      if (req !== drvReqRef.current) return;
       if (!j.ok) throw new Error(j.error || 'search failed');
       setData(j);
       setPlaceRowsShown(PLACE_PAGE);
@@ -39583,7 +39786,7 @@ function StopLookupScreen() {
       setAnswerTick((n) => n + 1);
       // The ledger opens itself when it IS the answer: nothing matched, or days went unsearched.
       setLedgerOpen(j.mode === 'place' && !j.switchedOff && (j.coverage?.complete === false || !j.view?.matched));
-    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); setBusy(null); }
+    } catch (e) { if (req === drvReqRef.current) { setErr(String(e.message || e)); setData(null); } } finally { if (req === drvReqRef.current) { setLoading(false); setBusy(null); } }
   }, [closeOrder, remember]);
 
   /** New dates on a place already on screen: search again, same place. */
@@ -39829,7 +40032,7 @@ function StopLookupScreen() {
               bought with a call a minute ago and whether it was filed for the next one. */}
           {d.found && data.prompted?.ok && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-              <span className="font-semibold">Answered by NuVizz — 1 call, on request.</span> {data.prompted.text}
+              <span className="font-semibold">{data.nuvizzCalls > 1 ? `Answered by NuVizz — ${data.nuvizzCalls} calls, on request.` : 'Answered by NuVizz — 1 call, on request.'}</span> {data.prompted.text}
             </div>
           )}
           {d.found

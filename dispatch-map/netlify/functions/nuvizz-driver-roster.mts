@@ -104,8 +104,23 @@ async function fetchDriverRoster(pageSize = 500): Promise<{ users: any[]; totalU
   return { users, totalUsers: users.length, totalRecords, pagesFetched };
 }
 
+// What leaves the function. The stored roster keeps NuVizz's full slim record (both apps share
+// that document), but the Drivers view reads userName / name / status / mobileNumber. A CDL
+// number, its state and its expiry have no consumer in either UI, so they are stripped on the
+// way out by name and by pattern — the same rule as the root proxy's publicRosterUser
+// (davis-nuvizz/netlify/functions/nuvizz.cjs). Exported for tests.
+const ROSTER_PRIVATE_FIELDS = ['cdlNumber', 'licenseState', 'licenseExpirationDttm'];
+export function publicRosterUser(u: any): any {
+  if (!u || typeof u !== 'object') return u;
+  const out = { ...u };
+  for (const k of Object.keys(out)) {
+    if (ROSTER_PRIVATE_FIELDS.includes(k) || /license|cdl/i.test(k)) delete out[k];
+  }
+  return out;
+}
+
 function summarize(users: any[]) {
-  const drivers = users.filter((u) => u && u.isDriver);
+  const drivers = users.filter((u) => u && u.isDriver).map(publicRosterUser);
   const enabled = drivers.filter((d) => d.isEnabled);
   return {
     drivers,
@@ -128,11 +143,12 @@ export default async (req: Request): Promise<Response> => {
     return new Response(JSON.stringify({ ok: false, error: `tenant must be ${TENANT}` }), { status: 400, headers: cors });
   }
   const refresh = req.method === 'POST' || url.searchParams.get('refresh') === '1';
-  if (refresh) {
-    // A live NuVizz pull is a dispatcher's act (inert until AUTH_REQUIRED=true).
-    const gate = await requireUser(req, { role: 'dispatcher' });
-    if (!gate.ok) return gate.response;
-  }
+  // The READ names every driver and their phone, so it is viewer — like messaging-roster and
+  // driver-phone. A live NuVizz pull is a dispatcher's act. Both inert until AUTH_REQUIRED=true.
+  const gate = refresh
+    ? await requireUser(req, { role: 'dispatcher' })
+    : await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
 
   try {
     // READ — serve the shared roster from Firestore. Zero NuVizz calls.

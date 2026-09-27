@@ -4,7 +4,7 @@
 // firestore data allow a prompted nuvizz call."
 //
 //   GET ?stop=<PRO or stop number>   → ONE /stop/info call, on request, after Firestore missed
-//   → { ok, nuvizzCalls: 0|1, mode: 'stop', promptedCall, prompted: { attempted, ok, reason, text,
+//   → { ok, nuvizzCalls: 0|n, mode: 'stop', promptedCall, prompted: { attempted, ok, reason, text,
 //        day, stored }, dossier, detail, … }
 //
 // A SEPARATE FUNCTION, ON PURPOSE. stop-lookup.mts makes a structural promise — it imports
@@ -43,7 +43,7 @@ import { getCustomerByMatchKey } from './lib/history-customers.mts';
 import { stopCustomerKey } from './lib/customer-key.mts';
 import { isMirrorDeploy } from './lib/mirror-guard.mts';
 import { lookupStopByPro } from './lib/nuvizz-scan.mts';
-import { setCallTrigger } from './lib/nuvizz-request.mts';
+import { setCallTrigger, getNuvizzRequester } from './lib/nuvizz-request.mts';
 import { requireUser } from './lib/require-user.mts';
 import {
   buildStopDossier, buildOrderDetail, notesSummary, classifyQuery, stopIdVariants,
@@ -95,16 +95,25 @@ export default async (req: Request): Promise<Response> => {
   }
 
   setCallTrigger('on-demand');
+  // COUNTED, NOT ASSUMED. The shared requester retries a 429/5xx up to four more times and
+  // counts every answered attempt against the daily ceiling, so one tap on a busy NuVizz can
+  // spend several calls. The answer reports what the requester counted over this lookup — the
+  // same before/after read nuvizz-write and uat-seed use — and never less than one when the
+  // outcome says a call went out (a timed-out attempt is sent but not counted).
+  const reqr = getNuvizzRequester();
+  const callsBefore = reqr.getStats().totalThisInstance;
   let res: any;
   try { res = await lookupStopByPro(stopRaw); } catch (e: any) { res = { ok: false, reason: e?.message || 'error' }; }
   const outcome = promptedOutcome(res);
-  const nuvizzCalls = outcome.spent ? 1 : 0;
+  const counted = Math.max(0, reqr.getStats().totalThisInstance - callsBefore);
+  const nuvizzCalls = Math.max(counted, outcome.spent ? 1 : 0);
+  const spentNote = nuvizzCalls === 1 ? 'ONE NuVizz call, spent on request.' : `${nuvizzCalls} NuVizz calls, spent on request — the request was retried.`;
 
   if (!outcome.ok) {
     return J({
       ...base, nuvizzCalls,
       prompted: { attempted: true, ok: false, reason: outcome.reason, text: outcome.text, vendorReason: res?.reason ?? null },
-      note: nuvizzCalls ? 'ONE NuVizz call, spent on request.' : 'No NuVizz call was spent.',
+      note: nuvizzCalls ? spentNote : 'No NuVizz call was spent.',
     });
   }
 
@@ -156,9 +165,9 @@ export default async (req: Request): Promise<Response> => {
   return J({
     ...base, nuvizzCalls,
     window: null,
-    dossier: { ...dossier, found: true, sources: [promptedSource({ day }), ...dossier.sources], notes: notesSummary(notes) },
+    dossier: { ...dossier, found: true, sources: [promptedSource({ day, calls: nuvizzCalls }), ...dossier.sources], notes: notesSummary(notes) },
     detail: {
-      ok: true, mode: 'detail', date: shownDay, stopNbr, source: 'nuvizz', complete: true, errors: {},
+      ok: true, mode: 'detail', date: shownDay, stopNbr, source: 'nuvizz', complete: true, errors: {}, nuvizzCalls,
       stop: buildOrderDetail(record, { date: shownDay, today, source: 'nuvizz' }),
       note: notesSummary(notes), matchKey,
     },
@@ -167,6 +176,6 @@ export default async (req: Request): Promise<Response> => {
       text: `${outcome.text} ${stored && stored.ok === false ? `Filing it failed (${stored.error}) — shown here, but the next lookup will cost another call.` : decision.text}`,
     },
     errors: {},
-    note: 'ONE NuVizz call, spent on request.',
+    note: spentNote,
   });
 };

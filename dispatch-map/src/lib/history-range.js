@@ -185,7 +185,9 @@ export function rangeLabel(r, today) {
   // A window that runs past today is the address log reaching over the board days the queue
   // files corrections against. Say so: "Last 14 days" over a range ending Thursday is the
   // header lying about its own contents, which is the one thing this module exists to stop.
-  if (isDateStr(today) && r.to > today) {
+  // Only when the window HOLDS today: one that starts after it falls through to the explicit
+  // "Sep 29 – Oct 1" form, or the header claims a day the list does not cover.
+  if (isDateStr(today) && r.to > today && r.from <= today) {
     const back = daysBetween(r.from, today);
     return back > 1 ? `Last ${back} days + the board ahead` : 'Today + the board ahead';
   }

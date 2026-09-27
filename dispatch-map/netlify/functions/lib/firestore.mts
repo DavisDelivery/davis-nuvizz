@@ -22,7 +22,7 @@ import { fetchWithDeadline } from './fetch-deadline.mts';
 import crypto from 'node:crypto';
 // Pure + dependency-free (matchKey.js only), so importing it here cannot drag anything into
 // this module's cold-start path. See lib/address-history.mts for what it classifies and why.
-import { buildAddressChangeRow, addressHistoryEnabled } from './address-history.mts';
+import { buildAddressChangeRow, addressHistoryEnabled, unrecordedAddressChanges } from './address-history.mts';
 import { finishedGuardEnabled, isFinishedBoardRow } from './finished-guard.mts';
 import { routeMoved, moveClearsDriverEnabled } from './route-identity.mts';
 
@@ -270,15 +270,20 @@ export async function setDoc(path: string, data: any): Promise<boolean> {
  *
  * Creates the document if it is absent, which is the ordinary case for a customer who has
  * never had a note written.
+ *
+ * `fieldPaths` (optional): the mask, when it is not simply the top-level keys of `data` — a
+ * NESTED write such as one entry of a map. Build both with mapEntryPatch
+ * (lib/firestore-field-path.mts). A dotted KEY in `data` is not a nested path: the body
+ * would carry it as one literal field name, and nothing lands where a reader looks.
  */
-export async function updateDocFields(path: string, data: any): Promise<boolean> {
+export async function updateDocFields(path: string, data: any, fieldPaths?: string[]): Promise<boolean> {
   assertSafePath(path);
-  const keys = Object.keys(data || {});
+  const keys = fieldPaths && fieldPaths.length ? fieldPaths : Object.keys(data || {});
   if (!keys.length) return false;
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  // Repeated updateMask.fieldPaths params — one per field. Backticked field paths so a key
-  // containing a dot or a reserved word cannot be read as a nested path.
+  // Repeated updateMask.fieldPaths params — one per field. The top-level keys go as they are;
+  // a nested path comes in pre-quoted through `fieldPaths`.
   const mask = keys.map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}?${mask}`;
   const resp = await fsFetch(url, {
@@ -1698,22 +1703,39 @@ const planVerdictPath = (tenant: string, dateStr: string) => `${OPS_COLLECTION}/
 export async function recordPlanVerdicts(tenant: string, dateStr: string, rows: PlanVerdictRow[]): Promise<boolean> {
   if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return false;
   try {
-    const prior = await readPlanVerdicts(tenant, dateStr);
+    // THE READ THAT THROWS. This append is read-merge-REPLACE (setDoc has no mask), so a read
+    // that failed and came back as [] would replace the day's verdicts with this scan's alone.
+    // A failed read skips the write instead: this scan's rows are lost, the day's are not.
+    const prior = await readPlanVerdictsOrThrow(tenant, dateStr);
     const next = [...rows, ...prior].slice(0, PLAN_VERDICT_MAX);
     await setDoc(planVerdictPath(tenant, dateStr), {
       tenant: tenantKey(tenant), date: dateStr, updated_at: new Date().toISOString(),
       count: next.length, rowsJson: JSON.stringify(next),
     } as any);
     return true;
-  } catch { return false; }
+  } catch (e: any) {
+    // Both callers .catch() and move on, so this line is the only trace of a skipped append.
+    console.error(`[firestore] plan-verdict ledger NOT appended for ${dateStr} (${rows.length} row(s) lost, the day's earlier rows untouched) — ${e?.message || e}`);
+    return false;
+  }
 }
 
 /** The day's ledger, newest first; [] when none was ever written or the read fails. */
 export async function readPlanVerdicts(tenant: string, dateStr: string): Promise<PlanVerdictRow[]> {
+  try { return await readPlanVerdictsOrThrow(tenant, dateStr); } catch { return []; }
+}
+
+/** The same read, but a FAILED read throws — only an absent document is an empty day. For the
+ *  writer above, which replaces the document with whatever this returns plus its own rows. */
+export async function readPlanVerdictsOrThrow(tenant: string, dateStr: string): Promise<PlanVerdictRow[]> {
   if (!isFirestoreEnabled()) return [];
+  return ledgerRowsOf(await getDoc(planVerdictPath(tenant, dateStr)));
+}
+
+/** A day-ledger document's rows; [] for an absent document or an unparseable rowsJson. */
+function ledgerRowsOf(doc: any): any[] {
+  if (!doc) return [];
   try {
-    const doc = await getDoc(planVerdictPath(tenant, dateStr));
-    if (!doc) return [];
     const arr = JSON.parse(doc.rowsJson || '[]');
     return Array.isArray(arr) ? arr : [];
   } catch { return []; }
@@ -1764,38 +1786,65 @@ const ADDRESS_CHANGE_MAX = 800;
 const addressChangePath = (tenant: string, dateStr: string) => `${OPS_COLLECTION}/addr_changes__${tenantKey(tenant)}__${dateStr}`;
 
 /** Append rows to the day's address log (newest first). BEST-EFFORT BY DESIGN: a log that
- *  can break a scan is worse than no log, so every failure swallows and reports false. */
+ *  can break a scan is worse than no log, so every failure swallows and reports false.
+ *  A caller that has to tell a repeat from a failure uses appendAddressChanges below. */
 export async function recordAddressChanges(tenant: string, dateStr: string, rows: any[]): Promise<boolean> {
-  if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return false;
+  const out = await appendAddressChanges(tenant, dateStr, rows);
+  // The scan ignores this boolean on purpose (a log must never break it), so an append that
+  // was SKIPPED — the read failed, or the write did — has to say so somewhere. The function
+  // log is the only place a lost scan row can be seen; same shape as markScanKinds SKIPPED.
+  if (out.status === 'error') console.error(`[firestore] address log NOT appended for ${dateStr} (${rows.length} row(s) lost, the day's earlier rows untouched) — ${out.error}`);
+  return out.status === 'written';
+}
+
+/**
+ * The same append, saying WHICH of its outcomes happened (audit 2026-09-27):
+ *   written    the rows are on file
+ *   duplicate  every row was already on file — a correct refusal
+ *   nothing    no rows were given, or Firestore is off
+ *   error      the read or the write failed; nothing new is on file
+ * One `false` for all of them let a write Firestore refused reach the browser as
+ * "already recorded", which the queue's group run counts as logged. Never throws.
+ */
+export type AddressAppendResult = { status: 'written' | 'duplicate' | 'nothing' } | { status: 'error'; error: string };
+export async function appendAddressChanges(tenant: string, dateStr: string, rows: any[]): Promise<AddressAppendResult> {
+  if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return { status: 'nothing' };
   try {
-    const prior = await readAddressChanges(tenant, dateStr);
+    // THE READ THAT THROWS (audit 2026-09-27). This append is read-merge-REPLACE — setDoc has no
+    // mask — so a transient 503 that read back as [] replaced the day's whole log with this one
+    // row and reported success. A failed read now skips the write: at worst this row is
+    // missing, never the day's earlier corrections.
+    const prior = await readAddressChangesOrThrow(tenant, dateStr);
     // DE-DUPE ON RE-OBSERVATION. The scan runs every fifteen minutes and compares the stored
     // board row against the row it is about to write. The first scan after a change records
     // it and then WRITES the new address — so the next scan sees no difference and says
     // nothing. But a scan that fails to write (a thrown writeStops, a capped run) leaves the
-    // old row in place, and the next scan would file the identical change again. Keyed on the
-    // stop plus the exact before/after text, so a real second move still lands.
-    const seen = new Set(prior.map((r: any) => `${r?.stopNbr}|${r?.before?.addr1}|${r?.after?.addr1}|${r?.kind}`));
-    const fresh = rows.filter((r) => !seen.has(`${r?.stopNbr}|${r?.before?.addr1}|${r?.after?.addr1}|${r?.kind}`));
-    if (!fresh.length) return false;
+    // old row in place, and the next scan would file the identical change again. A repeat is
+    // identical in every address part, kind and source to the stop's NEWEST row, so a real
+    // second move — or a Reset and a re-correction of the zip — still lands. See
+    // unrecordedAddressChanges (lib/address-history.mts).
+    const fresh = unrecordedAddressChanges(prior, rows);
+    if (!fresh.length) return { status: 'duplicate' };
     const next = [...fresh, ...prior].slice(0, ADDRESS_CHANGE_MAX);
     await setDoc(addressChangePath(tenant, dateStr), {
       tenant: tenantKey(tenant), date: dateStr, updated_at: new Date().toISOString(),
       count: next.length, rowsJson: JSON.stringify(next),
     } as any);
-    return true;
-  } catch { return false; }
+    return { status: 'written' };
+  } catch (e: any) { return { status: 'error', error: String(e?.message || e || 'address log write failed') }; }
 }
 
 /** The day's address log, newest first; [] when none was written or the read fails. */
 export async function readAddressChanges(tenant: string, dateStr: string): Promise<any[]> {
+  try { return await readAddressChangesOrThrow(tenant, dateStr); } catch { return []; }
+}
+
+/** The same read, but a FAILED read throws — only an absent document is an empty day. For the
+ *  writer above, and for the address-history screen, where "could not read" and "nothing
+ *  changed" must never be the same answer. */
+export async function readAddressChangesOrThrow(tenant: string, dateStr: string): Promise<any[]> {
   if (!isFirestoreEnabled()) return [];
-  try {
-    const doc = await getDoc(addressChangePath(tenant, dateStr));
-    if (!doc) return [];
-    const arr = JSON.parse(doc.rowsJson || '[]');
-    return Array.isArray(arr) ? arr : [];
-  } catch { return []; }
+  return ledgerRowsOf(await getDoc(addressChangePath(tenant, dateStr)));
 }
 
 // ── The last refused scan, where the BOARD's own poll can see it ─────────────
