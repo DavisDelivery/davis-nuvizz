@@ -28,7 +28,7 @@
 //     server refused is shown as refused, with its reason, not folded into a count.
 //  3. CLEAR IS DESTRUCTIVE AND ASKS. It cancels real orders in the UAT tenant, and after a
 //     route test it has to unplan them first. The confirm names the number and what happens.
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Beaker, Check, RefreshCw, Trash2, Eye, AlertTriangle, Loader2 } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
 // Pure core, thin edges: every judgement about a row lives in the lib and is tested there.
@@ -47,6 +47,9 @@ export default function UatBench() {
   const [onlyUnplanned, setOnlyUnplanned] = useState(false);
   const [label, setLabel] = useState('');
   const [result, setResult] = useState(null);
+  // The newest catalogue read. A date box fires a read per change, and a slower answer for a day
+  // the tester already moved off would otherwise land last and list that day under this one.
+  const catSeq = useRef(0);
 
   const call = useCallback(async (body, method = 'POST') => {
     const res = method === 'GET'
@@ -58,12 +61,17 @@ export default function UatBench() {
   }, []);
 
   const loadCatalogue = useCallback(async (d) => {
+    const seq = ++catSeq.current;
     setLoading(true); setErr(null);
     try {
       const j = await call({ date: d }, 'GET');
+      if (seq !== catSeq.current) return;   // a newer read owns the list now
       if (!j?.ok) { setErr(j?.error || 'could not read production\'s day'); setCat(null); }
       else { setCat(j); setPicked(new Set()); }
-    } finally { setLoading(false); }
+    } catch (e) {
+      if (seq !== catSeq.current) return;
+      setErr(e?.message || 'could not reach the server'); setCat(null);
+    } finally { if (seq === catSeq.current) setLoading(false); }
   }, [call]);
 
   useEffect(() => { loadCatalogue(date); }, [date, loadCatalogue]);
@@ -92,6 +100,8 @@ export default function UatBench() {
       setResult({ op, ...j });
       if (!j?.ok && j?.error) setErr(j.error);
       if (op === 'seed' || op === 'clear') await loadCatalogue(date);
+    } catch (e) {
+      setErr(e?.message || 'could not reach the server');
     } finally { setBusy(null); }
   };
 
@@ -126,7 +136,10 @@ export default function UatBench() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <input
-              type="date" value={date} onChange={(e) => setDate(e.target.value)}
+              type="date" value={date}
+              // A new day empties the old day's list and picks at once, so neither can sit under
+              // the new date while its read is in flight (or after it fails).
+              onChange={(e) => { setDate(e.target.value); setCat(null); setPicked(new Set()); }}
               className="border rounded px-2 py-1 text-sm min-h-[38px]"
               aria-label="Production board day to pick from"
             />
