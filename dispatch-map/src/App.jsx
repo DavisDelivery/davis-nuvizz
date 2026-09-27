@@ -7712,7 +7712,7 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
         <div className="mt-1.5 pt-1.5 border-t border-slate-200">
           <button
             type="button"
-            onClick={() => { setBarOpen(false); onEnterTv(); }}
+            onClick={() => { setCollapsed(true); onEnterTv(); }}
             className="w-full inline-flex items-center justify-center gap-1.5 rounded border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
             title="Full-screen wall display — map, board status and the open flags, sized to read across a room"
           >
