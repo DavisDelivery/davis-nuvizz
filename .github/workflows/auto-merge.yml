@@ -66,7 +66,23 @@ jobs:
             gh pr ready "$num" --repo "$GITHUB_REPOSITORY"
           fi
 
-          echo "Squash-merging PR #$num ($HEAD_BRANCH)…"
+          # THE SQUASH SUBJECT IS THE PR TITLE, SAID OUTRIGHT. Without --subject GitHub picked the
+          # subject itself: #1027 landed on main (23:01Z, Sep 26) as "Shadow map: click a route and
+          # you see that route (v1.74.3) (#1027)", while its PR title — renamed at 22:52Z — read
+          # "…; satellite and filters (v1.75.1)". The rollback tool then read versions off merge
+          # subjects and pointed v1.74.3 at the wrong build. The title is read here at merge time,
+          # so a PR renamed after its tests started merges under its new name. It is DATA: read into
+          # a variable and passed as ONE argument, never pasted into this script's text by a
+          # workflow expression, so nothing in a title can run as a command. The body is left to
+          # GitHub exactly as before (no --body).
+          PR_TITLE=$(gh pr view "$num" --repo "$GITHUB_REPOSITORY" --json title --jq '.title')
+          if [ -z "$PR_TITLE" ]; then
+            echo "::error::PR #$num has no title to write as its merge subject — not merged."
+            exit 1
+          fi
+          SUBJECT="$PR_TITLE (#$num)"
+
+          echo "Squash-merging PR #$num ($HEAD_BRANCH) as: $SUBJECT"
 
           # NOT-MERGEABLE-YET IS THE EXPECTED CASE, NOT A FAILURE — AND IT MUST NOT
           # GO RED. Several agents work different problems in parallel here, so every
@@ -88,7 +104,7 @@ jobs:
           # So: swallow ONLY the two not-mergeable messages. Every other failure — a
           # bad token, a revoked permission, branch protection, an API outage — still
           # fails the job loudly, because none of those fix themselves.
-          if merge_out=$(gh pr merge "$num" --repo "$GITHUB_REPOSITORY" --squash --delete-branch 2>&1); then
+          if merge_out=$(gh pr merge "$num" --repo "$GITHUB_REPOSITORY" --squash --subject="$SUBJECT" --delete-branch 2>&1); then
             echo "$merge_out"
             echo "Merged PR #$num." >> "$GITHUB_STEP_SUMMARY"
             exit 0

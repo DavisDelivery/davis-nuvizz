@@ -23,6 +23,14 @@ export interface TruckProfile {
   active: boolean;
 }
 
+// WHICH COPY SEEDS WHAT (corrected Sep 27). These defaults seed NOTHING live: ensureSeedProfiles below
+// has no callers. The copy that seeds the live route builder is CLIENT_DEFAULT_TRUCKS in src/App.jsx —
+// the browser writes it as the Box and Trailer cards when truck_profiles is empty, and the builder
+// reads those cards by id from then on (getTruckProfile). The "tests" named a few lines down are
+// test/truck-weight-limits.test.mjs: it fails, naming the copy, if the four DEFAULT copies of the
+// weight limit disagree. It cannot see the live cards or a ⚙ Tuning / Router-settings value: those
+// are data, each edited on its own screen.
+
 // Seed defaults (editable). 26ft box ≈ 12–15 skids / ~10k lb / deck ~312in;
 // 53ft trailer ≈ 24–30 skids / deck ~636in.
 // WEIGHT: Chad, 2026-09-26: “10,000 pound limit on box trucks and 30,000 on tractors is the weight limits.”
@@ -70,7 +78,8 @@ export async function getTruckProfile(id: string): Promise<TruckProfile | null> 
 export async function saveTruckProfile(p: TruckProfile): Promise<void> {
   await setDoc(`${COLLECTION}/${p.id}`, p);
 }
-// Idempotent seeding helper (used by the UI/back end on first run).
+// Idempotent seeding helper. NO CALLERS today (grep): the browser seeds from App.jsx's
+// CLIENT_DEFAULT_TRUCKS instead. Kept for a back end that needs it; see the note above the defaults.
 export async function ensureSeedProfiles(): Promise<TruckProfile[]> {
   const existing = await listTruckProfiles();
   if (existing.length) return existing;

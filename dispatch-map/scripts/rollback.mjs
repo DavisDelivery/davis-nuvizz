@@ -261,10 +261,181 @@ export function versionOf(source) {
   return m ? m[1] : null;
 }
 
-/** PURE: '…(v1.30.2) (#930)' → '1.30.2'. Null when the subject carries no version. */
+/**
+ * PURE: '…(v1.30.2) (#930)' → '1.30.2'. Null when the subject carries no version.
+ *
+ * THE FALLBACK, NOT THE SOURCE. A merge subject is typed by a person (or copied by GitHub from a
+ * branch's first commit) and can say one version while the tree ships another: #1027 (79c8032)
+ * merged as "(v1.74.3)" while its App.jsx said '1.75.1' — v1.74.3 was already #1025 (7b5fe43).
+ * The tree is what the footer showed, so the tree decides; see withTreeVersions.
+ */
 export function versionFromSubject(subject) {
   const m = /\(v(\d+\.\d+\.\d+)\)/.exec(String(subject || ''));
   return m ? m[1] : null;
+}
+
+/**
+ * PURE: `git grep` over many trees at once → Map(sha → the APP_VERSION that tree ships).
+ *
+ * `git grep … -e '^const APP_VERSION = ' <sha> <sha> … -- dispatch-map/src/App.jsx` prints one
+ * `<sha>:<path>:<line>` per tree that has the line, in ONE process — measured at 0.4 s for 97
+ * commits, where a `git show` of the 1.5 MB file per commit costs about as much for every 20.
+ * A tree with no App.jsx (or no APP_VERSION line) is simply absent from the map, and the caller
+ * falls back to the subject for that commit rather than inventing a number.
+ *
+ * That shape is only what git prints when nobody's git config says otherwise — see TREE_GREP.
+ */
+export function parseTreeVersions(out) {
+  const map = new Map();
+  for (const line of String(out || '').split('\n')) {
+    // The path between the two colons is whatever git prints for the ONE file the pathspec names
+    // (relative to wherever it ran), so it is not compared — only the line's shape is.
+    const m = /^([0-9a-f]{7,40}):[^:\n]*:const APP_VERSION = '([^']+)'/.exec(line);
+    if (!m || map.has(m[1])) continue;
+    map.set(m[1], m[2]);
+  }
+  return map;
+}
+
+/**
+ * PURE: label each commit with the version its TREE ships — the number the footer showed on
+ * that build — and keep the subject's claim beside it so a disagreement can be said out loud.
+ *
+ * `versionFrom` says where the label came from: 'tree', or 'subject' when the tree could not be
+ * read (a commit older than App.jsx, a git that could not answer). Null when neither says.
+ */
+export function withTreeVersions(commits, treeVersions) {
+  return (commits || []).map((c) => {
+    const tree = treeVersions?.get?.(c.sha) ?? null;
+    const subjectVersion = versionFromSubject(c.subject);
+    return {
+      ...c,
+      version: tree ?? subjectVersion,
+      subjectVersion,
+      versionFrom: tree ? 'tree' : (subjectVersion ? 'subject' : null),
+    };
+  });
+}
+
+/**
+ * PURE: when some builds' versions came from merge subjects rather than their code, the sentence
+ * that says so — null when every one was read from its tree.
+ *
+ * A "no commit ships vX" or "vX names two points" answer is only as good as the labels it was
+ * worked out from. If trees could not be read, the labels are merge subjects, and a merge subject
+ * can name the wrong version (#1027 did). Saying "no commit ships v1.75.1" without saying that is
+ * the Sep 26 answer again, stated with the same confidence.
+ *
+ * Two kinds of unread build, said apart: one whose version is its merge TITLE's claim ('subject'),
+ * and one with no version at all (its code was not read and its title names none). Calling the
+ * second kind "merge titles" named a source that was never there.
+ */
+export function subjectFallbackNote(commits) {
+  const all = commits || [];
+  const titled = all.filter((c) => c.versionFrom === 'subject').length;
+  const none = all.filter((c) => c.versionFrom !== 'tree' && c.versionFrom !== 'subject').length;
+  if (!titled && !none) return null;
+  const parts = [];
+  if (titled) {
+    parts.push(`${titled} of ${all.length} build(s) in this window could not be read from their code, so their `
+      + 'versions are merge titles — and a merge title can name the wrong version (#1027 did)');
+  }
+  if (none) {
+    parts.push(`${none}${titled ? '' : ` of ${all.length}`} build(s) could not be read from their code and their `
+      + 'titles name no version, so no version is known for them');
+  }
+  return `${parts.join('; ')}.`;
+}
+
+/**
+ * PURE: "roll back to v1.74.3" → the commit to roll back to, and everything after it.
+ *
+ * The NEWEST commit that shows the version: a commit that did not move APP_VERSION (a CLAUDE.md
+ * edit, say) still showed the version before it, and the newest of those is the last build that
+ * read that number in the footer. The older ones are returned as `sameVersion` so the plan can
+ * name them rather than hide them.
+ *
+ * `setBy` is the one of them that MOVED APP_VERSION to this number — the oldest of the stretch,
+ * when the build before it (still inside the window) showed a different number. Otherwise it is
+ * null rather than a guess, and `unsetWhy` says which of two reasons: 'window' — the window ends at
+ * that oldest commit, so what came before it was not read (a wider --days reads it); 'unversioned'
+ * — the build before it WAS read and carries no version, so no window would settle it.
+ *
+ * NEVER A GUESS BETWEEN TWO POINTS. If the version appears in two separate stretches of history
+ * (the same number claimed twice, with something else between), there is no one answer, so this
+ * returns `ambiguousVersion` with every match and the CLI asks for a commit instead.
+ */
+export function resolveVersion(commits, version) {
+  const hits = [];
+  (commits || []).forEach((c, i) => { if (c.version === version) hits.push(i); });
+  if (!hits.length) return { target: null, undone: [], missingVersion: version };
+  const oneStretch = hits.every((v, k) => k === 0 || v === hits[k - 1] + 1);
+  if (!oneStretch) return { target: null, undone: [], ambiguousVersion: version, matches: hits.map((i) => commits[i]) };
+  const oldest = hits[hits.length - 1];
+  const before = commits[oldest + 1];
+  const setBy = before && before.version && before.version !== version ? commits[oldest] : null;
+  const unsetWhy = setBy ? null : (before ? 'unversioned' : 'window');
+  return { target: commits[hits[0]], undone: commits.slice(0, hits[0]), sameVersion: hits.slice(1).map((i) => commits[i]), setBy, unsetWhy };
+}
+
+/**
+ * PURE: what the plan says when the version asked for sat on more than one commit in a row.
+ *
+ * Only the oldest of such a run MOVED APP_VERSION to the number; every newer one — the target
+ * included — changed something else and kept it. The plan used to say all the older ones "did not
+ * move APP_VERSION", which is false of exactly the one that did, so each commit is named with
+ * what it did. Empty when the version sat on one commit only.
+ *
+ * "Widen --days" only when widening could answer it: when the build before the run was read and
+ * carries no version, a wider window reads the same build again, so the plan says that instead.
+ */
+export function sameVersionNote({ target, sameVersion = [], setBy = null, unsetWhy = null } = {}) {
+  if (!target || !sameVersion?.length) return [];
+  const v = `v${target.version}`;
+  const lines = [
+    `${v} is on ${sameVersion.length + 1} commits in a row. This takes the newest, the last build that`,
+    `showed ${v}; it did not move APP_VERSION itself. To go to an older one, pass its commit:`,
+  ];
+  sameVersion.forEach((c, k) => {
+    const oldest = k === sameVersion.length - 1;
+    const what = !oldest ? 'did not move APP_VERSION'
+      : setBy && setBy.sha === c.sha ? `moved APP_VERSION to ${v}`
+        : unsetWhy === 'unversioned' ? 'the oldest of the run; the build before it has no readable version, so which one set it is not known'
+          : 'the oldest in the window read; what came before it was not read (widen --days)';
+    lines.push(`  ${c.sha.slice(0, 7)}  ${c.subject.slice(0, 60)}  — ${what}`);
+  });
+  return lines;
+}
+
+/**
+ * PURE: "No commit on main ships vX" — and the commits whose merge TITLE names vX while their code
+ * shipped something else, so the refusal points somewhere instead of stopping bare.
+ *
+ * v1.40.0 is the real case: it has a changelog row, but no build's code ever said it. d412457 moved
+ * APP_VERSION from 1.39.0 to 1.41.0 in one commit while its title said "(v1.40.0)". The old tool
+ * resolved "v1.40.0" to d412457 by that title; reading the code, it rightly refuses — and this says
+ * which commit the number came from and how to reach it. Empty when no title names it.
+ */
+export function titleNamesNote(commits, version) {
+  const named = (commits || []).filter((c) => c.versionFrom === 'tree' && c.subjectVersion === version && c.version !== version);
+  if (!named.length) return [];
+  return [
+    `No build's code says v${version}, but ${named.length === 1 ? 'this commit\'s merge title names it' : 'these commits\' merge titles name it'}:`,
+    // The WHOLE subject: its tail is the "(vX.Y.Z) (#N)" this line exists to show.
+    ...named.map((c) => `  ${c.sha.slice(0, 7)}  ${formatWall(c.at)}  ${c.subject}  — the footer on it read v${c.version}`),
+    `To roll back to ${named.length === 1 ? 'it' : 'one of them'}, pass the commit:  npm run rollback -- ${named[0].sha.slice(0, 7)}`,
+  ];
+}
+
+/**
+ * PURE: a commit Chad already has → the target and everything after it, WHEN it is in the
+ * window. Null when it is not, so the caller reads exactly what lies between it and main
+ * instead of trimming the window's oldest commit off a list that is not the answer.
+ */
+export function splitAtCommit(commits, sha) {
+  const idx = (commits || []).findIndex((c) => c.sha === sha);
+  if (idx === -1) return null;
+  return { target: commits[idx], undone: commits.slice(0, idx) };
 }
 
 /**
@@ -337,7 +508,10 @@ export function ensureRollbackScript(source) {
  */
 export function rollbackRowText({ toVersion, toWhen, because, undone = [], paths = [] }) {
   const scope = paths.length ? `${paths.length} path(s): ${paths.join(', ')}` : 'the whole app';
-  const lost = undone.map((c) => c.version).filter(Boolean);
+  // Each version once, and never the one being rolled back TO. Versions are read from each
+  // commit's tree, so a commit that did not move APP_VERSION carries its parent's number — listing
+  // it twice, or listing the target's own number as "undone", would misstate what was lost.
+  const lost = [...new Set(undone.map((c) => c.version).filter(Boolean))].filter((v) => v !== toVersion);
   const lostBit = lost.length
     ? ` UNDONE: ${lost.length} release(s) — ${lost.join(', ')}.`
     : ' No released versions were undone.';
@@ -367,11 +541,13 @@ export function rollbackRowText({ toVersion, toWhen, because, undone = [], paths
 // than guessed at: every one of them conflicts on a plain `git revert`, and the conflicts
 // split into exactly two kinds.
 //
-//   MECHANICAL — APP_VERSION, the VERSION_LOG rows, and the generated public/version.json.
-//     These collide on almost every parallel merge (CLAUDE.md has a whole entry about it),
-//     they carry no behaviour, and this tool REWRITES them a few lines later anyway when it
-//     bumps the version. Resolving them automatically is not a judgement call; leaving them
-//     for Chad to hand-edit at 6:45am would be.
+//   MECHANICAL — APP_VERSION, the VERSION_LOG rows, and the two generated files: public/version.json
+//     and src/lib/version-dates.js. These collide on almost every parallel merge (CLAUDE.md has a
+//     whole entry about it) and carry no behaviour. This tool rewrites APP_VERSION and the log a few
+//     lines later anyway when it bumps the version; the build (prebuild) rewrites version.json from
+//     them, and version-dates.js is regenerated here from both sides (regenerateVersionDates).
+//     Resolving them automatically is not a judgement call; leaving them for Chad to hand-edit at
+//     6:45am would be.
 //   CODE — anything else. NOT the tool\'s to resolve. A revert that guesses which side of a
 //     real code conflict to keep is a silent behaviour change wearing a rollback\'s name,
 //     which is the exact failure this whole feature exists to undo. It stops and says where.
@@ -411,8 +587,99 @@ export function resolveByPR(commits, numbers) {
   return { found, missing };
 }
 
-/** A file whose entire content this tool regenerates, so a conflict in it carries no meaning. */
+/**
+ * A file the BUILD rewrites whole from App.jsx (npm run build → prebuild → emit-version-json.mjs), so
+ * a conflict in it carries no meaning: main's copy is kept, and the drop's own deploy writes the new one.
+ */
 export const GENERATED = ['dispatch-map/public/version.json'];
+
+/**
+ * THE OTHER GENERATED FILE, settled by regenerating it rather than by taking either side.
+ *
+ * src/lib/version-dates.js is written by scripts/emit-version-dates.mjs, which prebuild also runs on
+ * every deploy. It carries no behaviour: its one reader, lib/rollback-targets.js, prints "· landed
+ * <date>" beside each row of the footer's Roll back panel, and the request that panel files names the
+ * version, never the date. It is NOT rebuilt from the tree alone, though: the generator MERGES the
+ * committed copy with `git log -L` on APP_VERSION's line and never removes a row, because a version
+ * that landed on main stays landed. Dropping a PR does not un-land its version, so no row is removed
+ * here either.
+ *
+ * Measured Sep 28 on the nine Sep 26 PRs: only #1023's revert conflicts in it — main's side holds 42 rows,
+ * the reverted side none — and the tool counted that as a real code conflict a person had to settle.
+ */
+export const VERSION_DATES_FILE = 'dispatch-map/src/lib/version-dates.js';
+
+/** The history read emit-version-dates.mjs fromGit() makes, argument for argument (the \u0001 separators
+ *  are what its parseVersionLog reads), so a dispute is settled by the answer the generator would give. */
+export const VERSION_HISTORY_LOG = ['log', '-L', `/^const APP_VERSION = /,+1:${APP}`, '--format=COMMIT\u0001%H\u0001%ct'];
+
+/** PURE: `'1.74.0': '2026-09-26T19:52:00.000Z'` rows → { version: epoch seconds }. The generator's own
+ *  reader of its format (existing() in emit-version-dates.mjs), kept here because that one is private. */
+export function datesIn(text) {
+  const out = {};
+  for (const m of String(text ?? '').matchAll(/'(\d+\.\d+\.\d+)':\s*'([^']+)'/g)) {
+    const t = Date.parse(m[2]);
+    if (Number.isFinite(t)) out[m[1]] = Math.floor(t / 1000);
+  }
+  return out;
+}
+
+/**
+ * PURE: a conflicted version-dates.js, regenerated — never by picking a side.
+ *
+ * Every dated row on EITHER side is kept (the generator's own rule: merge, never truncate), and the file
+ * is written by the generator's renderModule, so it is byte for byte what the generator would write for
+ * those rows. The two sides CAN give one version two dates: a copy built on a PR branch dates a version
+ * by the branch commit, and a later copy built on history that holds the merge re-dates it by the merge
+ * (#1023's own copy said 1.74.0 landed at 19:08:21, its branch commit 6c86404; #1029's copy moved it to
+ * 19:52:00, when 4f927cf merged). Then git history settles it, exactly as the generator does — `history()` is
+ * parseVersionLog over `git log -L`, only asked for when there is a dispute — and a dispute history
+ * cannot settle is a person's call, never a coin toss.
+ *
+ * Returns { text } or { stop: why }.
+ */
+export function regenerateVersionDates(body, { render, history } = {}) {
+  if (typeof render !== 'function') return { stop: 'its generator (scripts/emit-version-dates.mjs) could not be loaded' };
+  const merged = {};
+  const disputed = new Set();
+  const take = (text) => {
+    for (const [v, t] of Object.entries(datesIn(text))) {
+      if (v in merged && merged[v] !== t) disputed.add(v);
+      else if (!(v in merged)) merged[v] = t;
+    }
+  };
+  for (const h of splitConflicts(body)) {
+    take(h.plain);
+    if (h.ours !== null) { take(h.ours.join('\n')); take(h.theirs.join('\n')); }
+  }
+  if (!Object.keys(merged).length) return { stop: 'no dated version could be read from either side' };
+  if (disputed.size) {
+    const known = typeof history === 'function' ? history() : null;
+    const unsettled = [...disputed].filter((v) => !Number.isFinite(known?.[v]));
+    if (unsettled.length) {
+      return { stop: `its two sides date ${unsettled.map((v) => `v${v}`).join(', ')} differently, and git history here does not say which is right` };
+    }
+    for (const v of disputed) merged[v] = known[v];
+  }
+  return { text: render(merged) };
+}
+
+/**
+ * The revert the dry run's probe and --execute both run, with two settings STATED rather than
+ * inherited. The same class as TREE_GREP and --no-show-signature: a config setting must not decide
+ * what this tool reads. Command-line flags beat config, including GIT_CONFIG_COUNT in the environment.
+ *
+ *   merge.conflictStyle=merge — diff3 or zdiff3, settings people really use, add a `||||||| base`
+ *     section to every conflict. splitConflicts read it as code, so every App.jsx version hunk became
+ *     a "real" conflict: on a test repo `--drop 3` went from "✓ comes out cleanly" to "✗ 2 real code
+ *     conflict(s) … App.jsx", and --execute refused (measured Sep 27).
+ *   rerere.enabled=false — rerere replays a conflict someone once settled by hand, and it is on by
+ *     default once .git/rr-cache exists. With rerere.autoUpdate it also stages the file, so git reports
+ *     no conflict at all: a real code conflict read "✓ comes out cleanly" and --execute would have
+ *     committed that old answer unreviewed (measured Sep 27). Without autoUpdate the file is left
+ *     conflicted with no markers, and the stop blamed a deleted file that was not deleted.
+ */
+export const REVERT_NO_COMMIT = ['-c', 'merge.conflictStyle=merge', '-c', 'rerere.enabled=false', 'revert', '--no-commit'];
 
 /**
  * PURE: split a conflicted file into plain text and conflict blocks.
@@ -488,6 +755,95 @@ export function resolveVersionConflicts(text) {
 }
 
 /**
+ * PURE: how many real and how many mechanical conflicts ONE conflicted file holds.
+ *
+ * A FILE GIT MARKED CONFLICTED BUT WITH NO MARKERS IN IT IS A REAL CONFLICT. That is what a
+ * modify/delete looks like: the PR being dropped ADDED a file that a later PR then changed (or
+ * the other way round), so git cannot tell whether to delete it and writes no <<<<<<< at all.
+ * Counting only markers scored those files as zero — measured on #1033, whose four files later
+ * changed by #1037 (plan-core.mts, plan-jobs.mts, plan.mts, PlanPanel.jsx) were counted as
+ * nothing — and --execute would then have `git add`ed the file as it stood, silently keeping what
+ * the revert was meant to remove. An unreadable file is the same answer: a person has to look.
+ */
+export function conflictCounts(path, body) {
+  if (GENERATED.includes(path)) return { code: 0, mech: 1, markers: true };
+  if (body === null || body === undefined) return { code: 1, mech: 0, markers: false };
+  let code = 0; let mech = 0;
+  for (const h of splitConflicts(body)) {
+    if (h.ours === null) continue;
+    if (isVersionOnly(h)) mech++; else code++;
+  }
+  if (!code && !mech) return { code: 1, mech: 0, markers: false };
+  return { code, mech, markers: true };
+}
+
+/**
+ * PURE: what a drop does with ONE conflicted file — the single decision the dry run's probe and
+ * --execute both make, so the plan and the real thing cannot disagree about a file.
+ *
+ *   'ours'  the generated version.json: main's copy is kept (the drop's deploy rebuilds it anyway).
+ *   'write' only version-line hunks: `text` is the file with them resolved to main's side — or
+ *           version-dates.js regenerated from both sides by `regenerate` (regenerateVersionDates).
+ *   'stop'  anything a person has to decide — a code hunk, a file one side deleted and the other
+ *           changed (no markers at all), a file that could not be read, or a version-dates.js that
+ *           could not be regenerated (`why` says why). Never written.
+ *
+ * `code` and `mech` are the counts the plan prints.
+ */
+export function dropFileAction(path, body, { regenerate } = {}) {
+  const counted = conflictCounts(path, body);
+  if (GENERATED.includes(path)) return { action: 'ours', ...counted };
+  if (path === VERSION_DATES_FILE && counted.markers) {
+    const r = typeof regenerate === 'function' ? regenerate(body) : { stop: 'its generator (scripts/emit-version-dates.mjs) could not be loaded' };
+    if (typeof r?.text === 'string') return { action: 'write', text: r.text, code: 0, mech: counted.code + counted.mech, markers: true, regenerated: true };
+    return { action: 'stop', code: Math.max(1, counted.code), mech: 0, markers: true, why: r?.stop || 'it could not be regenerated' };
+  }
+  if (counted.code) return { action: 'stop', ...counted };
+  const { text, remaining } = resolveVersionConflicts(body);
+  // conflictCounts and resolveVersionConflicts share isVersionOnly, so this cannot fire — but a file
+  // is never written with markers left in it on the strength of "cannot".
+  if (remaining) return { action: 'stop', ...counted, code: remaining };
+  return { action: 'write', text, ...counted };
+}
+
+/**
+ * PURE: did git's revert of one PR run at all? A revert that exits with an error and leaves NO file
+ * conflicted did nothing — git refused it outright — and must never read "comes out cleanly". The
+ * Sep 27 review measured it on a throwaway repo: a true merge commit, reverted without -m, fails that
+ * way; the probe swallowed the error as "conflicts are expected", found nothing conflicted, printed ✓,
+ * and --execute built a "Drop #5" commit that reverted nothing. Returns git's reason, or null when the
+ * revert ran (cleanly, or stopping on conflicts — the ordinary case).
+ */
+export function revertFailure(error, conflicted) {
+  if (!error) return null;
+  if ((conflicted || []).length) return null;
+  const text = String(typeof error === 'object' ? (error.stderr || error.message || '') : error).trim();
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const said = lines.find((l) => /^error:/i.test(l)) || lines.find((l) => /^fatal:/i.test(l)) || lines[0];
+  return (said || 'git refused the revert').replace(/^(error|fatal):\s*/i, '');
+}
+
+/**
+ * PURE: the refusal for PRs that landed as a true merge commit (more than one parent).
+ *
+ * Every PR auto-merge lands is squashed into ONE ordinary commit, so a merge commit got onto main some
+ * other way. Reverting one means choosing which parent was main (`git revert -m 1`), and picking that
+ * is a person's call — the same reason a real code conflict stops the run. Empty when there are none.
+ */
+export function mergeRefusal(merges) {
+  if (!merges?.length) return [];
+  const one = merges.length === 1;
+  return [
+    `${merges.map((m) => `#${m.pr}`).join(', ')} ${one ? 'is a merge commit' : 'are merge commits'}: ${
+      merges.map((m) => `${m.sha.slice(0, 7)} has ${m.parents} parents`).join('; ')}.`,
+    'Every PR auto-merge lands is squashed into one ordinary commit, so this was merged another way.',
+    'Reverting a merge means choosing which parent was main (git revert -m 1), and that is a person\'s',
+    'call, not this tool\'s. Nothing was done. Revert it by hand on a branch of your own, or roll back',
+    'to a time instead, which cannot conflict:',
+  ];
+}
+
+/**
  * PURE: the changelog sentence a PR-drop writes about itself.
  *
  * Names the PRs by number, because that is how Chad refers to them and how he will look one
@@ -506,9 +862,21 @@ export function dropRowText({ dropped = [], because, autoResolved = 0 }) {
 
 // ── READING HISTORY ──────────────────────────────────────────────────────────
 
-/** PURE: `git log` porcelain → rows. Kept separate from the git call so tests need no repo. */
+/**
+ * PURE: `git log` porcelain → rows. Kept separate from the git call so tests need no repo.
+ *
+ * ONLY ROWS OF THE FORMAT ARE COMMITS. Every commit GitHub squash-merges onto main is signed, and a
+ * git config with log.showSignature=true makes `git log` print gpg's "Signature made …" lines on
+ * stdout between them (measured Sep 27). Read as commits, those lines were handed to the tree grep
+ * as revisions, the grep failed for the whole window, and every version fell back to its merge
+ * subject — the Sep 26 bug again, from a setting. The CLI also passes --no-show-signature; this is
+ * the second line, for whatever else a config can put on stdout.
+ */
 export function parseLog(out) {
-  return String(out || '').split('\n').map((l) => l.trim()).filter(Boolean).map((line) => {
+  return String(out || '').split('\n').map((l) => l.trim()).filter(Boolean).filter((line) => {
+    const f = line.split('\u0001');
+    return f.length >= 3 && f[0] !== '' && Number.isFinite(Number(f[1])) && f[1] !== '';
+  }).map((line) => {
     const [sha, epoch, ...rest] = line.split('\u0001');
     const subject = rest.join('\u0001');
     return { sha, at: Number(epoch) * 1000, subject, version: versionFromSubject(subject) };
@@ -566,8 +934,65 @@ function parseArgv(argv) {
   return out;
 }
 
+const LOG_FORMAT = '--format=%H\u0001%ct\u0001%s';
+// --no-show-signature: see parseLog. A config setting must not decide what this tool reads. Exported
+// so a test can run it against a signed commit under log.showSignature=true.
+export const LOG = ['--no-show-signature', LOG_FORMAT];
+
+/**
+ * The version each commit's tree ships, read ONCE per commit per run. A commit's tree never
+ * changes, so the cache cannot go stale; it saves the second read when the plan, the list and
+ * the drop probe ask about the same commits.
+ */
+const treeVersionCache = new Map();
+
+/**
+ * The `git grep` that reads each tree's APP_VERSION, with every output and pattern setting stated
+ * rather than inherited. Measured Sep 27: `grep.lineNumber=true` — a common setting — makes git print
+ * `sha:path:NN:const …`, which parseTreeVersions does not read, and `grep.patternType=fixed` makes the
+ * `^` a literal so nothing matches. Either one silently put every version back on its merge subject,
+ * and the tool answered "No commit on main ships v1.75.1" again. Command-line flags beat config.
+ */
+export const TREE_GREP = ['grep', '--no-line-number', '--no-column', '--no-color', '--basic-regexp', '-e', '^const APP_VERSION = '];
+
+/**
+ * `chunk` is how many commits one `git grep` reads (200 is well under any command-line limit; a full
+ * clone's 60 days is several chunks). It is an option only so a test can make a five-commit repo take
+ * five chunks; anything but a positive whole number is the default, never a loop that cannot end.
+ * `cache` is the per-run cache unless a test hands in its own.
+ */
+export function readTreeVersions(shas, { cwd, chunk = 200, cache } = {}) {
+  const size = Number.isInteger(chunk) && chunk > 0 ? chunk : 200;
+  const store = cache instanceof Map ? cache : treeVersionCache;
+  const todo = [...new Set(shas)].filter((s) => !store.has(s));
+  const run = (...a) => execFileSync('git', a, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, cwd, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  // From the repo root whatever the cwd, so the pathspec means the same file from anywhere.
+  let top = null;
+  try { top = run('rev-parse', '--show-toplevel'); } catch { /* not a repo: every commit falls back */ }
+  for (let i = 0; i < todo.length; i += size) {
+    const part = todo.slice(i, i + size);
+    let out = '';
+    // Exit 1 is "no tree had the line" — an answer, not a failure. Anything else (a git that
+    // cannot answer) leaves these commits on their subject's version, which the list marks.
+    try { out = top ? run('-C', top, ...TREE_GREP, ...part, '--', APP) : ''; } catch { out = ''; }
+    const found = parseTreeVersions(out);
+    for (const s of part) store.set(s, found.get(s) ?? null);
+  }
+  const map = new Map();
+  for (const s of shas) { const v = store.get(s); if (v) map.set(s, v); }
+  return map;
+}
+
+/** Commits read off git, labelled by what their trees ship. */
+function labelled(logOut) {
+  const commits = parseLog(logOut);
+  return withTreeVersions(commits, readTreeVersions(commits.map((c) => c.sha)));
+}
+
+// FIRST-PARENT: the states main was actually in. On a squash-merge history that is every commit
+// anyway; on a true merge it keeps the side branch's own commits out, since main never ran them.
 function historySince(days) {
-  return parseLog(git('log', 'origin/main', `--since=${days} days ago`, '--format=%H\u0001%ct\u0001%s'));
+  return labelled(git('log', 'origin/main', '--first-parent', `--since=${days} days ago`, ...LOG));
 }
 
 async function changelogHeadline(sha, version) {
@@ -578,9 +1003,15 @@ async function changelogHeadline(sha, version) {
 function showList(days) {
   const commits = historySince(days);
   console.log(BOLD(`\n  What shipped in the last ${days} days — newest first, times are ${ZONE}.\n`));
+  console.log(DIM('  The version is the one the footer showed on that build (APP_VERSION in its own tree).'));
+  console.log(DIM('  * = its tree could not be read, so the version is the merge subject\'s claim.\n'));
+  const unreadNote = subjectFallbackNote(commits);
+  if (unreadNote) console.log(BOLD(`  ! ${unreadNote}\n`));
   for (const c of commits) {
-    const v = c.version ? `v${c.version}` : DIM('(no version)');
-    console.log(`  ${formatWall(c.at)}   ${v.padEnd(12)} ${c.sha.slice(0, 7)}  ${c.subject.slice(0, 84)}`);
+    const v = c.version ? `v${c.version}${c.versionFrom === 'subject' ? '*' : ''}` : '(no version)';
+    const differs = c.versionFrom === 'tree' && c.subjectVersion && c.subjectVersion !== c.version
+      ? DIM(`  (subject says v${c.subjectVersion})`) : '';
+    console.log(`  ${formatWall(c.at)}   ${v.padEnd(12)} ${c.sha.slice(0, 7)}  ${c.subject.slice(0, 84)}${differs}`);
   }
   console.log(BOLD('\n  To see what rolling back to one of these would do (nothing moves):\n'));
   console.log('      npm run rollback -- "2026-09-14 23:59"\n');
@@ -589,24 +1020,32 @@ function showList(days) {
 function resolveTarget(t, commits) {
   if (t.kind === 'commit') {
     const sha = git('rev-parse', t.sha);
-    const known = commits.find((c) => c.sha === sha);
-    return { target: known || { sha, at: Number(git('log', '-1', '--format=%ct', sha)) * 1000, subject: git('log', '-1', '--format=%s', sha), version: versionFromSubject(git('log', '-1', '--format=%s', sha)) }, undone: commits.slice(0, commits.findIndex((c) => c.sha === sha)) };
+    const inWindow = splitAtCommit(commits, sha);
+    if (inWindow) return inWindow;
+    // Older than the window (or not on main's first-parent line): read exactly what lies between
+    // it and main, rather than trimming the window's oldest commit off a list that is not it.
+    const [target] = labelled(git('log', '-1', ...LOG, sha));
+    return { target, undone: labelled(git('log', '--first-parent', `${sha}..origin/main`, ...LOG)) };
   }
-  if (t.kind === 'version') {
-    const idx = commits.findIndex((c) => c.version === t.version);
-    if (idx === -1) return { target: null, undone: [], missingVersion: t.version };
-    return { target: commits[idx], undone: commits.slice(0, idx) };
-  }
+  if (t.kind === 'version') return resolveVersion(commits, t.version);
   return splitAt(commits, t.at);
 }
 
-async function printPlan({ target, undone, paths, asked }) {
+async function printPlan({ target, undone, paths, asked, sameVersion = [], setBy = null, unsetWhy = null }) {
   const headline = await changelogHeadline(target.sha, target.version);
   console.log(BOLD('\n  ROLLBACK PLAN — nothing has moved. This is what --execute would do.\n'));
   console.log(`  You asked for   ${asked}`);
   console.log(`  Rolling back to ${BOLD(target.version ? `v${target.version}` : target.sha.slice(0, 7))}  ${formatWall(target.at)}  ${target.sha.slice(0, 7)}`);
   console.log(`                  ${target.subject.slice(0, 92)}`);
   if (headline) console.log(DIM(`                  ${headline.slice(0, 92)}`));
+  if (target.versionFrom === 'tree' && target.subjectVersion && target.subjectVersion !== target.version) {
+    console.log(DIM(`                  its merge subject says v${target.subjectVersion}; the footer on this build read`));
+    console.log(DIM(`                  v${target.version} (APP_VERSION in its tree), and that is what this goes by.`));
+  }
+  if (target.versionFrom === 'subject') {
+    console.log(DIM('                  (its tree could not be read — this version is the merge subject\'s claim)'));
+  }
+  for (const line of sameVersionNote({ target, sameVersion, setBy, unsetWhy })) console.log(DIM(`                  ${line}`));
   console.log(`  Scope           ${paths.length ? `${paths.length} path(s): ${paths.join(', ')}` : 'the whole app'}`);
   console.log(`  Kept as-is      ${SELF_PRESERVE.join(', ')}`);
   console.log(DIM('                  your rules, the CI guards and this tool do not go backwards'));
@@ -723,6 +1162,29 @@ CODE ONLY — Firestore and anything already sent to NuVizz are untouched.`);
 }
 
 /**
+ * How the tree at `repoDir` regenerates src/lib/version-dates.js: ITS OWN generator (the one its
+ * prebuild runs), so what the drop writes is what that tree's build would write — and, only when the
+ * two sides of the conflict date one version differently, its git history read the way
+ * emit-version-dates.mjs fromGit() reads it. `git log -L` over App.jsx took 7 s on a 110-commit clone,
+ * so it is never run when both sides agree, which is every case measured on Sep 28.
+ *
+ * Undefined when the tree carries no generator (a rollback to before it existed): the conflict is
+ * then a person's to settle, like any file this tool cannot vouch for.
+ */
+async function versionDatesRegenerator(repoDir) {
+  let gen = null;
+  try { gen = await import(pathToFileURL(join(repoDir, 'dispatch-map', 'scripts', 'emit-version-dates.mjs')).href); } catch { gen = null; }
+  if (typeof gen?.renderModule !== 'function' || typeof gen?.parseVersionLog !== 'function') return undefined;
+  const history = () => {
+    try {
+      return gen.parseVersionLog(execFileSync('git', ['-C', repoDir, ...VERSION_HISTORY_LOG],
+        { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }));
+    } catch { return null; }
+  };
+  return (body) => regenerateVersionDates(body, { render: gen.renderModule, history });
+}
+
+/**
  * Would this PR come out cleanly? Measured by actually trying it, in a throwaway worktree.
  *
  * NOT predicted from the file lists. Two PRs can touch one file and not collide, or collide in
@@ -730,7 +1192,7 @@ CODE ONLY — Firestore and anything already sent to NuVizz are untouched.`);
  * worktree in a temp dir means the probe cannot touch Chad's checkout even if it goes wrong,
  * which matters because this runs while he is looking at a broken board.
  */
-function probeRevert(shas) {
+async function probeRevert(shas) {
   const dir = mkdtempSync(join(tmpdir(), 'rollback-probe-'));
   try {
     git('worktree', 'add', '--detach', '--quiet', dir, 'origin/main');
@@ -740,24 +1202,31 @@ function probeRevert(shas) {
     // came out fine. Chad would reasonably stop at the word "error".
     const wt = (...a) => execFileSync('git', ['-C', dir, ...a],
       { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    // The generator main's own tree carries, so a regenerated version-dates.js is what main's build writes.
+    const regenerate = await versionDatesRegenerator(dir);
     const report = [];
     for (const c of shas) {
       let conflicted = [];
-      try { wt('revert', '--no-commit', c.sha); } catch { /* conflicts are expected */ }
+      let error = null;
+      // A conflicting revert throws, and that is the ordinary case — but so does a revert git refused
+      // outright, which leaves nothing conflicted. revertFailure tells the two apart.
+      try { wt(...REVERT_NO_COMMIT, c.sha); } catch (e) { error = e; }
       try {
         conflicted = wt('diff', '--name-only', '--diff-filter=U').trim().split('\n').filter(Boolean);
       } catch { /* nothing unmerged */ }
+      const failed = revertFailure(error, conflicted);
       let code = 0; let mech = 0;
+      const realFiles = [];
+      const regenerated = [];
       for (const f of conflicted) {
-        if (GENERATED.includes(f)) { mech++; continue; }
-        let body = '';
-        try { body = readFileSync(join(dir, f), 'utf8'); } catch { continue; }
-        for (const h of splitConflicts(body)) {
-          if (h.ours === null) continue;
-          if (isVersionOnly(h)) mech++; else code++;
-        }
+        let body = null;
+        try { body = readFileSync(join(dir, f), 'utf8'); } catch { /* unreadable: counted as real */ }
+        const n = dropFileAction(f, body, { regenerate });
+        code += n.code; mech += n.mech;
+        if (n.code) realFiles.push({ file: f, code: n.code, why: n.why });
+        if (n.regenerated) regenerated.push(f);
       }
-      report.push({ ...c, conflicted, code, mech });
+      report.push({ ...c, conflicted, realFiles, regenerated, code, mech, failed });
       try { wt('revert', '--abort'); } catch { /* nothing in progress */ }
       try { wt('reset', '--hard', 'origin/main'); wt('clean', '-qfd'); } catch { /* best effort */ }
     }
@@ -768,7 +1237,7 @@ function probeRevert(shas) {
 }
 
 async function printDropPlan({ picked, asked }) {
-  const probe = probeRevert(picked);
+  const probe = await probeRevert(picked);
   console.log(BOLD('\n  DROP PLAN — nothing has moved. This is what --execute would do.\n'));
   console.log(`  You asked to drop  ${asked}`);
   console.log(`  Reverting ${picked.length} PR(s), newest first. Everything else on main stays in.\n`);
@@ -779,14 +1248,31 @@ async function printDropPlan({ picked, asked }) {
     console.log(`  ${BOLD(`#${c.pr}`)}${c.version ? `  v${c.version}` : ''}  ${formatWall(c.at)}  ${c.sha.slice(0, 7)}`);
     console.log(`      ${c.subject.slice(0, 88)}`);
     if (headline) console.log(DIM(`      ${headline.slice(0, 88)}`));
-    if (!c.code) {
+    if (c.failed) {
+      // Git refused the revert and left nothing conflicted: nothing was reverted, so nothing "comes out".
+      blocked++;
+      console.log(`      ${BOLD('✗ git could not revert it')} — ${c.failed}`);
+    } else if (!c.code) {
       console.log(`      ${BOLD('✓ comes out cleanly')}${c.mech ? DIM(` (${c.mech} version-line conflict(s), resolved mechanically)`) : ''}`);
     } else {
       blocked++;
       console.log(`      ${BOLD(`✗ ${c.code} real code conflict(s)`)} — a person has to pick a side:`);
-      for (const f of c.conflicted.filter((f) => !GENERATED.includes(f))) console.log(`          ${f}`);
+      // Only the files a person has to settle, each with its count. A file whose only conflicts are
+      // version lines (App.jsx, on nearly every drop) is settled by the tool, and listing it under
+      // "a person has to pick a side" told Chad to hand-edit something he never has to touch.
+      for (const r of c.realFiles) console.log(`          ${r.file}  (${r.code})${r.why ? `  — ${r.why}` : ''}`);
+    }
+    for (const f of c.regenerated || []) {
+      console.log(DIM(`      ${f.split('/').pop()}: regenerated from both sides by its own generator (no side taken)`));
     }
     console.log('');
+  }
+  // "Clean" is a statement about git, not about the app. Measured Sep 27: #1022 drops with no
+  // conflict at all, and two tests a LATER PR added (#1023) then fail, because they expect what #1022
+  // did. Saying ✓ without this line would read as "safe to ship", which the probe cannot know.
+  if (probe.some((c) => !c.code && !c.failed)) {
+    console.log(DIM('  "Comes out cleanly" means git found nothing to settle. A later PR\'s tests can still'));
+    console.log(DIM('  expect what a dropped PR did, so the drop\'s own CI run is what says it works.\n'));
   }
 
   console.log(BOLD('  WHAT THIS DOES NOT PUT BACK — code only:\n'));
@@ -806,7 +1292,7 @@ async function printDropPlan({ picked, asked }) {
   console.log(DIM('      npm run rollback -- "2026-09-14 11:59pm"\n'));
 }
 
-function executeDrop({ picked, because, push }) {
+async function executeDrop({ picked, because, push }) {
   if (git('status', '--porcelain')) {
     console.error('\n  ✗ You have uncommitted changes. Commit or stash them first.\n');
     process.exit(1);
@@ -818,31 +1304,54 @@ function executeDrop({ picked, because, push }) {
   const branch = `drop/pr-${picked.map((c) => c.pr).join('-')}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
   git('checkout', '-q', '-B', branch, 'origin/main');
 
+  // Leave NOTHING behind, on every stop. A half-reverted branch and a dirty tree on the morning the
+  // board is broken is worse than no attempt: the next command someone runs picks it up. The branch
+  // goes too — a pile of dead drop/* branches is its own confusion. The reset is safe: the drop branch
+  // was cut from origin/main a moment ago on a tree checked clean above, so it throws away only what
+  // this run staged — which `revert --abort` alone does not, after a PR that reverted with no conflict.
+  const abandon = () => {
+    try { git('revert', '--abort'); } catch { /* nothing in progress */ }
+    try { git('reset', '-q', '--hard'); } catch { /* best effort */ }
+    git('checkout', '-q', wasOn === 'HEAD' ? 'main' : wasOn);
+    try { git('branch', '-D', branch); } catch { /* never created */ }
+    process.exit(1);
+  };
+  // The generator this tree carries (the drop branch is origin/main's tree), for version-dates.js.
+  const regenerate = await versionDatesRegenerator(process.cwd());
+
   let autoResolved = 0;
   for (const c of picked) {
-    try { execFileSync('git', ['revert', '--no-commit', c.sha], { encoding: 'utf8', maxBuffer: 1 << 26, stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* conflicts handled below */ }
+    let error = null;
+    try { execFileSync('git', [...REVERT_NO_COMMIT, c.sha], { encoding: 'utf8', maxBuffer: 1 << 26, stdio: ['ignore', 'pipe', 'pipe'] }); } catch (e) { error = e; }
     let conflicted = [];
     try { conflicted = git('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean); } catch {}
+    const failed = revertFailure(error, conflicted);
+    if (failed) {
+      // Git refused the revert outright. Building on past it would commit a "Drop #N" that reverts
+      // nothing, with a changelog row saying the PR was dropped — an intent reported as an outcome.
+      console.error(`\n  ✗ git could not revert #${c.pr} (${c.sha.slice(0, 7)}): ${failed}`);
+      console.error('\n    Nothing of it was reverted, so no drop is built. Nothing was pushed and nothing is');
+      console.error('    left behind. Settle it by hand on a branch of your own, or roll back to a time instead:\n');
+      console.error('        npm run rollback -- "2026-09-14 11:59pm"\n');
+      abandon();
+    }
     for (const f of conflicted) {
-      if (GENERATED.includes(f)) { git('checkout', '--ours', '--', f); git('add', '--', f); autoResolved++; continue; }
-      const { text, remaining } = resolveVersionConflicts(readFileSync(f, 'utf8'));
-      if (remaining) {
-        // STOP. Never guess which side of a real code conflict to keep.
-        console.error(`\n  ✗ #${c.pr} has ${remaining} real code conflict(s) in ${f}.`);
+      let body = null;
+      try { body = readFileSync(f, 'utf8'); } catch { /* unreadable: a real conflict, below */ }
+      const decided = dropFileAction(f, body, { regenerate });
+      if (decided.action === 'ours') { git('checkout', '--ours', '--', f); git('add', '--', f); autoResolved++; continue; }
+      if (decided.action !== 'write') {
+        // STOP. Never guess which side of a real code conflict to keep — and a file one side
+        // deleted while the other changed it is a real conflict with no markers in it at all.
+        console.error(`\n  ✗ #${c.pr} has ${decided.code} real code conflict(s) in ${f}${decided.why ? ` (${decided.why})` : decided.markers ? '' : ' (one side deleted this file and the other changed it, or it could not be read)'}.`);
         console.error('\n    This is not mine to resolve — picking a side would ship a behaviour change');
         console.error('    nobody reviewed, which is the thing a rollback exists to undo. Nothing was');
-        console.error('    pushed. Either resolve it by hand on this branch, or roll back to a time');
-        console.error('    instead, which cannot conflict:\n');
+        console.error(`    pushed and nothing is left behind. Either settle it by hand (git revert ${c.sha.slice(0, 7)}`);
+        console.error('    on a branch of your own), or roll back to a time instead, which cannot conflict:\n');
         console.error('        npm run rollback -- "2026-09-14 11:59pm"\n');
-        // Leave NOTHING behind. A half-reverted branch and a dirty tree on the morning the
-        // board is broken is worse than no attempt: the next command someone runs picks it up.
-        // The branch goes too — a pile of dead drop/* branches is its own confusion.
-        try { git('revert', '--abort'); } catch { /* nothing in progress */ }
-        git('checkout', '-q', wasOn === 'HEAD' ? 'main' : wasOn);
-        try { git('branch', '-D', branch); } catch { /* never created */ }
-        process.exit(1);
+        abandon();
       }
-      writeFileSync(f, text);
+      writeFileSync(f, decided.text);
       git('add', '--', f);
       autoResolved++;
     }
@@ -915,12 +1424,23 @@ async function main(argv) {
       console.error('    Run --list to see what is there. I am not going to guess at which you meant.\n');
       process.exit(2);
     }
+    // A PR that landed as a true merge commit is refused before anything is probed or built — the dry
+    // run and --execute alike. `rev-list --parents` prints the commit and then each parent.
+    const merges = found.map((c) => ({ pr: c.pr, sha: c.sha, parents: git('rev-list', '--parents', '-n', '1', c.sha).split(/\s+/).length - 1 }))
+      .filter((m) => m.parents > 1);
+    if (merges.length) {
+      const [first, ...rest] = mergeRefusal(merges);
+      console.error(`\n  ✗ ${first}`);
+      for (const l of rest) console.error(`    ${l}`);
+      console.error('\n        npm run rollback -- "2026-09-14 11:59pm"\n');
+      process.exit(2);
+    }
     if (!opts.execute) { await printDropPlan({ picked: found, asked: nums.map((n) => `#${n}`).join(', ') }); return; }
     if (!opts.because || opts.because.trim().length < 8) {
       console.error('\n  ✗ --execute needs --because "<why>".\n');
       process.exit(2);
     }
-    executeDrop({ picked: found, because: opts.because.trim(), push: opts.push });
+    await executeDrop({ picked: found, because: opts.because.trim(), push: opts.push });
     return;
   }
 
@@ -944,9 +1464,22 @@ async function main(argv) {
   }
 
   const commits = historySince(Math.max(opts.days, 60));
-  const { target, undone, missingVersion } = resolveTarget(t, commits);
+  const { target, undone, missingVersion, ambiguousVersion, matches, sameVersion, setBy, unsetWhy } = resolveTarget(t, commits);
+  const unreadNote = subjectFallbackNote(commits);
   if (missingVersion) {
-    console.error(`\n  ✗ No commit on main ships v${missingVersion}. Run --list to see what does.\n`);
+    console.error(`\n  ✗ No commit on main ships v${missingVersion}. Run --list to see what does.`);
+    // …and when a merge TITLE names it (v1.40.0: d412457's title, whose code shipped v1.41.0), say
+    // which commit, so the refusal leads somewhere instead of stopping bare.
+    for (const l of titleNamesNote(commits, missingVersion)) console.error(`    ${l}`);
+    if (unreadNote) console.error(`    ${unreadNote}\n    So this answer may be wrong: pass the commit you mean instead.`);
+    console.error('');
+    process.exit(2);
+  }
+  if (ambiguousVersion) {
+    console.error(`\n  ✗ v${ambiguousVersion} names more than one point on main, with other builds between them:\n`);
+    for (const c of matches) console.error(`      ${c.sha.slice(0, 7)}  ${formatWall(c.at)}  ${c.subject.slice(0, 80)}${c.versionFrom === 'tree' ? '' : '  (merge title, code not read)'}`);
+    if (unreadNote) console.error(`\n    ${unreadNote}`);
+    console.error('\n    I am not going to pick one for you. Pass the commit you mean instead.\n');
     process.exit(2);
   }
   if (!target) {
@@ -960,7 +1493,7 @@ async function main(argv) {
   }
 
   if (!opts.execute) {
-    await printPlan({ target, undone, paths: opts.paths, asked: opts.target });
+    await printPlan({ target, undone, paths: opts.paths, asked: opts.target, sameVersion, setBy, unsetWhy });
     return;
   }
   if (!opts.because || opts.because.trim().length < 8) {
