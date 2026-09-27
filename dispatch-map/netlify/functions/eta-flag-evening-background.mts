@@ -345,11 +345,13 @@ export default async (req: Request): Promise<Response> => {
     // 8pm-11pm fire that board is TOMORROW's, so this is the pass that gives Chad the warning
     // a day early; the claim is shared with the day sweep, so whichever sees an order first
     // sends the one email and the other stays quiet.
+    // recipientsFor already leads with customer service (the channel's alwaysAlso) and
+    // de-duplicates it; prepending ALERT_TO again put customerservice@ on the To: line twice.
     const mailTo = recipientsFor('alertCc', storedRecipients);
     const stacker = emailEnabled()
       ? await runStackerAlert(stops, date, TENANT, {
         createDocIfAbsent, send: sendEmail,
-        to: mailTo.length ? [ALERT_TO, ...mailTo] : ALERT_TO,
+        to: mailTo.length ? mailTo : ALERT_TO,
         at: status.at,
       })
       : { enabled: false, found: 0, claimed: 0, sent: 0, failed: 0, orders: [] as string[] };
