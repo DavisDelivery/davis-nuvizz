@@ -418,3 +418,28 @@ test('REVIEW · the engine\'s learned start is the FIRST DELIVERY, not leaving t
   assert.equal(n.eta_label, '9:30a', 'arrival at the first stop is the learned first delivery — the drive is not added again');
   assert.match(p.trucks[0].depart_label, /^9:[0-2]\da$/, `leaves ${p.trucks[0].depart_label} — a few minutes before the 9:30 first delivery`);
 });
+
+// ── what the audit of the day's work caught ──
+
+test('AUDIT · a load that is already full is not counted as a zero-size truck in "roughly N trucks would clear it"', () => {
+  // One 14-skid box already full, one empty 28-skid trailer, 57 skids of pool: the two trucks
+  // average 21 skids, and 14 on the box + 57 in the pool is 71 → 4 trucks of this size, not 5.
+  const onBoard = Array.from({ length: 7 }, (_, i) => row(`B${i}`, { planned: true, skids: 2 }));
+  const pool = Array.from({ length: 19 }, (_, i) => row(`U${i}`, { skids: 3 }));
+  const p = plan([...onBoard, ...pool], [shell('BOX', { existing: onBoard.map((r) => r.stopNbr) }), shell('TRL', { tractor: true })]);
+  assert.equal(p.trucks.find((t) => t.key === 'BOX').full, true);
+  assert.equal(p.fit.fits, false);
+  assert.equal(p.fit.trucks_needed_estimate, 4);
+});
+
+test('AUDIT · out of time, STRICT still takes every late stop off — the budget costs polish, never the rule', () => {
+  const rows = [
+    ...Array.from({ length: 3 }, (_, i) => row(`X${i}`, { name: `DAWN ${i}`, city: 'Dalton', lat: 34.77 + i * 0.01, lng: -84.97 })),
+    row('U1'), row('U2'),
+  ];
+  const marks = Object.fromEntries(rows.filter((r) => r.stopNbr.startsWith('X')).map((r) => [r.stopNbr, { receiving_hours: { thu: '5AM-6AM' } }]));
+  const p = plan(rows, [shell('T1'), shell('T2')], { inputs: inputs(notesFor(rows, marks)), windowMode: 'strict', clockBudgetMs: 0 });
+  assert.ok(p.trucks.every((t) => t.stops.every((s) => !s.late)), 'nothing late rides in strict, even with no time left');
+  assert.equal(p.left_unplanned.filter((l) => l.reason === 'time_window').length, 3);
+  for (const id of ['U1', 'U2']) assert.ok(p.trucks.some((t) => t.stops.some((s) => s.stopNbr === id)), `${id} still rides`);
+});

@@ -406,6 +406,9 @@ export interface BuildCleanupOpts {
   windowMode?: 'strict' | 'advisory';
   // ROUTING_TIME_RESTRICTIONS, the Build button's own clock switch. Absent → the env.
   timeRestrictions?: boolean;
+  // The clock pass's time budget (CLEANUP_CLOCK_MS). Tests set 0 to prove the out-of-time
+  // path still takes every late stop off in strict.
+  clockBudgetMs?: number;
 }
 
 // The pure core: pool → solve → one trip per shell → proposal. No I/O.
@@ -780,6 +783,12 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   const poolEq = pool.reduce((a, s) => a + stopSkidEquiv(s, cfg), 0);
   const capacityEq = drivers.reduce((a, d) => a + (capsByKey.get(d.driver_key)?.hard || 0), 0);
   const perTruckAvg = drivers.length ? capacityEq / drivers.length : 0;
+  const trucksNeededWhole = () => {
+    const whole = drivers.reduce((a, d) => a + (fullCapByKey.get(d.driver_key)?.skids || 0), 0);
+    const avg = drivers.length ? whole / drivers.length : 0;
+    const carried = drivers.reduce((a, d) => a + (existingOf.get(d.driver_key)?.eq || 0), 0);
+    return avg > 0 ? Math.ceil((poolEq + carried) / avg) : 0;
+  };
   const fit: {
     pool_skid_equiv: number; capacity_skid_equiv: number; fits: boolean; shortfall_skid_equiv: number;
     trucks_needed_estimate: number; constrained?: { trucks: string[]; skid_equiv: number; room: number } | null;
@@ -788,7 +797,11 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     capacity_skid_equiv: r1(capacityEq),
     fits: poolEq <= capacityEq,
     shortfall_skid_equiv: r1(Math.max(0, poolEq - capacityEq)),
-    trucks_needed_estimate: perTruckAvg > 0 ? Math.ceil(poolEq / perTruckAvg) : 0,
+    // Build rules: a truck's cap here is the ROOM IT HAS LEFT, so averaging it would count a
+    // full load as a zero-size truck and double the estimate. "How many trucks this size" is
+    // asked of the WHOLE trucks instead, against everything they must carry — what is already on
+    // them plus the pool. (Measured on a full-box board: 5 before, the honest 4 after.)
+    trucks_needed_estimate: buildRules ? trucksNeededWhole() : (perTruckAvg > 0 ? Math.ceil(poolEq / perTruckAvg) : 0),
   };
   if (!fit.fits) {
     notes.push(`The pool is ${fit.pool_skid_equiv} skid-equivalents and these ${drivers.length} truck${drivers.length === 1 ? '' : 's'} hold about ${fit.capacity_skid_equiv} — roughly ${fit.trucks_needed_estimate} trucks would clear it. The overflow is listed, not hidden.`);
@@ -1173,8 +1186,8 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       const { etas } = tlFor(pre)(order);
       return order.map((s, i) => { const c = closeOf(s); return c != null && etas[i] > c ? etas[i] - c : 0; });
     };
-    const clockDeadline = Date.now() + CLEANUP_CLOCK_MS;
-    const overBudget = () => Date.now() > clockDeadline;
+    const clockDeadline = Date.now() + (opts.clockBudgetMs ?? CLEANUP_CLOCK_MS);
+    const overBudget = () => Date.now() >= clockDeadline;
     const pres = new Map(drivers.map((d) => [d.driver_key, prefixOf(d)] as const));
     for (const d of drivers) {
       const pre = pres.get(d.driver_key)!;
