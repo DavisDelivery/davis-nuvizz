@@ -14,7 +14,7 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, findDavisStop, davisPieceId, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode, activeScans } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, findDavisStop, davisPieceId, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode, activeScans, pieceAlreadyAboard } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
@@ -1365,6 +1365,16 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         if (!freshAcquisition(p7)) return null;
       }
 
+      // A PIECE ID ALREADY ABOARD IS THE SAME SKID, SEEN AGAIN — asked before the
+      // stop-full refusal. The top barcode books a skid the moment it decodes and
+      // the PRO on that label then pairs with it; on an order's last skid the stop
+      // is full BECAUSE of that piece, and answering "full" first put NOT COUNTED
+      // and "Add OVER the count" over a skid that was counted. See pieceAlreadyAboard.
+      const liveOgs = new Set([...scannedOgs, ...justBooked.current.map((b) => String(b.og).toUpperCase())]);
+      if (!isOverride && pieceAlreadyAboard(pair, liveOgs)) {
+        return evaluateScan(pair, davisStop ? [davisStop] : stops, liveOgs, otherLoads);
+      }
+
       if (!isOverride && countKnown && done.scanned >= done.expected) {
         if (proOnlyScanner) answerAcquisition(p7);
         return refuse({ pro: p7, count: done.scanned, full: owner.businessName, expected: done.expected });
@@ -1426,7 +1436,6 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         while (used.has(`NOOG-${pro7}-${n}`)) n += 1;
         pair = { ...pair, og: `NOOG-${pro7}-${n}` };
       }
-      const liveOgs = new Set([...scannedOgs, ...justBooked.current.map((b) => String(b.og).toUpperCase())]);
       // A Davis piece is judged against ITS stop only. Handing evaluateScan the whole load
       // would let a Uline stop that shares the same 7-digit key decide the verdict — its
       // appointment warning on Estes freight, or none on a Davis stop that needs one.

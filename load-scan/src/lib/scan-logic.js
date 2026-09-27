@@ -699,3 +699,19 @@ export function sortForLoading(rows) {
     return (a.stop.loadSeq ?? 1e9) - (b.stop.loadSeq ?? 1e9);
   });
 }
+
+/**
+ * Is this piece id ALREADY on the truck? Then the read is the same skid seen
+ * again — never another one — and the answer is the silent duplicate.
+ *
+ * record() must ask this BEFORE the stop-full refusal. With an order open, the top
+ * barcode books a skid the instant it decodes; the PRO on that same label then
+ * completes a pair with the booked id inside the window. On an order's LAST skid
+ * the stop is full because of the piece that just booked, so asking "is the stop
+ * full?" first raised NOT COUNTED, and offered "Add OVER the count", for a skid
+ * that WAS counted. A deliberate override carries no piece id, so it never lands here.
+ */
+export function pieceAlreadyAboard(pair, liveOgs) {
+  const og = String(pair?.og ?? '').trim().toUpperCase();
+  return !!og && !!liveOgs && liveOgs.has(og);
+}
