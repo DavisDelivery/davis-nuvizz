@@ -39433,7 +39433,12 @@ function StopLookupScreen() {
   const [openLoad, setOpenLoad] = useState(null); // ONE load open at a time: each open map is a billed map load
   // A slower answer to an older week is DROPPED, never painted over a newer one — stepping the week
   // twice while the first read is still out must not leave last week's loads on this week's label.
+  // SHARED by every search that writes the answer (run, runPlace, runDriver): whichever was pressed
+  // LAST is the one on screen, so two quick date or range taps cannot leave the lit pill over rows
+  // from the other window (audit 2026-09-27, app-A4-4).
   const drvReqRef = useRef(0);
+  // The same rule for the order panel: tapping B while A is still loading must never show A under B.
+  const detailReqRef = useRef(0);
 
   const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
@@ -39443,6 +39448,7 @@ function StopLookupScreen() {
     // search is how a dock's hours get typed onto somebody else's dock.
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     try { localStorage.setItem(STOP_LOOKUP_LAST, term); } catch { /* private mode — a remembered box is a convenience, never a requirement */ }
+    const req = ++drvReqRef.current;
     try {
       // ONE RULE decides stop-vs-customer, and both sides read it from src/lib/stop-lookup.js,
       // so the box stays one box and the client can never classify a string one way while the
@@ -39466,6 +39472,7 @@ function StopLookupScreen() {
       }
       const r = await apiFetch(`/.netlify/functions/stop-lookup?${p.toString()}`);
       const j = await r.json();
+      if (req !== drvReqRef.current) return;
       if (!j.ok) throw new Error(j.error || 'lookup failed');
       setData(j);
       if (j.mode === 'customer-choose') setNameKey(null);
@@ -39481,7 +39488,7 @@ function StopLookupScreen() {
       // ledger is where the year says which sources it deliberately did not read.
       const yearBlank = j.mode === 'customer-year' && !j.view?.counted;
       setLedgerOpen(!!(stopBlank || custBlank || yearBlank));
-    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); setBusy(null); }
+    } catch (e) { if (req === drvReqRef.current) { setErr(String(e.message || e)); setData(null); } } finally { if (req === drvReqRef.current) { setLoading(false); setBusy(null); } }
   }, [remember]);
 
   /** Search whatever is in the box, with the current window and pinned customer. */
@@ -39496,7 +39503,7 @@ function StopLookupScreen() {
     });
   }, [run, range, nameKey, yearOn, today]);
 
-  const closeOrder = useCallback(() => { setDetail(null); setDetailData(null); setDetailErr(null); }, []);
+  const closeOrder = useCallback(() => { detailReqRef.current += 1; setDetail(null); setDetailData(null); setDetailErr(null); }, []);
 
   /**
    * AN ORDER TAPPED ANYWHERE ON THIS SCREEN OPENS UNDER ITS OWN ROW.
@@ -39517,12 +39524,14 @@ function StopLookupScreen() {
     if (detail && detail.stopNbr === id && detail.date === day) { closeOrder(); return; }
     setDetail({ stopNbr: id, date: day });
     setDetailLoading(true); setDetailErr(null); setDetailData(null);
+    const req = ++detailReqRef.current;
     try {
       const r = await apiFetch(`/.netlify/functions/stop-lookup?detail=${encodeURIComponent(id)}&date=${encodeURIComponent(day)}`);
       const j = await r.json();
+      if (req !== detailReqRef.current) return;
       if (!j.ok) throw new Error(j.error || 'could not load the order');
       setDetailData(j);
-    } catch (e) { setDetailErr(String(e.message || e)); } finally { setDetailLoading(false); }
+    } catch (e) { if (req === detailReqRef.current) setDetailErr(String(e.message || e)); } finally { if (req === detailReqRef.current) setDetailLoading(false); }
   }, [detail, closeOrder]);
 
   /** "Open this order's full history" — the one case where leaving the customer IS the ask,
@@ -39563,20 +39572,24 @@ function StopLookupScreen() {
     const term = String(data?.dossier?.query || data?.query || '').trim();
     if (!term || asking) return;
     setAsking(true); setPromptMsg(null);
+    // The answer this ask is ABOUT. A search started while NuVizz is thinking replaces it, and
+    // then this reply belongs to nothing on screen.
+    const seen = drvReqRef.current;
     try {
       const r = await apiFetch(`/.netlify/functions/stop-lookup-prompted?stop=${encodeURIComponent(term)}`, { cache: 'no-store' });
       const j = await r.json();
+      if (seen !== drvReqRef.current) return;
       if (!j.ok) throw new Error(j.error || 'NuVizz could not be asked');
       // EVERY CALL IT COST STAYS ON THE COUNT, found or not — the header chip reads it, and a
       // "NuVizz has nothing either" under a chip saying "0 NuVizz calls" is a spend nobody sees.
       if (j.prompted?.ok && j.dossier) {
         setData({ ...j, nuvizzCalls: promptedCallsOnScreen(data?.nuvizzCalls, j.nuvizzCalls) }); setLedgerOpen(false); setPromptMsg(j.prompted);
-        if (j.detail) { setDetail({ stopNbr: j.detail.stopNbr, date: j.detail.date }); setDetailData(j.detail); setDetailErr(null); setDetailLoading(false); }
+        if (j.detail) { detailReqRef.current += 1; setDetail({ stopNbr: j.detail.stopNbr, date: j.detail.date }); setDetailData(j.detail); setDetailErr(null); setDetailLoading(false); }
       } else {
         setData((cur) => (cur ? { ...cur, nuvizzCalls: promptedCallsOnScreen(cur.nuvizzCalls, j.nuvizzCalls) } : cur));
         setPromptMsg(j.prompted || { attempted: true, ok: false, reason: 'error', text: 'No answer came back.' });
       }
-    } catch (e) { setPromptMsg({ attempted: true, ok: false, reason: 'error', text: String(e.message || e) }); }
+    } catch (e) { if (seen === drvReqRef.current) setPromptMsg({ attempted: true, ok: false, reason: 'error', text: String(e.message || e) }); }
     finally { setAsking(false); }
   }, [data, asking]);
 
@@ -39756,9 +39769,11 @@ function StopLookupScreen() {
     setLoading(true); setBusy('place'); setErr(null); setPromptMsg(null); closeOrder();
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     try { localStorage.setItem(STOP_LOOKUP_PLACE, JSON.stringify(f)); } catch { /* a remembered box is a convenience */ }
+    const req = ++drvReqRef.current;
     try {
       const r = await apiFetch(`/.netlify/functions/stop-lookup?${placeParams(f, placeSelOf(selNow, todayInET()))}`);
       const j = await r.json();
+      if (req !== drvReqRef.current) return;
       if (!j.ok) throw new Error(j.error || 'search failed');
       setData(j);
       setPlaceRowsShown(PLACE_PAGE);
@@ -39766,7 +39781,7 @@ function StopLookupScreen() {
       setAnswerTick((n) => n + 1);
       // The ledger opens itself when it IS the answer: nothing matched, or days went unsearched.
       setLedgerOpen(j.mode === 'place' && !j.switchedOff && (j.coverage?.complete === false || !j.view?.matched));
-    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); setBusy(null); }
+    } catch (e) { if (req === drvReqRef.current) { setErr(String(e.message || e)); setData(null); } } finally { if (req === drvReqRef.current) { setLoading(false); setBusy(null); } }
   }, [closeOrder, remember]);
 
   /** New dates on a place already on screen: search again, same place. */
