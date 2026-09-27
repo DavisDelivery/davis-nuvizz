@@ -37703,7 +37703,9 @@ function OrderDetailBody({ data, onOpenHistory, wide }) {
           {d.source === 'sealed'
             ? 'From the sealed nightly record — this cannot change again.'
             : d.source === 'nuvizz'
-              ? 'Straight from NuVizz — one call, asked for just now.'
+              // The count this answer carries (shiplify-lookup-uat-6): a busy NuVizz retried is
+              // more than one call, and the chip, banner and ledger already say so.
+              ? (Number(data.nuvizzCalls) > 1 ? `Straight from NuVizz — ${Number(data.nuvizzCalls)} calls, asked for just now.` : 'Straight from NuVizz — one call, asked for just now.')
               : "From today's live board — still moving until tonight's capture seals it."}
         </div>
         <button onClick={onOpenHistory}

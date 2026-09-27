@@ -167,7 +167,7 @@ export default async (req: Request): Promise<Response> => {
     window: null,
     dossier: { ...dossier, found: true, sources: [promptedSource({ day, calls: nuvizzCalls }), ...dossier.sources], notes: notesSummary(notes) },
     detail: {
-      ok: true, mode: 'detail', date: shownDay, stopNbr, source: 'nuvizz', complete: true, errors: {},
+      ok: true, mode: 'detail', date: shownDay, stopNbr, source: 'nuvizz', complete: true, errors: {}, nuvizzCalls,
       stop: buildOrderDetail(record, { date: shownDay, today, source: 'nuvizz' }),
       note: notesSummary(notes), matchKey,
     },

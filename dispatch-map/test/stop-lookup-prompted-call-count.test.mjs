@@ -118,3 +118,37 @@ test('the banner over a prompted order reads the answer\'s own count', () => {
   const banner = APP.slice(i, i + 700);
   assert.match(banner, /data\.nuvizzCalls/, 'the banner is handed the answer\'s count');
 });
+
+test('the order panel NuVizz opens says the same count as the chip — not "one call" after a retry', async () => {
+  // The panel's footer hard-coded "Straight from NuVizz — one call" while the chip, the banner
+  // and the ledger above it said two. The detail now carries the answer's own count.
+  const t = await today();
+  const busy = await ask('stop=7180005', scripted([[503, { error: 'busy' }], [200, vendorStop('007180005', t)]]));
+  const once = await ask('stop=7180006', scripted([[200, vendorStop('007180006', t)]]));
+  assert.equal(busy.body.nuvizzCalls, 2);
+  assert.equal(busy.body.detail.nuvizzCalls, 2, "the detail carries the answer's count");
+  assert.equal(once.body.detail.nuvizzCalls, 1);
+
+  const lucide = await import('lucide-react');
+  const { libExports } = await import('./helpers/app-lift.mjs');
+  const APP_SRC = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const lucideNames = /import\s*\{([^}]*)\}\s*from 'lucide-react'/.exec(APP_SRC)[1]
+    .split(',').map((x) => x.trim()).filter(Boolean)
+    .map((x) => x.split(/\s+as\s+/)).map(([from, to]) => [to || from, lucide[from]]);
+  const libs = await libExports(['date-util.js', 'stop-lookup.js']);
+  const render = (Body, detail) => renderToStaticMarkup(React.createElement(Body, { data: detail, onOpenHistory: () => {}, wide: true }));
+  const { OrderDetailBody } = liftFromApp({
+    targets: ['OrderDetailBody'],
+    inject: {
+      ...Object.fromEntries(lucideNames), ...libs, React,
+      useState: React.useState, useEffect: React.useEffect, useMemo: React.useMemo,
+      useRef: React.useRef, useCallback: React.useCallback,
+    },
+    exercise: (l) => { render(l.OrderDetailBody, busy.body.detail); render(l.OrderDetailBody, once.body.detail); },
+  });
+
+  const two = render(OrderDetailBody, busy.body.detail);
+  assert.match(two, /Straight from NuVizz — 2 calls, asked for just now\./);
+  assert.doesNotMatch(two, /one call/);
+  assert.match(render(OrderDetailBody, once.body.detail), /Straight from NuVizz — one call, asked for just now\./);
+});
