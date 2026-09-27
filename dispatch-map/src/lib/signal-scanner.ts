@@ -460,6 +460,29 @@ function envelopeClose(normalized: string, afterIdx: number, firstClose: string)
 // still reads Monday to Friday as hours.
 const CLOSURE_BEFORE_DAY = /\b(?:CLOSE[SD]?|NOT\s+OPEN|NO\s+DELIVER\w*)\s+(?:ON\s+)?$/i;
 
+// A LUNCH IS A CLOSURE TOO, and the day tier has to refuse it the way the bare-pair tier
+// always has. "MON-FRI 12-1 FOR LUNCH" is the hour the dock is SHUT; stored as receiving
+// hours it becomes the only hour they take freight, Monday to Friday — every real delivery
+// flags, and the router aims the truck at the one hour nobody is on the dock.
+// A range is read as the lunch when a lunch word is attached to it AND it is lunch-shaped
+// (narrower than the bare tier's own width floors, lunchShaped below):
+//   LUNCH_BEFORE_DAY    — the break is named first: "LUNCH MON-FRI 12-1", "CLOSED FOR LUNCH
+//                         MON-FRI 12-1PM".
+//   FOR_LUNCH_AFTER     — "MON-FRI 12-1 FOR LUNCH": FOR ties the range to the lunch.
+//   LUNCH_AFTER_UNTIMED — "MON-FRI 12PM-1PM CLOSED FOR LUNCH": the break is named after the
+//                         range and has no times of its own, so the range IS its times.
+// The width is what keeps a real window next to the word a window: "MON-FRI 8-12 CLOSED FOR
+// LUNCH" is a morning, "NO LUNCH MON-FRI 8-5" is a working day, and "MON-FRI 8-12 LUNCH
+// 12-1" names its own lunch hour — all three stay hours.
+const LUNCH_BEFORE_DAY = /\b(?:LUNCH|BREAK)\s*[:\-]?\s*(?:ON\s+)?$/i;
+const FOR_LUNCH_AFTER = /^\s*FOR\s+(?:LUNCH|BREAK)\b/i;
+const LUNCH_AFTER_UNTIMED = new RegExp(`^\\s*(?:CLOSED?\\s+)?(?:FOR\\s+)?(?:LUNCH|BREAK)\\b(?!\\s*[:\\-]?\\s*${TIME_RANGE})`, 'i');
+function lunchShaped(rangeText: string, w: { open: string; close: string }): boolean {
+  const toMin = (t: string) => parseInt(t.slice(0, 2), 10) * 60 + parseInt(t.slice(3), 10);
+  const wroteMeridiem = /(A|P)M?\.?\s*(?:-|TO|—)|(A|P)M?\.?\s*$/i.test(rangeText) || /NOON/i.test(rangeText);
+  return toMin(w.close) - toMin(w.open) < (wroteMeridiem ? 90 : 180);
+}
+
 function scanHours(text: string | null | undefined, source: SignalSource): HoursScanResult | null {
   if (!text) return null;
   const normalized = stripCommentPrefixes(text);
@@ -478,10 +501,15 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
     // Thursday — so every real delivery flagged, and the router would try to cram the stop
     // into the one hour nobody is on the dock. The bare-pair tier has refused a closure
     // context since it was written; the day-qualified tier, which outranks it, never did.
-    if (CLOSURE_BEFORE_DAY.test(normalized.slice(Math.max(0, m.index - 24), m.index))) continue;
+    const beforeSpan = normalized.slice(Math.max(0, m.index - 24), m.index);
+    if (CLOSURE_BEFORE_DAY.test(beforeSpan)) continue;
     const days = expandDaySpan(m[1]);
     const parsed = parseTimeRange(m[2]);
     if (!days.length || !parsed) continue;
+    const afterRange = normalized.slice(m.index + m[0].length);
+    const namesLunch = LUNCH_BEFORE_DAY.test(beforeSpan)
+      || FOR_LUNCH_AFTER.test(afterRange) || LUNCH_AFTER_UNTIMED.test(afterRange);
+    if (namesLunch && lunchShaped(m[2], parsed)) continue;
     const env = envelopeClose(normalized, m.index + m[0].length, parsed.close);
     for (const d of days) byDay[d] = { open: parsed.open, close: env.close };
     matchedBits.push(m[0] + env.extraText);
