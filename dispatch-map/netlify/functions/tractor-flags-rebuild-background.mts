@@ -5,11 +5,12 @@
 // our own Firestore — NEVER calls NuVizz. Mirrors
 // nuvizz-rebuild-customer-history-background.
 //
-// Idempotent by construction: every location's values are computed fresh from
-// scratch across ALL scanned partitions in this run and then written as a full
-// overwrite — no blind accumulation on top of prior docs. This is also the
-// RE-TAG path: when a driver gains (or loses) the Tractor tag in MarginIQ,
-// re-running this re-derives everything from the roster as it stands now.
+// The ALL-DAYS run (no ?date / ?from&to) is idempotent by construction: every
+// location's values are computed fresh from scratch across every captured
+// partition and then written as a full overwrite — no blind accumulation on top
+// of prior docs. That run is also the RE-TAG path: when a driver gains (or loses)
+// the Tractor tag in MarginIQ, re-running it re-derives everything from the roster
+// as it stands now. A windowed run merges instead; see below.
 //
 // Background fn (15-min budget). No schedule — run on demand:
 //   POST /.netlify/functions/tractor-flags-rebuild-background        → ALL captured days
