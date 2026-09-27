@@ -134,7 +134,7 @@ import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
 import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
-import { boardStatusPanel } from './lib/board-status-card.js';
+import { boardStatusPanel, scanHaltedMessage } from './lib/board-status-card.js';
 import { buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner, rosterDriverOf } from './lib/route-status.js';
 import { wbOwnDayRosterEnabled, routeOwnDay, ownDayIdentity } from './lib/wb-own-day.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
@@ -5447,7 +5447,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
 // the card. Routing keeps its chip on the map in its own column (v1.13.0) and passes nothing.
 // A slot rather than a flag because the two screens hand it different props, and the moment
 // this component starts deciding which to build it owns both screens' flag state.
-function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, ops, scanErr, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null, barMode = false, flagsChip = null }) {
+function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, ops, scanErr, scanState = null, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null, barMode = false, flagsChip = null }) {
   // `drawnCount` (Routing) = pins actually on the map right now. The card used to publish the
   // whole day board while the map drew a filtered subset, so the number on the chip matched
   // neither the pins beneath it nor the bottom grid — Chad, counting dots: "there are more dots
@@ -5455,7 +5455,9 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
   // header now reads "15 of 833 stops" so the chip describes the map you are looking at.
   const filtering = typeof drawnCount === 'number' && drawnCount !== stopCount;
   // What is visible, decided once for both placements — see lib/board-status-card.js.
-  const panel = boardStatusPanel({ collapsed, scanErr });
+  // `scanState` (halted scanner) is passed by the dispatch Map; the phone Map prints its own.
+  const halted = scanHaltedMessage(scanState);
+  const panel = boardStatusPanel({ collapsed, scanErr, halted });
   // Bar mode only: dismiss the dropdown on an outside click or Escape (see the wrapper below).
   // The map PILL needs none of this — it stacks its detail in flow and covers nothing.
   const barRef = useRef(null);
@@ -5573,7 +5575,8 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
         {panel.open && (
           <div className="absolute right-full mr-1 top-full mt-1 w-60 rounded-lg border border-slate-200 bg-white shadow-xl px-2.5 py-2 leading-tight z-40" data-testid="routing-bar-status-drop">
             {panel.showDetails && details}
-            {panel.showError && <div className={`text-[11px] text-red-600${panel.showDetails ? ' mt-1' : ''}`}>{scanErr}</div>}
+            {panel.showHalted && <div className={`text-[11px] font-semibold text-red-700${panel.showDetails ? ' mt-1' : ''}`}>{halted}</div>}
+            {panel.showError && <div className={`text-[11px] text-red-600${panel.showDetails || panel.showHalted ? ' mt-1' : ''}`}>{scanErr}</div>}
           </div>
         )}
       </div>
@@ -5593,7 +5596,9 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
       {panel.showDetails && <div className="mt-0.5 leading-tight">{details}</div>}
       {/* OUTSIDE the collapse. The refresh button lives in the always-visible header, so a scan
           error rendered inside the collapsed body is feedback nobody sees — on a phone the icon
-          spins for a minute, goes quiet, and the button reads as broken. */}
+          spins for a minute, goes quiet, and the button reads as broken. The halted-scanner
+          banner sits here for the same reason: the board under it has stopped updating. */}
+      {panel.showHalted && <div className="mt-0.5 text-[11px] font-semibold text-red-700">{halted}</div>}
       {panel.showError && <div className="mt-0.5 text-[11px] text-red-600">{scanErr}</div>}
     </div>
   );
@@ -16345,6 +16350,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 visibleUnplannedCount={visibleUnplannedCount}
                 ops={ops}
                 scanErr={scanErr}
+                scanState={scanState}
                 scanning={scanning}
                 scanCooldown={scanCooldown}
                 scanDenied={scanDenied}

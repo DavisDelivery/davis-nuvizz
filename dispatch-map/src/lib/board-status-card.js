@@ -17,18 +17,34 @@
 // nobody sees: the icon spins for a minute, goes quiet, and the button reads as broken.
 
 /**
- * @param {{collapsed?: boolean, scanErr?: unknown}} card
- * @returns {{open: boolean, showDetails: boolean, showError: boolean}}
+ * @param {{collapsed?: boolean, scanErr?: unknown, halted?: string|null}} card
+ * @returns {{open: boolean, showDetails: boolean, showError: boolean, showHalted: boolean}}
  *   open        — bar mode: render the dropdown panel at all
  *   showDetails — the pallets / freshness / call-meter block
  *   showError   — the scan-error line
+ *   showHalted  — the "scanner halted, board may be stale" banner (scanHaltedMessage)
  */
-export function boardStatusPanel({ collapsed = false, scanErr = null } = {}) {
+export function boardStatusPanel({ collapsed = false, scanErr = null, halted = null } = {}) {
   const showDetails = collapsed !== true;
   // A blank or whitespace-only error is NOT an error. `Number(null)` being 0 once shipped a
   // customer-service email announcing a midnight deadline for a stop with no deadline at all;
   // an empty string opening an empty red box is the same mistake in a smaller hat, and in bar
   // mode it would also force open a dropdown with nothing in it.
   const showError = typeof scanErr === 'string' ? scanErr.trim().length > 0 : !!scanErr;
-  return { open: showDetails || showError, showDetails, showError };
+  // A HALTED SCANNER IS VISIBLE WHILE COLLAPSED, for the same reason as the error: the board
+  // under it has stopped updating, and a warning filed inside a closed body is one nobody reads.
+  const showHalted = typeof halted === 'string' && halted.trim().length > 0;
+  return { open: showDetails || showError || showHalted, showDetails, showError, showHalted };
+}
+
+/**
+ * PURE. The banner for a halted scanner (the daily NuVizz call ceiling, or the kill switch),
+ * or null while scanning runs. Same words the phone Map prints under its Scan button.
+ * @param {{halted?: boolean, reason?: string}|null|undefined} scanState
+ */
+export function scanHaltedMessage(scanState) {
+  if (!scanState?.halted) return null;
+  return scanState.reason === 'ceiling'
+    ? 'Daily scan limit reached — updates resume after midnight UTC'
+    : 'Scanning paused (kill switch) — board may be stale';
 }
