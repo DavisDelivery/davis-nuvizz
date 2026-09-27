@@ -54,7 +54,9 @@ async function takePlanLock(date: string, id: string, at: string, by: string | n
     if (held && ACTIVE.has(held.status) && !held.cancelRequested) return `a plan of ${date} is already ${held.status} — let it finish or Stop it before queuing another`;
     const born = Date.parse(String(lock.at || ''));
     if (!held && Number.isFinite(born) && deps.now().getTime() - born < PLAN_LOCK_BIRTH_MS) {
-      return `another Plan of ${date}${lock.by ? ` (${lock.by})` : ''} is being queued right now — it shows in the list in a moment; Stop it there if it is not wanted`;
+      // Said as what is known: the lock is taken and its job is not on file YET. That press may still land
+      // (then it shows in the list) or may have died (then the day frees itself a minute after it).
+      return `another Plan of ${date}${lock.by ? ` (${lock.by})` : ''} is being queued right now — if it goes through it shows in the list in a moment (Stop it there if it is not wanted); if nothing shows within a minute, press Plan again`;
     }
     const next = `${base}__after__${holder}`;
     if (await deps.shadowCreate(next, mine)) {

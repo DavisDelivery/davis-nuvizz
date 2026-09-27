@@ -98,6 +98,8 @@ test('a press that died after taking the lock (its job never appeared) holds the
   const young = store(dead(20_000));
   const r = await enqueuePlan(PARAMS, 'disp', deps(young));
   assert.equal(r.status, 409, JSON.stringify(r.body));
+  // The refusal cannot know whether that press will land or has died, so it does not promise either.
+  assert.match(r.body.error, /if nothing shows within a minute, press Plan again/);
   assert.equal(planJobs(young).length, 0);
   const old = store(dead(PLAN_LOCK_BIRTH_MS + 1000));
   const ok = await enqueuePlan(PARAMS, 'disp', deps(old));
