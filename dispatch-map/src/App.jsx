@@ -7307,13 +7307,16 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       // the one failure worth having a record of would be the one that left none. callWrite
       // resolves network errors rather than throwing, so nothing SHOULD land here; `should` is
       // not a reason to leave the hole open.
-      let landed = false, clean = false, why = '';
+      // `out` is declared HERE, beside the verdicts, because the landed-but-not-clean branch
+      // below reads `out.now` after this try has closed. Declared inside it, that branch threw
+      // "out is not defined" on the modal's most common vendor outcome (audit 2026-09-27).
+      let landed = false, clean = false, why = '', out = {};
       try {
         // stopId pins the write to THIS record: two NuVizz orders can share one number, and
         // re-addressing the other twin sends freight to a place nobody chose. The server
         // refuses rather than guess.
         const r = await setStopAddress(pro, fields, { stopId: stop?.stopId || undefined });
-        const out = r?.result || r || {};
+        out = r?.result || r || {};
         // TWO QUESTIONS, ASKED SEPARATELY. `landed` is whether the ADDRESS reached the order —
         // read back and proven server-side. `clean` is whether the write disturbed nothing
         // else. Reading `ok` for both is what printed "NuVizz did not take it … the driver's
