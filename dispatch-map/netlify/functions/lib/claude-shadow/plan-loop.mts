@@ -306,7 +306,16 @@ export interface LoopDeps {
   iso: () => string;
   // Claim round n BEFORE paying for it: false means another worker holds it, and this invocation
   // stops without touching the run. Two overlapping ticks can never both spend on one round.
-  claim?: (n: number) => Promise<boolean>;
+  // 'lost' means round n was claimed before by a run that never recorded it — it paid, then died or its
+  // record write was refused — so that call is charged (lostCall) before the next round is paid for.
+  claim?: (n: number) => Promise<boolean | 'lost'>;
+}
+
+/** The stand-in for a round an earlier run claimed and never recorded. Its answer cannot be read, so it
+ *  goes through applyResponse like any call that came back with no usage: charged on the HIGH side
+ *  (unreadCost), adding nothing to the conversation. Uncounted, it let real spend pass every cap. */
+export function lostCall(n: number): CallResult {
+  return { ok: false, httpStatus: null, timedOut: false, ms: 0, body: null, error: `round ${n} was claimed by an earlier worker run that never recorded it (it stopped, or its record could not be written, after the call) — what it cost cannot be read` };
 }
 
 /**
@@ -324,7 +333,14 @@ export async function runRounds(problem: Problem, state: LoopState, s: LoopSetti
       return st;
     }
     if (deps.now() - t0 >= startBeforeMs) return st;   // out of time for THIS invocation, not the run
-    if (deps.claim && !(await deps.claim(st.rounds.length + 1))) return st;
+    const got = deps.claim ? await deps.claim(st.rounds.length + 1) : true;
+    if (!got) return st;
+    if (got === 'lost') {
+      // Counted first, then the gate is asked again with it: the cap sees what was already paid.
+      st = applyResponse(problem, st, s, lostCall(st.rounds.length + 1), deps.iso());
+      await deps.checkpoint(st);
+      continue;
+    }
     const call = await deps.call(buildRequest(problem, st, s));
     st = applyResponse(problem, st, s, call, deps.iso());
     await deps.checkpoint(st);

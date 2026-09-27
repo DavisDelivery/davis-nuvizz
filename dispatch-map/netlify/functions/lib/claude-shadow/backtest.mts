@@ -325,12 +325,14 @@ async function loadState(id: string, deps: BtDeps): Promise<LoopState> {
   return restoreState(rounds);
 }
 
-/** Create-only claim on round n; takes over a claim whose invocation died. */
-async function claimRound(id: string, n: number, deps: BtDeps): Promise<boolean> {
+/** Create-only claim on round n; takes over a claim whose invocation died. A takeover answers 'lost':
+ *  the first claim's call went out and its record never landed (audit 2026-09-27), so the loop charges
+ *  it before paying for the next round. A later stale attempt paid nothing — it went straight to that. */
+async function claimRound(id: string, n: number, deps: BtDeps): Promise<boolean | 'lost'> {
   const now = deps.now();
   for (let k = 1; k <= 5; k++) {
     const path = `${jobPath(id)}/claims/r${n}a${k}`;
-    if (await deps.shadowCreate(path, { n, attempt: k, at: now.toISOString() })) return true;
+    if (await deps.shadowCreate(path, { n, attempt: k, at: now.toISOString() })) return k === 1 ? true : 'lost';
     const held = await deps.getDoc(path);
     const heldAt = Date.parse(String(held?.at || ''));
     if (Number.isFinite(heldAt) && now.getTime() - heldAt < CLAIM_STALE_MS) return false;   // someone is on it
