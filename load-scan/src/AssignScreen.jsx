@@ -26,10 +26,14 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Check, UserCheck } from 'lucide-react';
 
 import * as api from './lib/api.js';
-import { shiftDayString, shiftLabel, addDays } from './lib/shift.js';
+import { shiftLabel, addDays } from './lib/shift.js';
 
-export default function AssignScreen({ session, loads = [], people = [] }) {
-  const [shiftDay, setShiftDay] = useState(shiftDayString());
+// `shiftDay` is the Activity panel's day and `loads` is the board read FOR it —
+// null while that read is still on its way (see lib/assign-day.js). The tab has no
+// day of its own: a private one is how Tuesday's trucks got saved into Wednesday.
+export default function AssignScreen({ session, shiftDay, onShiftDay, loads: dayLoads, people = [] }) {
+  const loads = dayLoads || [];
+  const loadingTrucks = dayLoads == null;
   const [assignments, setAssignments] = useState({});
   const [selected, setSelected] = useState(null); // the loader being handed trucks
   const [busy, setBusy] = useState(false);
@@ -101,7 +105,7 @@ export default function AssignScreen({ session, loads = [], people = [] }) {
   return (
     <div className="space-y-3">
       <div className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2 flex items-center gap-2">
-        <button type="button" className="rounded-lg ring-1 ring-slate-300 px-2 py-1 text-sm" onClick={() => setShiftDay(addDays(shiftDay, -1))}>
+        <button type="button" className="rounded-lg ring-1 ring-slate-300 px-2 py-1 text-sm" onClick={() => onShiftDay(addDays(shiftDay, -1))}>
           ‹
         </button>
         <div className="flex-1 text-center">
@@ -110,7 +114,7 @@ export default function AssignScreen({ session, loads = [], people = [] }) {
             {Object.keys(assignments).length} of {loads.length} trucks assigned
           </div>
         </div>
-        <button type="button" className="rounded-lg ring-1 ring-slate-300 px-2 py-1 text-sm" onClick={() => setShiftDay(addDays(shiftDay, 1))}>
+        <button type="button" className="rounded-lg ring-1 ring-slate-300 px-2 py-1 text-sm" onClick={() => onShiftDay(addDays(shiftDay, 1))}>
           ›
         </button>
         <button type="button" onClick={load} className="rounded-lg ring-1 ring-slate-300 px-2 py-1" disabled={busy}>
@@ -202,7 +206,9 @@ export default function AssignScreen({ session, loads = [], people = [] }) {
             );
           })}
           {!loads.length ? (
-            <div className="px-3 py-4 text-sm text-slate-500 text-center">No trucks on the board for this day.</div>
+            <div className="px-3 py-4 text-sm text-slate-500 text-center">
+              {loadingTrucks ? 'Loading the trucks for this shift…' : 'No trucks on the board for this day.'}
+            </div>
           ) : null}
         </div>
       </div>

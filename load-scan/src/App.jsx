@@ -9,6 +9,7 @@ import { shiftDayString } from './lib/shift.js';
 import { watchForUpdate, applyUpdate } from './lib/appupdate.js';
 import ReportScreen from './ReportScreen.jsx';
 import AssignScreen from './AssignScreen.jsx';
+import { assignView } from './lib/assign-day.js';
 import { loadSession, saveSession, clearSession, daysRemaining } from './lib/session.js';
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
@@ -2405,6 +2406,7 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
   const t = data.totals || {};
   const loads = data.loads || [];
   const people = data.people || [];
+  const assign = assignView(data, date);
 
   const TONE = {
     not_started: 'bg-rose-50 ring-rose-300 text-rose-900',
@@ -2533,7 +2535,15 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
       </div>
 
       {tab === 'assign' ? (
-        <AssignScreen session={session} loads={loads} people={people} />
+        // One day for the whole tab: the trucks listed are the board read for the
+        // day the taps are saved under, and the arrows move both. See assign-day.js.
+        <AssignScreen
+          session={session}
+          shiftDay={assign.shiftDay}
+          onShiftDay={onDate}
+          loads={assign.loads}
+          people={people}
+        />
       ) : tab === 'report' ? (
         <ReportScreen session={session} />
       ) : tab === 'trucks' ? (
