@@ -15,9 +15,15 @@
 // The "2 of 3" piece index is printed as human-readable text ONLY. It is in
 // neither barcode, so it cannot be used for completeness.
 
-/** Match key: last 7 digits. Same rule as the WMS scanner and dispatch-map normalizePro. */
+/**
+ * Match key: last 7 digits. Same rule as the WMS scanner and dispatch-map normalizePro.
+ * A board segment suffix ("007157687-1") is dropped first so the key is the PRO on
+ * the label — the server's normalizePro (lib/manifest.mts) applies the same rule.
+ */
 export function normalizePro(v) {
-  const digits = String(v ?? '').replace(/\D/g, '');
+  const raw = String(v ?? '').trim();
+  const seg = /^(\d{9})-(\d{1,2})$/.exec(raw);
+  const digits = (seg ? seg[1] : raw).replace(/\D/g, '');
   return digits ? digits.slice(-7) : '';
 }
 
