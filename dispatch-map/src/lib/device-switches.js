@@ -114,6 +114,14 @@ export const DEVICE_SWITCHES = [
     does: 'A location paints lime only if its first tractor delivery was before the board date — the board as it stood that morning. Applies to both tabs.',
     symptom: 'ON and lime pins go missing on older boards — a dock a tractor first served later reads as unproven. Routing shows a "Lime as of board date" notice while it is on.',
   },
+  // THE TRAINEE'S DRIVER-AREA RINGS — default OFF: a reference for somebody learning the board,
+  // not something every dispatcher's map should carry.
+  {
+    key: 'dispatchMap.driverAreas', kind: 'toggle', on: 'on', off: 'off', dflt: false,
+    label: 'Driver areas — Map tab',
+    does: 'Draws a ring round where each driver usually delivers (his last 4 weeks), with his name in it — page one of the printed driver-area sheet. Paint only: clicks, pins and panels work as before.',
+    symptom: 'ON and coloured rings with driver names cover the Map. Nothing about the stops changes — turn it off and the rings go.',
+  },
 ];
 
 /** PURE: the stored value for a switch, or null when nothing has been stored on this device. */

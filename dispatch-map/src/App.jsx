@@ -65,6 +65,8 @@ import { rollbackTargets, rollbackRequestBody } from './lib/rollback-targets.js'
 // be classified one way by the client and the other way by the server.
 import { classifyQuery, notesSummary } from './lib/stop-lookup.js';
 import { DEVICE_SWITCHES, switchReport, encodeValue, describeValue } from './lib/device-switches.js';
+// The trainee's driver-area rings on the Map tab — the printed sheet's page one, drawn live.
+import { DRIVER_AREAS_URL, driverAreasStatus, makeDriverAreaOverlayClass } from './lib/driver-area-overlay.js';
 import { reportDenied, deniedSurfaces, subscribeDenied } from './lib/permission-denied.js';
 import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut as endSession, currentResetLink, scrubResetLink, fetchMe } from './lib/auth-client.js';
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
@@ -183,7 +185,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.77.1';
+const APP_VERSION = '1.78.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -237,6 +239,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.78.0', 'DRIVER AREAS ON THE MAP: THE TRAINEE\u2019S RINGS, BEHIND ONE SWITCH. Chad, 2026-09-27: \u201cfind the circles we were working on for the new trainee learning to route to try and guide him to where drivers go and we were going to build an overlay for the map that we could toggle on and off.\u201d The circles are the driver-area sheet built Sep 7\u20138: one hollow ring per cluster of a driver\u2019s last 4 weeks of deliveries with his name in it, and no ring for a driver whose work is too spread out for one to be honest. NOW ON THE MAP TAB: Filters \u2192 Driver areas, on the desktop Filters card and in the phone\u2019s Filters \u2192 Map display, remembered per device, OFF by default. Not on the office wall: its map cannot zoom, so the switch is not offered there. The same rings as the printed sheet \u2014 one function now draws both (territoryModel) \u2014 and a sheet printed the same day gives each driver the same colour. PAINT ONLY: the rings take no clicks and the names let clicks through, so every click lands where it does with the switch off; the names do sit over the pins at the middle of each ring. Names that would pile on top of each other are left off until you zoom in; the smallest ring places its name first; a ring whose middle is off-screen or crowded puts its name just inside its own arc. Under the switch it always says what it is showing: how many drivers and the days the rings are built from (today has no history until tonight\u2019s capture, so it is not claimed), who has no ring and why (too spread out, or too few stops with a map position), who was left out (stopped running, or too few stops), and in red when the history could not be read. AND THE SHEET HAD STOPPED ANSWERING: it read every stop whole (the full vendor payload) to use six fields of it. Measured before this change, one week took 21s and four weeks did not answer inside 31s, against a 26s ceiling. It now asks Firestore for those fields only \u2014 a test watches every read the sheet and the map make and fails on anything outside them \u2014 and the same read feeds the new ?format=layer the map draws from. Zero NuVizz calls, by construction, as before. A STOP WITH NO MAP POSITION IS NOT AT 0\u00b0,0\u00b0: the board carries lat:null until a stop is geocoded and a blank from the vendor reads as 0, and both were being counted as mapped and placed off the coast of Africa, where a driver with enough of them grew a ring. Both are now no position, on the map and the sheet \u2014 the one way the printed sheet can differ from before; otherwise it comes out byte-for-byte as it did. Diagnostics \u2192 This device lists the switch. Map tab only: the Routing map belongs to the Route Workbench and is not touched, and neither is the Build Panel. PUT IT BACK: revert this commit.'],
   ['1.77.1', 'A ROUTE OPENS IN A DRAWER: BOTH MAPS ZOOMED TO IT, WHAT IT KEPT, LOST AND GAINED, AND THE TRUCKS IT TRADED WITH. Chad, 2026-09-26: \u201cwhen i click on a row i want a drawer with maps of stops they had then ones that moved as well as maps of what dispatcher did vs what claude did as well as i want to have a button to show all the routes that were effected by changes that claude made so i can essentially layer information onto the map.\u201d On a backtested day, a row in the routes list now opens that route in a drawer over the day: from the right on a desktop (the day stays visible beside it; a click there, Close or Esc shuts it), the whole screen on a phone. At the top, the route, its driver and truck, one sentence on what Claude did to it \u2014 how many of its orders it kept, took off and put on, and how many trucks it traded with \u2014 and \u25c0 \u25b6 to walk the list; that header stays in reach however far down the drawer is read. Then dispatch\u2019s map and Claude\u2019s side by side (one with a Dispatch | Claude switch on a phone), zoomed to that truck with its stops numbered in each plan\u2019s order: a red ring on dispatch\u2019s map is a stop Claude took off this truck, a green ring on Claude\u2019s a stop it brought on. \u201cShow the N trucks Claude traded with\u201d layers every truck this route swapped stops with onto both maps in its own colour, and \u201cHide\u201d takes them off again. Under the maps, the route\u2019s numbers and the stops it kept, lost (and to which truck) and gained (and from which). The drawer\u2019s maps are made once per open day, so walking route to route costs no more map loads. The drawer keeps its own route and coloured trucks, so nothing about the day, the scorecard or the page\u2019s own maps moves under it. FIXED IN REVIEW, before it shipped: Esc closes it every time, Tab stays inside it, and Close puts the keyboard back on the row that opened it. PUT IT BACK: revert this commit.'],
   ['1.77.0', 'PLAN A DAY WITH CLAUDE: PICK THE BOARD DAY, HOW FAR BACK TO REACH FOR UNPLANNED ORDERS, AND THE LOADS. Chad, 2026-09-26: \u201cthere should be a planning area of the shadow mode where I can tell it to build a certain number of routes and it take what it\u2019s learned from the engine and firestore data and propose how it would route the selected routes\u201d \u2014 and then: \u201cyou need to let me set the parameters for tomorrows board such as the date and how many days it looks back for unplanned orders.\u201d The Shadow tab opens on a new card, Plan a day with Claude. THE DAY: any board day, with the next few offered as buttons and their unplanned counts on them. THE LOOK-BACK: Off, 3, 7 or 14 days, or any whole number to 14 \u2014 the Map\u2019s own Carry-over unplanned rule, run by the SAME code: the board\u2019s carry-over loop was moved out of the Map\u2019s feed unchanged into one shared function, and the planner calls it with the same readers, the same judges (the open-order pool, else the unplanned snapshot) and the same order of steps, so a plan never reads a different board from the one on the Map. A test runs both on one board, with and without a judge, and requires the same rows. WHICH STOPS: unplanned only (the default), or every open stop for a full re-plan. With unplanned only, a stop already on a load you PICK is kept on it and counts against its room (a preview of Monday\u2019s board with twelve roster loads picked kept 28 stops on two of them, CHE and DARVIN) because that truck carries it whatever Claude proposes; a plan that ignored it would promise room the truck does not have. THE LOADS: the day\u2019s roster loads with their drivers, trucks and the cap each would be held to (yours, else learned held to the class ceiling, else the rating), a load with no driver yet with a box truck or tractor you choose, a driver not on the roster, or a spare box truck or tractor with no driver. A driver who already has a roster load is greyed in the driver list, so nobody is handed a second, empty truck. PREVIEW IS FREE AND COMES FIRST: it reads the board from Firestore (0 NuVizz calls, 0 model spend) and says how many stops there are to place and by which day they were filed, what is not planned and why, and what the picked loads can carry against what there is \u2014 skid spots, pounds, no-tractor stops on box trucks, and time on site alone \u2014 in red where they fall short. Plan with Claude is offered only against a preview of exactly what is picked. The run is the backtest\u2019s: the same queue, worker, Stop, per-run cap and one 24-hour ceiling shared with backtests, and the board is frozen with the job when it is queued. ONE RULE DIFFERS FROM A BACKTEST, AND THE EVALUATOR ENFORCES IT: a stop may be left off only when no picked truck has room for it \u2014 its spots, its pounds, and the time it would add to that driver\u2019s day \u2014 and every one left off carries Claude\u2019s reason. The result is the loads with their stops, spots, pounds, miles and driver\u2019s day, the stops left off with their reasons, and Claude\u2019s map alone (a plan has no dispatch side). A proposal only: nothing is sent, saved or staged. Measured on Monday\u2019s real board: a 14-day look-back read in 7.1 s and stores 272 KB. FIXED IN REVIEW, before it shipped: THE ROOM RULE CANNOT TRAP CLAUDE \u2014 a load has room for a stop only if the evaluator\u2019s own measure, with the stop added and the route re-sequenced, still fits its spots, pounds, equipment and the driver\u2019s day. STOPS GO WHERE THE MAP DRAWS THEM: a pin a dispatcher corrected is used, and gives a stop with no feed geocode a place. A PLAN THAT COULD NEVER PASS IS REFUSED AT $0: when the stops already on a picked load break its cap, weight, equipment or driver\u2019s day by themselves, the preview says which and Plan is off. Two quick presses queue one run; a board re-scanned since its preview is refused so the dispatcher sees what will be planned; stops on a route name the roster gives to two loads are left out and counted, not pinned to the wrong truck. On screen: the result\u2019s map draws; \u201cplaced\u201d counts Claude\u2019s own placements apart from the stops already there; a queued plan says how many jobs are ahead or that the 24-hour ceiling is holding it; Refresh re-reads the loads; the time gauge counts each driver\u2019s day once. PUT IT BACK: revert this commit.'],
   ['1.76.0', 'HARD CAPS, WITH THE LEARNED NUMBERS BESIDE THEM. Chad, 2026-09-26, after the Sep 23 report: \u201cthere are times where we can get 46 pallets on a truck but its when its certain very stackable freight like corregated boxes. So i like hard caps on even the learned behavior and a ui to adjust them all against their learned behaviors.\u201d Until now a backtest RAISED a cap or a weight limit to whatever dispatch had loaded on that truck that day, so on those loads the number bound nothing, and a learned skid cap could sit anywhere history put it (58 of Sep 23\u2019s 61 loads carried a learned cap above the truck\u2019s rating; TRAILER 6 at 46.4 from a raise history cannot tell was one trip or two). NOW, with hard caps on: (1) caps and weight limits HOLD \u2014 a load dispatch ran past one reads as over on dispatch\u2019s side, and Claude may not match it; (2) a LEARNED skid cap is held down to a ceiling per truck class \u2014 box 22 spots, tractor 37 to start, the learned engine\u2019s own hard caps (from ~900 real trips), never the ratings (14/28 would make Sep 23 unplannable: 1,230 spots carried against 1,148 rated); (3) the ceilings are yours to set on the capacity card (Edit caps \u2192 two boxes beside the loose-pieces ratio; who set them and when is shown and logged); (4) a cap YOU set for a driver or a route is your number and stands above the ceiling \u2014 that is the adjusting against learned behaviour \u2014 and under the \u201ctighter\u201d rule your number now beats a learned one on the other side (typing a cap is how a learned one is corrected); (5) every driver\u2019s row shows the cap the backtest will hold it to, with \u201cheld to the tractor ceiling 37\u201d beside a learned cap that sits above it and the truck class beside the name; a route pools every truck that ran it, so its ceiling is applied when a day is built and its row says so. Every result records the mode, the ceilings, how many learned caps were held and how many loads dispatch itself ran past a cap or a limit; the \u201cWhat this measures\u201d lines say it, and the day\u2019s scorecard shows it beside the weight limits. SHADOW_HARD_CAPS=off on Netlify puts the whole old rule back at once (caps and limits raised to dispatch\u2019s load, no ceilings), no deploy needed; the switch\u2019s position is on the capacity card. Sep 23 has not been re-run under this rule; the earlier report\u2019s numbers stand for the rule they were made under. FIXED IN REVIEW, before it shipped: A CAP TYPED ON A ROUTE IS HELD TO THE CEILING OF THE TRUCK THAT RUNS IT \u2014 a route pools every truck, so 46 typed for the corrugated trailer must never brief a 26\u2032 box truck covering that route at 46; a cap typed on a DRIVER is that driver\u2019s own truck and still stands above the ceiling, which is where the 46-pallet day belongs. A DAY NO PLAN CAN SATISFY IS REFUSED BEFORE ROUND 1, AT $0, with the reason (the caps that hold carry fewer skid spots or pounds than the stops that must ride, or one stop fits no truck) instead of paying for every round and ending \u201cno plan without a violation\u201d. An employees roster that cannot be read now stops the build (retried next tick) instead of briefing every tractor as a box truck held to 22. Dispatch\u2019s loads past only their own learned cap \u2014 the 95th percentile of that driver\u2019s loads, so about one in twenty by design \u2014 are counted apart from real overs, and every load Dispatch ran past a cap or limit is flagged on its route row so the count leads to it. The capacity card now shows a route\u2019s number with what it is held to on each truck, a pinned driver\u2019s class the way the backtest reads it, and the held line on its own row on a phone; the router\u2019s cap rule, weight note and load-table legend say the rule that is in force.'],
@@ -2613,6 +2616,109 @@ function useShiplifyTab(tab, boardDate) {
       sig: `${on ? 1 : 0}|${data.status}|${data.head?.generation || ''}|${facts.known ? 1 : 0}|${facts.map.size}`,
     };
   }, [on, setOn, data, facts.map, facts.places, facts.known]);
+}
+
+// ── "DRIVER AREAS" — the trainee's rings on the Map tab: one switch, per device, default OFF ──
+//
+// Chad, 2026-09-27: "find the circles we were working on for the new trainee learning to route to
+// try and guide him to where drivers go and we were going to build an overlay for the map that we
+// could toggle on and off." The rings are page one of the printed driver-area sheet, computed by
+// the same function (territoryLayer in lib/driver-territory.js) so the screen and the paper can
+// never disagree; lib/driver-area-overlay.js draws them, and says why they can never change what
+// a click on the board does.
+//
+// DEFAULT OFF, and only the explicit 'on' turns it on: it is a reference for somebody learning
+// the board, not something every dispatcher's map should suddenly carry. Registered in
+// lib/device-switches.js, so the Diagnostics "This device" screen can say where it stands.
+const LS_DRIVER_AREAS = 'dispatchMap.driverAreas';
+let __driverAreasOn = (() => {
+  try { return localStorage.getItem('dispatchMap.driverAreas') === 'on'; } catch { return false; }
+})();
+const __driverAreasOnListeners = new Set();
+function setDriverAreasOn(v) {
+  __driverAreasOn = !!v;
+  try { localStorage.setItem(LS_DRIVER_AREAS, __driverAreasOn ? 'on' : 'off'); } catch { /* private mode */ }
+  for (const cb of [...__driverAreasOnListeners]) cb(__driverAreasOn);
+}
+function useDriverAreasSwitch() {
+  const [on, setOn] = useState(__driverAreasOn);
+  useEffect(() => {
+    // Re-read storage on mount, as useShiplifySwitch does: the Diagnostics "This device" screen
+    // writes storage directly, and every consumer already mounted hears about a change.
+    let stored = __driverAreasOn;
+    try { stored = localStorage.getItem('dispatchMap.driverAreas') === 'on'; } catch { /* keep */ }
+    if (stored !== __driverAreasOn) {
+      __driverAreasOn = stored;
+      for (const l of [...__driverAreasOnListeners]) l(__driverAreasOn);
+    }
+    const cb = (v) => setOn(v);
+    __driverAreasOnListeners.add(cb);
+    setOn(__driverAreasOn);
+    return () => { __driverAreasOnListeners.delete(cb); };
+  }, []);
+  return [on, setDriverAreasOn];
+}
+
+// THE RINGS, read once a day per page, and only once somebody turns the switch on — a dispatcher
+// who never uses it never pays for the read. `day` is the Eastern day they were read on, so a
+// board left open overnight reads fresh rings the next time the switch asks. A failed read is
+// kept as 'error' with its reason (never an empty layer that would look like "no drivers"), and
+// flipping the switch off and on asks again.
+let __driverAreas = { status: 'idle', layer: null, error: null, day: null };
+const __driverAreasSubs = new Set();
+let __driverAreasPromise = null;
+function __publishDriverAreas(next) {
+  __driverAreas = { ...__driverAreas, ...next };
+  for (const cb of [...__driverAreasSubs]) cb(__driverAreas);
+}
+function fetchDriverAreasOnce() {
+  const today = todayInET();
+  if (__driverAreas.status === 'ready' && __driverAreas.day === today) return Promise.resolve(__driverAreas);
+  if (__driverAreasPromise) return __driverAreasPromise;
+  // The old rings go while new ones are read: yesterday's rings under a line saying "couldn't
+  // load" would be two answers at once.
+  __publishDriverAreas({ status: 'loading', error: null, layer: null });
+  __driverAreasPromise = (async () => {
+    try {
+      const r = await apiFetch(DRIVER_AREAS_URL, { cache: 'no-store' });
+      let body = null;
+      try { body = await r.json(); } catch { /* an HTML 502 or a timeout page has no JSON in it */ }
+      if (!r.ok || !body || body.ok !== true) throw new Error(body?.error || `HTTP ${r.status}`);
+      __publishDriverAreas({ status: 'ready', layer: body, error: null, day: today });
+    } catch (err) {
+      console.error('driver areas fetch error', err);
+      __publishDriverAreas({ status: 'error', error: err?.message || String(err) });
+    } finally {
+      __driverAreasPromise = null;
+    }
+    return __driverAreas;
+  })();
+  return __driverAreasPromise;
+}
+function useDriverAreasData(on) {
+  const [state, setState] = useState(__driverAreas);
+  useEffect(() => {
+    const cb = (st) => setState(st);
+    __driverAreasSubs.add(cb);
+    setState(__driverAreas);
+    if (on) fetchDriverAreasOnce();
+    return () => { __driverAreasSubs.delete(cb); };
+  }, [on]);
+  return state;
+}
+
+// ON THE MAP. Built when the switch goes on and the rings have arrived; rebuilt when the map
+// itself is (mapReady — "Hide place labels" rebuilds it); torn down completely when the switch
+// goes off, so OFF is exactly the board as it was before this existed.
+function useDriverAreasOnMap({ google, mapRef, mapReady, on, layer }) {
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!google || !map || !on || !layer) return undefined;
+    const Overlay = makeDriverAreaOverlayClass(google);
+    const overlay = new Overlay(layer);
+    overlay.attach(map);
+    return () => overlay.detach();
+  }, [google, mapRef, mapReady, on, layer]);
 }
 
 // WHICH TAB A STOP PANEL IS OPEN ON. The stop panel (StopDataSections) is shared by the Map and
@@ -6143,6 +6249,26 @@ function LimeAsOfControl() {
   );
 }
 
+// "Driver areas" — the switch, and under it a line that always says something: what the rings
+// are built from, who has no ring and why, or that the read failed. An overlay that is on and
+// drawing nothing looks exactly like one that is off, so the words are part of the switch.
+// ONE component in the desktop Filters card and the phone's Filters → Map display, over one
+// per-device store, so the two views cannot disagree about where it stands.
+function DriverAreasControl() {
+  const [on, setOn] = useDriverAreasSwitch();
+  const data = useDriverAreasData(on);
+  const s = driverAreasStatus({ on, status: data.status, layer: data.layer, error: data.error });
+  const tone = s.tone === 'error' ? 'text-red-600' : s.tone === 'warn' ? 'text-amber-700' : 'text-slate-500';
+  return (
+    <div data-driver-areas-switch>
+      <MapFilterToggle label="Driver areas" checked={on} onChange={setOn} />
+      <div className={`text-[10px] leading-snug space-y-0.5 ${tone}`} role="status" data-driver-areas-status={on ? data.status : 'off'}>
+        {s.lines.map((line) => <div key={line}>{line}</div>)}
+      </div>
+    </div>
+  );
+}
+
 function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true, tab = 'map', shiplifySwitch = false, limeAsOfSwitch = false }) {
   const inv = inventory || null;
   // This tab's Shiplify switch: with it off, no Shiplify row is listed even in "Show all" —
@@ -7433,7 +7559,7 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
 // `drawnAsImage` — the wall display renders its map as a static picture, which can show pins
 // and nothing else. The rows that only mean something to a live vector map are hidden there
 // rather than left inert; see the call site for why a dead toggle is worse than a missing one.
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null, drawnAsImage = false, tvLiveMap = null, setTvLiveMap = null, showDriverLabels = null, setShowDriverLabels = null }) {
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null, drawnAsImage = false, tvLiveMap = null, setTvLiveMap = null, showDriverLabels = null, setShowDriverLabels = null, onWall = false }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
   // Clustering is off by default now; with icons memoized, unclustered rendering is far
   // cheaper, so only warn on genuinely huge boards rather than nagging every busy day.
@@ -7522,6 +7648,10 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
           onChange={setShowRoutes}
         />
       )}
+      {/* THE TRAINEE'S RINGS — where each driver usually works. Not on the wall at all: its
+          map cannot be zoomed (see the tvMode map options), so the names that only appear as
+          you zoom in would never appear, and 11px names do not read across a room. */}
+      {!onWall && <DriverAreasControl />}
       {/* THE WALL'S MAP, AS A PICTURE OR AS THE REAL THING — and it is a switch on the
           SCREEN rather than an env var because that is the only shape that can answer the
           question. Chad, on the static picture: "Think it looks bad with the city zoomed
@@ -12011,6 +12141,9 @@ function MobileFiltersTab({
             checked={showRoutes}
             onChange={setShowRoutes}
           />
+          {/* The trainee's driver-area rings, on a phone — the same switch and store as the
+              desktop Filters card, so the two views cannot disagree. */}
+          <DriverAreasControl />
           <MapFilterToggle
             label="Hide place labels"
             checked={mapFilters.hideLabels}
@@ -14543,6 +14676,15 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     mapReady,
   });
 
+  // THE TRAINEE'S DRIVER-AREA RINGS — the "Driver areas" switch in Filters, desktop and phone.
+  // Paint only (rings clickable:false, names pointer-events:none; see lib/driver-area-overlay.js),
+  // so every click on this board lands where it does with the switch off. Never on the wall — its
+  // map cannot zoom, so it is not offered there, and a device switched on elsewhere neither reads
+  // nor draws the rings in wall mode.
+  const [driverAreasOn] = useDriverAreasSwitch();
+  const driverAreas = useDriverAreasData(driverAreasOn && !tvMode);
+  useDriverAreasOnMap({ google, mapRef, mapReady, on: driverAreasOn && !tvMode, layer: driverAreas.layer });
+
   // Keep the Recenter button's action pointed at the current board: fit to all
   // currently-shown stops (or fall back to the default center when none).
   useEffect(() => {
@@ -15305,6 +15447,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 // "live map" tick on a dispatcher's desktop map would be meaningless there.
                 tvLiveMap={tvLiveMap}
                 setTvLiveMap={setTvLiveMap}
+                onWall
               />
             </div>
             {/* THERE IS NO PIN CAP TO PRINT ANY MORE. This corner used to carry "showing 401

@@ -37,6 +37,35 @@
 //
 // PURE: no Firestore, no network, no clock. Every decision is testable on plain data.
 
+/**
+ * A COORDINATE THAT IS NOT THERE IS NOT ZERO.
+ *
+ * The board carries `lat: null, lng: null` until a stop is geocoded (nuvizz-list starts every
+ * stop that way, and history keeps what the board had). Number(null) is 0 and 0 is finite, so a
+ * stop with no position was counted as HAVING one and placed at 0°,0° — off the coast of Africa:
+ * a driver with a few of them grew a ring there, those stops were "covered" by it, and the "what
+ * this is built from" line counted them as mapped. Blank and null are absent; anything else is
+ * read as a number, and NaN stays NaN.
+ */
+export function coordOf(v) {
+  if (v === null || v === undefined || (typeof v === 'string' && !v.trim())) return NaN;
+  return Number(v);
+}
+
+/**
+ * Where a stop is, or null when it has no position we can use.
+ *
+ * 0°,0° IS "NO POSITION" TOO. nuvizz-scan reads `Number(addr.latitude)` whenever the field is
+ * not null, and Number('') is 0 — so a blank the vendor sends becomes exactly 0,0. No Davis
+ * delivery is in the Gulf of Guinea; a stop there is a stop nobody geocoded.
+ */
+export function positionOf(s) {
+  const lat = coordOf(s?.lat), lng = coordOf(s?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat === 0 && lng === 0) return null;
+  return { lat, lng };
+}
+
 /** A stop contributes to a territory only if we can place it AND attribute it. */
 export function usableStop(s) {
   if (!s) return false;
@@ -296,7 +325,7 @@ export function territoryCoverage(stops = [], opts = {}) {
     const key = driverKeyOf(s);
     if (!key) noDriver++;
     else if (!isDriver(key, roster)) filteredOut++;
-    if (Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lng))) withCoords++;
+    if (positionOf(s)) withCoords++;
   }
   const usable = (stops || []).filter((s) => usableStop(s) && isDriver(driverKeyOf(s), roster)).length;
   return {
@@ -436,8 +465,9 @@ export function driverCircles(stops = [], opts = {}) {
 
   const byDriver = new Map();
   for (const s of stops || []) {
-    const lat = Number(s?.lat), lng = Number(s?.lng);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;   // circles need coordinates
+    const at = positionOf(s);
+    if (!at) continue;                                              // circles need coordinates
+    const { lat, lng } = at;
     const key = driverKeyOf(s);
     if (!key || !isDriver(key, roster)) continue;
     if (active && !active.has(key)) continue;
@@ -539,8 +569,9 @@ export function driverPoints(stops = [], opts = {}) {
   const active = opts.active || null;
   const byDriver = new Map();
   for (const s of stops || []) {
-    const lat = Number(s?.lat), lng = Number(s?.lng);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const at = positionOf(s);
+    if (!at) continue;
+    const { lat, lng } = at;
     const key = driverKeyOf(s);
     if (!key || !isDriver(key, roster)) continue;
     if (active && !active.has(key)) continue;
@@ -646,4 +677,120 @@ export function applyAliases(stops = [], aliases = []) {
     // Rewrite BOTH name fields, so whichever one downstream reads it lands on the same person.
     return { ...s, driverUserName: to, driverName: to };
   });
+}
+
+// ── THE RINGS, COMPUTED ONCE FOR THE PAPER AND FOR THE SCREEN ───────────────
+//
+// Chad, 2026-09-27: "find the circles we were working on for the new trainee learning to route
+// to try and guide him to where drivers go and we were going to build an overlay for the map that
+// we could toggle on and off."
+//
+// The printed sheet and the Map overlay must draw the SAME rings in the SAME colours. A trainee
+// holding the sheet beside the screen and seeing two different answers cannot tell which to
+// believe, and building the pipeline twice is exactly how a printout and a screen drift apart —
+// this repo has already paid for that once, on the roster freshness line. So the pipeline lives
+// here once: territorySheetHtml renders it to paper, territoryLayer projects it to the small JSON
+// the map draws.
+
+/**
+ * EVERY FIELD OF A HISTORY STOP THAT THIS MODULE OR THE SHEET READS — and the endpoint asks
+ * Firestore for these and nothing else.
+ *
+ * A history stop is the whole normalized vendor stop, raw payload and all. Reading four weeks of
+ * them in full is what made the sheet stop answering: measured 2026-09-27, ONE week took 21s and
+ * four did not come back inside 31s, against a 26s function ceiling. The territory code has never
+ * looked at more than these six fields (a test proves it by watching every read), so the other
+ * few hundred were bytes carried across the wire to be thrown away.
+ *
+ * `stopNbr` is NOT read here. It rides along because every history stop is written with it
+ * (upsertStops keys the document by it), and listDocs SKIPS a masked document that has none of
+ * its masked fields — so without one field every document is guaranteed to carry, a stop with no
+ * driver, no ZIP and no coordinates would silently vanish from the "what this is built from"
+ * counts. Absent is not zero, again.
+ */
+export const TERRITORY_STOP_FIELDS = Object.freeze(['stopNbr', 'driverUserName', 'driverName', 'zip', 'city', 'lat', 'lng']);
+
+// COLOUR TELLS RINGS APART. IT DOES NOT NAME ANYBODY.
+//
+// Ten swatches across 59 drivers means six men share every colour, so a colour cannot identify a
+// person — and the first sheet printed a legend that implied it could, which cost a whole page
+// and told the reader something false. There is no legend. The colours exist so that two rings
+// crossing each other read as two rings; the NAME in the middle is the answer. Varied lightness
+// as well as hue, because the sheet gets photocopied. Moved here from the sheet so the screen
+// colours a driver exactly as the paper does.
+export const RING_PALETTE = Object.freeze(['#1f4e79', '#a4462d', '#3f7d3f', '#6b4a8a', '#8a6d1f',
+  '#256b6b', '#8a3060', '#4a5a6b', '#2f6f9e', '#7a3b1e']);
+
+/** Each driver's ring colour, by his place in the busiest-first driver list. */
+export function ringColours(drivers = []) {
+  return new Map((drivers || []).map((d, i) => [d.key, RING_PALETTE[i % RING_PALETTE.length]]));
+}
+
+/**
+ * THE WHOLE PIPELINE, ONCE: who is still running, their work, their rings and their colours.
+ *
+ * `drivers` and `circles` are the sheet's existing overrides, carried through unchanged so the
+ * printed page is byte-for-byte what it was before this was shared.
+ */
+export function territoryModel(stops = [], opts = {}) {
+  const all = stops || [];
+  const roster = opts.roster || null;
+  // ONLY DRIVERS WHO HAVE ACTUALLY RUN IN THE WINDOW. Chad: "terry hasn't ran for me in a long
+  // time ... just guys that have ran in last 4 weeks."
+  const { active, excluded } = activeDrivers(all, { roster, minStops: opts.minStops ?? 5 });
+  // THE KEY COMES FROM ONE PLACE — driverKeyOf, never re-derived inline. An inline uppercase-and-
+  // underscore once turned "COLIN/DJ 1" into COLIN/DJ_1, which is in no active set, and Colin's
+  // second load vanished from the tables while the rings (which asked properly) still drew it.
+  const inWindow = all.filter((s) => active.has(driverKeyOf(s)));
+  const drivers = opts.drivers || driverCore(inWindow, { roster });
+  const circleSets = opts.circles || driverCircles(all, { roster, active });
+  return { roster, active, excluded, inWindow, drivers, circleSets, colourOf: ringColours(drivers) };
+}
+
+const round = (v, dp) => Number(Number(v).toFixed(dp));
+
+/**
+ * THE MAP OVERLAY'S DATA — the sheet's page one, as JSON a map can draw.
+ *
+ * Only what a ring needs: where, how wide, whose, which colour. Nothing about customers, prices
+ * or addresses leaves the server, so a phone downloads a few kilobytes rather than four weeks of
+ * stops. A driver with no ring is LISTED with the reason, never silently missing — the same
+ * absent-is-not-zero rule the sheet prints under "No settled patch".
+ */
+export function territoryLayer(stops = [], opts = {}) {
+  const m = territoryModel(stops, opts);
+  const setBy = new Map(m.circleSets.map((c) => [c.key, c]));
+  const rings = [];
+  const noRing = [];
+  for (const d of m.drivers) {
+    const cs = setBy.get(d.key);
+    if (!cs) {
+      // Active, but not one of his stops carries a position, so there is nothing to draw a ring
+      // round. Said, not dropped: "no positions" and "too spread out" are different facts.
+      noRing.push({ key: d.key, label: d.label, stops: d.total, mapped: 0, why: 'no coordinates' });
+    } else if (!cs.circles.length) {
+      // TOO FEW POSITIONS IS NOT "SPREAD OUT". A man with forty stops in one ZIP and two of them
+      // geocoded has no cell busy enough to cluster, and calling that scattered work would tell
+      // a trainee the opposite of the truth. With under half his stops mapped, a missing ring
+      // says more about the geocoding than about his work — so say how many could be placed.
+      const few = cs.plotted < d.total / 2;
+      noRing.push({ key: d.key, label: cs.label, stops: d.total, mapped: cs.plotted, why: few ? 'few coordinates' : 'spread out' });
+    } else {
+      rings.push({
+        key: d.key,
+        label: cs.label,
+        colour: m.colourOf.get(d.key),
+        stops: d.total,
+        circles: cs.circles.map((c) => ({ lat: round(c.lat, 5), lng: round(c.lng, 5), radiusKm: round(c.radiusKm, 2) })),
+      });
+    }
+  }
+  const cov = territoryCoverage(m.inWindow, { roster: m.roster });
+  return {
+    rings,
+    noRing: noRing.sort((a, b) => a.label.localeCompare(b.label)),
+    excluded: m.excluded.map((e) => ({ label: e.label, why: e.why, stops: e.stops, lastSeen: e.lastSeen, daysSince: e.daysSince })),
+    coverage: { deliveries: cov.usable, days: cov.days, drivers: m.drivers.length, coordShare: round(cov.coordShare, 3) },
+    rosterApplied: cov.rosterApplied,
+  };
 }
