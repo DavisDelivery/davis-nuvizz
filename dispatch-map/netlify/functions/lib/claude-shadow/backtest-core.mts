@@ -791,14 +791,16 @@ export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequ
       if (fits) hard.push(`stop ${u.stop} is left unplanned but ${fits.load} has room for it (${fits.why})`);
     }
   }
+  // One message per DAY, keyed as measurePlan keys it: every "(no driver)" load is its own day, so
+  // grouping by the display name told Claude unnamed trucks shared one day and hid the other overruns.
   const overSaid = new Set<string>();
   for (const l of m.loads) {
     if (l.over) hard.push(`${l.id} is over its cap: ${l.spots} of ${l.cap} skid spots`);
     if (l.blocked) hard.push(`${l.id} is a tractor carrying ${l.blocked} no-tractor stop(s)`);
     if (l.overWeight) hard.push(`${l.id} carries ${l.weight} lb — over its ${l.maxLbs} lb limit`);
-    if (l.overTime && !overSaid.has(l.driver)) {
-      overSaid.add(l.driver);
-      const theirs = m.loads.filter((x) => x.driver === l.driver).map((x) => x.id);
+    if (l.overTime && !overSaid.has(driverKey(l))) {
+      overSaid.add(driverKey(l));
+      const theirs = m.loads.filter((x) => driverKey(x) === driverKey(l)).map((x) => x.id);
       hard.push(`${l.driver} would work ${l.driverMin} min on ${theirs.join(' + ')} (drive + ${p.serviceMin ?? DEFAULT_SERVICE_MIN} min a stop on site) — past their ${l.maxMin}-minute day`);
     }
   }
