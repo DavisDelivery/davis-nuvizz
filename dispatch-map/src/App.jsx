@@ -37660,7 +37660,7 @@ function OrderDetailBody({ data, onOpenHistory, wide }) {
           </DetailRow>}
       </DetailSection>
 
-      {(d.instructions || d.comments.length) && (
+      {(!!d.instructions || d.comments.length > 0) && (
         <DetailSection title="Instructions and notes on the order">
           {d.instructions && <DetailRow label="Instructions">{d.instructions}</DetailRow>}
           {d.comments.map((c, i) => (
@@ -37674,7 +37674,7 @@ function OrderDetailBody({ data, onOpenHistory, wide }) {
         </DetailSection>
       )}
 
-      {(d.contact || note?.contacts?.length) && (
+      {(!!d.contact || (note?.contacts?.length ?? 0) > 0) && (
         <DetailSection title="Who to call" note="Tap a number to dial it.">
           {d.contact && (
             <DetailRow label="On this order">
