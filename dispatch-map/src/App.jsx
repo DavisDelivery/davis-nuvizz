@@ -17202,7 +17202,16 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       .catch(() => { if (!cancelled) { setRoster([]); setRosterMeta({ ok: false }); } });
     return () => { cancelled = true; };
   }, [view, boardDate]);
-  const rosterState = useMemo(() => rosterFreshness(rosterMeta), [rosterMeta]);
+  // THE AGE MOVES WITH THE CLOCK. rosterFreshness measures against now, so memoising it on the
+  // envelope alone froze "cached 1m ago" and the "(before today)" flag at fetch time — still
+  // saying so at 3 PM, and never going stale overnight. A minute tick while the line is shown.
+  const [rosterTick, setRosterTick] = useState(0);
+  useEffect(() => {
+    if (view !== 'loads' || !open) return undefined;
+    const t = setInterval(() => setRosterTick((n) => n + 1), 60000);
+    return () => clearInterval(t);
+  }, [view, open]);
+  const rosterState = useMemo(() => rosterFreshness(rosterMeta), [rosterMeta, rosterTick]); // eslint-disable-line react-hooks/exhaustive-deps
   // One definition, two placements. Writing the markup twice is how the phone and the desktop
   // drift apart, and this app has shipped that twice; writing it once and PLACING it twice is
   // what "two views" actually asks for.
