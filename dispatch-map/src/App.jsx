@@ -129,9 +129,16 @@ import UatModeBar from './components/UatModeBar.jsx';
 import AccountScreen from './components/AccountScreen.jsx';
 import NuvizzLoginBar from './components/NuvizzLoginBar.jsx';
 import { onLoginNotice } from './lib/nuvizz-login-notice.js';
+import { tabLoadFailed } from './components/TabLoadFailure.jsx';
 // The Claude shadow tab lives in its own directory so scripts/check-shadow-isolation.mjs can
 // prove what it reaches: its own files, lib/api.js and lib/session.js, and nothing else.
-import ClaudeShadowScreen from './shadow/ClaudeShadowScreen.jsx';
+// LAZY (Chad, 2026-09-27, "12 yes"): its code loads the first time the Shadow tab opens instead
+// of riding in the start-up file. Rendered behind a <Suspense> in RoutingSection. With no error
+// boundary above it, an import that REJECTS would throw into render and unmount the WHOLE app, so
+// the rejection becomes a line on the Shadow tab with a Reload button and what the browser said
+// (components/TabLoadFailure.jsx) — never a white page. scripts/check-shadow-chunk.mjs fails CI
+// if a start-up file the built index.html names carries the Shadow's code.
+const ClaudeShadowScreen = React.lazy(() => import('./shadow/ClaudeShadowScreen.jsx').catch((err) => tabLoadFailed('Shadow', err)));
 import { isUatHost } from './lib/mirror-site.js';
 import { mergeDayLoads, splitDayLoads } from './lib/day-loads.js';
 import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
@@ -175,8 +182,11 @@ import { isHashLikeId, looksLikeLoadNbr, plannedDriverName } from './lib/route-i
 // Quote console — lazy so its ~345 KB (the @davisdelivery/quote-generator code plus its
 // geo/model JSON) loads only when the Quote tab is first opened, instead of riding in the
 // cold Map bundle where it's never used. Rendered behind a <Suspense> in QuoteScreen.
+// A rejected import becomes a line on the Quote tab with a Reload button and what the browser
+// said (components/TabLoadFailure.jsx): with no error boundary in the app, it would otherwise
+// throw into render and unmount the whole app.
 const UlineQuoteConsole = React.lazy(() =>
-  import('@davisdelivery/quote-generator').then((m) => ({ default: m.UlineQuoteConsole })));
+  import('@davisdelivery/quote-generator').then((m) => ({ default: m.UlineQuoteConsole })).catch((err) => tabLoadFailed('Quote', err)));
 
 // Vite's tree-shaker considers function-only imports from .ts files to be
 // pure; it eliminates them even though they're called from useAutoScanner's
@@ -197,7 +207,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.90.2';
+const APP_VERSION = '1.90.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -251,6 +261,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.90.3', 'THE SHADOW TAB’S CODE LOADS ONLY WHEN YOU OPEN IT, AND A TAB WHOSE CODE WILL NOT LOAD NO LONGER TURNS THE WHOLE PAGE WHITE. Chad, Sep 27: “12 yes” to loading the Shadow’s code only when its tab opens. The app’s main file is about 200 KB smaller (55 KB gzipped), so every start-up and every update fetches less; the first Shadow open of a visit now fetches its own file (about 57 KB gzipped), with “Loading the Shadow tab…” while it arrives. If the Shadow’s or the Quote tab’s file cannot load, that tab says so with a Reload button and what the browser said, and the rest of the app stays put — until now a Quote file that failed to load turned the whole page white. A new CI check fails any build that puts the Shadow back into the start-up file, and the layout guards now fail a tab showing that failure line instead of passing it as a working screen. The Build Panel, the Route Workbench and the map make the same requests and draw the same screen. PUT IT BACK: revert this commit.'],
   ['1.90.2', 'A STOP WITH A RECEIVING CLOCK AND A SHIPLIFY FORKLIFT NOW SHOWS BOTH: TWO ICONS. Chad, on PRO 007183542 (EXPRESS CONTAINER SERVICES): “this stop should have a double icons one for time and one for forklift.” It showed the clock alone. A restriction cluster used to veto the Shiplify forklift outright, because the forklift pin exists only where a stop would otherwise wear its plain colour; so a stop that had BOTH lost the forklift, which is how the freight comes off the truck. THE FORKLIFT NOW RIDES THE CLUSTER AS A DISC OF ITS OWN, after the clock: the pin’s lime ring, the same dark forklift, on a white ground, drawn from the same artwork as the pin and its Legend swatch. It goes after however many restrictions the stop has (a clock, a liftgate, an appointment), so nothing is hidden and nothing moves but the marker growing one slot wider. Where a dispatcher has confirmed no tractor trailer beside the clock, the disc wears the Box-only RED ring, on the same rule as the red-ring pin; an unconfirmed no does not turn it red. Every other rule is unchanged: a Shiplify dock still draws no pin beside a clock, and a selection, a search hit, a flag, do-not-send, an open route, a live status, a school / church / government mark, the amber address tint and the Estes ring all still win over the forklift. A house or school badge rides the clock’s disc, never on top of the forklift. The Legend counts the disc under the same forklift rows as the pin. THE WAY BACK: VITE_MAP_FORKLIFT_WITH_CLOCK=off (a redeploy) puts a clustered stop back to no forklift, byte for byte. 12 new tests.'],
   ['1.90.1', 'THE ROLLBACK TOOL GOES BY THE VERSION EACH BUILD ACTUALLY SHOWED, MAIN’S MERGE TITLES MATCH THEIR PR, AND OLD CHANGELOG ROWS THAT PROMISED THE WRONG WAY BACK ARE CORRECTED. npm run rollback now reads each build’s version from that build’s own code, not from its merge title: #1027 merged under the title v1.74.3 while it shipped v1.75.1, so asking for v1.74.3 used to land on the wrong build. A drop that cannot really be undone (a true merge commit, or a revert git refuses outright) now stops and says so instead of reading “comes out cleanly”. Auto-merge now writes each PR’s own title as its commit title on main. Old rows corrected, each with a dated note: the switches in v1.56.0, v1.65.0 and v1.76.0 take effect after a redeploy, not without one; rows that promised “revert this commit” now say how many conflicts that revert hits and point at rolling back to a time instead; and v1.75.1, v1.76.0 and v1.77.1 described their feature wrongly. The Version history list no longer scrolls sideways on a phone. Nothing on the board, the map or the Route Workbench changes, and 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.90.0', 'A RESIDENTIAL PAINT BRUSH, BESIDE THE TRACTOR AND BOX BRUSHES. Chad, with the Routing gear open on “Mark vehicle eligibility”: “the way i can paint tractor freindly or not i want to be able to paint residentials.” The gear gains “Mark building type: Off / Residential”. Armed, a click on a stop marks the location residential and the house mark appears on its pin; a second click puts it back to Auto, where Shiplify decides again. It writes exactly what the stop panel’s Building type picker writes (the type, who and when, merged onto the location’s notes), so a house painted on the map and a house picked in the panel are the same fact, and it sticks for every future stop there. It does NOT touch the vehicle mark, the same as the picker: the Tractor and Box brushes paint that. One brush at a time across both groups (arming one disarms the other, and Ninja, Box and Lasso); “Off” in one group never disarms the other’s brush; the on-map reminder names the brush and has a Stop button. The phone gear and both desktop gears carry it. THE WAY BACK: VITE_MAP_RESIDENTIAL_BRUSH=off (a redeploy) takes the group out of the gear; marks already painted stay, because they are the panel’s own field. 5 new tests.'],
@@ -30519,7 +30530,7 @@ function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTab
       {routingTab === 'build'
         ? <RoutingScreen debugCaptureRef={debugCaptureRef} presence={presence} onOpenEngine={showSubTabs ? () => setRoutingTab('engine') : null} onOpenShadow={showSubTabs ? () => setRoutingTab('shadow') : null} />
         : routingTab === 'shadow'
-          ? <ClaudeShadowScreen isMobile={isMobile} />
+          ? <React.Suspense fallback={<div className="p-6 text-sm text-slate-500">Loading the Shadow tab…</div>}><ClaudeShadowScreen isMobile={isMobile} /></React.Suspense>
           : <EngineScreen />}
     </div>
   );
