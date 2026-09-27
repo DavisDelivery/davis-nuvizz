@@ -35711,18 +35711,25 @@ function useAddressQueue(nonce) {
   const [loading, setLoading] = React.useState(true);
   const [err, setErr] = React.useState(null);
   const [showDismissed, setShowDismissed] = React.useState(false);
+  // THE LATEST LOAD WINS. The list stays up and usable through a reload, so a save on one row and
+  // a wave-off on the next can each start one — and the answer read BEFORE the wave-off can land
+  // AFTER it, putting the waved-off row back and the badge up by one. Only the newest call's
+  // answer, error or finish is applied.
+  const seq = React.useRef(0);
 
   const load = React.useCallback(async () => {
+    const mine = ++seq.current;
     setLoading(true); setErr(null);
     try {
       const r = await apiFetch(`/.netlify/functions/address-queue${showDismissed ? '?dismissed=1' : ''}`, { cache: 'no-store' });
       const j = await r.json();
+      if (mine !== seq.current) return;
       if (!j.ok) throw new Error(j.error || 'read failed');
       setData(j);
       // Working the list down has to move the badge, or it goes stale and stops being read. This
       // answer IS the fresh count, so it goes straight to the badge — no second read.
       publishProblemAddressCount(problemAddressTotal(j.summary, showDismissed));
-    } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
+    } catch (e) { if (mine === seq.current) setErr(String(e.message || e)); } finally { if (mine === seq.current) setLoading(false); }
   }, [showDismissed]);
   React.useEffect(() => { load(); }, [load, nonce]);
 
@@ -36743,6 +36750,9 @@ function QueueSummaryBar({ q, stacked }) {
       {b && b.live === false && (
         <div className="text-[11px] text-amber-700">Live writes are switched off on the server, so a push would reach nothing. Corrections still save to the board.</div>
       )}
+      {/* The list no longer blanks to "Loading the board…" on a reload, so this is the only sign a
+          Refresh (or the reload after a save) is under way — and that the rows are about to move. */}
+      {q.loading && <div className="text-[11px] text-slate-500">Refreshing the list…</div>}
       {q.push.fatal && <div className="text-[11px] rounded p-2 bg-amber-50 border border-amber-200 text-amber-900 break-words">Run stopped: {q.push.fatal}</div>}
       {/* WHAT NUVIZZ SAID ABOUT ROWS THAT ARE GONE. A refused push used to vanish with its row,
           which reads as done while the driver's manifest keeps the old address. In flow, in

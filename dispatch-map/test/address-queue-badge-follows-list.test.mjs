@@ -46,6 +46,7 @@ function runtime() {
       const s = slots[k];
       return [s.v, (v) => { s.v = typeof v === 'function' ? v(s.v) : v; }];
     },
+    useRef(v) { const k = i++; if (!(k in slots)) slots[k] = { current: v }; return slots[k]; },
     useCallback(fn, deps) {
       const k = i++;
       if (slots[k] && same(slots[k].deps, deps)) return slots[k].fn;
@@ -147,4 +148,31 @@ test('a failed queue read leaves the badge where it was', async () => {
   h.setAnswer(() => ({ ok: false, error: 'read failed' }));
   h.queue(); await tick(); h.queue();
   assert.equal(h.badge(), 5);
+});
+
+test('two reloads in flight: the answer read AFTER a wave-off wins, even when the older one lands last', async () => {
+  // The list stays usable through a reload (A3-2), so a save on one row and a wave-off on the next
+  // can each start one. The older read — taken before the wave-off — must not put the row back
+  // on the list or the badge back up by one.
+  const h = harness();
+  h.setAnswer(() => summary({ no_pin: 2 }));
+  h.badge(); await tick();
+  h.queue(); await tick();
+  const q = h.queue();
+  assert.equal(h.badge(), 2);
+
+  const gates = [];
+  h.setAnswer(() => new Promise((resolve) => gates.push(resolve)));
+  const older = q.reload();         // read before the wave-off: 2 to fix
+  const newer = q.reload();         // read after it: 1 to fix
+  assert.equal(gates.length, 2, 'both reads went out');
+  gates[1](summary({ no_pin: 1, dismissed: 1 }));
+  await newer;
+  gates[0](summary({ no_pin: 2 }));
+  await older;
+
+  const after = h.queue();
+  assert.equal(after.data.summary.no_pin, 1, 'the list is the newer read');
+  assert.equal(after.loading, false);
+  assert.equal(h.badge(), 1, 'and so is the badge');
 });

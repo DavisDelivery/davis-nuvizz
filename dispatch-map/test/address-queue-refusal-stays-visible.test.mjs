@@ -111,6 +111,10 @@ test('the refusal of a row that has LEFT the list is on the summary bar, in both
     assert.match(painted, /ACME SUPPLY · 007174397/, 'names the order');
     assert.match(painted, /NuVizz rejected the address/, 'quotes what NuVizz said');
     assert.match(painted, /portal/, 'and says where to fix it');
+    assert.doesNotMatch(painted, /Refreshing the list/, 'nothing is loading');
+    // The list no longer blanks on a reload, so the bar is where a Refresh shows it is under way.
+    const loading = textOf(rt.render(() => QueueSummaryBar({ q: { ...q, loading: true }, stacked })));
+    assert.match(loading, /Refreshing the list…/);
   }
 });
 
