@@ -5,7 +5,7 @@
 //
 //   POST /.netlify/functions/send-sms
 //   Body: { to, text }  OR  { text, recipients: [{ to, label? }] }
-//   → { ok, sent, failed, capped, results: [{ to, label, ok, id?, error? }] }
+//   → { ok, sent, failed, capped, results: [{ to, label, ok, id?, recorded?, error? }] }
 //
 // Guardrails (this endpoint sends billable SMS and has no user auth):
 //   • SMS_DAILY_CAP (default 500) — a per-ET-day ceiling tracked in Firestore so
@@ -85,9 +85,11 @@ export default async (req: Request): Promise<Response> => {
     if (sent >= remaining) { capped++; results.push({ to: r.to, label: r.label, ok: false, error: 'daily cap reached' }); continue; }
     const res = await sendSms({ to: r.to, text });
     if (res.ok) {
-      sent++; results.push({ to: r.to, label: r.label, ok: true, id: res.id });
-      // Record the outbound message so the conversation thread shows both sides.
-      await recordSmsMessage({ direction: 'out', contactPhone: r.to, text, driverName: r.driverName || null, label: r.label || null, messageId: res.id || null });
+      sent++;
+      // Record the outbound message so the conversation thread shows both sides. X-errors-4:
+      // `recorded:false` says the text went out but will not appear in the thread.
+      const recorded = await recordSmsMessage({ direction: 'out', contactPhone: r.to, text, driverName: r.driverName || null, label: r.label || null, messageId: res.id || null });
+      results.push({ to: r.to, label: r.label, ok: true, id: res.id, recorded });
     } else { failed++; results.push({ to: r.to, label: r.label, ok: false, error: res.error }); }
   }
 

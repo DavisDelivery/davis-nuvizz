@@ -32,7 +32,7 @@ export async function recordSmsMessage(m: {
   label?: string | null;
   messageId?: string | null;
   at?: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const contactPhone = normalizePhone(m.contactPhone);
   const at = m.at || new Date().toISOString();
   // Stable id: prefer the vendor messageId; else direction+phone+time so a retry
@@ -51,5 +51,11 @@ export async function recordSmsMessage(m: {
       messageId: m.messageId || null,
       at,
     });
-  } catch (e: any) { console.warn(`[sms-store] record failed: ${e?.message}`); }
+    return true;
+  } catch (e: any) {
+    // X-errors-4: still never throws, but says so — a caller that counts or reports the write
+    // (the inbound webhook, send-sms) must not claim a message reached the thread when it did not.
+    console.warn(`[sms-store] record failed: ${e?.message}`);
+    return false;
+  }
 }

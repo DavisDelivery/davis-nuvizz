@@ -50,7 +50,7 @@ export default async (req: Request): Promise<Response> => {
 
   if (!isFirestoreEnabled()) { console.warn('[st-webhook] firestore off; dropping event'); return ok(); }
 
-  let stored = 0;
+  let stored = 0, failed = 0;
   for (const r of asReports(body)) {
     const type = r?.type || r?.values?.type;
     if (type && type !== 'INCOMING_MESSAGE') continue; // only inbound replies for now
@@ -58,17 +58,21 @@ export default async (req: Request): Promise<Response> => {
     const contactPhone = normalizePhone(v?.contactPhone);
     const text = v?.text ?? '';
     if (!contactPhone && !text) continue;
+    const messageId = v?.messageId || r?.reportId || null;
     try {
-      await recordSmsMessage({
+      // X-errors-4: a refused write is not "stored" — recordSmsMessage reports it rather than
+      // swallowing it, so this count and log line tell the truth about a missing driver reply.
+      const landed = await recordSmsMessage({
         direction: 'in',
         contactPhone,
         accountPhone: v?.accountPhone,
         text,
-        messageId: v?.messageId || r?.reportId || null,
+        messageId,
       });
-      stored++;
-    } catch (e: any) { console.warn(`[st-webhook] store failed: ${e?.message}`); }
+      if (landed) stored++;
+      else { failed++; console.warn(`[st-webhook] inbound message NOT stored (messageId=${messageId ?? 'none'})`); }
+    } catch (e: any) { failed++; console.warn(`[st-webhook] store failed: ${e?.message}`); }
   }
-  console.log(`[st-webhook] stored=${stored}`);
-  return ok();
+  console.log(`[st-webhook] stored=${stored} failed=${failed}`);
+  return new Response(JSON.stringify({ ok: true, stored, failed }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 };
