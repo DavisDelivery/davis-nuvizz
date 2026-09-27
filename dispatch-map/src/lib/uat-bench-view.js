@@ -26,13 +26,15 @@ export function rowSubtitle(r) {
  * a row with an opening and no close carries an estimated ARRIVAL, not a window, and the
  * seeder drops it rather than pairing it with the builder's default. If this screen showed
  * "18:30–" as though it were a deadline, you would tick an order to test a deadline it does
- * not have and the copy would arrive with a 12–5 default. The two must say the same thing.
+ * not have and the copy would arrive with a 12–5 default. The two must say the same thing —
+ * so this is the seeder's rule exactly: both ends in the contract's yyyy-MM-ddTHH:mm:ss shape,
+ * and opening BEFORE closing. An inverted "18:30–17:00 strict" is dropped by the seeder too.
  */
 export function windowLabel(r) {
-  const t = (v) => (typeof v === 'string' && v.length >= 16 ? v.slice(11, 16) : null);
-  const a = t(r?.scheduledFrom);
-  const b = t(r?.scheduledTo);
-  if (a && b) return `${a}–${b}${String(r?.timeConstraint || '').toUpperCase() === 'STRICT' ? ' strict' : ''}`;
+  const iso = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v) ? v.slice(0, 19) : null);
+  const a = iso(r?.scheduledFrom);
+  const b = iso(r?.scheduledTo);
+  if (a && b && a < b) return `${a.slice(11, 16)}–${b.slice(11, 16)}${String(r?.timeConstraint || '').toUpperCase() === 'STRICT' ? ' strict' : ''}`;
   return 'no window';
 }
 
