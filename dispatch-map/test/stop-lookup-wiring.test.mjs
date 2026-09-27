@@ -228,7 +228,9 @@ test('a NuVizz answer is LABELLED as one, on the screen and in the drawer, and t
   // The chip reads the ANSWER's own count, not a slogan (v1.63.0 moved it into LookupCallsPill).
   assert.match(APP, /<LookupCallsPill calls=\{data\?\.nuvizzCalls\} \/>/, 'the chip is handed the answer\'s count');
   const pill = APP.slice(APP.indexOf('function LookupCallsPill'), APP.indexOf('function LookupSectionHead'));
-  assert.match(pill, /const spent = calls === 1;[\s\S]{0,900}1 NuVizz call — on request/, 'and says 1 only when the answer did');
+  // …and prints the count the answer carries: a retried busy NuVizz spends more than one
+  // (audit 2026-09-27, shiplify-lookup-uat-6), and `calls === 1` printed "0" for those.
+  assert.match(pill, /const spent = n > 0;[\s\S]{0,900}\$\{n\} NuVizz call\$\{n === 1 \? '' : 's'\} — on request/, 'and says the number the answer did');
 });
 
 test('a customer miss prints the honest sentence — a name cannot be prompted', () => {

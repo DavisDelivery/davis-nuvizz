@@ -444,11 +444,14 @@ export function promptedOutcome(res) {
   return { ok: false, spent: true, reason: 'error', text: `NuVizz could not answer: ${r || 'unknown error'}.` };
 }
 
-/** PURE: the ledger row for the source this answer came from — one call, on request. */
-export function promptedSource({ day } = {}) {
+/** PURE: the ledger row for the source this answer came from — the calls it cost, on request.
+ *  `calls` is what the requester counted (a retried busy answer costs more than one); absent,
+ *  it is one. */
+export function promptedSource({ day, calls } = {}) {
+  const price = Number.isFinite(calls) && calls > 1 ? `${calls} calls` : 'one call';
   return {
     key: 'nuvizz', label: 'NuVizz, asked just now', where: '/stop/info', looked: true, skipped: false,
-    note: day ? `one call, on request — filed under ${day}` : 'one call, on request — no delivery day on it',
+    note: day ? `${price}, on request — filed under ${day}` : `${price}, on request — no delivery day on it`,
     count: 1, found: true, state: 'found',
   };
 }

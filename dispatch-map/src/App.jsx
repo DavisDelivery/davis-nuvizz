@@ -38669,17 +38669,19 @@ const LOOKUP_CLEAR = 'grid h-10 w-9 shrink-0 place-items-center rounded-md text-
 const LOOKUP_ORDER_HINT = 'Leading zeros are optional. A carrier PRO such as AVRT-0170416694, or a piece number such as 007157687-1, finds its order too.';
 
 /** THE PRICE OF WHAT IS ON SCREEN, read off the answer — not a slogan. Every Firestore answer
- *  says 0; the one prompted answer says 1 and that it was asked for. A dot and a word, not a
- *  green box: it is a fact to be able to check, not the headline of the page. */
+ *  says 0; a prompted answer says what the requester COUNTED (one, or more when a busy NuVizz
+ *  was retried) and that it was asked for. A dot and a word, not a green box: it is a fact to
+ *  be able to check, not the headline of the page. */
 function LookupCallsPill({ calls }) {
-  const spent = calls === 1;
+  const n = Number(calls) > 0 ? Number(calls) : 0;
+  const spent = n > 0;
   return (
     <span
-      title={spent ? 'This answer came from NuVizz, because it was asked for — one call.' : 'Everything on this screen is read from our own records. Nothing here spends a NuVizz call.'}
+      title={spent ? `This answer came from NuVizz, because it was asked for — ${n === 1 ? 'one call' : `${n} calls`}.` : 'Everything on this screen is read from our own records. Nothing here spends a NuVizz call.'}
       className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${
         spent ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-white text-slate-600 ring-slate-200'}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${spent ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-      {spent ? '1 NuVizz call — on request' : '0 NuVizz calls'}
+      {spent ? `${n} NuVizz call${n === 1 ? '' : 's'} — on request` : '0 NuVizz calls'}
     </span>
   );
 }
@@ -40007,7 +40009,7 @@ function StopLookupScreen() {
               bought with a call a minute ago and whether it was filed for the next one. */}
           {d.found && data.prompted?.ok && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-              <span className="font-semibold">Answered by NuVizz — 1 call, on request.</span> {data.prompted.text}
+              <span className="font-semibold">{data.nuvizzCalls > 1 ? `Answered by NuVizz — ${data.nuvizzCalls} calls, on request.` : 'Answered by NuVizz — 1 call, on request.'}</span> {data.prompted.text}
             </div>
           )}
           {d.found
