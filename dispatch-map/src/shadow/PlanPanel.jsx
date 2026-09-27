@@ -25,6 +25,7 @@ import BacktestMap from './BacktestMap.jsx';
 import StopPicker from './StopPicker.jsx';
 import { truckColor } from './backtest-map-core.js';
 import { pruneSel, selTotals } from './stop-pick-core.js';
+import { asPick, pickKey, rebasePicks } from './plan-pick-core.js';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 const PLANS_URL = '/.netlify/functions/claude-shadow?view=plans';
@@ -228,8 +229,6 @@ function SectionPick({ area, phone }) {
 
 // ── the loads ───────────────────────────────────────────────────────────────
 
-const pickKey = (p) => (p.kind === 'roster' ? `r:${p.loadNbr || p.route}` : p.kind === 'driver' ? `d:${p.driver}` : `t:${p.route}`);
-
 function LoadPicker({ opts, picks, setPicks, phone }) {
   const roster = opts?.roster?.loads || [];
   const drivers = opts?.drivers || [];
@@ -238,7 +237,6 @@ function LoadPicker({ opts, picks, setPicks, phone }) {
   const has = (k) => picks.has(k);
   const toggle = (p) => setPicks((cur) => { const n = new Map(cur); const k = pickKey(p); if (n.has(k)) n.delete(k); else n.set(k, p); return n; });
   const setCls = (k, cls) => setPicks((cur) => { const n = new Map(cur); const p = n.get(k); if (p) n.set(k, { ...p, cls }); return n; });
-  const asPick = (l) => ({ kind: 'roster', route: l.route, driver: l.driver, cls: l.driver ? null : (l.cls || 'box_truck'), loadNbr: l.loadNbr, cap: l.cap, capSource: l.source, onBoard: l.onBoard, shownCls: l.cls });
   const shown = roster.filter((l) => !q.trim() || `${l.route} ${l.driver || ''}`.toLowerCase().includes(q.trim().toLowerCase()));
   const pickAll = (withDriver) => setPicks((cur) => { const n = new Map(cur); for (const l of roster) if (!withDriver || l.driver) n.set(pickKey(asPick(l)), asPick(l)); return n; });
   const clearRoster = () => setPicks((cur) => new Map([...cur].filter(([k]) => !k.startsWith('r:'))));
@@ -675,9 +673,9 @@ export function usePlanArea() {
       if (!date && j.date) setDate(j.date);
       // Roster picks belong to their day: a new day keeps added drivers and trucks, not old roster loads —
       // and not a driver who has a load of their own on the new day's roster (one driver, one truck; review).
-      const here = new Set((j.roster?.loads || []).map((l) => `r:${l.loadNbr || l.route}`));
-      const onRoster = new Set((j.roster?.loads || []).map((l) => String(l.driver || '').trim().toUpperCase().replace(/\s+/g, ' ')).filter(Boolean));
-      setPicks((cur) => new Map([...cur].filter(([k, p]) => (k.startsWith('r:') ? here.has(k) : !(p.kind === 'driver' && onRoster.has(String(p.driver || '').trim().toUpperCase().replace(/\s+/g, ' ')))))));
+      // A roster load still on it is rebuilt from the row just read, so the plan carries the driver and
+      // class now on screen and the preview goes stale (audit 2026-09-27).
+      setPicks((cur) => rebasePicks(cur, j.roster?.loads || []));
     }).catch((e) => { if (live) setOptsErr(String(e?.message || e)); });
     return () => { live = false; };
   }, [date, pl.post, optsTick]);
