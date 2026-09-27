@@ -536,6 +536,17 @@ export function focusPicks(cmp) {
   return { next, left: Math.max(0, cmp.partners.length - (MAX_SELECTED - 1)) };
 }
 
+/**
+ * Are the trucks an opened route traded with on the map? Only when every one that "Show the N trucks"
+ * colours (focusPicks) is coloured — not merely when a second truck is (audit 2026-09-27: "Show both
+ * trucks" on one stop coloured L4 and the header read "Hide the 3 trucks it traded with").
+ */
+export function partnersShownIn(cmp, sel) {
+  if (!cmp || !cmp.partners?.length || !sel) return false;
+  for (const id of focusPicks(cmp).next.keys()) if (!sel.has(id)) return false;
+  return true;
+}
+
 // ── v1.74.3: ONE ROUTE AT A TIME ───────────────────────────────────────────────────────────────────
 // Chad, 2026-09-26: "I want map to be more interactive where I click on a route it shows me the route
 // and stops on it" / "too hard to understand what is what what dispatch did vs claude." Opening a

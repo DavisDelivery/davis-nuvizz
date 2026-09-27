@@ -19,7 +19,7 @@ import { Route, Play, X, Settings2, ChevronDown, ChevronRight, ChevronLeft, Tren
 import { apiFetch } from '../lib/api.js';
 import BacktestMap, { useBacktestDay } from './BacktestMap.jsx';
 import { RoutesTable, RouteCards, RoutePanel, routeSummary } from './RouteCompare.jsx';
-import { routeRows, sortRoutes, routeCompare, focusPicks, toggleTruck, pickTrucks, MAX_SELECTED } from './backtest-map-core.js';
+import { routeRows, sortRoutes, routeCompare, focusPicks, partnersShownIn, toggleTruck, pickTrucks, MAX_SELECTED } from './backtest-map-core.js';
 import { routerChange } from './router-settings-core.js';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
@@ -555,7 +555,7 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
     // Back to the row that opened it, so the dispatcher keeps their place in the list (review).
     requestAnimationFrame(() => { if (was) dayRef.current?.querySelector(`[data-route-open="${was}"]`)?.focus(); });
   }, [drawerFocus, setDrawer, setDrawerFocus, setDrawerSel]);
-  const drawerPartnersShown = !!dcmp && drawerSel.size > 1;
+  const drawerPartnersShown = partnersShownIn(dcmp, drawerSel);
   const showDrawerPartners = useCallback(() => {
     if (!dcmp) return;
     const f = focusPicks(dcmp);
@@ -565,7 +565,7 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
   const hideDrawerPartners = useCallback(() => { if (dcmp) { setDrawerSel(new Map([[dcmp.load.id, 0]])); setDrawerNote(null); } }, [dcmp, setDrawerSel]);
   const pickInDrawer = useCallback((ids) => setDrawerSel((s0) => { const x = pickTrucks(s0, ids); setDrawerNote(x.refused ? TOO_MANY : null); return x.next; }), [TOO_MANY, setDrawerSel]);
   const dAt = dcmp ? sorted.findIndex((x) => x.id === dcmp.load.id) : -1;
-  const partnersShown = !!cmp && sel.size > 1;
+  const partnersShown = partnersShownIn(cmp, sel);
   const showPartners = useCallback(() => {
     if (!cmp) return;
     const f = focusPicks(cmp);
