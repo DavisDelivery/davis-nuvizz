@@ -35916,7 +35916,10 @@ function useProblemQueue(nonce, today) {
   // cannot pin to one record (no stopId — the twin guard is disarmed without it). Those rows
   // stay pushable one at a time, as a deliberate act.
   const sweepable = React.useMemo(() => allRows.filter((r) => queueRowPushable(r) && !r.dismissed), [allRows]);
-  const selected = React.useMemo(() => allRows.filter((r) => picked.has(r.key)), [allRows, picked]);
+  // WHAT THE GROUP BUTTONS SPEND is only ever a row a push can be pinned to and nobody waved off
+  // — the rows that carry a checkbox. A key in `picked` for any other row (the day box used to
+  // put them there) must never reach runGroup: without a stopId the twin guard is disarmed.
+  const selected = React.useMemo(() => allRows.filter((r) => picked.has(r.key) && queueRowPushable(r) && !r.dismissed), [allRows, picked]);
   const toggle = React.useCallback((key) => setPicked((prev) => {
     const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n;
   }), []);
@@ -35929,7 +35932,12 @@ function useProblemQueue(nonce, today) {
   // instead of inverting into a different half.
   const sweepDay = React.useCallback((rows, on) => setPicked((prev) => {
     const next = new Set(prev);
-    for (const r of rows) { if (on) next.add(r.key); else next.delete(r.key); }
+    for (const r of rows) {
+      // Adds ONLY the rows the day box counts (dayPickState). It used to add the whole day, so
+      // "Select all 1" silently ticked no-stopId, delivered and waved-off rows (audit 2026-09-27).
+      if (on && !(queueRowPushable(r) && !r.dismissed)) continue;
+      if (on) next.add(r.key); else next.delete(r.key);
+    }
     return next;
   }), []);
   const dismiss = React.useCallback(async (row, undo) => {
