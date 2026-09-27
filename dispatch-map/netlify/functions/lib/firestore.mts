@@ -1713,7 +1713,11 @@ export async function recordPlanVerdicts(tenant: string, dateStr: string, rows: 
       count: next.length, rowsJson: JSON.stringify(next),
     } as any);
     return true;
-  } catch { return false; }
+  } catch (e: any) {
+    // Both callers .catch() and move on, so this line is the only trace of a skipped append.
+    console.error(`[firestore] plan-verdict ledger NOT appended for ${dateStr} (${rows.length} row(s) lost, the day's earlier rows untouched) — ${e?.message || e}`);
+    return false;
+  }
 }
 
 /** The day's ledger, newest first; [] when none was ever written or the read fails. */
@@ -1785,7 +1789,12 @@ const addressChangePath = (tenant: string, dateStr: string) => `${OPS_COLLECTION
  *  can break a scan is worse than no log, so every failure swallows and reports false.
  *  A caller that has to tell a repeat from a failure uses appendAddressChanges below. */
 export async function recordAddressChanges(tenant: string, dateStr: string, rows: any[]): Promise<boolean> {
-  return (await appendAddressChanges(tenant, dateStr, rows)).status === 'written';
+  const out = await appendAddressChanges(tenant, dateStr, rows);
+  // The scan ignores this boolean on purpose (a log must never break it), so an append that
+  // was SKIPPED — the read failed, or the write did — has to say so somewhere. The function
+  // log is the only place a lost scan row can be seen; same shape as markScanKinds SKIPPED.
+  if (out.status === 'error') console.error(`[firestore] address log NOT appended for ${dateStr} (${rows.length} row(s) lost, the day's earlier rows untouched) — ${out.error}`);
+  return out.status === 'written';
 }
 
 /**

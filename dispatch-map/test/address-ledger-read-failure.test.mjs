@@ -106,3 +106,21 @@ test('an absent day document is still an empty day, not an error', async () => {
     assert.equal((await readAddressChanges('davis', DAY)).length, 1);
   } finally { fake.restore(); }
 });
+
+test('a skipped append is not silent: the scan ignores the boolean, so the function log names the lost rows', async () => {
+  const fake = installWithFlakyRead({
+    [ADDR_DOC]: { tenant: 'davis', date: DAY, count: 3, rowsJson: JSON.stringify(PRIOR) },
+    [VERDICT_DOC]: { tenant: 'davis', date: DAY, count: 2, rowsJson: JSON.stringify([verdictRow('A1'), verdictRow('A2')]) },
+  }, 'nuvizz_ops/', 2);
+  const said = [];
+  const realError = console.error;
+  console.error = (...a) => { said.push(a.join(' ')); };
+  try {
+    const { recordAddressChanges, recordPlanVerdicts } = await import('../netlify/functions/lib/firestore.mts');
+    assert.equal(await recordAddressChanges('davis', DAY, [addrRow('007174394', '4 A ST', '4 B ST')]), false);
+    assert.equal(await recordPlanVerdicts('davis', DAY, [verdictRow('A3')]), false);
+    assert.equal(fake.failed.length, 2);
+    assert.ok(said.some((l) => /address log NOT appended for 2026-09-10 \(1 row/.test(l)), said.join('\n'));
+    assert.ok(said.some((l) => /plan-verdict ledger NOT appended for 2026-09-10 \(1 row/.test(l)), said.join('\n'));
+  } finally { console.error = realError; fake.restore(); }
+});
