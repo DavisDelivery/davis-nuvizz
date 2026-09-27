@@ -1573,7 +1573,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           // "everything vanished" is a scan failure, not a hundred unplannings. Below the
           // ratio, plans carry forward untouched and unquestioned exactly as they always have.
           const pullHealthy = prevByNbr.size === 0 || dateStops.length >= prevByNbr.size * ABSENT_DEMOTE_MIN_RATIO;
-          let dropped = 0, healedDelivered = 0, absentPlanned = 0, refiledFinished = 0, refiledOpenKept = 0, refiledOpenGone = 0;
+          let dropped = 0, healedDelivered = 0, absentPlanned = 0, refiledFinished = 0, refiledOpenKept = 0, refiledOpenGone = 0, refiledOpenHeld = 0;
           for (const [nbr, p] of prevByNbr) {
             if (have.has(nbr)) continue;
             const priorOwnDay = boardDayFor(p, undefined, boardDateOverrides);
@@ -1598,6 +1598,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // or later (its own bucket has it) or stops listing it, it leaves this board.
             if (p.refiledOpen === true) {
               const lo = liveOpenByNbr.get(nbr);
+              // ABSENT FROM A PULL THIS SCAN HAS ALREADY JUDGED THIN (truncated at the row cap, or
+              // far shorter than the last pool or this board) is not evidence it closed — the same
+              // verdict every other absent row on this board gets. This copy is the only place the
+              // order lives (no past day holds an open copy), so dropping it here took it off every
+              // board until the next complete pull re-filed it. Carried as it was; a whole pull decides.
+              if (!lo && (pullThin || !pullHealthy)) { dateStops.push(p); refiledOpenHeld++; continue; }
               if (!lo || lo.day >= boardEtDate) { dropped++; refiledOpenGone++; continue; }
               dateStops.push({ ...lo.row, boardDate: boardEtDate, scheduledDate: date, refiledFrom: p.refiledFrom || lo.day, refiledOpen: true, carryover: true });
               refiledOpenKept++;
@@ -1635,6 +1641,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             dateStops.push(p);
           }
           if (dropped) console.log(`[scan] ${date}: carry-forward dropped ${dropped} wrong-day stop(s) (board=${boardEtDate})${refiledOpenGone ? ` incl. ${refiledOpenGone} open carry-over(s) NuVizz no longer lists on a past day` : ''}`);
+          if (refiledOpenHeld) console.warn(`[scan] ${date}: held ${refiledOpenHeld} open carry-over(s) absent from a THIN pull — absence is not evidence this scan`);
           if (refiledFinished || refiledOpenKept) console.log(`[scan] ${date}: carry-forward filed ${refiledFinished} finished stop(s) the pull reports under a past day; re-filed ${refiledOpenKept} open carry-over(s) from the live pull`);
           if (healedDelivered) console.log(`[scan] ${date}: dropped ${healedDelivered} stale-Scheduled stop(s) sealed DELIVERED in recent history (histReads=${histTerminal.reads()})`);
           if (absentPlanned) console.warn(`[scan] ${date}: ${absentPlanned} planned stop(s) absent from this pull — queued for demote verify (plan held unless NuVizz says the load dropped them)`);
