@@ -12,7 +12,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { buildCleanupPlan, fillMyLoadsBuildRules } from '../netlify/functions/lib/routing-cleanup-core.mts';
+import { buildCleanupPlan, existingStopsFromBody, fillMyLoadsBuildRules } from '../netlify/functions/lib/routing-cleanup-core.mts';
+import cleanupEndpoint from '../netlify/functions/routing-cleanup.mts';
 import { liveMatchKey } from '../netlify/functions/lib/routing-draft-core.mts';
 import { engineConfigDefaults } from '../netlify/functions/lib/routing-engine-config.mts';
 
@@ -206,8 +207,10 @@ test('a window NO load can make: ADVISORY keeps it and names it; STRICT leaves i
   assert.ok(truckOf(strict, 'U1'), 'the rest of the load still rides');
 });
 
-test('STRICT never leaves a stop off that another picked load can reach on time', () => {
+test('STRICT: an early closer is not left off because one picked load is running late — the empty one takes it', () => {
   // T1 already carries a far run, so its clock is late before it starts the fill; T2 is empty.
+  // (Here the engine hands W1 to T2 in the first place. The RE-OFFER — a stop strict took off
+  // one load, placed on another that reaches it in time — is pinned by its own AUDIT test below.)
   const far = Array.from({ length: 3 }, (_, i) => row(`F${i}`, { planned: true, city: 'Dalton', lat: 34.77 + i * 0.01, lng: -84.97 }));
   const w = row('W1', { name: 'EARLY CLOSER', lat: 34.10, lng: -84.01 });
   const rows = [...far, w, row('U1', { lat: 34.12, lng: -84.02 })];
@@ -442,4 +445,92 @@ test('AUDIT · out of time, STRICT still takes every late stop off — the budge
   assert.ok(p.trucks.every((t) => t.stops.every((s) => !s.late)), 'nothing late rides in strict, even with no time left');
   assert.equal(p.left_unplanned.filter((l) => l.reason === 'time_window').length, 3);
   for (const id of ['U1', 'U2']) assert.ok(p.trucks.some((t) => t.stops.some((s) => s.stopNbr === id)), `${id} still rides`);
+});
+
+test('AUDIT · STRICT RE-OFFER: a stop the clock takes off one load rides another that reaches it — never "no load reaches it"', () => {
+  // Found by search, not drawn: run against a copy of the code with the re-offer switched off,
+  // S2 is left off saying "no load you picked reaches it inside its time restriction" while T2
+  // reaches it at 9:17 for a 10:00 close. T1 already runs a far pair, so its clock is late.
+  const P = [['S0', 34.0765, -84.1811, 2], ['S1', 34.5393, -84.3043, 3], ['S2', 34.629, -84.0919, 1], ['S3', 34.5912, -83.7351, 2],
+    ['S4', 34.5838, -83.8894, 3], ['S5', 34.5992, -83.6428, 2], ['S6', 34.2183, -83.9368, 1]];
+  const rows = [
+    ...P.map(([id, lat, lng, sk]) => row(id, { name: `STOP ${id}`, lat, lng, skids: sk, weight: 300 })),
+    row('E0', { planned: true, lat: 34.7126, lng: -84.9, skids: 1 }), row('E1', { planned: true, lat: 34.7495, lng: -84.9, skids: 1 }),
+  ];
+  const H = { S0: '8AM-10AM', S1: '7AM-9AM', S2: '8AM-10AM', S4: '8AM-10AM', S6: '7AM-9AM' };
+  const inp = inputs(notesFor(rows, Object.fromEntries(Object.entries(H).map(([id, h]) => [id, { receiving_hours: { thu: h } }]))));
+  const p = plan(rows, [shell('T1', { existing: ['E0', 'E1'] }), shell('T2')], { inputs: inp, windowMode: 'strict' });
+  const t = truckOf(p, 'S2');
+  assert.equal(t?.key, 'T2', `S2 left off: ${JSON.stringify(p.left_unplanned.find((l) => l.stopNbr === 'S2'))}`);
+  assert.equal(t.stops.find((s) => s.stopNbr === 'S2').late, false);
+  assert.ok(p.notes.some((n) => /placed after the clock check/.test(n)), JSON.stringify(p.notes));
+  // Every stop strict DID leave off is one no picked load reaches in time — the sentence is checked, not trusted.
+  for (const l of p.left_unplanned) assert.equal(l.reason, 'time_window', JSON.stringify(l));
+  assert.ok(p.trucks.every((x) => x.stops.every((s) => !s.late)), 'strict: nothing late rides');
+});
+
+test('AUDIT · a stale row that still reads UNPLANNED but is already on a picked load is never routed twice or listed as left over', () => {
+  const onBoard = [row('B1', { planned: true, skids: 2 }), row('STALE', { skids: 3 })];   // STALE: isUnplanned, but on the card
+  const pool = [row('U1', { skids: 2 }), row('U2', { skids: 2 })];
+  const p = plan([...onBoard, ...pool], [shell('BOX', { existing: ['B1', 'STALE'] }), shell('OTHER')]);
+  const added = p.trucks.flatMap((t) => t.stops.map((s) => s.stopNbr));
+  assert.ok(!added.includes('STALE'), `STALE was routed again onto ${truckOf(p, 'STALE')?.key}`);
+  assert.ok(!p.left_unplanned.some((l) => l.stopNbr === 'STALE'), 'and it is not "left over" either — it is on BOX');
+  assert.deepEqual(p.trucks.find((t) => t.key === 'BOX').existing, { stops: 2, skid_equiv: 5, weight_lb: 1000 });
+  for (const id of ['U1', 'U2']) assert.ok(added.includes(id), `${id} still rides`);
+});
+
+test('AUDIT · a load that gets nothing while stops are LEFT OVER is not told "the pool fit on the others"', () => {
+  // The trailer has 27 of 28 on it — one skid of room — and every pool stop is 3 skids. The box
+  // takes four; two are left. "The pool fit on the others" would be false.
+  const onBoard = Array.from({ length: 9 }, (_, i) => row(`B${i}`, { planned: true, skids: 3, weight: 300 }));
+  const pool = Array.from({ length: 6 }, (_, i) => row(`U${i}`, { skids: 3, weight: 300 }));
+  const p = plan([...onBoard, ...pool], [shell('TRL', { tractor: true, existing: onBoard.map((r) => r.stopNbr) }), shell('BOX')]);
+  assert.equal(p.trucks.find((t) => t.key === 'TRL').stop_count, 0);
+  assert.equal(p.left_unplanned.length, 2, JSON.stringify(p.left_unplanned));
+  assert.ok(!p.notes.some((n) => /pool fit on the others/.test(n)), JSON.stringify(p.notes));
+  assert.ok(p.notes.some((n) => /TRL got nothing — the 2 stops still left over are listed below with the reason/.test(n)), JSON.stringify(p.notes));
+  // And when the pool really did fit, the sentence is still said.
+  const fits = plan([...onBoard, ...pool.slice(0, 4)], [shell('TRL', { tractor: true, existing: onBoard.map((r) => r.stopNbr) }), shell('BOX')]);
+  assert.ok(fits.notes.some((n) => /TRL got nothing — the pool fit on the others/.test(n)), JSON.stringify(fits.notes));
+});
+
+test('AUDIT · a carry-over the browser could not see either ({ stopNbr } alone) is NAMED as unread, not silently counted', () => {
+  const pool = [row('U1', { skids: 1 })];
+  const t = { ...shell('BOX'), existing_stop_nbrs: ['GHOST-1'], existing_stops: [{ stopNbr: 'GHOST-1' }] };
+  const p = plan(pool, [t]);
+  assert.ok(p.notes.some((n) => /BOX: 1 stop on it could not be read — counted as one skid each/.test(n)), JSON.stringify(p.notes));
+  assert.equal(p.trucks[0].existing.skid_equiv, 1);
+  // A carry-over the browser DID see is read, not called unreadable.
+  const seen = { ...shell('BOX'), existing_stop_nbrs: ['CARRY-1'], existing_stops: [{ stopNbr: 'CARRY-1', cartons: 4, volume: 0, pallets: 4, weight: 800, lat: 34.1, lng: -84.0 }] };
+  const q = plan(pool, [seen]);
+  assert.ok(!q.notes.some((n) => /could not be read/.test(n)), JSON.stringify(q.notes));
+  assert.equal(q.trucks[0].existing.skid_equiv, 4);
+});
+
+test('AUDIT · what the browser sends about a load keeps NULL as null — no freight numbers is not an empty stop, no latitude is not the equator', () => {
+  const [a] = existingStopsFromBody([{ stopNbr: 'C1', cartons: null, volume: '', pallets: undefined, weight: '850', lat: null, lng: -84.1 }]);
+  assert.deepEqual([a.cartons, a.volume, a.pallets, a.weight, a.lat, a.lng], [null, null, null, 850, null, -84.1]);
+  assert.equal(existingStopsFromBody([{ cartons: 3 }, { stopNbr: 'OK' }]).length, 1, 'a row with no id is dropped');
+  assert.equal(existingStopsFromBody(Array.from({ length: 500 }, (_, i) => ({ stopNbr: `X${i}` }))).length, 300, 'bounded');
+  assert.equal(existingStopsFromBody('nope'), null);
+  // End to end: a card row with a null latitude runs no clock from the equator.
+  const t = { ...shell('BOX'), existing_stop_nbrs: ['C1'], existing_stops: existingStopsFromBody([{ stopNbr: 'C1', cartons: 2, pallets: 2, weight: 400, lat: null, lng: -84.1 }]) };
+  const p = plan([row('U1')], [t]);
+  assert.match(p.trucks[0].stops[0]?.eta_label || '', /^\d{1,2}:\d{2}[ap]$/);
+  assert.ok(p.trucks[0].travel_min_est < 600, `a 0° latitude would cost ~2,300 miles of drive: ${p.trucks[0].travel_min_est}m`);
+});
+
+test('AUDIT · ONE SWITCH, BOTH SIDES: GET routing-cleanup says which rules a run would use, so the panel\'s words follow the switch', async () => {
+  const prev = process.env.FILL_MY_LOADS_BUILD_RULES;
+  try {
+    delete process.env.FILL_MY_LOADS_BUILD_RULES;
+    let r = await cleanupEndpoint(new Request('http://x/.netlify/functions/routing-cleanup', { method: 'GET' }));
+    assert.deepEqual(await r.json(), { ok: true, rules: 'build' });
+    process.env.FILL_MY_LOADS_BUILD_RULES = 'off';
+    r = await cleanupEndpoint(new Request('http://x/.netlify/functions/routing-cleanup', { method: 'GET' }));
+    assert.deepEqual(await r.json(), { ok: true, rules: 'engine' });
+  } finally {
+    if (prev === undefined) delete process.env.FILL_MY_LOADS_BUILD_RULES; else process.env.FILL_MY_LOADS_BUILD_RULES = prev;
+  }
 });

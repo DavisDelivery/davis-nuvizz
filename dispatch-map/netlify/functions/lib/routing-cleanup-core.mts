@@ -39,7 +39,7 @@ import { readStops } from './firestore.mts';
 import { DEPOT } from './history-derive.mts';
 import { ENGINE_VERSION, loadEngineConfig, type EngineConfig } from './routing-engine-config.mts';
 import { type ZonePrecisions } from './zones.mts';
-import { loadPlanInputs, type PlanInputs } from './routing-plan-core.mts';
+import { hasUsableCoords, loadPlanInputs, type PlanInputs } from './routing-plan-core.mts';
 import {
   driverEnvelope, driverZoneAffinity, fleetTripChain, zoneOwnersAsOf,
 } from './routing-envelope.mts';
@@ -141,9 +141,24 @@ export function fillMyLoadsBuildRules(env: Record<string, any> = process.env): b
   return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
 }
 
-// The clock pass's own wall-clock budget. Measured on the biggest board cleanup accepts (390
-// stops, 12 loads): the engine alone is ~20.1s, strict adds ~1.8s — inside the 26s function
-// limit but not by much. Past this budget strict still takes EVERY late stop off (that is the
+// WHAT THE BROWSER SAYS IS ON A LOAD, typed and bounded — the only fields the fill reads. Used
+// only for a stop the server's board does not have (a carry-over from another day on the card).
+// null stays null: Number(null) is 0 and 0 is finite, so a stop with no freight numbers would
+// read as an EMPTY one and a missing latitude as the equator.
+export function existingStopsFromBody(list: any): Array<Record<string, any>> | null {
+  if (!Array.isArray(list)) return null;
+  const n = (v: any) => { if (v == null || v === '') return null; const k = Number(v); return Number.isFinite(k) ? k : null; };
+  const str = (v: any) => (v == null ? null : String(v).slice(0, 200));
+  return list.slice(0, 300).map((x: any) => ({
+    stopNbr: str(x?.stopNbr), cartons: n(x?.cartons), volume: n(x?.volume), pallets: n(x?.pallets), weight: n(x?.weight),
+    lat: n(x?.lat), lng: n(x?.lng), businessName: str(x?.businessName), addr1: str(x?.addr1), city: str(x?.city), zip: str(x?.zip),
+    scheduledFrom: str(x?.scheduledFrom), scheduledTo: str(x?.scheduledTo),
+  })).filter((x: any) => x.stopNbr);
+}
+
+// The clock pass's own wall-clock budget. Measured on buildCleanupPlan alone in a 4-CPU dev
+// container (not production, no Firestore reads): 400 stops — CLEANUP_MAX_POOL — and 12 loads,
+// the engine alone ~20.1s and strict ~22.1s. Inside the 26s function limit, but not by much. Past this budget strict still takes EVERY late stop off (that is the
 // rule), it just stops re-inserting after each removal and stops re-offering, so a slow
 // container costs polish, never correctness.
 export const CLEANUP_CLOCK_MS = 2_500;
@@ -587,12 +602,18 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       const sent = new Map((t.existing_stops || []).map((x) => [String(x?.stopNbr ?? ''), x] as const));
       const ids = (t.existing_stop_nbrs && t.existing_stop_nbrs.length ? t.existing_stop_nbrs : [...sent.keys()]).map(String).filter(Boolean);
       const rows: any[] = [];
-      let unseen = 0;
+      let unseen = 0, unread = 0;
+      // The browser sends { stopNbr } alone for an id it could not see either. That row is as
+      // unread as a missing one — no freight, no position — so it is NAMED like one; it stays
+      // in the rows so its service time still runs on the clock, and counts one position below.
+      const blank = (r: any) => ['cartons', 'volume', 'pallets', 'weight', 'lat', 'lng'].every((f) => r?.[f] == null || r[f] === '');
       for (const id of ids) {
         const r = boardById.get(id) || sent.get(id);
-        if (r) rows.push(r); else unseen++;
+        if (!r) { unseen++; unread++; continue; }
+        rows.push(r);
+        if (!boardById.has(id) && blank(r)) unread++;
       }
-      if (unseen) notes.push(`${t.key}: ${unseen} stop${unseen === 1 ? '' : 's'} on it could not be read — counted as one skid each, so its room may be understated.`);
+      if (unread) notes.push(`${t.key}: ${unread} stop${unread === 1 ? '' : 's'} on it could not be read — counted as one skid each, so its room may be understated.`);
       let eq = unseen, lb = 0;
       for (const r of rows) {
         const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -1098,10 +1119,9 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   if (buildRules) {
     const svcRow = (r: any) => serviceMedianFor({ matchKey: liveMatchKey(r), pallets: Number(r?.pallets) || 0 } as AssignStop);
     type Pre = { clock: number; lat: number; lng: number; anchor: number | null; depart: number | null };
-    const posOf = (r: any) => {
-      const la = Number(r?.lat), ln = Number(r?.lng);
-      return Number.isFinite(la) && Number.isFinite(ln) && !(la === 0 && ln === 0) ? { lat: la, lng: ln } : null;
-    };
+    // The pool's own coordinate rule (hasUsableCoords), not a finite check: Number(null) is 0, so
+    // a stop on the load with no latitude would start the clock from the equator.
+    const posOf = (r: any) => (hasUsableCoords(r) ? { lat: Number(r.lat), lng: Number(r.lng) } : null);
     const legMin = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => travelMinutesForMiles(haversineMiles(a.lat, a.lng, b.lat, b.lng), cfg);
     // THE CLOCK'S START. The engine's learned start (envelope.start_minute_typical) is the
     // median FIRST DELIVERY of the day, not the minute the truck leaves Buford — so it anchors
@@ -1400,7 +1420,14 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   const fullNames = fullTrucks.map((k) => truckByKey.get(k)?.key || k);
   const emptyTrucks = out.filter((t) => !t.stop_count && !fullNames.includes(t.key)).map((t) => t.key);
   if (emptyTrucks.length && pool.length && (!buildRules || routed > 0)) {
-    notes.push(`${emptyTrucks.join(', ')} got nothing — the pool fit on the others.`);
+    // "The pool fit on the others" is only true when the pool DID fit. Under the Build rules a
+    // truck can come back empty while stops are left over — its room too small for any of them,
+    // or its clock too late for their docks — and saying the pool fit would be false; the
+    // leftovers carry their own reasons, so point at them instead.
+    const stillLeft = buildRules ? poolEntered - routed : 0;
+    notes.push(stillLeft > 0
+      ? `${emptyTrucks.join(', ')} got nothing — the ${stillLeft} stop${stillLeft === 1 ? '' : 's'} still left over ${stillLeft === 1 ? 'is' : 'are'} listed below with the reason.`
+      : `${emptyTrucks.join(', ')} got nothing — the pool fit on the others.`);
   }
   if (buildRules) {
     if (fullNames.length) {

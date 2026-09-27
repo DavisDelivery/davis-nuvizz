@@ -21,6 +21,9 @@
 //     → 400 no trucks / too many / duplicate key / the pool is a whole board
 //     → 404 no board data for that date yet
 //
+//   GET → { ok: true, rules: 'build'|'engine' } — which rules a POST would run under right now
+//         (FILL_MY_LOADS_BUILD_RULES). Reads nothing.
+//
 // Deterministic for (date, pool, trucks) at the sizes cleanup is for: the RNG is
 // seeded from the date, and on a leftover-sized pool both solvers converge well
 // inside their caps. It is NOT deterministic in the limit — solveAssignment's
@@ -31,13 +34,22 @@
 
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
-import { runCleanup, type CleanupTruckInput } from './lib/routing-cleanup-core.mts';
+import { existingStopsFromBody, fillMyLoadsBuildRules, runCleanup, type CleanupTruckInput } from './lib/routing-cleanup-core.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export default async (req: Request): Promise<Response> => {
   const headers = { 'Content-Type': 'application/json' };
+  // GET → which rules Fill my loads runs under right now (FILL_MY_LOADS_BUILD_RULES). The panel
+  // asks BEFORE a run so its step-4 words match the rules that will apply — with the switch off
+  // it puts the old words back too, so one env var reverts the server and the screen together.
+  // Same user gate as the run; reads nothing, calls nobody, so it needs no Firestore either.
+  if (req.method === 'GET') {
+    const gate = await requireUser(req, { role: 'dispatcher' });
+    if (!gate.ok) return gate.response;
+    return new Response(JSON.stringify({ ok: true, rules: fillMyLoadsBuildRules() ? 'build' : 'engine' }), { status: 200, headers });
+  }
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
@@ -78,17 +90,8 @@ export default async (req: Request): Promise<Response> => {
       ...(typeof t.capabilities.overheadClearance === 'boolean' ? { overheadClearance: t.capabilities.overheadClearance } : {}),
     } : null,
     existing_stop_nbrs: Array.isArray(t?.existing_stop_nbrs) ? t.existing_stop_nbrs.slice(0, 300).map((x: any) => String(x)) : null,
-    // What the browser sees on the load — only the fields the fill reads, typed here. Used only
-    // for a stop the server's board does not have (a carry-over from another day on the card).
-    existing_stops: Array.isArray(t?.existing_stops) ? t.existing_stops.slice(0, 300).map((x: any) => {
-      const n = (v: any) => { const k = Number(v); return Number.isFinite(k) ? k : null; };
-      const str = (v: any) => (v == null ? null : String(v).slice(0, 200));
-      return {
-        stopNbr: str(x?.stopNbr), cartons: n(x?.cartons), volume: n(x?.volume), pallets: n(x?.pallets), weight: n(x?.weight),
-        lat: n(x?.lat), lng: n(x?.lng), businessName: str(x?.businessName), addr1: str(x?.addr1), city: str(x?.city), zip: str(x?.zip),
-        scheduledFrom: str(x?.scheduledFrom), scheduledTo: str(x?.scheduledTo),
-      };
-    }).filter((x: any) => x.stopNbr) : null,
+    // What the browser sees on the load (existingStopsFromBody: typed, bounded, null kept null).
+    existing_stops: existingStopsFromBody(t?.existing_stops),
   }));
   // Bounded like every other input — an unbounded list is the one field a caller
   // could use to make this endpoint do unbounded work.
