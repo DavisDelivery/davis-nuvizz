@@ -315,8 +315,10 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
   // the stop never stated — harmless when the only question was the close, but the map's
   // rules read the OPEN edge too, and a 6am open it invented would have this stop reported
   // as "extra room, go at dawn" when what it actually says is that it shuts at half three.
+  // It outranks the SCANNER, never a dispatcher: typed hours (tier 'typed') are somebody's
+  // phone call to the dock, and one order's text does not get to overwrite them.
   const explicitClose = closesAtMin(text);
-  if (explicitClose != null) {
+  if (explicitClose != null && hoursTier !== 'typed') {
     closeMin = explicitClose; openMin = null;
     hoursTier = 'auto'; hoursProvenance = 'order-text';
     sources.delete('Order instructions (receiving hours)');
