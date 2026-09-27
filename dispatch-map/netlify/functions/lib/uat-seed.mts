@@ -230,14 +230,27 @@ export function buildSeedRow(prodRow: any, opts: { label?: string | null } = {})
  * `created` is the confirmed result: the UAT stopId NuVizz minted and the number it answered
  * with. Without a stopId this returns null rather than writing a row for an order we cannot
  * prove exists — a board row for a phantom order is the one thing worse than an empty board.
+ *
+ * `sent` is the delivery schedule the create sent NuVizz (buildStopPayload's to.schedule). Rule
+ * 3 holds on the board too: the row's window is the one the UAT order was CREATED with, not
+ * production's. When buildSeedRow refused a half or inverted window the order went out with the
+ * builder's default, and a row still reading production's 18:30 / none / MUST would test a
+ * window the tenant does not hold. Absent `sent`, a refused window reads as none.
  */
-export function seedIndexRow(prodRow: any, plan: SeedPlanRow, created: { stopId?: any; stopNbr?: any }): any | null {
+export function seedIndexRow(
+  prodRow: any, plan: SeedPlanRow, created: { stopId?: any; stopNbr?: any },
+  sent?: { timeFrom?: any; timeTo?: any; timeConstraint?: any } | null,
+): any | null {
   const stopId = str(created?.stopId);
   if (!stopId) return null;
   const nbr = str(created?.stopNbr) || plan.uatStopNbr;
   const out: any = {};
   for (const k of CARRIED_FIELDS) if (prodRow?.[k] !== undefined) out[k] = prodRow[k];
   for (const k of DROPPED_FIELDS) delete out[k];
+  const kept = !!plan.window?.from;
+  out.scheduledFrom = sent ? (sent.timeFrom ?? null) : (plan.window?.from ?? null);
+  out.scheduledTo = sent ? (sent.timeTo ?? null) : (plan.window?.to ?? null);
+  out.timeConstraint = sent ? (sent.timeConstraint ?? null) : (kept ? (plan.row?.deliverConstraint ?? null) : null);
 
   out.stopNbr = nbr;
   out.stopId = stopId;

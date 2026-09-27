@@ -230,7 +230,8 @@ export default async (req: Request): Promise<Response> => {
           status: 'created', stopId: rec.stopId ?? null, at, label,
         } as any).catch(() => undefined);
         created.push({ prodStopNbr: p.prodStopNbr, uatStopNbr: String(rec.stopNbr), stopId: rec.stopId ?? null, updated: rec.updated });
-        const idxRow = seedIndexRow(prodByNbr.get(p.prodStopNbr), p, rec);
+        const sentSchedule = payloads.find((x) => x.uatStopNbr === p.uatStopNbr)?.payload?.to?.schedule ?? null;
+        const idxRow = seedIndexRow(prodByNbr.get(p.prodStopNbr), p, rec, sentSchedule);
         if (idxRow) { idxRow.uatSeed = { prodStopNbr: p.prodStopNbr, at, label }; indexRows.push(idxRow); }
         else failed.push({ prodStopNbr: p.prodStopNbr, uatStopNbr: p.uatStopNbr, error: 'NuVizz accepted the create but returned no stopId — the order is in the ledger (so a clear will find it) but has no board row' });
       }
