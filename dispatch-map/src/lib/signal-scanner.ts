@@ -130,7 +130,17 @@ interface ScannableStop {
 // these comments arrive as SEPARATE NuVizz records joined with '\n'. With plain \s, a stop
 // whose notes read "NO DOCK" then "STRAIGHT TRUCK ONLY" would have the first record's
 // negation reach across the join and cancel the second record's real instruction.
-const NEGATED_BEFORE = /\b(?:NO|NOT|NEVER|DO[^\S\n]*N(?:OT|'?T)|CAN[^\S\n]*N(?:OT|'?T)|WON'?T)[^\S\n]+(?:\w+[^\S\n]+){0,2}$/i;
+//
+// ONLY THOSE WORDS MAY BRIDGE THE GAP — a verb of sending and the function words around it
+// (article, determiner, BE, preposition) — never any word. "NO TT STRAIGHT TRUCK ONLY" and "NO SEMI STRAIGHT TRUCK" are TWO instructions written
+// without punctuation, and a NOUN between the NO and the phrase is what says so: the NO
+// belongs to TT, not to STRAIGHT TRUCK. With \w+ here the first instruction's NO cancelled
+// the second, and nothing else in the list catches it, so the stop lost the one flag that
+// keeps it off a 53ft trailer — the expensive direction to be wrong in.
+const NEGATION_BRIDGE = `(?:SEND|SENT|USE|DELIVER(?:ED)?|SHIP(?:PED)?|BRING|BE|A|AN|THE|ANY|ON|IN|BY|VIA|WITH)`;
+const NEGATED_BEFORE = new RegExp(
+  `\\b(?:NO|NOT|NEVER|DO[^\\S\\n]*N(?:OT|'?T)|CAN[^\\S\\n]*N(?:OT|'?T)|WON'?T)[^\\S\\n]+(?:${NEGATION_BRIDGE}[^\\S\\n]+){0,2}$`, 'i',
+);
 
 function firstHit(text: string | null | undefined, patterns: RegExp[]): { text: string; pattern: string } | null {
   if (!text) return null;
