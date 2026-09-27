@@ -190,7 +190,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
       *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* `import { parseClosedList } from '../../../src/lib/davis-calendar.js';` was added at line 30 in e317822 (#873, v1.2.1), per `git log -S`. Ran davisClosedFromEnv({ULINE_DAVIS_CLOSED:'2026-09-07,2026-11-26'}) and it returns ['2026-09-07','2026-11-26'] with no Re
       *Fix:* Add `import { parseClosedList } from '../../../src/lib/davis-calendar.js';` to uline-forecast-store.mts (the same import manifest-run.mts uses), and add a one-line test that calls davisClosedFromEnv so a missing import cannot ship again.  
       <sub>High · logic · A5-S25-9 · reproduced by running the code</sub>
-- [ ] **`load-scan/netlify/functions/work-report.mts:156`** — `.map(toManifestStop)` passes the index as `warn`; any mismatch drops the whole board  
+- [x] **`load-scan/netlify/functions/work-report.mts:156`** — `.map(toManifestStop)` passes the index as `warn`; any mismatch drops the whole board  
+      *Done v1.81.1:* One stop whose skids plus loose pieces disagree with its piece total no longer wipes every truck off that shift's work report.
       *Fix:* Change line 156 to `.map((s: any) => toManifestStop(s))` (or pass an explicit warn collector).  
       <sub>High · logic · A6-S31-3 · reproduced by running the code</sub>
 
@@ -235,10 +236,12 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`dispatch-map/netlify/functions/nuvizz-driver-route.mts:302`** — Driver route snapshot defaults to the UTC day: reads tomorrow's board after 8pm ET  
       *Fix:* Import etDayString from ./lib/firestore.mts and use it for both defaults (lines 266 and 302), matching every other index reader.  
       <sub>High · date-time · X-datetime-3 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/AssignScreen.jsx:31`** — Truck list is the ET-calendar-day board while assignments key on shiftDay  
+- [x] **`load-scan/src/AssignScreen.jsx:31`** — Truck list is the ET-calendar-day board while assignments key on shiftDay  
+      *Done v1.81.1:* The Assign tab now lists the trucks for the same shift day its taps are saved to. Its arrows move the Activity board with it. While the new day's board is loading, the tab shows 'Loading the trucks for this shift…' so it never offers the old day's trucks.
       *Fix:* Fetch the loads for AssignScreen with the same day key the assignments use (pass shiftDay into api.fetchManifest / a board read keyed by shiftDay) instead of reusing the parent's etToday() manifest; whichever key is right, both sides must use the same one.  
       <sub>High · date-time · A6-S33-3 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/lib/fmt.js:12`** — fmtDate/fmtDateTime show the UTC calendar day for ET evening timestamps  
+- [x] **`load-scan/src/lib/fmt.js:12`** — fmtDate/fmtDateTime show the UTC calendar day for ET evening timestamps  
+      *Done v1.81.1:* Dates next to a time in Load Scan, such as 'Locked until…', 'closed …', last sign-in and scan times, now show the ET calendar day. After 8pm ET they used to show tomorrow's date.
       *Fix:* In fmtDate, only use the regex shortcut when the string is a bare date (/^\d{4}-\d{2}-\d{2}$/); for anything with a time component build the date parts with Intl.DateTimeFormat in America/New_York (as fmtTime and etToday already do).  
       <sub>High · date-time · A6-S33-1 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/lib/nuvizz-write.mts:2013`** — addStopNote fires partialUpdate with a near-empty echo when getStop is 200 with no record  
@@ -874,7 +877,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`dispatch-map/src/App.jsx:10058`** — Draft adoption keyed on note?.id ignores same-doc updates; stale draft overwrites them on Save  
       *Fix:* Depend on the note's content, not its id: `}, [note])` (or a cheap version stamp like `note?.last_updated?.seconds`), keeping the `dirtyRef` guard so in-progress edits are still protected. Apply the same change to the desktop effect at 8438–8443.  
       <sub>High · react-state · A1-S4-5 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/App.jsx:960`** — Loaded-sequence stamp is deleted on every ScanScreen mount (freeze guard resets)  
+- [x] **`load-scan/src/App.jsx:960`** — Loaded-sequence stamp is deleted on every ScanScreen mount (freeze guard resets)  
+      *Done v1.81.1:* Reopening a half-loaded truck now keeps the route order it was loaded against, so a resequence mid-load still shows its warning. Before, every reopen deleted that record, because the check ran before the scan list had loaded.
       *Fix:* Do not decide 'nothing aboard' from React state that has not hydrated: read the queue (`store.queuedFor`) inside the effect and count `activeScans` from it, or skip the clear until `refreshLocal` has completed once (e.g. a `hydrated` ref).  
       <sub>High · react-state · A6-S32-2 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/src/App.jsx:2258`** — useDriverSnapshot: cached path never clears `loading` — driver drawer sticks on skeleton  
@@ -962,26 +966,32 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W12.1 — critical and high (10 items)
 
-- [ ] **`load-scan/netlify/functions/driver-admin.mts:198`** — upsert can deactivate the last active dispatcher, bypassing the set-active guard  
+- [x] **`load-scan/netlify/functions/driver-admin.mts:198`** — upsert can deactivate the last active dispatcher, bypassing the set-active guard  
+      *Done v1.81.1:* A dispatcher who saves the only active dispatcher as inactive is refused with the same message set-active gives, so the office can no longer lock itself out of the driver admin screen.
       *Fix:* In the upsert branch, when `existing` is set and the resolved `active` is false, apply the same guard: if (isLastActiveDispatcher(await listDocs(DRIVER_AUTH), driverNumber)) return bad('cannot deactivate the last dispatcher — promote another one first', 409).  
       <sub>High · security · A5-S30-3 · reproduced by running the code</sub>
-- [ ] **`load-scan/netlify/functions/lib/activity.mts:191`** — Activity view counts pickup pieces in expected, so a clean-closed load reads closed_short  
+- [x] **`load-scan/netlify/functions/lib/activity.mts:191`** — Activity view counts pickup pieces in expected, so a clean-closed load reads closed_short  
+      *Done v1.81.1:* The dispatcher's Activity view no longer counts pickup pieces as freight that has to go on the truck, so a truck closed with every delivery aboard reads closed clean instead of closed short.
       *Fix:* Compute the load's expected from non-pickup stops in buildActivity (`(l.stops||[]).filter(s=>!s.isPickup).reduce(...)`, falling back to l.expectedPieces when no stops are attached) or have scan-activity.mts derive expectedPieces the same way the phone's loadP…  
       <sub>High · data-contract · A5-S30-7 · reproduced by running the code</sub>
-- [ ] **`load-scan/netlify/functions/lib/aliases.mts:142`** — planAliasAdd/findAmbiguousAliases ignore displayName, but name login counts it  
+- [x] **`load-scan/netlify/functions/lib/aliases.mts:142`** — planAliasAdd/findAmbiguousAliases ignore displayName, but name login counts it  
+      *Done v1.81.1:* Attaching a name that is already another active driver's display name is refused, and the 'claimed by more than one driver' warning now lists it, so a dispatcher can't quietly break a driver's name sign-in.
       *Fix:* In planAliasAdd and findAmbiguousAliases, treat normalizeDriverAlias(c.displayName) as a claim alongside nuvizzAliases (the same predicate resolveLoginIdentifier uses), so the add is refused and the ambiguity is surfaced.  
       <sub>High · logic · A5-S30-2 · reproduced by running the code</sub>
-- [ ] **`load-scan/netlify/functions/lib/manifest.mts:190`** — Segment-suffixed stopNbr (007157687-1) yields a bogus PRO key; correct freight scans RED  
+- [x] **`load-scan/netlify/functions/lib/manifest.mts:190`** — Segment-suffixed stopNbr (007157687-1) yields a bogus PRO key; correct freight scans RED  
+      *Done v1.81.1:* A board stop numbered like 007157687-1 now matches the PRO printed on its label, so a loader scanning the right skid gets GREEN instead of RED 'not on this load'. Typing the stop number the way the screen shows it still finds the stop.
       *Fix:* In normalizePro (or prosFor), strip a segment suffix the same way dispatch-map's proKeys does before taking digits: const seg = /^(\d{9})-(\d{1,2})$/.exec(String(v ?? '').trim()); const digits = (seg ? seg[1] : String(v ?? '')).replace(/\D/g, ''); then slice(…  
       <sub>High · logic · A5-S30-1 · reproduced by running the code</sub>
-- [ ] **`load-scan/netlify/functions/lib/workreport.mts:145`** — Per-person rows judged against the whole load: two-person trucks all read 'short'  
+- [x] **`load-scan/netlify/functions/lib/workreport.mts:145`** — Per-person rows judged against the whole load: two-person trucks all read 'short'  
+      *Done v1.81.1:* The shift work report now decides short or complete once per truck, using the truck's own scanned count from its session record, so two loaders who filled a truck together no longer both read 'short' and the truck counts once in loads started and complete.
       *Fix:* Compute `short`/`status`/complete-ness once per LOAD from the sum of all sessions' pieces (or from the scan doc's scannedCount), derive per-person rows from that, and count loadsStarted/loadsComplete over distinct loadNbr.  
       <sub>High · logic · A6-S31-5 · reproduced by running the code</sub>
 - [x] **`load-scan/src/App.jsx:1162`** — Gun: second same-PRO label within 3s has its PRO read dropped by the shared gate  
       *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed in ff94d17 (#848, load-scan v0.45.0, 'Scanning a multi-piece order stops asking permission'). That commit removed both `gate.current.allow(normalizePro(evaluated.pro))` in the booking path and the no-OG `gate.current.allow(pro7, now)`. HEAD now reads `if
       *Fix:* Register the post-booking cooldown only for camera engines (`if (engineName !== 'wedge') gate.current.allow(...)`), or key the gun's stutter guard on a shorter window/own gate instance.  
       <sub>High · logic · A6-S32-5 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/App.jsx:3404`** — Offline truck switch for a loader opens the wrong cached manifest and shows 'No load'  
+- [x] **`load-scan/src/App.jsx:3404`** — Offline truck switch for a loader opens the wrong cached manifest and shows 'No load'  
+      *Done v1.81.1:* A loader who has no signal and taps Different truck now gets the saved pick list back. They can reopen any truck they already opened with signal. If they pick a truck whose stops were never saved on the phone, the picker stays up and says so, instead of opening an empty 0/0 truck where every label reads NOT ON THIS LOAD.
       *Fix:* Cache per load (`cacheKey(date, driverNumber, loadNbr)`) and, when the fetch for a picked load fails and the cache has no stops for it, stay on the picker with the offline message instead of calling `setActiveLoad`.  
       <sub>High · logic · A6-S32-10</sub>
 - [ ] **`load-scan/netlify/functions/lib/worklog.mts:51`** — Finish event `pieces` is the load total, not the person's count; rollups double-count  
@@ -1335,4 +1345,5 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 | Date | Who | What |
 |---|---|---|
 | 2026-09-03 | Claude (code review) | Created from the full review of `bb379fc`: 338 confirmed findings sorted into 14 workstreams. |
+| 2026-09-27 | Claude (audit fixes, v1.81.1) | Ticked 10: A6-S31-3, A6-S33-3, A6-S33-1, A6-S32-2, A5-S30-3, A5-S30-7, A5-S30-2, A5-S30-1, A6-S31-5, A6-S32-10. |
 | 2026-09-27 | Claude (audit fixes, v1.80.2) | Ticked 16: X-authgates-3, X-authgates-1, A5-S27-1, A6-S31-8, A5-S25-9, A5-S28-1, A4-S20-1, X-authgates-4, A4-S24-1, A2-S8-9, A1-S2-1, A5-S25-10, A6-S32-5, A2-S7-1, A3-S13-9, A2-S8-1. |
