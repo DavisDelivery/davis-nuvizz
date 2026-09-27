@@ -24,8 +24,13 @@
 //     into view — and a crowded centre falls back to its own arc too. Zoomed into one town the
 //     rings are arcs, and an arc with no name on it teaches nothing. (A view wholly inside a big
 //     ring shows no line at all, and so nothing to name — zoom out to see which ring it is.)
+//   • A RING CAN BE AN OVAL. Where a driver's work runs along a road, the layer carries an `oval`
+//     (fitOval, driver-territory.js) and it is drawn as that oval — a Polygon, since Google's only
+//     round shape is a Circle — with its name laid out against the oval's own edge. The layer
+//     still carries the circle's radius, and a ring whose oval cannot be read is drawn round.
 //
 // Pure except makeDriverAreaOverlayClass, which is handed `google` and builds the map objects.
+import { ovalOf, ovalPath, ovalEnds } from './driver-territory.js';
 
 export const DRIVER_AREAS_WEEKS = 4;
 export const DRIVER_AREAS_URL = `/.netlify/functions/driver-territory?format=layer&weeks=${DRIVER_AREAS_WEEKS}`;
@@ -35,11 +40,24 @@ const KM_PER_DEG_LAT = 110.574;
 export const NAME_H = 14;
 
 /**
+ * How far a ring's outline is from its centre in direction `a` (radians, screen y down): `r` for a
+ * circle, the oval's own edge for an oval — { rx, ry, rot }, the long and short radii in pixels
+ * and the turn of the long one.
+ */
+export function ringReach(it, a) {
+  const ok = Number.isFinite;
+  if (!(it && ok(it.rx) && ok(it.ry) && it.rx > 0 && it.ry > 0)) return it ? it.r : NaN;
+  const t = a - (ok(it.rot) ? it.rot : 0);
+  return (it.rx * it.ry) / Math.hypot(it.ry * Math.cos(t), it.rx * Math.sin(t));
+}
+
+/**
  * WHERE EACH RING'S NAME GOES AT THIS ZOOM, OR NOWHERE.
  *
  * `items`: { id, x, y, r, w, h } in container pixels — the ring's centre, its radius and the
- * name's box. `view`: { width, height } of the map. Returns Map(id → { x, y }); an id that is
- * absent is not drawn at this zoom.
+ * name's box; an oval also carries { rx, ry, rot } (see ringReach), with `r` the radius of the
+ * circle on the same ground, which is what orders it among the others. `view`: { width, height }
+ * of the map. Returns Map(id → { x, y }); an id that is absent is not drawn at this zoom.
  *
  * Deterministic: the same rings at the same view always lay out the same way.
  */
@@ -62,21 +80,23 @@ export function placeRingLabels(items = [], view = {}) {
     if (it.x >= 0 && it.x <= W && it.y >= 0 && it.y <= H) {
       tries.push([it.x, it.y]);
       // A ring big enough to hold the name above or below its centre may move it there — still
-      // plainly inside its own ring, so the name cannot be read as belonging to a neighbour.
-      if (it.r > it.h * 2.5) tries.push([it.x, it.y - it.h - gap], [it.x, it.y + it.h + gap]);
+      // plainly inside its own ring, so the name cannot be read as belonging to a neighbour. For
+      // an oval "big enough" is measured straight up, where the name would go: an oval lying
+      // east-west can be long and still have no room above its middle.
+      if (ringReach(it, -Math.PI / 2) > it.h * 2.5) tries.push([it.x, it.y - it.h - gap], [it.x, it.y + it.h + gap]);
     }
     // THEN THE RING ITSELF: just inside it, starting from the point nearest the middle of the view
     // (where the arc the reader can see is) and working out to either side. This is the only place
     // a ring whose centre is off-screen can be named, and the fallback for one whose centre is on
     // screen but crowded or hard against an edge. The name keeps the ring's colour, so a name on
-    // an arc still reads as that ring's.
-    if (it.r > it.h * 2) {
-      const base = Math.atan2(H / 2 - it.y, W / 2 - it.x);
-      const k = it.r - it.h;
-      for (const deg of [0, -30, 30, -60, 60, -90, 90]) {
-        const a = base + (deg * Math.PI) / 180;
-        tries.push([it.x + Math.cos(a) * k, it.y + Math.sin(a) * k]);
-      }
+    // an arc still reads as that ring's. An oval's edge is as far out as the oval is that way.
+    const base = Math.atan2(H / 2 - it.y, W / 2 - it.x);
+    for (const deg of [0, -30, 30, -60, 60, -90, 90]) {
+      const a = base + (deg * Math.PI) / 180;
+      const edge = ringReach(it, a);
+      if (!(edge > it.h * 2)) continue;
+      const k = edge - it.h;
+      tries.push([it.x + Math.cos(a) * k, it.y + Math.sin(a) * k]);
     }
     const hit = tries.find(([x, y]) => onScreen(x, y, it.w, it.h) && free(x, y, it.w, it.h));
     if (!hit) continue;
@@ -217,10 +237,23 @@ export function makeDriverAreaOverlayClass(google) {
       const b = proj.fromLatLngToDivPixel(centre);
       if (!a || !b) return;
       const items = [];
+      const px = (lat, lng) => proj.fromLatLngToContainerPixel(new google.maps.LatLng(lat, lng));
       this.labels.forEach((lb, i) => {
-        const c = proj.fromLatLngToContainerPixel(new google.maps.LatLng(lb.lat, lb.lng));
-        const n = proj.fromLatLngToContainerPixel(new google.maps.LatLng(lb.lat + lb.radiusKm / KM_PER_DEG_LAT, lb.lng));
-        if (!c || !n) return;
+        const c = px(lb.lat, lb.lng);
+        if (!c) return;
+        if (lb.ends) {
+          // AN OVAL IS MEASURED BY WHERE ITS OWN RADII END ON SCREEN — the long one's length and
+          // turn, the short one's length — so a turned map turns the oval's name room with it.
+          const A = px(lb.ends.major.lat, lb.ends.major.lng);
+          const B = px(lb.ends.minor.lat, lb.ends.minor.lng);
+          if (!A || !B) return;
+          const rx = Math.hypot(A.x - c.x, A.y - c.y);
+          const ry = Math.hypot(B.x - c.x, B.y - c.y);
+          items.push({ id: i, x: c.x, y: c.y, r: Math.sqrt(rx * ry), rx, ry, rot: Math.atan2(A.y - c.y, A.x - c.x), w: this.widths[i], h: NAME_H });
+          return;
+        }
+        const n = px(lb.lat + lb.radiusKm / KM_PER_DEG_LAT, lb.lng);
+        if (!n) return;
         // The TRUE distance to the ring's north point, not its height on screen: the map can be
         // turned, and a ring measured top-to-bottom on a map rotated 90° measures nothing.
         items.push({ id: i, x: c.x, y: c.y, r: Math.hypot(c.x - n.x, c.y - n.y), w: this.widths[i], h: NAME_H });
@@ -263,7 +296,15 @@ export function makeDriverAreaOverlayClass(google) {
       for (const d of this.rings) {
         for (const c of d.circles || []) {
           if (![c.lat, c.lng, c.radiusKm].every(Number.isFinite)) continue;
-          drawn.push({ d, c, at: { map, center: { lat: c.lat, lng: c.lng }, radius: c.radiusKm * 1000, clickable: false, zIndex: 0 } });
+          // An oval where the layer carries one (and it reads), otherwise the circle. Both are
+          // paint only: clickable:false, zIndex 0, exactly like each other. A Maps build with no
+          // Polygon draws the circle rather than throwing and drawing nothing.
+          const paths = ovalOf(c) && google.maps.Polygon ? ovalPath(c) : null;
+          const Shape = paths ? google.maps.Polygon : google.maps.Circle;
+          const at = paths
+            ? { map, paths, clickable: false, zIndex: 0 }
+            : { map, center: { lat: c.lat, lng: c.lng }, radius: c.radiusKm * 1000, clickable: false, zIndex: 0 };
+          drawn.push({ d, c, Shape, ends: paths ? ovalEnds(c) : null, at });
         }
       }
       // EVERY HALO FIRST, THEN EVERY RING. A white halo under the coloured line is the sheet's
@@ -272,18 +313,18 @@ export function makeDriverAreaOverlayClass(google) {
       // later driver's 5px halo would cut a white gap through every earlier driver's line where
       // they cross; drawn all-halos-then-all-rings, no halo is ever above any ring. zIndex 0
       // keeps both under the route lines (1 and up).
-      for (const { at } of drawn) {
-        this.shapes.push(new google.maps.Circle({ ...at, strokeColor: '#ffffff', strokeOpacity: 0.75, strokeWeight: 5, fillOpacity: 0 }));
+      for (const { Shape, at } of drawn) {
+        this.shapes.push(new Shape({ ...at, strokeColor: '#ffffff', strokeOpacity: 0.75, strokeWeight: 5, fillOpacity: 0 }));
       }
       // HOLLOW — no fill at all. The paper's 5% tint reads fine four rings deep; on the live map
       // the metro sits under twenty-odd rings at once, and on the first real render (68 rings,
       // 2026-09-27) even 4% stacked into a brown wash over Gwinnett that hid the streets the
       // trainee is trying to learn. Lines only, so the base map and every pin read as they do
       // with the switch off.
-      for (const { d, at } of drawn) {
-        this.shapes.push(new google.maps.Circle({ ...at, strokeColor: d.colour, strokeOpacity: 0.95, strokeWeight: 2, fillOpacity: 0 }));
+      for (const { d, Shape, at } of drawn) {
+        this.shapes.push(new Shape({ ...at, strokeColor: d.colour, strokeOpacity: 0.95, strokeWeight: 2, fillOpacity: 0 }));
       }
-      const labels = drawn.map(({ d, c }) => ({ text: d.label, colour: d.colour, lat: c.lat, lng: c.lng, radiusKm: c.radiusKm }));
+      const labels = drawn.map(({ d, c, ends }) => ({ text: d.label, colour: d.colour, lat: c.lat, lng: c.lng, radiusKm: c.radiusKm, ends }));
       this.names = new RingNames(labels);
       this.names.setMap(map);
     }

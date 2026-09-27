@@ -56,10 +56,10 @@ function fixture() {
 
 // ── 1. PAPER AND SCREEN AGREE ────────────────────────────────────────────────
 
-/** The overview rings the sheet draws: fill + stroke colour, in the order they are painted. */
+/** The overview rings the sheet draws — circles and ovals — by stroke colour, in paint order. */
 function sheetRings(html) {
   const big = html.slice(0, html.indexOf('<div class="page">'));
-  return [...big.matchAll(/<circle [^>]*?fill="(#[0-9a-f]{6})" fill-opacity="0\.05" stroke="(#[0-9a-f]{6})" stroke-width="1\.6"/g)]
+  return [...big.matchAll(/<(?:circle|ellipse) [^>]*?fill="(#[0-9a-f]{6})" fill-opacity="0\.05" stroke="(#[0-9a-f]{6})" stroke-width="1\.6"/g)]
     .map((m) => m[2]);
 }
 
@@ -143,6 +143,20 @@ test('NOTHING ABOUT A CUSTOMER LEAVES THE SERVER — rings, names and counts onl
   const ring = territoryLayer(stops).rings[0];
   assert.deepEqual(Object.keys(ring).sort(), ['circles', 'colour', 'key', 'label', 'stops']);
   assert.deepEqual(Object.keys(ring.circles[0]).sort(), ['lat', 'lng', 'radiusKm']);
+  // EVERY ring, not just the first: a ring is a centre and a size, and an oval (where the work
+  // runs along a road — driver-area-ovals.test.mjs) is three more numbers, never anything else.
+  // A driver running the I-985 towns is added so there IS an oval to check.
+  const road = [[34.121, -84.000], [34.185, -83.925], [34.227, -83.884], [34.298, -83.824]]
+    .flatMap(([lat, lng]) => cluster('Ray Corridor', lat, lng, 40, 0.03));
+  let ovals = 0;
+  for (const r of territoryLayer([...stops, ...road]).rings) {
+    for (const c of r.circles) {
+      const keys = Object.keys(c).sort();
+      assert.ok(['lat,lng,radiusKm', 'lat,lng,oval,radiusKm'].includes(keys.join(',')), `${r.label}: ${keys}`);
+      if (c.oval) { ovals++; assert.deepEqual(Object.keys(c.oval).sort(), ['angleDeg', 'majorKm', 'minorKm']); }
+    }
+  }
+  assert.ok(ovals > 0, 'the check above met an oval');
 });
 
 test('no history is an empty layer, not a crash — and says so in its counts', () => {

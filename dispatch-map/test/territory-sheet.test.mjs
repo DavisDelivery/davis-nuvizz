@@ -156,7 +156,7 @@ test('every drawn ring carries its driver\'s name — no anonymous circles', () 
   // given a leader line; it is never dropped.
   const html = territorySheetHtml({ stops: fleet(30) });
   const svg = bigMap(html);
-  const rings = (svg.match(/<circle [^>]*stroke-width="1.6"/g) || []).length;
+  const rings = (svg.match(/<(?:circle|ellipse) [^>]*stroke-width="1.6"/g) || []).length;
   const names = textBoxes(svg).filter((t) => t.text.startsWith('Driver ')).length;
   assert.ok(rings > 0, 'there are rings');
   assert.equal(names, rings, `${rings} rings but ${names} names`);

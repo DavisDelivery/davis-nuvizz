@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   placeRingLabels, driverAreasStatus, fmtDay, fmtWindow, NAME_H, DRIVER_AREAS_URL, DRIVER_AREAS_WEEKS,
+  makeDriverAreaOverlayClass,
 } from '../src/lib/driver-area-overlay.js';
 import { DEVICE_SWITCHES } from '../src/lib/device-switches.js';
 
@@ -212,9 +213,19 @@ test('NOT ON THE WALL — its map cannot zoom, so the names that appear on zoom 
 });
 
 test('PAINT ONLY: no ring takes a click and no name can sit between a finger and a pin', () => {
-  const circles = [...OVERLAY.matchAll(/new google\.maps\.Circle\(\{[^}]*\}\)/g)].map((m) => m[0]);
-  assert.equal(circles.length, 2, 'the halo and the ring');
-  assert.match(OVERLAY, /clickable: false/, 'rings are clickable:false');
+  // Built for real against a recording google.maps rather than grepped: every shape the overlay
+  // makes — circle or oval, halo or ring — is asked for with clickable:false. (The ovals' own
+  // version of this, with the order and the colours, is in driver-area-ovals.test.mjs.)
+  const made = [];
+  class Shape { constructor(o) { made.push(o); } setMap() {} }
+  const google = { maps: { Circle: Shape, Polygon: Shape, OverlayView: class { setMap() {} }, LatLng: class {}, event: { addListener: () => ({ remove() {} }) } } };
+  const Overlay = makeDriverAreaOverlayClass(google);
+  new Overlay({ rings: [
+    { key: 'A', label: 'Round Ring', colour: '#1f4e79', stops: 90, circles: [{ lat: 34, lng: -84, radiusKm: 8 }] },
+    { key: 'B', label: 'Oval Ring', colour: '#a4462d', stops: 90, circles: [{ lat: 34.2, lng: -83.9, radiusKm: 10, oval: { majorKm: 12, minorKm: 4, angleDeg: 40 } }] },
+  ] }).attach({});
+  assert.equal(made.length, 4, 'a halo and a ring for each');
+  assert.ok(made.every((o) => o.clickable === false), 'no ring takes a click');
   assert.match(OVERLAY, /pointer-events:none/, 'the names let clicks through');
   assert.ok(!/addListener\([^)]*'click'/.test(OVERLAY), 'and nothing here listens for a click');
 });
