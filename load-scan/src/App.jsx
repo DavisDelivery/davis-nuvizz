@@ -4,7 +4,7 @@ import {
   LogOut, Users, ClipboardList, Camera, KeyRound, ChevronRight,
 } from 'lucide-react';
 
-import { fmtDate, fmtDateTime, fmtTime, etToday } from './lib/fmt.js';
+import { fmtDate, fmtDateTime, fmtTime } from './lib/fmt.js';
 import { shiftDayString } from './lib/shift.js';
 import { watchForUpdate, applyUpdate } from './lib/appupdate.js';
 import ReportScreen from './ReportScreen.jsx';
@@ -3268,7 +3268,9 @@ function DispatcherScreen({ session, onSignOut }) {
   const [boardDays, setBoardDays] = useState(1);
   const [boardNonce, setBoardNonce] = useState(0);
   const [activity, setActivity] = useState(null);
-  const [activityDate, setActivityDate] = useState(etToday());
+  // The SHIFT day, like the loaders' phones: from 8pm the trucks on the dock are
+  // tomorrow's, and the calendar day would open on the board that just finished.
+  const [activityDate, setActivityDate] = useState(shiftDayString());
   const [query, setQuery] = useState('');
   // A board name looking for an existing credential to attach itself to.
   const [attaching, setAttaching] = useState(null);
