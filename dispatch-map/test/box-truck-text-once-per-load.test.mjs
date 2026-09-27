@@ -103,7 +103,8 @@ test('the evening sweep texts a box truck with stackers at two docks once, even 
     fake.store.set(`${boardPath}/stops/${dockA.stopNbr}`, { ...dockA, loadNbr: 'TRACTOR 9', routeName: 'TRACTOR 9' });
     const second = await run();
     assert.equal(second.ok, true, JSON.stringify(second));
-    assert.equal(second.candidates >= 1, true, 'dock B is still on the box truck and still selected');
+    assert.equal(boxRow([{ ...dockA, loadNbr: 'TRACTOR 9', routeName: 'TRACTOR 9' }, dockB])?.stopNbr, dockB.stopNbr,
+      'dock B is still on the box truck and still flagged');
     const boxTexts2 = texts.filter((t) => /runs a box truck/.test(t.text));
     assert.equal(boxTexts2.length, 1, `one box-truck text for the load all night, got: ${boxTexts2.map((t) => t.text).join(' | ')}`);
     assert.equal(second.alreadyClaimed, 1);

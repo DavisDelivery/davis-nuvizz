@@ -82,6 +82,14 @@ export const TRAILER_SMS_CAP = 8;
 export const BOX_SMS_CAP = 8;
 export const CLAIM_COLLECTION = 'eta_flag_sms';
 
+/** House shape: default ON, an explicit off-word turns it off, anything malformed leaves it
+ *  ON. FLAG_SMS_CAP_SKIPS_TEXTED=off puts the per-sweep cap back over EVERY textable row
+ *  (claimed or not) and lets trailer backfill take the box reservation, as before. */
+export function smsCapSkipsTextedEnabled(env: any = process.env): boolean {
+  const v = String(env?.FLAG_SMS_CAP_SKIPS_TEXTED ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
 /**
  * PURE. Who gets this sweep's texts, given the ET minutes-past-midnight of the sweep.
  * The always-list rides every sweep; the night list (the router building loads) rides
@@ -348,7 +356,11 @@ export function smsClaimSubject(row: any, env: any = process.env): string {
  * badly-trucked route silences every late one — and both failures are invisible, because a
  * capped list looks exactly like a quiet one.
  */
-export function selectTextable(rows: any[], cap = SMS_PER_SWEEP_CAP, trailerCap = TRAILER_SMS_CAP, boxCap = BOX_SMS_CAP): any[] {
+export function selectTextable(
+  rows: any[], cap = SMS_PER_SWEEP_CAP, trailerCap = TRAILER_SMS_CAP, boxCap = BOX_SMS_CAP,
+  opts: { skip?: (row: any) => boolean; env?: any } = {},
+): any[] {
+  const skipsTexted = smsCapSkipsTextedEnabled(opts.env ?? process.env);
   // Same un-collapse as the email path: on a capped board this selector saw one summary row
   // with no stopNbr and texted nobody, on exactly the night the board was worst.
   const flat = flattenForConsumers(rows);
@@ -396,6 +408,18 @@ export function selectTextable(rows: any[], cap = SMS_PER_SWEEP_CAP, trailerCap 
   box.sort((a: any, b: any) => (worst(b?.routeConflicts) - worst(a?.routeConflicts))
     || String(a?.routeKey || a?.routeName || '').localeCompare(String(b?.routeKey || b?.routeName || '')));
 
+  // THE CAP IS SPENT ONLY ON ROWS NOT YET TEXTED. The caller names the already-claimed ones
+  // (`skip`); without this every sweep re-selected the same top rows, found them claimed and
+  // sent nothing, and whatever the cap had deferred was never texted at all. Applied AFTER the
+  // one-row-per-route pick, so a route's claim is judged on the same row it always was.
+  // FLAG_SMS_CAP_SKIPS_TEXTED=off puts back the cap over every row.
+  if (skipsTexted && typeof opts.skip === 'function') {
+    const keep = (r: any) => !opts.skip!(r);
+    hours.splice(0, hours.length, ...hours.filter(keep));
+    trailer.splice(0, trailer.length, ...trailer.filter(keep));
+    box.splice(0, box.length, ...box.filter(keep));
+  }
+
   // THREE KINDS OF NEWS, TWO RESERVATIONS, ONE CAP. Each certain kind holds a reservation so
   // a bad night of one cannot silence the other two, and whatever either does not use
   // backfills the hours rows — so a quiet night still texts the full eight, exactly as it did
@@ -406,7 +430,9 @@ export function selectTextable(rows: any[], cap = SMS_PER_SWEEP_CAP, trailerCap 
   const reservedTrailer = Math.min(trailer.length, Math.max(0, trailerCap));
   const reservedBox = Math.min(box.length, Math.max(0, boxCap));
   const takeHours = Math.max(0, Math.min(hours.length, total - reservedTrailer - reservedBox));
-  const takeTrailer = Math.max(0, Math.min(trailer.length, total - takeHours));
+  // Trailer backfill stops at the box reservation, or a bad trailer night takes the box
+  // route's slot (FLAG_SMS_CAP_SKIPS_TEXTED=off restores the old backfill).
+  const takeTrailer = Math.max(0, Math.min(trailer.length, total - takeHours - (skipsTexted ? reservedBox : 0)));
   const takeBox = Math.max(0, Math.min(box.length, total - takeHours - takeTrailer));
   // The certain ones first in the returned order, for the reason the trailer comment gives:
   // if the sender dies half way down the list, the messages that survive should be the ones

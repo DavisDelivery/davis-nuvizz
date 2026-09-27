@@ -65,7 +65,7 @@ import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
 import { sweepDue, LEGACY_STEP_MIN } from './lib/flag-sweep-cadence.mts';
 import { earlyCloseOpt } from './lib/flag-policy.mts';
-import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable, smsClaimSubject, boxClaimByRouteEnabled } from './lib/flag-sms.mts';
+import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable, smsClaimSubject, boxClaimByRouteEnabled, smsCapSkipsTextedEnabled } from './lib/flag-sms.mts';
 // Only to report WHERE the list came from — the list itself is resolved by smsRecipients.
 import { resolveChannel, channelSpec, recipientsFor } from './lib/alert-recipients.mts';
 // THIS PATH NOW EMAILS TOO, and the header above says it does not - so it is said here as
@@ -213,7 +213,6 @@ export default async (req: Request): Promise<Response> => {
       opts: { ...engineOpts(legInfo.legs), ...(placeLift ? { placeMarks: placeLift.placeMarks } : {}) },
     });
 
-    const candidates = selectTextable(flags.rows);
     // WHO IS ON THE LIST TONIGHT, read fresh every sweep. Chad edits this from Diagnostics
     // (nuvizz_ops/alert_recipients); a number removed at 8:15p is off the 9:00p sweep with no
     // redeploy. If that read fails we fall back to the environment rather than to silence —
@@ -248,6 +247,27 @@ export default async (req: Request): Promise<Response> => {
     };
     const textsSilenced = !recipients.length && (savedSilent('flagSmsTo') || savedSilent('flagSmsToNight'));
 
+    // THE PER-SWEEP CAP IS SPENT ON WHAT HAS NOT BEEN TEXTED YET. Selected before the claim
+    // check, the same top rows came back every sweep, all claimed, and the stops the cap had
+    // deferred were never texted. So the claims already standing are read first (one Firestore
+    // read per textable subject, zero NuVizz) and those subjects are left out of the cap. The
+    // claim below is still what guarantees one text per subject — this only decides who gets
+    // the slots. FLAG_SMS_CAP_SKIPS_TEXTED=off puts the old selection back.
+    const claimPathOf = (r: any) => smsClaimPath(TENANT, date, smsClaimSubject(r), r.rule);
+    const textedClaims = new Set<string>();
+    let alreadyTexted = 0;
+    if (smsCapSkipsTextedEnabled() && smsEnabled() && recipients.length) {
+      const every = selectTextable(flags.rows, Infinity, Infinity, Infinity);
+      await Promise.all(every.map(async (r: any) => {
+        const p = claimPathOf(r);
+        try { if (await getDoc(p)) textedClaims.add(p); } catch { /* unknown: left in, the claim decides */ }
+      }));
+      alreadyTexted = every.filter((r: any) => textedClaims.has(claimPathOf(r))).length;
+    }
+    const candidates = selectTextable(flags.rows, undefined, undefined, undefined, {
+      skip: (r: any) => textedClaims.has(claimPathOf(r)),
+    });
+
     const status: any = {
       tenant: TENANT, date, offsetDays, etMin, at: new Date().toISOString(),
       boardStops: stops.length, redCount: flags.redCount, amberCount: flags.amberCount,
@@ -271,7 +291,7 @@ export default async (req: Request): Promise<Response> => {
       // A near-match is named too, so nobody mistakes it for an exact join.
       unclassedRoutes: (rc?.unclassed ?? []).filter((u) => u.reason !== 'appointment_route'),
       nearMatches: rc?.nearMatches ?? [],
-      smsEnabled: smsEnabled(), sent: 0, failed: 0, alreadyClaimed: 0,
+      smsEnabled: smsEnabled(), sent: 0, failed: 0, alreadyClaimed: alreadyTexted,
       texted: [] as any[],
     };
 
