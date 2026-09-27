@@ -333,7 +333,35 @@ export async function pruneSynced(days = 14) {
 
 // ── Manifest cache ───────────────────────────────────────────────────────────
 
-export const cacheKey = (date, driverNumber) => `manifest::${date}::${driverNumber}`;
+/**
+ * The day's list (a loader's pick list, a driver's own loads) and each truck
+ * opened BY NUMBER get separate slots. They shared one, so the truck a loader
+ * opened overwrote the pick list, and with no signal "Different truck" found only
+ * that truck and opened it again.
+ */
+export const cacheKey = (date, driverNumber, loadNbr = '') =>
+  `manifest::${date}::${driverNumber}${loadNbr ? `::load::${loadNbr}` : ''}`;
+
+/**
+ * What a saved manifest can honestly serve with no signal: { manifest, open }.
+ *
+ * Asked for a truck by number, the copy must hold that truck WITH its stops — a
+ * pick-list summary row or another truck's manifest is not it, and opening the
+ * pick on either put the loader on a 0/0 scan screen where every label reads NOT
+ * ON THIS LOAD. `manifest` is null then, and the caller keeps the picker up.
+ * Asked for the day's list, the copy is served as it is, and a lone load opens
+ * itself only when it is a real one — the same rule as the online path.
+ */
+export function manifestFromCache(cached, loadNbr = '') {
+  const m = cached && typeof cached === 'object' ? cached : null;
+  if (!m) return { manifest: null, open: null };
+  const loads = Array.isArray(m.loads) ? m.loads : [];
+  if (loadNbr) {
+    const hit = !m.summariesOnly && loads.find((l) => String(l?.loadNbr) === String(loadNbr));
+    return hit ? { manifest: m, open: hit.loadNbr } : { manifest: null, open: null };
+  }
+  return { manifest: m, open: loads.length === 1 && !m.summariesOnly ? loads[0].loadNbr : null };
+}
 
 // ── Loaded-against sequence ──────────────────────────────────────────────────
 //

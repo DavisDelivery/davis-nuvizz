@@ -3855,12 +3855,17 @@ export default function App() {
   // midnight belong to two different days at once.
   const date = shiftDayString();
 
+  // Resolves true when there is a manifest to work from for what was asked —
+  // fresh, or a saved copy that really holds it — so a pick is opened only then.
   const getManifest = useCallback(
     async (opts = {}) => {
-      if (!session?.token) return;
+      if (!session?.token) return false;
       setLoading(true);
       setErr('');
-      const key = store.cacheKey(date, session.driverNumber);
+      // A truck asked for by number is saved in its OWN slot, never over the
+      // day's pick list. See offline.cacheKey.
+      const want = opts.loadNbr ? String(opts.loadNbr) : '';
+      const key = store.cacheKey(date, session.driverNumber, want);
       try {
         const r = await api.fetchManifest(session.token, { date, ...opts });
         setManifest(r);
@@ -3869,22 +3874,34 @@ export default function App() {
         // A lone load opens itself — except in the loader pick-list, where the
         // rows carry no stops and one truck on the dock is still a choice.
         if (loads.length === 1 && !r.summariesOnly) setActiveLoad(loads[0].loadNbr);
+        return true;
       } catch (e) {
         if (e?.status === 401) {
           clearSession();
           setSession(null);
-          return;
+          return false;
         }
-        // Offline: the cached manifest is the whole point.
-        const cached = await store.getCache(key);
-        if (cached?.value) {
-          setManifest(cached.value);
-          const loads = cached.value.loads || [];
-          if (loads.length === 1) setActiveLoad(loads[0].loadNbr);
+        // Offline: the cached manifest is the whole point — but only a copy that
+        // holds what was asked for. A truck by number: its own slot, then the
+        // day's slot (a driver's own manifest carries its loads).
+        const slots = want ? [key, store.cacheKey(date, session.driverNumber)] : [key];
+        for (const slot of slots) {
+          const cached = await store.getCache(slot);
+          const use = store.manifestFromCache(cached?.value, want);
+          if (!use.manifest) continue;
+          setManifest(use.manifest);
+          if (use.open) setActiveLoad(use.open);
           setErr(`Working from the copy saved ${fmtDateTime(cached.at)}.`);
+          return true;
+        }
+        // Nothing saved can serve it. The picker stays up and says why, rather
+        // than opening a truck this phone has no stops for.
+        if (want && e?.offline) {
+          setErr(`No connection, and ${want} has not been opened on this phone yet — its stops are not saved here.`);
         } else {
           setErr(e?.offline ? 'No connection and no saved manifest yet.' : e?.message || 'Could not load the manifest.');
         }
+        return false;
       } finally {
         setLoading(false);
       }
@@ -3991,12 +4008,12 @@ export default function App() {
             // A summary row has no stops: fetch the chosen load before opening
             // it. Same ?loadNbr path the manual entry already used.
             onPick={async (loadNbr) => {
-              if (manifest.summariesOnly) await getManifest({ loadNbr });
+              if (manifest.summariesOnly && !(await getManifest({ loadNbr }))) return;
               setActiveLoad(loadNbr);
               clockIn(loadNbr);
             }}
             onManual={async (loadNbr) => {
-              await getManifest({ loadNbr });
+              if (!(await getManifest({ loadNbr }))) return;
               setActiveLoad(loadNbr);
               clockIn(loadNbr);
             }}
