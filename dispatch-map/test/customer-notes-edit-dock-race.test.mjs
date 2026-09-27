@@ -126,6 +126,7 @@ function saveScope({ dock, onScreen }) {
     getDoc: async () => ({ exists: () => true, data: () => ({ ...STORED[dock.key], dock_notes: draft.dock_notes }) }),
     serverTimestamp: () => 'TS', eligibilityChanged: () => false, buildingTypeChanged: () => false,
     NOTES_UPDATED_BY: 'dispatcher', notesSummary, changedNoteFields, answerHoldsDock, reportDenied: () => {},
+    NOTE_SAVE_CHANGED_ONLY_ON: true,
     setData: (fn) => { screen = fn(screen); },
   };
   return { save: build(SAVE_SRC, scope), screen: () => screen, written };

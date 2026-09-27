@@ -14,6 +14,20 @@
 // So the save sends the fields the rep actually CHANGED against what the form opened on, and
 // nothing else. A key the rep toggled and toggled back is not a change. A stored value the
 // form never touched (a Timestamp, a GeoPoint, a map) compares equal to itself and stays out.
+//
+// THE WAY BACK: VITE_NOTE_SAVE_CHANGED_ONLY=off puts the Stop lookup save back to writing the
+// whole draft, exactly as before (house shape — default on, an off-word turns it off, anything
+// malformed leaves it on). It changes how a document is WRITTEN, which is the kind of change
+// CLAUDE.md wants a named switch for; and the batch lands on main as one squashed commit, so
+// "revert that commit" is not a way back for this change alone. A VITE_ flag is build-time, so
+// flipping it is a redeploy. The only side is the write payload — the form, the read and the
+// read-back are identical in both positions.
+
+/** House shape: default ON, an explicit off/0/false/no turns it off, anything else leaves it ON. */
+export function noteSaveChangedOnlyEnabled(env) {
+  const v = String(env?.VITE_NOTE_SAVE_CHANGED_ONLY ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
 
 const isPlainObject = (v) => {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;

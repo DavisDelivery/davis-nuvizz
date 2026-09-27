@@ -111,7 +111,7 @@ import {
   rowsFromAoa, summarizeShiplify, shiplifyBatchId, chunkRowsBySize, decodeIndexLine, SHIPLIFY_SHEET,
 } from './lib/shiplify-import.js';
 import { eligibilityChanged } from './lib/trailer-block.js';
-import { changedNoteFields, answerHoldsDock } from './lib/customer-note-edit.js';
+import { changedNoteFields, answerHoldsDock, noteSaveChangedOnlyEnabled } from './lib/customer-note-edit.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops, hoursSummary } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
@@ -1302,6 +1302,9 @@ const WB_OWN_DAY_ROSTER_ON = wbOwnDayRosterEnabled(import.meta.env);
 // Auto-detected receiving hours on the Compare row, marked "· auto" (lib/time-marks.js timeMarkChip).
 // VITE_COMPARE_AUTO_HOURS=off puts the row back to typed-only. Build-time, so flipping it is a redeploy.
 const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
+// A Stop lookup note save writes only the fields the rep changed (lib/customer-note-edit.js).
+// VITE_NOTE_SAVE_CHANGED_ONLY=off puts back the whole-draft write. Build-time, so flipping it is a redeploy.
+const NOTE_SAVE_CHANGED_ONLY_ON = noteSaveChangedOnlyEnabled(import.meta.env);
 // THE WALL DISPLAY DRAWS ITS MAP AS A PICTURE — see lib/tv-static-map.js for why, and for the
 // house-shape switch. Read once at module load, like every other build-time flag here.
 // VITE_TV_STATIC_MAP=off puts the TV back on the live JS map; anything malformed leaves it ON.
@@ -39639,7 +39642,8 @@ function StopLookupScreen() {
         // just the keys absent from the payload, so `...draft` here wrote every field back with
         // its open-time value — re-subscribing a customer who unsubscribed while the rep typed,
         // dragging a corrected pin back to the wrong building (audit 2026-09-27, app-A4-3).
-        ...changedNoteFields(draft, editSeed),
+        // VITE_NOTE_SAVE_CHANGED_ONLY=off puts back the whole-draft write (see the lib's header).
+        ...(NOTE_SAVE_CHANGED_ONLY_ON ? changedNoteFields(draft, editSeed) : draft),
         match_key: key,
         raw_name: draft.raw_name || editDock.name || '',
         raw_address: draft.raw_address || [editDock.addr1, editDock.city, editDock.state, editDock.zip].filter(Boolean).join(', '),
