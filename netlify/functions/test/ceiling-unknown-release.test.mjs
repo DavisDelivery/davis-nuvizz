@@ -37,9 +37,16 @@ test('Chad lowered the ceiling to 1,500 and it tripped: a cold instance that can
     assert.deepEqual(fs.writes, [], 'open:false is never written to the shared document on a guess');
     assert.equal(nvreq.dailyCeilingKnown(), false);
 
-    // The per-call path: a request is refused before it is sent, and nothing is released.
+    // The per-call path: a request is refused before it is sent, and nothing is released. The
+    // network is stubbed so a regression here fails the test instead of reaching anything real.
     const r = nvreq.createRequester();
-    await assert.rejects(r.request('https://vendor.invalid/x', {}, { route: '/x', tenant: 'DAVIS' }), (e) => e.name === 'NuvizzCircuitOpenError');
+    const realFetch = globalThis.fetch;
+    let sent = 0;
+    globalThis.fetch = async () => { sent += 1; throw new Error('test: nothing may leave this process'); };
+    try {
+      await assert.rejects(r.request('https://nuvizz.example/x', {}, { route: '/x', tenant: 'DAVIS' }), (e) => e.name === 'NuvizzCircuitOpenError');
+    } finally { globalThis.fetch = realFetch; }
+    assert.equal(sent, 0, 'nothing was sent');
     assert.deepEqual(fs.writes, []);
 
     // A good read of his setting settles it — 1,600 is still over 1,500, so still shut.
