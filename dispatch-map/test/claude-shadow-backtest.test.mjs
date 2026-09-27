@@ -125,7 +125,7 @@ test('dropping freight is never a saving: a delivered stop a load can carry may 
   const dropped = evaluateAssignment(p, { loads: dispatchMinus([blocked, plain]), unplanned: [{ stop: blocked, reason: 'box only, no box room' }, { stop: plain, reason: 'far' }] }, CFG, seqr);
   assert.equal(dropped.ok, false);
   assert.match(dropped.summary.hardViolations.join(' '), new RegExp(`stop ${plain} must be on a load`));
-  assert.ok(!dropped.summary.hardViolations.some((v) => v.includes(`stop ${blocked} `)), 'the no-tractor stop that rode a tractor may be left');
+  assert.ok(!dropped.summary.hardViolations.some((v) => v.includes(`stop ${blocked} must be on a load`)), 'the no-tractor stop that rode a tractor may be left (when no box truck has room: below)');
   // The permitted one still needs a reason.
   const silent = evaluateAssignment(p, { loads: dispatchMinus([blocked]), unplanned: [{ stop: blocked, reason: '   ' }] }, CFG, seqr);
   assert.match(silent.summary.hardViolations.join(' '), /no reason/);

@@ -25,7 +25,7 @@ import { callMessages, PRICES_PER_MTOK } from './anthropic.mts';
 import { claudeShadowEnabled, shadowModel, anthropicKeyConfigured } from './config.mts';
 import { learnRefusal, loosePerSkidFrom } from './learn.mts';
 import { ceilingsInForce } from './settings-core.mts';
-import { hardCapsEnabled } from './config.mts';
+import { hardCapsEnabled, btRoomCheckEnabled } from './config.mts';
 import { readSettings } from './settings.mts';
 import { LEARN_DAYS_COLLECTION, HISTORY_MANIFEST_MASK, sealedDaysFrom } from './learn-core.mts';
 import {
@@ -414,7 +414,8 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
     }
     const problem: BtProblem = JSON.parse(stored.problemJson);
     const cfg = JSON.parse(stored.cfgJson);
-    const loopProblem = btLoopProblem(problem, cfg);
+    // SHADOW_BT_ROOM_CHECK=off puts the old backtest rule back (a no-tractor stop that rode a tractor may be left off with any reason).
+    const loopProblem = btLoopProblem(problem, cfg, { btRoomCheck: btRoomCheckEnabled(deps.env) });
     if (typeof stored.promptJson === 'string') Object.assign(loopProblem, frozenPrompt(stored.promptJson));
     const s = job.settings || {};
     const settings: LoopSettings = {
@@ -538,7 +539,7 @@ export async function backtestView(deps: BtDeps = LIVE) {
     // EVERY run's spend — failed, stopped and re-run days included — not just each day's latest result.
     spend: { usd: Math.round(jobs.reduce((a: number, j: any) => a + (typeof j.usd === 'number' ? j.usd : 0), 0) * 100) / 100, runs: jobs.length },
     ceiling: ceilingView(every, routerSettingsFrom(rsDoc), deps),
-    settings: routerSettingsFrom(rsDoc), pinned: routerPinned(rsDoc), hardCaps: hardCapsEnabled(deps.env), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
+    settings: routerSettingsFrom(rsDoc), pinned: routerPinned(rsDoc), hardCaps: hardCapsEnabled(deps.env), btRoomCheck: btRoomCheckEnabled(deps.env), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
     refused: routerRefusal(deps.env, deps.firestoreOn()),
     enabled: claudeShadowEnabled(deps.env),
     model: shadowModel(deps.env).model,
