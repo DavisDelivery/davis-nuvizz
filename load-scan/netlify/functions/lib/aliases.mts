@@ -119,6 +119,16 @@ export function resolveLoginIdentifier(
 }
 
 /**
+ * Every name that signs this credential in: its displayName and each alias,
+ * normalized. The same claims resolveLoginIdentifier counts — the add guard and
+ * the ambiguity report must see what sign-in sees, or they wave through a name
+ * that then signs NEITHER driver in.
+ */
+function namesClaimedBy(c: DriverCred): Set<string> {
+  return new Set([c.displayName, ...(c.nuvizzAliases || [])].map(normalizeDriverAlias).filter(Boolean));
+}
+
+/**
  * Plan attaching one board name to a driver's alias set — the actual fix for an
  * unmatched sign-in.
  *
@@ -142,7 +152,7 @@ export function planAliasAdd(
   const claimedBy = allCreds
     .filter((c) => String(c.driverNumber) !== String(target.driverNumber))
     .filter((c) => c.active !== false)
-    .filter((c) => (c.nuvizzAliases || []).some((a) => normalizeDriverAlias(a) === alias))
+    .filter((c) => namesClaimedBy(c).has(alias))
     .map((c) => String(c.driverNumber));
 
   if (claimedBy.length) {
@@ -175,9 +185,7 @@ export function planAliasRemove(target: DriverCred, rawAlias: any): { aliases: s
 export function findAmbiguousAliases(creds: DriverCred[]): Array<{ alias: string; driverNumbers: string[] }> {
   const map = new Map<string, string[]>();
   for (const c of creds.filter((c) => c.active !== false)) {
-    for (const a of c.nuvizzAliases || []) {
-      const k = normalizeDriverAlias(a);
-      if (!k) continue;
+    for (const k of namesClaimedBy(c)) {
       if (!map.has(k)) map.set(k, []);
       map.get(k)!.push(String(c.driverNumber));
     }
