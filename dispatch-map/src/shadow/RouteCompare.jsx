@@ -119,7 +119,7 @@ export function RoutesTable({ rows, total, sel, onToggle, onOpen, focus, q, setQ
               <tr key={r.id} onClick={() => onOpen(r.id)} className={`border-t border-slate-100 cursor-pointer align-middle ${focus === r.id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}>
                 <td className="pl-1"><Dot id={r.id} sel={sel} onToggle={onToggle} label={r.route} m={m} /></td>
                 <td className="py-1 pr-3">
-                  <button onClick={(e) => { e.stopPropagation(); onOpen(r.id); }} className="text-left min-h-[44px]">
+                  <button data-route-open={r.id} onClick={(e) => { e.stopPropagation(); onOpen(r.id); }} className="text-left min-h-[44px]">
                     <span className="font-semibold text-slate-800 block">{r.route}</span>
                     <span className="text-[11px] text-slate-500 block">{r.driver} · {r.cls === 'tractor' ? 'tractor' : 'box'}{r.orderSource && r.orderSource !== 'driven' ? ` · ${ORDER_WORD[r.orderSource] || r.orderSource}` : ''}</span>
                   </button>
@@ -153,7 +153,7 @@ export function RouteCards({ rows, total, sel, onToggle, onOpen, focus, q, setQ,
       {shown.map((r) => (
         <div key={r.id} className={`rounded-lg border ${focus === r.id ? 'border-indigo-300 bg-indigo-50' : 'bg-white'} flex items-start`}>
           <Dot id={r.id} sel={sel} onToggle={onToggle} label={r.route} m={m} />
-          <button onClick={() => onOpen(r.id)} className="flex-1 min-w-0 text-left py-2 pr-2 min-h-[44px] space-y-1">
+          <button data-route-open={r.id} onClick={() => onOpen(r.id)} className="flex-1 min-w-0 text-left py-2 pr-2 min-h-[44px] space-y-1">
             <span className="flex items-center justify-between gap-2">
               <span className="min-w-0"><span className="text-xs font-semibold text-slate-800">{r.route}</span> <span className="text-[11px] text-slate-500">{r.driver} · {r.cls === 'tractor' ? 'tractor' : 'box'}</span></span>
               <ChangeChip row={r} />
@@ -308,20 +308,26 @@ function StopList({ title, items, side, sel, onOpen, m }) {
 }
 
 /** One route, opened: both versions' numbers, the trade, and both stop lists. */
-export function RoutePanel({ cmp, phone, sel, onOpen, onClose, prevId, nextId, position, total, colourNote, m = null, onShowPartners = null, partnersShown = false, showMap = false }) {
-  const [side, setSide] = useState('claude');
-  if (!cmp) return null;
-  const L = cmp.load;
-  const took = groupBy(cmp.removed, (x) => (x.status.kind === 'moved' ? x.status.to : null), (x, ref) => (ref ? `→ ${ref.route} · ${ref.driver}` : 'Left unplanned by Claude'));
-  const gave = groupBy(cmp.added, (x) => x.status.from, (x, ref) => (ref ? `← ${ref.route} · ${ref.driver}` : 'Added'));
+/** The one sentence that says what Claude did to this truck (shared by the route panel and the drawer's header). */
+export function routeSummary(cmp) {
+  if (!cmp) return '';
   const movedN = cmp.removed.filter((x) => x.status.kind === 'moved').length;
   const unN = cmp.removed.filter((x) => x.status.kind === 'unplanned').length;
-  const summary = cmp.change === 'parked' ? `Claude parked this truck: ${movedN} of your ${cmp.freight.driven.orders} orders ride other trucks${unN ? ` and ${unN} ${unN === 1 ? 'is' : 'are'} left unplanned` : ''}.`
+  return cmp.change === 'parked' ? `Claude parked this truck: ${movedN} of your ${cmp.freight.driven.orders} orders ride other trucks${unN ? ` and ${unN} ${unN === 1 ? 'is' : 'are'} left unplanned` : ''}.`
     : cmp.change === 'unmapped' ? 'None of your stops on this truck had a map point, so the comparison cannot see your version of it.'
       : cmp.change === 'empty' ? 'Neither version has a mapped stop on this truck.'
     : cmp.change === 'same' ? 'Claude left this route exactly as you ran it.'
       : cmp.change === 'reordered' ? 'Same stops as yours — Claude only changed the order.'
         : `Claude kept ${cmp.kept} of your ${cmp.freight.driven.orders} orders, took off ${cmp.removed.length} and put on ${cmp.added.length}${cmp.partners.length ? `, trading with ${cmp.partners.length} truck${cmp.partners.length === 1 ? '' : 's'}` : ''}.`;
+}
+
+export function RoutePanel({ cmp, phone, sel, onOpen, onClose, prevId, nextId, position, total, colourNote, m = null, onShowPartners = null, partnersShown = false, showMap = false, bare = false }) {
+  const [side, setSide] = useState('claude');
+  if (!cmp) return null;
+  const L = cmp.load;
+  const took = groupBy(cmp.removed, (x) => (x.status.kind === 'moved' ? x.status.to : null), (x, ref) => (ref ? `→ ${ref.route} · ${ref.driver}` : 'Left unplanned by Claude'));
+  const gave = groupBy(cmp.added, (x) => x.status.from, (x, ref) => (ref ? `← ${ref.route} · ${ref.driver}` : 'Added'));
+  const summary = routeSummary(cmp);
   const nav = (
     <div className="flex items-center gap-1 shrink-0">
       <button onClick={() => prevId && onOpen(prevId)} disabled={!prevId} aria-label="Previous route" className="rounded-lg border bg-white min-h-[44px] min-w-[44px] inline-flex items-center justify-center disabled:opacity-40"><ChevronLeft size={16} /></button>
@@ -349,13 +355,16 @@ export function RoutePanel({ cmp, phone, sel, onOpen, onClose, prevId, nextId, p
   );
   return (
     <section tabIndex={-1} className="rounded-xl border-2 border-indigo-300 bg-indigo-50/30 p-3 space-y-3 outline-none focus-visible:ring-2 focus-visible:ring-indigo-400" aria-label={`Route ${L.route}`}>
-      <div className={phone ? 'space-y-2' : 'flex items-start justify-between gap-3'}>
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-slate-900">{L.route} <span className="font-normal text-slate-600">· {L.driver} · {L.cls === 'tractor' ? 'tractor' : 'box truck'}</span></div>
-          <div className="text-xs text-slate-700">{summary}</div>
+      {/* bare (v1.77.0): inside the route drawer, whose own header carries the name and ◀ ▶ ✕. */}
+      {bare ? <div className="text-xs text-slate-700">{summary}</div> : (
+        <div className={phone ? 'space-y-2' : 'flex items-start justify-between gap-3'}>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-900">{L.route} <span className="font-normal text-slate-600">· {L.driver} · {L.cls === 'tractor' ? 'tractor' : 'box truck'}</span></div>
+            <div className="text-xs text-slate-700">{summary}</div>
+          </div>
+          {nav}
         </div>
-        {nav}
-      </div>
+      )}
       <FlagChips flags={cmp.flags} />
       {onShowPartners && cmp.partners.length > 0 && (
         <button onClick={onShowPartners} className="rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-indigo-700 min-h-[44px]">

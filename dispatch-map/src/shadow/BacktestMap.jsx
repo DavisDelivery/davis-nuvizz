@@ -261,7 +261,7 @@ function ModeButton({ value, label, mode, setMode }) {
 
 // `only` (v1.76.0, the planning area): one plan and one pane — a forward plan has no dispatch side, so
 // there is no second map to load, no Dispatch | Claude switch, and no rings for stops that changed hands.
-export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus, zoomTick = 0, onOpenRoute, onAllRoutes, partners = 0, partnersShown = false, onShowPartners, onHidePartners, note, only = null }) {
+export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus, zoomTick = 0, onOpenRoute, onAllRoutes, partners = 0, partnersShown = false, onShowPartners, onHidePartners, note, only = null, cardKey = undefined, dayNotes = true }) {
   const [g, setG] = useState(null);
   const [gErr, setGErr] = useState(null);
   const [mode, setMode] = useState(only || (phone ? 'claude' : 'both'));
@@ -319,7 +319,9 @@ export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus
   }, [focus, zoomTick, m, paneTick]);
 
   // Which dispatch trucks are drawn in a planned order — a backtest's question; a plan has no dispatch side.
-  const oddOrder = m && !only ? orderNote(m) : null;
+  const oddOrder = m && !only && dayNotes ? orderNote(m) : null;
+  // A stop card belongs to the visit it was opened on (v1.77.1 route drawer, review).
+  useEffect(() => { if (cardKey !== undefined) setStories(null); }, [cardKey]);
   const onStop = useCallback((stopId) => setStories(m ? storiesAt(m, stopId) : null), [m]);
 
   const header = (
@@ -328,7 +330,7 @@ export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus
       {!only && !phone && <ModeButton value="both" label="Side by side" mode={mode} setMode={setMode} />}
       {!only && <ModeButton value="driven" label="Dispatch" mode={mode} setMode={setMode} />}
       {!only && <ModeButton value="claude" label="Claude" mode={mode} setMode={setMode} />}
-      {focus && <button onClick={onAllRoutes} className="rounded-lg border bg-white px-3 text-xs font-semibold min-h-[44px] inline-flex items-center gap-1"><Layers size={13} /> All routes</button>}
+      {focus && onAllRoutes && <button onClick={onAllRoutes} className="rounded-lg border bg-white px-3 text-xs font-semibold min-h-[44px] inline-flex items-center gap-1"><Layers size={13} /> All routes</button>}
       {focus && partners > 0 && (partnersShown
         ? <button onClick={onHidePartners} className="rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-indigo-700 min-h-[44px]">Hide the {partners} truck{partners === 1 ? '' : 's'} it traded with</button>
         : <button onClick={onShowPartners} className="rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-indigo-700 min-h-[44px]">Show the {partners} truck{partners === 1 ? '' : 's'} Claude traded with</button>)}
