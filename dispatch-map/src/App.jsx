@@ -2190,8 +2190,14 @@ function useStops(date, carryDays = 0) {
   // touches it. This is the reference number for "how many stops should be in the list":
   // the board can only ever show this many or fewer.
   const [scanUnplannedCount, setScanUnplannedCount] = useState(null);
+  // The selection on screen RIGHT NOW. A read answers for the date it asked about; when the
+  // dispatcher has since picked another day, that answer is dropped instead of painting
+  // yesterday's board under today's date picker.
+  const selectionRef = useRef('');
+  selectionRef.current = `${date}|${carryDays}`;
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
+    const asked = `${date}|${carryDays}`;
     if (!silent) setLoading(true);
     setError(null);
     try {
@@ -2201,6 +2207,7 @@ function useStops(date, carryDays = 0) {
       if (!MOCK_MODE && carryDays > 0) params += (params ? '&' : '?') + `carryDays=${carryDays}`;
       const url = '/.netlify/functions/nuvizz-pull-today-stops' + params;
       const data = await fetchJsonWithRetry(url);
+      if (asked !== selectionRef.current) return;
       if (!data.ok) throw new Error(data.error || 'NuVizz function returned ok:false');
       // Attach the match key now so every consumer downstream can hit it.
       const decorated = (data.stops || []).map((s) => ({
@@ -2221,9 +2228,9 @@ function useStops(date, carryDays = 0) {
       setScanUnplannedCount(typeof data.unplannedCount === 'number' ? data.unplannedCount : null);
       setLastRefreshed(new Date());
     } catch (e) {
-      if (!silent) setError(e.message); // a failed silent poll shouldn't surface an error banner
+      if (!silent && asked === selectionRef.current) setError(e.message); // a failed silent poll shouldn't surface an error banner
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && asked === selectionRef.current) setLoading(false);
     }
   }, [date, carryDays]);
 
