@@ -24,7 +24,7 @@ import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { territorySheetHtml } from '../../src/lib/territory-sheet-html.js';
 import {
   territoryCoverage, activeDrivers, possibleSameDriver, applyAliases, rosterOf, territoryLayer,
-  TERRITORY_STOP_FIELDS,
+  TERRITORY_STOP_FIELDS, splitHidden,
 } from '../../src/lib/driver-territory.js';
 import { driverAliases } from './lib/marginiq.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -157,6 +157,9 @@ export default async (req: Request): Promise<Response> => {
       excludedDrivers: excluded,
       possibleSameDriver: possibleSameDriver(folded).map((p) => ({ a: p.a.key, b: p.b.key, aStops: p.a.stops, bStops: p.b.stops })),
       aliasesApplied: { fromRoster, fromOps },
+      // Who the rings and the sheet leave off by name (HIDDEN_FROM_RINGS), of those present here.
+      // The lists above are the raw history on purpose — this is what EXISTS, not what is drawn.
+      hiddenFromRings: splitHidden(folded).hidden,
       readMs,
       totalMs: Date.now() - started,
       nuvizzCalls: 0,

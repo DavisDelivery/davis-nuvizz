@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import {
   TERRITORY_STOP_FIELDS, RING_PALETTE, ringColours, territoryModel, territoryLayer,
   activeDrivers, territoryCoverage, possibleSameDriver, applyAliases, driverCore,
+  HIDDEN_FROM_RINGS, splitHidden,
 } from '../src/lib/driver-territory.js';
 import { territorySheetHtml } from '../src/lib/territory-sheet-html.js';
 
@@ -250,4 +251,59 @@ test('TOO FEW MAP POSITIONS IS NOT "SPREAD OUT" — the reason given has to be t
   assert.equal(n.stops, 40);
   // And genuinely scattered work with every stop mapped is still called what it is.
   assert.equal(territoryLayer(fixture()).noRing.find((x) => x.key === 'RASKO_SULJIC').why, 'spread out');
+});
+
+// ── 4. THE PEOPLE CHAD TOOK OFF THE RINGS ────────────────────────────────────
+//
+// Chad, 2026-09-27: "I don't want Chad Brandi Freddy or Jessica on the map in rings."
+
+const withChadsList = () => [
+  ...fixture(),
+  ...cluster('Chad Davis', 34.12, -84.00, 60, 0.05).map((s) => ({ ...s, city: 'OWNERSVILLE', zip: '30599' })),
+  ...cluster('Brandi Bradberry', 33.95, -84.05, 25, 0.04),
+  ...cluster('Jessica  Sage', 34.02, -84.10, 40, 0.04),          // the vendor's double space, as NuVizz spells names
+];
+
+test('CHAD, BRANDI AND JESSICA GET NO RING — and are not listed as having none either', () => {
+  const layer = territoryLayer(withChadsList());
+  for (const key of ['CHAD_DAVIS', 'BRANDI_BRADBERRY', 'JESSICA_SAGE']) {
+    assert.ok(!layer.rings.some((r) => r.key === key), `${key} has no ring`);
+    assert.ok(!layer.noRing.some((n) => n.key === key), `${key} is not in "no ring"`);
+    assert.ok(!layer.excluded.some((e) => e.label.toUpperCase().replace(/\s+/g, '_') === key), `${key} is not in "not shown"`);
+  }
+  assert.ok(layer.rings.some((r) => r.key === 'VINCENT_BONZO'), 'everybody else is still drawn');
+  assert.deepEqual(layer.hidden, ['Brandi Bradberry', 'Chad Davis', 'Jessica Sage'], 'and the JSON says who was left off');
+});
+
+test('…OFF THE PRINTED SHEET TOO, which is the same pipeline — no ring, no card, no town-table row', () => {
+  const html = territorySheetHtml({ stops: withChadsList() });
+  for (const name of ['Chad Davis', 'Brandi Bradberry', 'Jessica Sage']) assert.ok(!html.includes(name), `${name} is not on the sheet`);
+  assert.ok(!html.includes('OWNERSVILLE'), 'a town only Chad ran is not handed to anybody in the table');
+  assert.ok(html.includes('Vincent Bonzo'), 'the drivers are all still there');
+});
+
+test('THEY ARE NOT COUNTED — nobody\'s share of a ZIP includes their stops', () => {
+  const kept = territoryModel(withChadsList());
+  const plain = territoryModel(fixture());
+  assert.equal(kept.inWindow.length, plain.inWindow.length, 'exactly the deliveries of everybody else');
+  assert.deepEqual(kept.drivers.map((d) => d.key), plain.drivers.map((d) => d.key), 'the same drivers in the same order — and so the same colours');
+});
+
+test('MATCHED ON THE PERSON, NOT ON LETTERS — an alias of Chad is Chad, a "Chad Davison" is not', () => {
+  const stops = [
+    ...cluster('C DAVIS', 34.12, -84.00, 30, 0.05),
+    ...cluster('Chad Davison', 33.80, -84.30, 30, 0.04),
+  ];
+  const folded = applyAliases(stops, [{ from: 'C_DAVIS', to: 'CHAD_DAVIS' }]);
+  const layer = territoryLayer(folded);
+  assert.ok(!layer.rings.some((r) => r.key === 'CHAD_DAVIS'), 'a load under another spelling of him is still his');
+  assert.ok(layer.rings.some((r) => r.key === 'CHAD_DAVISON'), 'somebody else whose name starts the same is untouched');
+});
+
+test('the list is exactly the three Chad named who are in the history — "Freddy" matches nobody yet', () => {
+  assert.deepEqual([...HIDDEN_FROM_RINGS], ['CHAD_DAVIS', 'BRANDI_BRADBERRY', 'JESSICA_SAGE']);
+  assert.ok(Object.isFrozen(HIDDEN_FROM_RINGS), 'nobody can widen it at runtime by accident');
+  // An empty list is the way to see everybody again — the override the model takes.
+  assert.ok(territoryLayer(withChadsList(), { hidden: [] }).rings.some((r) => r.key === 'CHAD_DAVIS'));
+  assert.deepEqual(splitHidden([], HIDDEN_FROM_RINGS), { kept: [], hidden: [] }, 'nothing present, nothing said');
 });

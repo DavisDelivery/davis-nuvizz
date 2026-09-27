@@ -727,13 +727,49 @@ export function ringColours(drivers = []) {
 }
 
 /**
+ * PEOPLE WHO GET NO RING, BY NAME, BECAUSE CHAD SAID SO.
+ *
+ * Chad, 2026-09-27, on the first map drawn from real history: "I don't want Chad Brandi Freddy or
+ * Jessica on the map in rings." Three of those names carry loads in the four weeks behind that
+ * map — Chad Davis (208 deliveries, three rings), Jessica Sage (40, three) and Brandi Bradberry
+ * (23, three) — so the data drew them exactly like route drivers. The rings are a trainee's guide
+ * to whose area a stop is in, and who counts as that is Chad's call, not the data's.
+ *
+ * THE CANONICAL KEY, NEVER A SUBSTRING: matched on driverKeyOf after the alias fold, so a load
+ * under another spelling of the same man is caught and a "Chad Davison" hired next year is not.
+ * They are taken out before ANYTHING is counted — no ring, no row in the town table, no card, no
+ * share of anybody's ZIP — on the map and on the printed sheet alike, which are one pipeline. And
+ * what was left out is still SAID, in the layer's `hidden` list, so a missing name is never a
+ * mystery to whoever looks next.
+ *
+ * "Freddy" is not here: as of 2026-09-27 no driver of that name is anywhere in the history (the
+ * nearest are Frank Okine, on the map, and Alfred Andi, on the roster but not in the window), and
+ * a name added on a guess could take the wrong man off a trainee's map.
+ */
+export const HIDDEN_FROM_RINGS = Object.freeze(['CHAD_DAVIS', 'BRANDI_BRADBERRY', 'JESSICA_SAGE']);
+
+/** Stops of the named people set aside, and the names that were actually present to set aside. */
+export function splitHidden(stops = [], keys = HIDDEN_FROM_RINGS) {
+  const hide = new Set((keys || []).map((k) => String(k).toUpperCase()));
+  const kept = [];
+  const labels = new Map();
+  for (const s of stops || []) {
+    const k = hide.size ? driverKeyOf(s) : null;
+    if (k && hide.has(k)) { labels.set(k, betterLabel(labels.get(k), driverLabelOf(s))); continue; }
+    kept.push(s);
+  }
+  return { kept, hidden: [...labels.values()].sort((a, b) => a.localeCompare(b)) };
+}
+
+/**
  * THE WHOLE PIPELINE, ONCE: who is still running, their work, their rings and their colours.
  *
  * `drivers` and `circles` are the sheet's existing overrides, carried through unchanged so the
  * printed page is byte-for-byte what it was before this was shared.
  */
 export function territoryModel(stops = [], opts = {}) {
-  const all = stops || [];
+  // CHAD'S LIST GOES FIRST, so nobody he named is counted anywhere below (see HIDDEN_FROM_RINGS).
+  const { kept: all, hidden } = splitHidden(stops, opts.hidden ?? HIDDEN_FROM_RINGS);
   const roster = opts.roster || null;
   // ONLY DRIVERS WHO HAVE ACTUALLY RUN IN THE WINDOW. Chad: "terry hasn't ran for me in a long
   // time ... just guys that have ran in last 4 weeks."
@@ -744,7 +780,7 @@ export function territoryModel(stops = [], opts = {}) {
   const inWindow = all.filter((s) => active.has(driverKeyOf(s)));
   const drivers = opts.drivers || driverCore(inWindow, { roster });
   const circleSets = opts.circles || driverCircles(all, { roster, active });
-  return { roster, active, excluded, inWindow, drivers, circleSets, colourOf: ringColours(drivers) };
+  return { roster, active, excluded, inWindow, drivers, circleSets, colourOf: ringColours(drivers), hidden };
 }
 
 const round = (v, dp) => Number(Number(v).toFixed(dp));
@@ -792,5 +828,8 @@ export function territoryLayer(stops = [], opts = {}) {
     excluded: m.excluded.map((e) => ({ label: e.label, why: e.why, stops: e.stops, lastSeen: e.lastSeen, daysSince: e.daysSince })),
     coverage: { deliveries: cov.usable, days: cov.days, drivers: m.drivers.length, coordShare: round(cov.coordShare, 3) },
     rosterApplied: cov.rosterApplied,
+    // Left off by name (HIDDEN_FROM_RINGS) — said here so the JSON explains a missing name. Not
+    // printed on the map or the sheet: Chad asked for them to be off it, not listed on it.
+    hidden: m.hidden,
   };
 }
