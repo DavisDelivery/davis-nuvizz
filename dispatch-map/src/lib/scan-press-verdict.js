@@ -50,7 +50,8 @@ const ago = (sec) => (sec == null ? 'a moment' : sec < 90 ? plural(sec, 'second'
  * PURE.
  * @param {object} o
  * @param {boolean} o.updated        the polled board's last_scanned_at moved since the press
- * @param {object|null} o.refusal    lastScanRefusal, already matched to THIS press by the caller
+ * @param {object|null} o.refusal    lastScanRefusal, fresh enough (by age) to be this press's;
+ *                                   the run ledger decides whether it is (see below)
  * @param {object|null} o.run        scanRun from the board feed (server-computed ages)
  * @param {number} o.waitedSec       how long this press has been waiting (a browser DURATION)
  * @returns {{kind: 'landed'|'refused'|'running'|'stalled', message: string|null, done: boolean}}
@@ -64,19 +65,27 @@ export function scanPressVerdict({ updated, refusal = null, run = null, waitedSe
   const age = run && Number.isFinite(Number(run.startedAgeSec)) ? Number(run.startedAgeSec) : null;
   const mine = age != null && age <= waitedSec + 20;
 
-  // A REAL RUN OF THIS PRESS OUTRANKS A REFUSAL. The caller matches a refusal to this press on
-  // a ~2-minute window (the server gives its age in whole minutes), so a refusal can be someone
-  // else's: a session that expired at 06:00:10, then a dispatcher whose press at 06:00:40
-  // started a scan. Checking the refusal first told that dispatcher "Scan did not run" on the
-  // first poll while their scan ran. The gate files a refusal on the run ledger too, as a
-  // finished row with outcome 'refused' — that row is not a scan, so it never outranks one.
-  const ranMine = mine && run.outcome !== 'refused';
-  if (refusal && !ranMine) {
-    return {
-      kind: 'refused',
-      message: `Scan did not run. ${refusal.message || `Refused (${refusal.reason || 'no reason given'}).`}`,
-      done: true,
-    };
+  // WHOSE REFUSAL IS IT? The caller matches a refusal to this press on a ~2-minute window (the
+  // server gives its age in whole minutes), so it can be someone else's: a session that expired
+  // at 06:00:10, then a dispatcher whose press at 06:00:40 started a scan. Believing it on sight
+  // told that dispatcher "Scan did not run" on the first poll while their scan ran.
+  //
+  // The run ledger settles it without comparing clocks. The gate files a refused press on the
+  // ledger — a finished row with outcome 'refused' — BEFORE it stamps the refusal this poll
+  // serves (nuvizz-manual-scan-background), so a press that really was refused shows its own
+  // refused row as the newest run by the time its refusal can be seen. Hence:
+  //   · a real run of this press (in flight or finished) outranks any refusal: it is not ours;
+  //   · this press's own refused row confirms the refusal at once;
+  //   · no ledger reading at all leaves nothing to check it against, so it is believed, as
+  //     before;
+  //   · otherwise (the newest row is older than this press — this press's scan has not written
+  //     its row yet) it is not this press's yet: keep watching, and if nothing of this press
+  //     ever shows up it is the answer when the window closes (below).
+  const refusalText = refusal
+    ? `Scan did not run. ${refusal.message || `Refused (${refusal.reason || 'no reason given'}).`}`
+    : null;
+  if (refusal && (!run || (mine && run.outcome === 'refused'))) {
+    return { kind: 'refused', message: refusalText, done: true };
   }
 
   if (mine && run.finished) {
@@ -106,6 +115,11 @@ export function scanPressVerdict({ updated, refusal = null, run = null, waitedSe
       done: true,
     };
   }
+
+  // No run of ours anywhere, and a refusal was seen: that refusal is the likeliest reason, but
+  // it only becomes the answer once the window has been waited out — until then this press's
+  // own scan may still write its row.
+  if (refusal) return { kind: 'refused', message: refusalText, done: waitedSec >= SCAN_POLL_WINDOW_SEC };
 
   // No run of ours anywhere. Either the press never reached the scanner, or the ledger is
   // unreadable. Both mean the same thing to a dispatcher: do not trust this board as fresh.
