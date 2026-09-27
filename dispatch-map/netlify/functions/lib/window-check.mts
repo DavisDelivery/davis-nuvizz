@@ -33,6 +33,19 @@ export function checkCodes(requested: any): string[] {
   return uniq.length ? uniq : ACTIVE_CODES.slice();
 }
 
+/**
+ * PURE: the request asked for statuses, and none of them is open work — a grid filtered to
+ * Completed and/or Cancelled. The grid's rows are already filtered to those buckets, so every
+ * one of them would be set aside and checkCodes' "none → all four" fallback would compare an
+ * EMPTY shown set against all open work: one call spent to list every open order as missing.
+ * No statuses at all (the unfiltered window) is not this — that is still all four.
+ */
+export function closedOnlyRequest(requested: any): boolean {
+  if (!Array.isArray(requested)) return false;
+  const asked = requested.map((c) => String(c ?? '').trim()).filter(Boolean);
+  return asked.length > 0 && !asked.some((c) => ACTIVE_CODES.includes(c));
+}
+
 export interface ShownRow {
   stopNbr: string; status?: any; day?: string | null; routeName?: string | null;
   weight?: any; cartons?: any; volume?: any; businessName?: string | null; city?: string | null;
