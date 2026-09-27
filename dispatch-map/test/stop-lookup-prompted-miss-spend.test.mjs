@@ -43,3 +43,16 @@ test('the screen keeps the spend on BOTH branches of the answer — found, and n
     'a miss or an error folds its spend into the answer on screen, so the header chip counts it');
   assert.match(APP, /import \{[^}]*\bpromptedCallsOnScreen\b[^}]*\} from '\.\/lib\/stop-lookup\.js'/, 'from the shared module');
 });
+
+test('after "NuVizz has nothing either" the chip counts the call without claiming the answer came from NuVizz', async () => {
+  // The count now stays up over a MISS, where the order on screen is still the Firestore answer.
+  // The chip's tooltip used to say "This answer came from NuVizz" — true only when NuVizz found it.
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { liftFromApp } = await import('./helpers/app-lift.mjs');
+  const { LookupCallsPill } = liftFromApp({ targets: ['LookupCallsPill'], inject: { React } });
+  const html = renderToStaticMarkup(React.createElement(LookupCallsPill, { calls: promptedCallsOnScreen(0, 1) }));
+  assert.match(html, /1 NuVizz call — on request/);
+  assert.doesNotMatch(html, /came from NuVizz/, 'a miss must not be described as an answer from NuVizz');
+  assert.match(html, /title="NuVizz was asked about this order, on request — one call spent\."/);
+});

@@ -38677,7 +38677,9 @@ function LookupCallsPill({ calls }) {
   const spent = n > 0;
   return (
     <span
-      title={spent ? `This answer came from NuVizz, because it was asked for — ${n === 1 ? 'one call' : `${n} calls`}.` : 'Everything on this screen is read from our own records. Nothing here spends a NuVizz call.'}
+      // "Asked", not "answered": the count now stays up after NuVizz had nothing too (app-A4-8),
+      // and over that miss the order on screen did NOT come from NuVizz.
+      title={spent ? `NuVizz was asked about this order, on request — ${n === 1 ? 'one call' : `${n} calls`} spent.` : 'Everything on this screen is read from our own records. Nothing here spends a NuVizz call.'}
       className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${
         spent ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-white text-slate-600 ring-slate-200'}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${spent ? 'bg-amber-500' : 'bg-emerald-500'}`} />
