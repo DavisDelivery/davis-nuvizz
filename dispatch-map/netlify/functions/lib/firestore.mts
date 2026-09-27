@@ -1501,7 +1501,8 @@ export async function readScanConfig(): Promise<Record<string, any>> {
   return (doc as Record<string, any>) || {};
 }
 export async function writeScanConfig(cfg: Record<string, any>): Promise<void> {
-  // setDoc PATCH-merges, so the write endpoint sends the full managed field set.
+  // setDoc REPLACES the document (a PATCH with no updateMask), so the write endpoint sends
+  // the full managed field set, merged onto a STRICT read of the prior document.
   await setDoc(SCAN_CONFIG_PATH, cfg);
 }
 

@@ -49,13 +49,27 @@ export function haversineMatrix(depot: LatLng, stops: LatLng[]): Matrix {
   return { durationSec, distanceMeters };
 }
 
+// A5-S27-4: a pair Google cannot route (condition ROUTE_NOT_FOUND, no duration) or leaves out of
+// its answer takes the straight-line road estimate above instead of a free 0-second, 0-metre leg.
+// ROUTE_MATRIX_ESTIMATE_UNROUTABLE=off puts back the old reading. House shape: default ON, an
+// explicit off-word turns it off, anything malformed leaves it ON.
+//
+// SCOPE: the BUILD only (routing-build-background → resolveMatrix). This file's HTTP handler is
+// called by exactly one screen — the Route Workbench's "road distances" re-sequence on a Compare
+// card — and the workbench is frozen (CLAUDE.md), so the handler keeps the old reading until Chad
+// names that change. The switch therefore reverts every side this change has: the build's matrix.
+export function unroutableEstimateEnabled(env: any = process.env): boolean {
+  const v = String(env?.ROUTE_MATRIX_ESTIMATE_UNROUTABLE ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
 function parseDuration(s: any): number {
   if (typeof s === 'number') return s;
   const m = String(s ?? '').match(/^(\d+(?:\.\d+)?)s$/);
   return m ? Math.round(Number(m[1])) : 0;
 }
 
-async function computeChunk(origins: LatLng[], destinations: LatLng[], apiKey: string): Promise<{ originIndex: number; destinationIndex: number; durationSec: number; distanceMeters: number }[]> {
+async function computeChunk(origins: LatLng[], destinations: LatLng[], apiKey: string): Promise<{ originIndex: number; destinationIndex: number; durationSec: number; distanceMeters: number; routed: boolean }[]> {
   const wp = (p: LatLng) => ({ waypoint: { location: { latLng: { latitude: p.lat, longitude: p.lng } } } });
   const resp = await fetchWithTimeout(ROUTES_URL, {
     method: 'POST',
@@ -74,15 +88,24 @@ async function computeChunk(origins: LatLng[], destinations: LatLng[], apiKey: s
     destinationIndex: e.destinationIndex ?? 0,
     durationSec: parseDuration(e.duration),
     distanceMeters: typeof e.distanceMeters === 'number' ? e.distanceMeters : 0,
+    // A real route carries a duration. No duration — or an explicit ROUTE_NOT_FOUND — is no route.
+    routed: (typeof e.duration === 'number' || /^\d+(?:\.\d+)?s$/.test(String(e.duration ?? '')))
+      && e.condition !== 'ROUTE_NOT_FOUND',
   }));
 }
 
 // Full (depot + stops) matrix via Google, chunked to respect the element cap.
-export async function buildMatrixViaGoogle(depot: LatLng, stops: LatLng[], apiKey: string): Promise<Matrix> {
+export interface MatrixOpts { estimateUnroutable?: boolean }
+export async function buildMatrixViaGoogle(depot: LatLng, stops: LatLng[], apiKey: string, opts: MatrixOpts = {}): Promise<Matrix> {
   const nodes = [depot, ...stops];
   const n = nodes.length;
-  const durationSec = Array.from({ length: n }, () => new Array(n).fill(0));
-  const distanceMeters = Array.from({ length: n }, () => new Array(n).fill(0));
+  // Start from the road estimate so any pair without a real Google route keeps an honest cost.
+  // An explicit `estimateUnroutable` wins over the switch (the workbench handler passes false).
+  const estimate = opts.estimateUnroutable ?? unroutableEstimateEnabled();
+  const base = estimate ? haversineMatrix(depot, stops) : null;
+  const durationSec = base ? base.durationSec : Array.from({ length: n }, () => new Array(n).fill(0));
+  const distanceMeters = base ? base.distanceMeters : Array.from({ length: n }, () => new Array(n).fill(0));
+  let fromGoogle = 0;
 
   const originChunk = Math.max(1, Math.floor(MAX_ELEMENTS / n));
   for (let o = 0; o < n; o += originChunk) {
@@ -90,21 +113,24 @@ export async function buildMatrixViaGoogle(depot: LatLng, stops: LatLng[], apiKe
     const elements = await computeChunk(originsSlice, nodes, apiKey);
     for (const e of elements) {
       const i = o + e.originIndex, j = e.destinationIndex;
-      if (i < n && j < n) { durationSec[i][j] = e.durationSec; distanceMeters[i][j] = e.distanceMeters; }
+      if (estimate && !e.routed) continue;
+      if (i < n && j < n) { durationSec[i][j] = e.durationSec; distanceMeters[i][j] = e.distanceMeters; if (i !== j) fromGoogle++; }
     }
   }
+  const estimated = n * (n - 1) - fromGoogle;
+  if (estimate && estimated > 0) console.warn(`google-route-matrix: ${estimated} of ${n * (n - 1)} legs had no Google route — road estimate used`);
   return { durationSec, distanceMeters };
 }
 
 // Resolve the best available matrix for the requested mode (Appendix B: cheap by
 // default). Google is used ONLY when mode === 'google' AND the key is present;
 // otherwise (default) the free haversine estimate — even when the key exists.
-export async function resolveMatrix(depot: LatLng, stops: LatLng[], mode: 'haversine' | 'google' = 'haversine'): Promise<{ matrix: Matrix; source: 'google' | 'haversine' }> {
+export async function resolveMatrix(depot: LatLng, stops: LatLng[], mode: 'haversine' | 'google' = 'haversine', opts: MatrixOpts = {}): Promise<{ matrix: Matrix; source: 'google' | 'haversine' }> {
   if (stops.length > MAX_STOPS) throw new Error(`selection too large: ${stops.length} stops (max ${MAX_STOPS})`);
   if (mode === 'google') {
     const key = process.env.GOOGLE_ROUTES_API_KEY;
     if (key) {
-      try { return { matrix: await buildMatrixViaGoogle(depot, stops, key), source: 'google' }; }
+      try { return { matrix: await buildMatrixViaGoogle(depot, stops, key, opts), source: 'google' }; }
       catch (e: any) { console.error('google-route-matrix: falling back to haversine —', e?.message); }
     } else {
       console.error('google-route-matrix: mode=google requested but GOOGLE_ROUTES_API_KEY not set — using haversine');
@@ -127,7 +153,9 @@ export default async function handler(req: Request): Promise<Response> {
   const mode = body?.mode === 'google' || body?.matrixMode === 'google' ? 'google' : 'haversine';
   if (!depot || !stops) return new Response(JSON.stringify({ error: 'depot and stops required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   try {
-    const { matrix, source } = await resolveMatrix(depot, stops, mode);
+    // The only caller is the Route Workbench's road-distance re-sequence (frozen): it keeps the
+    // pre-A5-S27-4 reading of an unroutable leg exactly as it was. See the SCOPE note above.
+    const { matrix, source } = await resolveMatrix(depot, stops, mode, { estimateUnroutable: false });
     return new Response(JSON.stringify({ matrix, source, available: isGoogleRoutesEnabled() }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (e: any) {
     return new Response(JSON.stringify({ error: e?.message }), { status: 400, headers: { 'Content-Type': 'application/json' } });

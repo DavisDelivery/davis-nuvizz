@@ -38,11 +38,11 @@ import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, type WriteOp
 import { requireUser } from './lib/require-user.mts';
 import { bearerFromHeaders } from './lib/auth-core.mts';
 import { runOp, resolveWriteCreds, loadImportBlocked, personalWriteCreds } from './lib/nuvizz-write.mts';
-import { rwbEngineBlocked, takeRwbLoginRefusal, holdRwbLogin, rwbLoginHeld } from './lib/nuvizz-rwb.mts';
+import { rwbEngineBlocked, takeRwbLoginRefusal, holdRwbLogin, rwbLoginHeld, releaseRwbLoginCheckedSince } from './lib/nuvizz-rwb.mts';
 import { personalLoginsMode, publicIdentity, type Identity } from './lib/nuvizz-identity.mts';
-import { resolveWriteIdentity, watchPersonalRefusals, refusalAfterWrite, markLoginRejected } from './lib/nuvizz-write-identity.mts';
+import { resolveWriteIdentity, watchPersonalRefusals, refusalAfterWrite, markLoginRejected, passingCheckAt } from './lib/nuvizz-write-identity.mts';
 import { getUser, patchUser } from './lib/auth-store.mts';
-import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
+import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, dailyCeilingKnown, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
 import { outboundAllowed, outboundRefusal } from './lib/mirror-guard.mts';
@@ -313,18 +313,27 @@ export default async (req: Request): Promise<Response> => {
   const who = gate.user.authenticated ? gate.user.username : null;
   let identity: Identity = { kind: 'shared', appUser: who, why: 'off', note: null };
   if (MUTATING_OPS.has(op)) {
-    identity = await resolveWriteIdentity(mode, gate.user, { getUser }, { tokenPresented: !!bearerFromHeaders(req.headers) });
+    let account: any = null;
+    identity = await resolveWriteIdentity(mode, gate.user, { getUser: async (u) => (account = await getUser(u)) }, { tokenPresented: !!bearerFromHeaders(req.headers) });
     if (identity.kind === 'refused') {
       return J({ ok: false, op, tenant, live, error: identity.error, identity: publicIdentity(identity, mode), ops }, identity.status);
     }
-    if (identity.kind === 'personal') creds = personalWriteCreds(identity.nuvizzUser, identity.password);
+    if (identity.kind === 'personal') {
+      creds = personalWriteCreds(identity.nuvizzUser, identity.password);
+      // A Test that passed AFTER this instance held the login (it runs in another function, which
+      // cannot reach this hold) puts the login back here too — the account read above decides.
+      releaseRwbLoginCheckedSince(creds.rwb, passingCheckAt(account));
+    }
   }
   const identityOut = publicIdentity(identity, mode);
 
   // 5) Pre-flight budget — refuse to start at/over the ceiling. The breaker itself defaults to
   //    ENFORCE (nuvizz-request.mts:70), so this is the polite refusal before the hard one.
   if (ops.current >= ops.ceiling) {
-    return J({ ok: false, op, tenant, live, error: `daily NuVizz call ceiling reached (${ops.current}/${ops.ceiling}) — write refused`, ops }, 429);
+    // Say when the number is the DEFAULT only because the saved setting could not be read —
+    // "(2000/2000)" under a card reading 3,000 is the contradiction of 2026-09-09.
+    const guess = dailyCeilingKnown() ? '' : ` — the saved ceiling could not be read, so the ${ops.ceiling} default is in force`;
+    return J({ ok: false, op, tenant, live, error: `daily NuVizz call ceiling reached (${ops.current}/${ops.ceiling})${guess} — write refused`, ops }, 429);
   }
 
   // 6) Fire. Attribute the spike distinctly so Diagnostics shows live-write volume.

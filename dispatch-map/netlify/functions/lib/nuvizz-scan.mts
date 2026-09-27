@@ -991,11 +991,27 @@ export async function fetchStopEvents(
   }
 }
 
-async function probeStop(n: number, dateStr: string, authHeader: string, companyCode: string): Promise<StopProbe> {
+/** A counter the unplanned descent threads through its /stop/info probes so a probe that got NO
+ *  ANSWER is distinguishable from "there is no stop with this number" — the descent's twin of
+ *  LoadProbeTally. It counts only requests that threw (the call-ceiling breaker refusing it, a
+ *  timeout, a dropped connection): none of those is NuVizz saying anything about the number.
+ *  Which HTTP statuses on /stop/info mean "no such stop" is a fact about the vendor the code does
+ *  not hold, so a non-OK status is left exactly as it was — `exists: false`, uncounted. */
+export interface StopProbeTally { failed: number }
+
+async function probeStop(n: number, dateStr: string, authHeader: string, companyCode: string, tally?: StopProbeTally): Promise<StopProbe> {
   const stopNbr = String(n).padStart(9, '0');
   const url = `${NUVIZZ_BASE}/stop/info/${encodeURIComponent(stopNbr)}/${encodeURIComponent(companyCode)}`;
+  let resp: Response;
   try {
-    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/stop/info', tenant: companyCode });
+    resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/stop/info', tenant: companyCode });
+  } catch {
+    // Never answered — "we did not ask", not "nothing there". Counted so the descent cannot
+    // report complete over it (A4-S19-8).
+    if (tally) tally.failed += 1;
+    return { n, exists: false };
+  }
+  try {
     if (!resp.ok) return { n, exists: false };
     const d: any = await resp.json();
     const wrap = d?.Stop || d?.stop || d;
@@ -1036,10 +1052,10 @@ export function buildTerminalSkipPlan(
 // down if above), then binary-search the bracket to pin it. Anchoring on today's
 // estimate (not the query date's) keeps the descent start near the real top for
 // any date. sampleExists() tolerates single-number gaps by probing 8 in a row.
-async function findCeiling(dateStr: string, authHeader: string, companyCode: string): Promise<number> {
+async function findCeiling(dateStr: string, authHeader: string, companyCode: string, tally?: StopProbeTally): Promise<number> {
   const sampleExists = async (top: number): Promise<boolean> => {
     const sample = Array.from({ length: 8 }, (_, k) => top - k);
-    const rs = await Promise.all(sample.map((n) => probeStop(n, dateStr, authHeader, companyCode)));
+    const rs = await Promise.all(sample.map((n) => probeStop(n, dateStr, authHeader, companyCode, tally)));
     return rs.some((r) => r.exists);
   };
   const base = Math.max(estimateStopFrontier(todayUTC()), observedFrontier) + CEILING_MARGIN;
@@ -1123,7 +1139,10 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
   const postTargetStop = Math.max(1, opts.postTargetChunks ?? POST_TARGET_CHUNKS_TO_STOP);
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
-  const ceiling = await findCeiling(dateStr, authHeader, companyCode);
+  // Every probe of this descent — the ceiling search included, since a ceiling found by probes
+  // that were never answered is not a ceiling — tallies the ones NuVizz never answered.
+  const tally: StopProbeTally = { failed: 0 };
+  const ceiling = await findCeiling(dateStr, authHeader, companyCode, tally);
   const floor = unplannedFloor(estimateStopFrontier(dateStr) - FLOOR_MARGIN, opts.sinceStopNbr);
 
   // Phase 6 (default OFF): load the terminal-stop skip cache so numbers already
@@ -1157,10 +1176,10 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
       // Synthesize the cached terminals (no call) + probe only the unknown numbers.
       const plan = buildTerminalSkipPlan(batch, terminalCache);
       skipped += plan.synthesized.length;
-      const probed = await Promise.all(plan.toProbe.map((m) => probeStop(m, dateStr, authHeader, companyCode)));
+      const probed = await Promise.all(plan.toProbe.map((m) => probeStop(m, dateStr, authHeader, companyCode, tally)));
       rs = [...plan.synthesized, ...probed];
     } else {
-      rs = await Promise.all(batch.map((m) => probeStop(m, dateStr, authHeader, companyCode)));
+      rs = await Promise.all(batch.map((m) => probeStop(m, dateStr, authHeader, companyCode, tally)));
     }
     // Record newly-confirmed terminals so future descents can skip them. Synthesized
     // entries are already cached, so this only captures fresh real-probe deliveries.
@@ -1211,8 +1230,10 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
   // complete = the descent stopped because it reached the floor or early-stopped
   // BY DESIGN — not because it was truncated by the probe cap or the time budget.
   // A truncated descent must NOT be trusted to advance the lean high-water (R9).
-  const complete = !(probes >= maxProbes) && !(Date.now() - startedAt >= timeBudgetMs);
-  return { records: results, complete, ceiling, floor, maxSeen };
+  // Nor is one with a probe NuVizz never answered: walking to the floor past numbers nobody
+  // could ask about is not reaching the floor (A4-S19-8).
+  const complete = !(probes >= maxProbes) && !(Date.now() - startedAt >= timeBudgetMs) && tally.failed === 0;
+  return { records: results, complete, ceiling, floor, maxSeen, probeFailures: tally.failed };
 }
 
 // ── Adaptive forward discovery (call-reduction: weekend/cold resumption) ─────
@@ -1284,12 +1305,15 @@ async function scanUnplannedForward(dateStr: string, fromStopNbr: number, opts: 
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
   const start = fromStopNbr + 1;
+  const tally: StopProbeTally = { failed: 0 };
   const r = await scanForward(start, async (n) => {
-    const p = await probeStop(n, dateStr, authHeader, companyCode);
+    const p = await probeStop(n, dateStr, authHeader, companyCode, tally);
     return { exists: p.exists, isNew: !!p.record, record: p.record ?? undefined };
   }, opts);
   if (r.maxSeen > observedFrontier) observedFrontier = r.maxSeen;
-  return { records: r.records, complete: r.complete, ceiling: r.maxSeen || fromStopNbr, floor: start, maxSeen: r.maxSeen };
+  // An unanswered probe reads as an EMPTY chunk to the walk, so "two empty chunks, stop" could
+  // be the vendor refusing, not the frontier running dry — never complete over one (A4-S19-8).
+  return { records: r.records, complete: r.complete && tally.failed === 0, ceiling: r.maxSeen || fromStopNbr, floor: start, maxSeen: r.maxSeen, probeFailures: tally.failed };
 }
 
 // Forward load discovery: re-pull already-known active loads (status updates),
@@ -1326,6 +1350,8 @@ export interface ScanResult {
   // floor / early-stopped by design (not truncated by cap/budget/breaker) — only
   // set when includeUnplanned. observedFrontierStopNbr: highest stop number seen.
   descentComplete?: boolean;
+  // Descent probes that got no answer (breaker refusal, timeout, network). >0 ⇒ descentComplete=false.
+  descentProbeFailures?: number;
   // Load-probe health. See the note where loadTally is created.
   loadProbeFailures?: number;
   loadsComplete?: boolean;
@@ -1334,6 +1360,22 @@ export interface ScanResult {
 
 // Full scan for one date: planned (load scan) + unplanned (number-space scan),
 // deduped (load-sourced wins), normalized. Used by the background writer.
+/**
+ * PURE. The descent's rows for orders the load scan did NOT already find — the load-sourced
+ * (planned) row wins. A load row is the raw Load.stops entry, `{ stop: {stopNbr…}, … }`, so it
+ * is keyed the way normalizeStop resolves it (`raw.stop || raw`); keying on `s.stopNbr` read
+ * undefined for every wrapped row and let a planned order come back a second time, unplanned.
+ */
+export function unplannedNotOnLoads(loadStops: any[], unplannedStops: any[]): any[] {
+  const seen = new Set<string>(
+    (loadStops || []).map((s: any) => (s?.stop ?? s)?.stopNbr).filter(Boolean).map(String),
+  );
+  return (unplannedStops || []).filter((u: any) => {
+    const nbr = u?.stop?.stopNbr;
+    return !!nbr && !seen.has(String(nbr));
+  });
+}
+
 export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts; includeUnplanned?: boolean; includeLoads?: boolean; loadTargets?: number[] | null; forwardLoad?: { start: number; known?: number[] } | null; forwardUnplanned?: { start: number } | null } = {}): Promise<ScanResult> {
   const includeUnplanned = opts.includeUnplanned !== false; // default true
   const includeLoads = opts.includeLoads !== false;         // default true
@@ -1355,7 +1397,7 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
   // includeLoads=false → unplanned-only (skip the load-number scan entirely — no
   // /load/info probes). includeUnplanned=false → load-only (skip the descent +
   // its findCeiling probing). At least one is always true at the call sites.
-  const EMPTY_DESCENT = { records: [] as any[], complete: true, ceiling: 0, floor: 0, maxSeen: 0 };
+  const EMPTY_DESCENT = { records: [] as any[], complete: true, ceiling: 0, floor: 0, maxSeen: 0, probeFailures: 0 };
   // EVERY LOAD PROBE THAT COULD NOT BE ANSWERED, COUNTED. Without this the load half of a
   // scan had no failure channel at all: probeLoad swallowed auth/5xx/network into the same
   // null it uses for "no such load", so a scan whose every call failed produced an EMPTY
@@ -1378,11 +1420,7 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
   const [loadStops, descent] = await Promise.all([loadScan, unplannedScan]);
   const unplannedStops = descent.records;
 
-  const seen = new Set<string>(loadStops.map((s: any) => s.stopNbr).filter(Boolean));
-  const extraUnplanned = unplannedStops.filter((u: any) => {
-    const nbr = u?.stop?.stopNbr;
-    return nbr && !seen.has(nbr);
-  });
+  const extraUnplanned = unplannedNotOnLoads(loadStops, unplannedStops);
 
   const stops = [...loadStops, ...extraUnplanned].map(normalizeStop);
   const unplannedCount = stops.filter((s) => !s.isPlanned).length;
@@ -1418,6 +1456,8 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
     // descent ran this scan). descentComplete=false ⇒ truncated, don't trust the
     // high-water to advance the lean floor (R9).
     descentComplete: includeUnplanned ? descent.complete : undefined,
+    // How many of the descent's /stop/info probes got no answer at all (see StopProbeTally).
+    descentProbeFailures: includeUnplanned ? descent.probeFailures : undefined,
     // How many load probes the vendor could not answer, and the verdict the write path
     // acts on. loadsComplete=false means "this load list is not authoritative — preserve,
     // do not prune". Undefined when loads were not scanned at all.

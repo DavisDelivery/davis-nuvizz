@@ -1951,6 +1951,11 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         driverName: r.driverName,
         etaMin: r.etaMin, lateBy: r.lateBy, anchored: r.anchored, detail: r.detail,
         scope: r.scope, servedDate: r.servedDate,
+        // WHICH KIND OF DEADLINE — 'typed' | 'auto' | 'assumed'. selectAlertable refuses an
+        // assumed 5pm close by this field alone, so dropping it here let every constituent of
+        // a collapsed amber batch through the late floor: three guessed deadlines emailed
+        // nobody and twenty-six emailed twenty-six. Flag history reads it for the same reason.
+        hoursTier: r.hoursTier,
         // R7's own facts. The text selector groups trailer conflicts BY ROUTE and quotes the
         // restriction back, so routeKey/routeConflicts/blockers are filter-and-render inputs
         // exactly as `scope` is — and the comment above is the receipt for what happens when

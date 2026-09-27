@@ -28,7 +28,7 @@ import { ensureLegs, readTravelCalibration, routeClassesPath, legacyRouteClasses
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, sendAlerts, ALERT_TO, alertRecipients, ALERT_CC, ALERT_CC_REJECTED, AMBER_LEAD_GATE_MIN, ALERT_MIN_TIER, ALERT_TIERS, ALERT_COLLECTION } from './lib/flag-alert.mts';
+import { selectAlertable, sendAlerts, ALERT_TO, alertRecipients, AMBER_LEAD_GATE_MIN, ALERT_MIN_TIER, ALERT_TIERS, ALERT_COLLECTION } from './lib/flag-alert.mts';
 // The saved CC list (Diagnostics → Alert recipients), falling back to ALERT_CC when nobody
 // has saved one. Same resolver the screen prints from, so the two cannot disagree.
 import { resolveChannel, channelSpec } from './lib/alert-recipients.mts';
@@ -355,8 +355,12 @@ export default async (req: Request): Promise<Response> => {
     // Diagnostics and the next sweep uses it. A failed read falls back to the env-parsed
     // default rather than to customer service alone, and says so in the run log.
     let ccStore: string;
-    let cc = ALERT_CC;
-    let ccRefused: string[] = ALERT_CC_REJECTED;
+    // The fallback is the env list read by the SAME resolver as the saved path, not the older
+    // module-load parser — that one refused "Name <address>" entries the resolver mails, so a
+    // failed read silently dropped a person the ordinary sweep would have told.
+    const envCc = resolveChannel(channelSpec('alertCc')!, {});
+    let cc = envCc.recipients.filter((a) => a !== ALERT_TO);
+    let ccRefused: string[] = envCc.envRejected.map((r) => r.value);
     try {
       const resolved = resolveChannel(channelSpec('alertCc')!, await readAlertRecipients());
       cc = resolved.recipients.filter((a) => a !== ALERT_TO);

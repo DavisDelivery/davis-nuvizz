@@ -91,7 +91,12 @@ export default async (req: Request): Promise<Response> => {
   // No Firestore (a preview build without FIREBASE_SA): still serve the resolved environment
   // lists so the panel renders and tells the truth about who is being alerted right now — it
   // simply cannot persist a change. A blank panel here would read as "nobody is alerted".
+  // SAME GATES AS BELOW, FIRST: this payload carries the env's personal mobile numbers too, and
+  // a preview or mirror deploy with Firestore off can carry production's FLAG_SMS_TO. Inert
+  // with AUTH_REQUIRED off (the legacy principal passes), exactly like the gated branch.
   if (!isFirestoreEnabled()) {
+    const gate = await requireUser(req, { role: req.method === 'POST' ? 'admin' : 'viewer' });
+    if (!gate.ok) return gate.response;
     return J(payload({}, false, {
       note: 'Firestore is not configured on this deploy — these lists come from environment variables and cannot be edited here.',
     }));

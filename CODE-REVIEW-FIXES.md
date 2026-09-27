@@ -204,19 +204,24 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W4.1 — critical and high (5 items)
 
-- [ ] **`dispatch-map/netlify/functions/customer-comms-config.mts:122`** — Config save during a Firestore read blip replaces stored config with defaults  
+- [x] **`dispatch-map/netlify/functions/customer-comms-config.mts:122`** — Config save during a Firestore read blip replaces stored config with defaults  
+      *Done v1.81.2:* A save on the Customer emails screen that cannot read the current settings (a Firestore blip) is now refused with 'Could not read the current email settings, so nothing was saved — try again'. Before, it quietly rewrote them from defaults, which switched the mailer OFF and dropped the custom template behind a 200.
       *Fix:* Give writeConfig a strict read (getDoc without the catch) and return 503 to the caller on failure, or switch the write to updateDocFields with only the patched keys so an unreadable current state cannot be overwritten.  
       <sub>High · firestore-semantics · A5-S26-12 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/customer-comms.mts:261`** — writeConfig on a failed read replaces the comms config with defaults (mailer silently OFF)  
+- [x] **`dispatch-map/netlify/functions/lib/customer-comms.mts:261`** — writeConfig on a failed read replaces the comms config with defaults (mailer silently OFF)  
+      *Done v1.81.2:* Same bug as A5-S26-12, same commit. writeConfig now reads the stored settings strictly: a 404 still starts from defaults, any other read failure refuses the save. The sweep's own read (readConfig) still fails CLOSED, so an outage still stops mail and never starts it.
       *Fix:* Make writeConfig read strictly (throw on an unreadable doc and surface a 500 to the UI) or write the patch with updateDocFields so untouched fields survive.  
       <sub>High · firestore-semantics · X-firestore-3 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/manifest-archive-store.mts:36`** — Manifest archive read blip replaces a day's revision history and bypasses the supersede guard  
+- [x] **`dispatch-map/netlify/functions/lib/manifest-archive-store.mts:36`** — Manifest archive read blip replaces a day's revision history and bypasses the supersede guard  
+      *Done v1.81.2:* A Uline report filed while the night's manifest record cannot be read is now reported as not filed (ok:false) and writes nothing. Before, the blip let an older report take the night: its PDF went over the complete manifest and the arrival history was cut. The night now keeps the manifest and history it had.
       *Fix:* Let the read failure throw (drop `.catch(() => null)`); archiveManifest already has an outer try that reports ok:false, and the ingest deliberately leaves an unfiled email unmarked for retry.  
       <sub>High · firestore-semantics · X-errors-3 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/nuvizz-scan-config.mts:207`** — scan_config save on a failed read wipes the kill switch, rules and ceiling override  
+- [x] **`dispatch-map/netlify/functions/nuvizz-scan-config.mts:207`** — scan_config save on a failed read wipes the kill switch, rules and ceiling override  
+      *Done v1.81.2:* A scan-schedule save in Diagnostics that cannot read the current settings is now refused with an error, and nothing is written. Before, it replaced the document with only the edited field, which wiped the kill switch, the ceiling override and every other setting. The misleading 'setDoc PATCH-merges' comment on writeScanConfig is corrected.
       *Fix:* Use a STRICT read (let readScanConfig throw and return 500 from the handler) and/or write the edit with updateDocFields (field-masked) instead of setDoc; fix the writeScanConfig comment.  
       <sub>High · firestore-semantics · X-firestore-2 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/routing-engine-tuning.mts:62`** — Engine tuning POST drops every other knob when the prior read blips  
+- [x] **`dispatch-map/netlify/functions/routing-engine-tuning.mts:62`** — Engine tuning POST drops every other knob when the prior read blips  
+      *Done v1.81.2:* An Engine-tab (Build Panel step 4) save that cannot read the saved knobs is now refused with an error, and nothing is written. Before, it replaced the document with only the edited knob, so tonight's assignment run fell back to defaults for every other tuned knob.
       *Fix:* Remove the `.catch(() => null)` on the prior read (let the handler's outer catch return 500), or use updateDocFields with the clamped patch so only the named knobs change.  
       <sub>High · firestore-semantics · X-errors-2 · reproduced by running the code</sub>
 
@@ -317,7 +322,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W7.1 — critical and high (10 items)
 
-- [ ] **`dispatch-map/netlify/functions/lib/flag-alert.mts:351`** — Assumed-close guard is defeated for collapsed rows: hoursTier is dropped by the collapse  
+- [x] **`dispatch-map/netlify/functions/lib/flag-alert.mts:351`** — Assumed-close guard is defeated for collapsed rows: hoursTier is dropped by the collapse  
+      *Done v1.81.2:* On a busy day, when the amber flag list collapses into one summary line, customer service no longer gets emailed about stops that were only judged against the assumed 5pm close. Before the fix, 26 such stops sent 26 emails even though 3 sent none.
       *Fix:* Add `hoursTier: r.hoursTier` to the collapsedRows projection in board-flags.js (and any other field a consumer filters on), and make the guard here fail closed: treat a missing hoursTier as not-alertable for amber rows, or assert the field is present in colla…  
       <sub>High · data-contract · A3-S16-2 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/lib/routing-constraints.mts:44`** — 'No 53ft' as the app writes it (no_53ft) never blocks a 53' trailer  
@@ -384,19 +390,23 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W8.1 — critical and high (10 items)
 
-- [ ] **`dispatch-map/netlify/functions/lib/freight-class.mts:134`** — Freight class uses `pallets` (NuVizz TOTAL pieces) as the pallet count  
+- [x] **`dispatch-map/netlify/functions/lib/freight-class.mts:134`** — Freight class uses `pallets` (NuVizz TOTAL pieces) as the pallet count  
+      *Done v1.81.2:* The freight-class report now works out cube, lb-per-pallet, density and class from the real skid count (NuVizz totalCartons), not NuVizz's total piece count, and lists total pieces in a new `pieces` column.
       *Fix:* Use `stop.cartons` (real skid count) for `pallets`, lbPerPallet and cubeFt3PalletEst, and expose totalPallets as `pieces`; mirror the field names freight-geometry.mts already uses and add a test with cartons != pallets.  
       <sub>High · data-contract · A3-S16-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/nuvizz-list.mts:357`** — Past dispatcher override bypasses the live-route clamp: routed open stop filed on a past day  
+- [x] **`dispatch-map/netlify/functions/lib/nuvizz-list.mts:357`** — Past dispatcher override bypasses the live-route clamp: routed open stop filed on a past day  
+      *Done v1.81.2:* An open stop that is on a route and has a dispatcher-set 'not until' date that has already passed now shows on today's board, on its route. Before, it was filed back on the past day.
       *Fix:* Only honour an override that is not already in the past for an on-route stop, e.g. `if (set && !finishedEarly && (set >= today || !s.loadNbr)) return set;` (or prune `< today` entries when the map is read for a scan).  
       <sub>High · logic · A3-S18-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/nuvizz-request.mts:270`** — Counter/breaker Firestore failure after a completed NuVizz call rejects the write  
+- [x] **`dispatch-map/netlify/functions/lib/nuvizz-request.mts:270`** — Counter/breaker Firestore failure after a completed NuVizz call rejects the write  
+      *Done v1.81.2:* When NuVizz has already answered a call, a Firestore failure while saving the call count or the ceiling trip is now only logged, so a Save that NuVizz applied is no longer shown to the dispatcher as failed. The process still stops at the ceiling.
       *Fix:* Wrap `await deps.recordCall(...)` and `await deps.tripCircuit(...)` in try/catch inside doFetchWithRetry: log the accounting failure, still increment totalThisInstance, and return the NuVizz response; accounting must never decide the outcome of a vendor call …  
       <sub>High · error-handling · X-nuvizzwrite-2 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/lib/nuvizz-scan.mts:938`** — Unplanned descent has no failure channel: refused/5xx/401 probes report descentComplete:true  
       *Fix:* Give the descent the same failure channel loads got: thread a tally into probeStop (count non-404 statuses and thrown errors, mirroring isLoadProbeFailureStatus), and make scanUnplannedStops/scanDate report `complete: false` (or a separate `descentFailures`) …  
       <sub>High · error-handling · A4-S19-8 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/nuvizz-scan.mts:1320`** — scanDate dedupe reads s.stopNbr on wrapped load rows — load-sourced never wins  
+- [x] **`dispatch-map/netlify/functions/lib/nuvizz-scan.mts:1320`** — scanDate dedupe reads s.stopNbr on wrapped load rows — load-sourced never wins  
+      *Done v1.81.2:* An order the load scan finds on a truck is no longer filed a second time as an unplanned copy with no route by the number-probe scan. The copy on the route wins.
       *Fix:* Key the set the same way normalizeStop resolves the row: `const seen = new Set(loadStops.map((s: any) => (s?.stop ?? s)?.stopNbr).filter(Boolean).map(String))`, and compare `String(u?.stop?.stopNbr)` against it; add a unit test that feeds one wrapped load row…  
       <sub>High · logic · A4-S19-1 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/lib/nuvizz-write-ops.mts:428`** — Executed-stop guard matches words; NuVizz stopStatus is a numeric code — never fires live  
@@ -558,13 +568,15 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W5.1 — critical and high (10 items)
 
-- [ ] **`dispatch-map/netlify/functions/day-completion-report-background.mts:196`** — Report email failure after a written snapshot is never retried and never persisted  
+- [x] **`dispatch-map/netlify/functions/day-completion-report-background.mts:196`** — Report email failure after a written snapshot is never retried and never persisted  
+      *Done v1.81.2:* When the mailer refuses the 6:30 end-of-day report, its answer (error, time, primary or spare firing) is now saved on that day's day_completion record with a field-masked write and logged; before, it only went into a response Netlify throws away. The spare firing still retries because `sent` is not stamped, and the log line names the record instead of printing the error, so it never carries an address.
       *Fix:* Persist the send outcome on the day_completion doc with a field-masked write (e.g. emailedAt / emailError) and let the spare firing (or a rerun) resend when snapshot exists but emailedAt is absent.  
       <sub>High · error-handling · A3-S15-11 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/lib/sms-store.mts:54`** — Inbound driver SMS lost silently: store failure swallowed, webhook still 200s and counts it  
       *Fix:* Make recordSmsMessage throw (or return false) on write failure; in the webhook return a non-2xx when any report failed to store so the vendor retries (the doc id is derived from messageId, so a retry de-dupes), and in send-sms surface `recorded:false` in the …  
       <sub>High · error-handling · X-errors-4 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/send-sms.mts:84`** — Bulk send runs sequential vendor+Firestore calls under the 10s default timeout  
+- [x] **`dispatch-map/netlify/functions/send-sms.mts:84`** — Bulk send runs sequential vendor+Firestore calls under the 10s default timeout  
+      *Done v1.81.2:* A bulk "Text N drivers" can now run for up to 26 seconds instead of 10. After 20 seconds it stops starting new texts and lists by name everyone it did not reach ("not sent — ran out of time; send again to this recipient"). The dispatcher can see exactly who got the text, and those texts still count toward the daily cap. Before, the platform killed the request with an HTML 502 and the cap count was lost.
       *Fix:* Add `[functions."send-sms"] timeout = 26` to dispatch-map/netlify.toml and bound the per-request batch to what fits (or fan the sends out with bounded concurrency and record the cap increment per successful send rather than once at the end).  
       <sub>High · error-handling · A5-S29-11</sub>
 - [ ] **`dispatch-map/src/App.jsx:6463`** — POD photo pull ignores the wrong-twin refusal and reports 'No delivery photos on file'  
@@ -661,7 +673,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W9.1 — critical and high (10 items)
 
-- [ ] **`dispatch-map/netlify/functions/google-route-matrix.mts:65`** — ROUTE_NOT_FOUND elements are stored as 0-second, 0-metre legs  
+- [x] **`dispatch-map/netlify/functions/google-route-matrix.mts:65`** — ROUTE_NOT_FOUND elements are stored as 0-second, 0-metre legs  
+      *Done v1.81.2:* On a road-distance (Google) build, a pair of stops Google cannot drive between, or leaves out of its answer, is now costed with the same straight-line road estimate the free matrix uses. The router no longer treats it as a free 0-mile, 0-second leg. A real 0-second leg between two stops at the same dock is left alone.
       *Fix:* In computeChunk, when `e.condition && e.condition !== 'ROUTE_EXISTS'` (or duration is absent), fill that element from `haversineMeters(...)*1.3 / AVG_SPEED_MPS` instead of 0, and count it so the response can flag `degraded` elements.  
       <sub>High · data-contract · A5-S27-4 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/lib/routing-cleanup-core.mts:479`** — Liftgate stop rides a truck with NO liftgate whenever the fleet is mixed  
@@ -709,10 +722,12 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`dispatch-map/netlify/functions/lib/history-core.mts:107`** — Nightly history capture runs the number-probe scanDate() on a schedule, gated by an unrelated default-OFF flag  
       *Fix:* Gate the index path on the scanner's real mode (LIST_DISCOVERY / always prefer the index) instead of NUVIZZ_LEAN_DISCOVERY, and make the scheduled path never call scanDate(): on an empty/halted index write a capture-failure record ('index empty — rescan by ha…  
       <sub>High · config · X-background-2</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/refresh-stops-core.mts:1493`** — Missed re-enrichment after a reconsignment lets the stale registry pin the moved order forever  
+- [x] **`dispatch-map/netlify/functions/lib/refresh-stops-core.mts:1493`** — Missed re-enrichment after a reconsignment lets the stale registry pin the moved order forever  
+      *Done v1.81.2:* An order whose delivery address changed now keeps its map pin on the new address even when the first re-read after the move was capped or failed. Before, the pin snapped back to the old building for good.
       *Fix:* Make the pending re-enrichment durable: at line 1497 skip the registry record when its stored `addrListSig` disagrees with the row's current one (`if (r.addrListSig && s.addrListSig && r.addrListSig !== s.addrListSig) continue;`), and/or stamp `reenrichPendin…  
       <sub>High · logic · A4-S22-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/tractor-flags-rebuild-background.mts:59`** — A ?date= / ?from&to rebuild REPLACES each touched location's lifetime counts with the window's  
+- [x] **`dispatch-map/netlify/functions/tractor-flags-rebuild-background.mts:59`** — A ?date= / ?from&to rebuild REPLACES each touched location's lifetime counts with the window's  
+      *Done v1.81.2:* A tractor-location rebuild run for one day (?date=) or a date range (?from&to) now adds those days to each location using the same sticky rules as the nightly pass. Before, it overwrote the location's lifetime delivery count, first-served date and driver list with just that window, which also un-painted lime on earlier boards when 'lime as of board date' was on. The all-days rebuild still recomputes from scratch, and the run summary now reports which mode ran.
       *Fix:* Either refuse the date/window filter for this job (it is only safe as a full rebuild — drop the ?date/?from&to modes and the comment advertising them), or when a filter is present merge into the existing doc with the same sticky rules updateTractorFlagsForDay…  
       <sub>High · logic · A5-S29-1 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/src/App.jsx:1725`** — useStops: a slow response for the previous date overwrites the newly selected date's board  
@@ -1215,13 +1230,16 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
       *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed in 10bbdb2 (#911, v1.20.1, 'The manifest verdict travels with the run'). toStoredEmailRun now includes `...(storedGradeEnabled() ? { shipDate: diff.shipDate ?? null, expectedDelivery: diff.expectedDelivery ?? null, coverage: diff.coverage ?? null, grade:
       *Fix:* Add `coverage: diff.coverage ?? null, grade: diff.grade ?? null` to toStoredEmailRun (and pin them in the 'stored shape matches' test at manifest-email-ingest.test.mjs 142-148); the client's gradeOf already prefers stored grade/coverage over the fallback.  
       <sub>High · data-contract · A3-S13-9 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/manifest-extract.mts:213`** — intOrNull(null) returns 0: null header totals and null units become real zeros  
+- [x] **`dispatch-map/netlify/functions/lib/manifest-extract.mts:213`** — intOrNull(null) returns 0: null header totals and null units become real zeros  
+      *Done v1.81.2:* When the manifest reader can't read a header total or a Units/Wgt cell, that value now stays blank instead of turning into 0. The review grid shows an empty cell, and false 'header says 0 PROs' / weight-mismatch warnings no longer appear. A real 0 on the paper still reads as 0.
       *Fix:* Treat null/undefined/'' as null before coercing: `const intOrNull = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? Math.round(n) : null; }` and add a test with null header totals asserting no header warnings …  
       <sub>High · null-handling · A3-S17-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/marginiq.mts:62`** — resolveDriverPhone ignores employee status: texts can go to terminated employees  
+- [x] **`dispatch-map/netlify/functions/lib/marginiq.mts:62`** — resolveDriverPhone ignores employee status: texts can go to terminated employees  
+      *Done v1.81.2:* "Text driver" now matches a name only to active employees, the same ones the Messages contact picker lists. A terminated or inactive employee is never texted and can no longer take a name from an active driver who shares it; that name now gets "no phone on file".
       *Fix:* Apply the same gate in loadMap: `if (!isMessageable(e)) continue;` before indexing the names.  
       <sub>High · logic · A3-S18-5 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/route-departures.mts:106`** — ?refit=1&days=<non-numeric> publishes an EMPTY departure table  
+- [x] **`dispatch-map/netlify/functions/route-departures.mts:106`** — ?refit=1&days=<non-numeric> publishes an EMPTY departure table  
+      *Done v1.81.2:* A mistyped departure refit can no longer wipe every route's learned departure time. A non-numeric days= now means the default 21 days. A malformed through= is rejected with a 400 before anything is read. A refit that learns no routes refuses to publish (409) and leaves the current table in place. A dry run still shows its result as before.
       *Fix:* Parse with `parseInt(..., 10)` and fall back to 21 when not finite; validate `through` against /^\d{4}-\d{2}-\d{2}$/; and refuse to publish (return 409 or force dry) when `Object.keys(table).length === 0` or `daySamples.length === 0`.  
       <sub>High · null-handling · A5-S28-4 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/auth-users.mts:137`** — reset returns ok:true with neither an email nor a temp password when Resend rejects the send  
@@ -1345,5 +1363,6 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 | Date | Who | What |
 |---|---|---|
 | 2026-09-03 | Claude (code review) | Created from the full review of `bb379fc`: 338 confirmed findings sorted into 14 workstreams. |
+| 2026-09-27 | Claude (audit fixes, v1.81.2) | Ticked 18: A5-S26-12, X-firestore-3, X-errors-3, X-firestore-2, X-errors-2, A3-S16-2, A3-S16-1, A3-S18-1, X-nuvizzwrite-2, A4-S19-1, A3-S15-11, A5-S29-11, A5-S27-4, A4-S22-1, A5-S29-1, A3-S17-1, A3-S18-5, A5-S28-4. |
 | 2026-09-27 | Claude (audit fixes, v1.81.1) | Ticked 10: A6-S31-3, A6-S33-3, A6-S33-1, A6-S32-2, A5-S30-3, A5-S30-7, A5-S30-2, A5-S30-1, A6-S31-5, A6-S32-10. |
 | 2026-09-27 | Claude (audit fixes, v1.80.2) | Ticked 16: X-authgates-3, X-authgates-1, A5-S27-1, A6-S31-8, A5-S25-9, A5-S28-1, A4-S20-1, X-authgates-4, A4-S24-1, A2-S8-9, A1-S2-1, A5-S25-10, A6-S32-5, A2-S7-1, A3-S13-9, A2-S8-1. |

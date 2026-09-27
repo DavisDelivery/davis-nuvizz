@@ -31,6 +31,9 @@ const COLUMNS = [
   'lines', 'lines_with_full_dims', 'dims_coverage', 'skus', 'products',
   'cube_ft3_dims', 'cube_ft3_pallet_est', 'cube_ft3_used', 'cube_source',
   'density_pcf', 'freight_class', 'oversize', 'has_long_cat',
+  // Appended, not inserted beside `cartons`: a reader that takes this CSV by column position
+  // keeps every existing column where it was. `pieces` is NuVizz totalPallets (skids + loose).
+  'pieces',
 ];
 
 function csvCell(v: any): string {
@@ -126,7 +129,7 @@ export default async (req: Request): Promise<Response> => {
             driver_name: s?.driverName ?? null,
             status: s?.normalizedStatus ?? s?.executed?.stopStatus ?? s?.status ?? null,
             delivered_dttm: s?.executed?.deliveredDTTM ?? s?.deliveredDTTM ?? null,
-            pallets: f.pallets, cartons: f.cartons, weight_lb: f.weightLb, lb_per_pallet: f.lbPerPallet,
+            pallets: f.pallets, cartons: f.cartons, pieces: f.pieces, weight_lb: f.weightLb, lb_per_pallet: f.lbPerPallet,
             lines: f.lines, lines_with_full_dims: f.linesWithFullDims, dims_coverage: f.dimsCoverage,
             skus: f.skus.join(';'), products: f.products.slice(0, 12).join(' | '),
             cube_ft3_dims: f.cubeFt3Dims, cube_ft3_pallet_est: f.cubeFt3PalletEst,

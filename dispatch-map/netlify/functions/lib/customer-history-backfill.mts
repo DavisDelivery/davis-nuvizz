@@ -108,6 +108,18 @@ export function finishBackfill(doc: BackfillProgress, nowIso: string, error: str
   return { ...doc, running: false, updated_at: nowIso, finished_at: nowIso, error: error ?? null };
 }
 
+/**
+ * PURE: what the live run writes on each heartbeat and at its finish — its own record, WITHOUT
+ * last_refused. A refused run writes that field onto this document while this run is live; a
+ * whole-document write carrying the plan's `last_refused: null` erased it on the next heartbeat,
+ * and with it the only trace that the refused range never ran. The run's first write (the plan)
+ * still replaces the whole record: a new run starts clean.
+ */
+export function heartbeatFields(doc: BackfillProgress): Omit<BackfillProgress, 'last_refused'> {
+  const { last_refused: _ignored, ...own } = doc;
+  return own;
+}
+
 /** PURE: the field-masked patch a refused run leaves on the LIVE run's document. */
 export function refusalPatch(
   attempt: { from: string | null; to: string | null; by: string | null }, nowIso: string, reason: string,

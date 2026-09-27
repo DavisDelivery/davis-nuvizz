@@ -247,7 +247,10 @@ export default async (req: Request): Promise<Response> => {
       const clean = clampScanConfig(body);
       // Merge onto any existing overrides so a partial edit doesn't drop other fields,
       // then stamp metadata. The scanner re-clamps on read, so this is safe regardless.
-      const prior = await readScanConfig().catch(() => ({}));
+      // STRICT read: writeScanConfig REPLACES the document, so a blip read as {} would delete
+      // the kill switch and every override. A missing doc still reads {}; a failed read throws
+      // to the 500 below and nothing is written.
+      const prior = await readScanConfig();
       const toStore = { ...prior, ...clean, updatedAt: new Date().toISOString(), updatedBy: String(body?.updatedBy || 'diagnostics-ui').slice(0, 120) };
       await writeScanConfig(toStore);
 

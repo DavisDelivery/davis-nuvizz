@@ -296,13 +296,18 @@ export async function captureDate(date: string): Promise<any> {
  * `undefined` means the scan did not cover that half at all (an unplanned-only or loads-only
  * run), which is not a complaint; only an explicit `false` is.
  */
-export function scanHealthComplaint(scan: { loadsComplete?: boolean; descentComplete?: boolean; loadProbeFailures?: number } | null): string | null {
+export function scanHealthComplaint(scan: { loadsComplete?: boolean; descentComplete?: boolean; loadProbeFailures?: number; descentProbeFailures?: number } | null): string | null {
   if (!scan) return null;
   const bits: string[] = [];
   if (scan.loadsComplete === false) {
     bits.push(`${scan.loadProbeFailures ?? 'some'} load probe(s) unanswered`);
   }
-  if (scan.descentComplete === false) bits.push('the unplanned descent was truncated');
+  if (scan.descentComplete === false) {
+    const unanswered = Number(scan.descentProbeFailures);
+    bits.push(Number.isFinite(unanswered) && unanswered > 0
+      ? `the unplanned descent was truncated (${unanswered} stop probe(s) unanswered)`
+      : 'the unplanned descent was truncated');
+  }
   return bits.length ? bits.join('; ') : null;
 }
 

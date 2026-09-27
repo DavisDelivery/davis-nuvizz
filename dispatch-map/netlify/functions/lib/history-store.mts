@@ -140,7 +140,10 @@ export function transientWriteError(e: any): boolean {
   const msg = String(e?.message || e || '');
   const m = msg.match(/failed: (\d{3})\b/);
   if (m) { const code = Number(m[1]); return code === 429 || (code >= 500 && code <= 599); }
-  return /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network|aborted/i.test(msg);
+  // firestore-history-address-5: fsFetch's own 20s deadline rejects with a TimeoutError
+  // ("no answer within Nms") — a stall, not a refusal, so it is retried like a dropped socket.
+  if (e?.name === 'TimeoutError') return true;
+  return /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network|aborted|no answer within/i.test(msg);
 }
 export function backoffMs(attempt: number, rnd = Math.random()): number {
   const base = WRITE_BACKOFF_MS[Math.min(attempt, WRITE_BACKOFF_MS.length - 1)];

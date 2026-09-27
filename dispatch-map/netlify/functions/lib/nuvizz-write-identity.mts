@@ -114,6 +114,22 @@ export function watchPersonalRefusals<R extends RequesterLike>(
   return { requester: wrapped as R, refusedStatus: () => refused, withheld: () => withheld };
 }
 
+/**
+ * PURE. When the account's saved NuVizz login last PASSED a check (Test, or the check a save
+ * runs) — nothing refused, and at least one side said yes, the same rule auth-nuvizz-login uses to
+ * clear a refusal — or null. The write process's refusal hold lives in its own memory, and a Test
+ * runs in a different function; this is how the write process learns a person has re-tested the
+ * login since it was held (lib/nuvizz-rwb.mts releaseRwbLoginCheckedSince).
+ */
+export function passingCheckAt(doc: any): string | null {
+  const c = doc?.nuvizzCheck;
+  if (!c || typeof c !== 'object') return null;
+  if (c.api === 'refused' || c.portal === 'refused') return null;
+  if (c.api !== 'ok' && c.portal !== 'ok') return null;
+  const at = typeof c.at === 'string' ? c.at : '';
+  return Number.isFinite(Date.parse(at)) ? at : null;
+}
+
 /** Step 3, PURE. One reason, or null. The portal's own words win: they say what NuVizz said. */
 export function refusalAfterWrite(identity: Identity, v7Status: number | null, portal: { detail: string } | null): string | null {
   if (identity.kind !== 'personal') return null;

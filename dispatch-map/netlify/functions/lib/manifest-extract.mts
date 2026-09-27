@@ -210,7 +210,12 @@ export function extractManifestJson(text: string): ManifestParse {
 }
 
 const digitsOf = (v: any) => String(v ?? '').replace(/\D/g, '');
-const intOrNull = (v: any) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n) : null; };
+// An unread cell is null, never 0: Number(null) and Number('') are both 0, and a 0 here reads
+// as "header says 0 PROs" and puts a false zero in the review grid's Units cell.
+const intOrNull = (v: any) => {
+  if (v == null || (typeof v === 'string' && v.trim() === '')) return null;
+  const n = Number(v); return Number.isFinite(n) ? Math.round(n) : null;
+};
 const strOrNull = (v: any) => { const s = String(v ?? '').trim(); return s ? s : null; };
 
 // Normalize + validate the model's output. NEVER throws on bad rows — it keeps the good
