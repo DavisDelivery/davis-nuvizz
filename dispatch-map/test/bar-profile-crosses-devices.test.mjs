@@ -111,8 +111,8 @@ function makeGrid(storage) {
     LS_BOTTOM_BAR, LS_BOTTOM_PROFILES, LS_BOTTOM_PROFILES_ACTIVE);
 }
 
-const CHAD = { view: 'stops', status: ['unplanned'], nvWindow: '-7d' };
-const chadAt = (updatedAt, s = CHAD) => ({ name: 'Chad', s, updatedAt });
+const WORKING_SET = { view: 'stops', status: ['unplanned'], nvWindow: '-7d' };
+const savedProfile = (updatedAt, s = WORKING_SET) => ({ name: 'Chad', s, updatedAt });
 const wholeBoard = (stamp) => ({ ...normalizeBar(null), ...stamp });
 
 function device(seed) {
@@ -125,7 +125,7 @@ test('control: a profile selected on this device and still loading applies itsel
   const d = device({ [LS_BOTTOM_PROFILES_ACTIVE]: 'Chad' });
   const mount = d.rt.render(d.grid, { profileList: [], activeProfileName: 'Chad' });
   assert.deepEqual([mount.status, mount.nvWindow], [[], '']);
-  const after = d.rt.render(d.grid, { profileList: [chadAt(1000)], activeProfileName: 'Chad' });
+  const after = d.rt.render(d.grid, { profileList: [savedProfile(1000)], activeProfileName: 'Chad' });
   assert.deepEqual([after.status, after.nvWindow], [['unplanned'], '-7d']);
 });
 
@@ -134,12 +134,12 @@ test('Chad selects his profile on the desktop, then opens the iPad: the iPad gri
   // cached list, but not selected.
   const d = device({
     [LS_BOTTOM_BAR]: wholeBoard({ profile: null, profileAt: null }),
-    [LS_BOTTOM_PROFILES]: { list: [chadAt(1000)] },
+    [LS_BOTTOM_PROFILES]: { list: [savedProfile(1000)] },
   });
-  const mount = d.rt.render(d.grid, { profileList: [chadAt(1000)], activeProfileName: null });
+  const mount = d.rt.render(d.grid, { profileList: [savedProfile(1000)], activeProfileName: null });
   assert.deepEqual([mount.chip, mount.status, mount.nvWindow], [null, [], '']);
   // The snapshot: the shared selection says Chad.
-  const after = d.rt.render(d.grid, { profileList: [chadAt(1000)], activeProfileName: 'Chad' });
+  const after = d.rt.render(d.grid, { profileList: [savedProfile(1000)], activeProfileName: 'Chad' });
   assert.equal(after.chip, 'Chad');
   assert.deepEqual([after.status, after.nvWindow], [['unplanned'], '-7d'], 'the chip says Chad, so the grid must be on Chad\'s working set');
   const mem = memoryOf(d);
@@ -150,12 +150,12 @@ test('Chad presses "Update Chad to current" on the desktop, then opens the iPad:
   const OLD = { view: 'stops', status: ['planned'], nvWindow: '' };
   const d = device({
     [LS_BOTTOM_BAR]: wholeBoard({ ...normalizeBar(OLD), profile: 'Chad', profileAt: 1000 }),
-    [LS_BOTTOM_PROFILES]: { list: [chadAt(1000, OLD)] },
+    [LS_BOTTOM_PROFILES]: { list: [savedProfile(1000, OLD)] },
     [LS_BOTTOM_PROFILES_ACTIVE]: 'Chad',
   });
-  const mount = d.rt.render(d.grid, { profileList: [chadAt(1000, OLD)], activeProfileName: 'Chad' });
+  const mount = d.rt.render(d.grid, { profileList: [savedProfile(1000, OLD)], activeProfileName: 'Chad' });
   assert.deepEqual([mount.status, mount.nvWindow], [['planned'], '']);
-  const after = d.rt.render(d.grid, { profileList: [chadAt(2000)], activeProfileName: 'Chad' });
+  const after = d.rt.render(d.grid, { profileList: [savedProfile(2000)], activeProfileName: 'Chad' });
   assert.deepEqual([after.status, after.nvWindow], [['unplanned'], '-7d'], 'the newer save on the desktop is the one he means');
   assert.equal(memoryOf(d).profileAt, 2000);
 });
@@ -163,23 +163,23 @@ test('Chad presses "Update Chad to current" on the desktop, then opens the iPad:
 test('a dispatcher\'s own unsaved tweak still survives a snapshot that brings nothing new', () => {
   const d = device({
     [LS_BOTTOM_BAR]: wholeBoard({ ...normalizeBar({ status: ['completed'] }), profile: 'Chad', profileAt: 1000 }),
-    [LS_BOTTOM_PROFILES]: { list: [chadAt(1000)] },
+    [LS_BOTTOM_PROFILES]: { list: [savedProfile(1000)] },
     [LS_BOTTOM_PROFILES_ACTIVE]: 'Chad',
   });
-  d.rt.render(d.grid, { profileList: [chadAt(1000)], activeProfileName: 'Chad' });
-  const after = d.rt.render(d.grid, { profileList: [chadAt(1000)], activeProfileName: 'Chad' });
+  d.rt.render(d.grid, { profileList: [savedProfile(1000)], activeProfileName: 'Chad' });
+  const after = d.rt.render(d.grid, { profileList: [savedProfile(1000)], activeProfileName: 'Chad' });
   assert.deepEqual(after.status, ['completed'], 'same profile, same save time: this device\'s bar wins');
 });
 
 test('a dispatcher who started filtering before the snapshot landed keeps what they set', () => {
   const d = device({
     [LS_BOTTOM_BAR]: wholeBoard({ profile: null, profileAt: null }),
-    [LS_BOTTOM_PROFILES]: { list: [chadAt(1000)] },
+    [LS_BOTTOM_PROFILES]: { list: [savedProfile(1000)] },
   });
-  const mount = d.rt.render(d.grid, { profileList: [chadAt(1000)], activeProfileName: null });
-  d.rt.render(d.grid, { profileList: [chadAt(1000)], activeProfileName: null });
+  const mount = d.rt.render(d.grid, { profileList: [savedProfile(1000)], activeProfileName: null });
+  d.rt.render(d.grid, { profileList: [savedProfile(1000)], activeProfileName: null });
   mount.setStatus(['cancelled']);
-  d.rt.render(d.grid, { profileList: [chadAt(1000)], activeProfileName: null });
-  const after = d.rt.render(d.grid, { profileList: [chadAt(1000)], activeProfileName: 'Chad' });
+  d.rt.render(d.grid, { profileList: [savedProfile(1000)], activeProfileName: null });
+  const after = d.rt.render(d.grid, { profileList: [savedProfile(1000)], activeProfileName: 'Chad' });
   assert.deepEqual(after.status, ['cancelled']);
 });
