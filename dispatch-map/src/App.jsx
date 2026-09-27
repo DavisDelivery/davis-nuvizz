@@ -35719,8 +35719,9 @@ function useAddressQueue(nonce) {
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'read failed');
       setData(j);
-      // Working the list down has to move the badge, or it goes stale and stops being read.
-      bustProblemAddressCount();
+      // Working the list down has to move the badge, or it goes stale and stops being read. This
+      // answer IS the fresh count, so it goes straight to the badge — no second read.
+      publishProblemAddressCount(problemAddressTotal(j.summary, showDismissed));
     } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
   }, [showDismissed]);
   React.useEffect(() => { load(); }, [load, nonce]);
@@ -35898,8 +35899,16 @@ function queueCostLine(selected, budget) {
  * what updates it. Zero NuVizz calls either way.
  */
 let __addrQueueBadgeCache = null;
+const __addrQueueBadgeListeners = new Set();
 function useProblemAddressCount() {
   const [n, setN] = React.useState(() => __addrQueueBadgeCache);
+  // Every queue load hands this badge the count it just read (publishProblemAddressCount). It
+  // used to only null the cache, which nothing re-read until the browser reloaded — so a badge
+  // that read 9 at 7am still read 9 after all nine were fixed (audit 2026-09-27).
+  React.useEffect(() => {
+    __addrQueueBadgeListeners.add(setN);
+    return () => { __addrQueueBadgeListeners.delete(setN); };
+  }, []);
   React.useEffect(() => {
     if (__addrQueueBadgeCache != null) return undefined;
     let dead = false;
@@ -35908,8 +35917,9 @@ function useProblemAddressCount() {
         const r = await apiFetch('/.netlify/functions/address-queue', { cache: 'no-store' });
         const j = await r.json();
         if (!j?.ok) return;
-        const s = j.summary || {};
-        const total = Number(s.mis_split || 0) + Number(s.no_pin || 0) + Number(s.corrected_not_pinned || 0);
+        const total = problemAddressTotal(j.summary, false);
+        // A queue load that landed while this read was in flight is the newer count — keep it.
+        if (__addrQueueBadgeCache != null) return;
         __addrQueueBadgeCache = total;
         if (!dead) setN(total);
       } catch { /* a badge that fails to load must never break the navigation */ }
@@ -35918,8 +35928,19 @@ function useProblemAddressCount() {
   }, []);
   return n || 0;
 }
-/** Cleared when the screen reloads, so working the queue down is reflected in the badge. */
-function bustProblemAddressCount() { __addrQueueBadgeCache = null; }
+/** The badge's number from an address-queue summary: rows still to fix, never waved-off ones.
+ *  Asked with ?dismissed=1, the server counts a waved-off row into its signal AND into
+ *  `dismissed` (address-queue.mts), so that answer takes them back out. */
+function problemAddressTotal(summary, withDismissed) {
+  const s = summary || {};
+  const all = Number(s.mis_split || 0) + Number(s.no_pin || 0) + Number(s.corrected_not_pinned || 0);
+  return Math.max(0, all - (withDismissed ? Number(s.dismissed || 0) : 0));
+}
+/** A queue load's own answer IS the fresh count: hand it to every mounted badge, no second read. */
+function publishProblemAddressCount(total) {
+  __addrQueueBadgeCache = total;
+  for (const fn of __addrQueueBadgeListeners) fn(total);
+}
 
 /** The state every queue view shares. Kept here so the phone and desktop renders cannot
  *  disagree about what is selected or what a push returned. */
