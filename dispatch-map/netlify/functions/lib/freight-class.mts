@@ -10,6 +10,12 @@
 //   • cube_dims      — from line-item L×W×H (the real thing, when present)
 //   • cube_pallet_est— pallets × a standard pallet footprint × assumed stack height
 // `cube_used` prefers real dims when every line has them, else the pallet estimate.
+//
+// "pallets" here is the SKID count. NuVizz mislabels its freight fields (see
+// lib/nuvizz-scan.mts normalizeStop and lib/freight-geometry.mts): the normalized
+// `cartons` field (NuVizz totalCartons) is the real skid count, while `pallets` (NuVizz
+// totalPallets) is the TOTAL piece count, skids + loose. Cubing the piece count as
+// pallets inflates the cube and drags density down into a class that is far too high.
 
 const PALLET_FOOTPRINT_IN2 = 48 * 40; // standard GMA pallet, square inches
 
@@ -69,8 +75,9 @@ export interface ShipmentFreight {
   linesWithFullDims: number;
   dimsCoverage: DimsCoverage;
   weightLb: number | null;
-  pallets: number | null;
-  cartons: number | null;
+  pallets: number | null;           // real skid count (NuVizz totalCartons, normalized `cartons`)
+  cartons: number | null;           // NuVizz totalCartons as stored — the same skid count
+  pieces: number | null;            // total pieces, skids + loose (NuVizz totalPallets, normalized `pallets`)
   lbPerPallet: number | null;       // weight ÷ pallets — the real signal when dims are absent
   skus: string[];                   // distinct SKUs on the shipment (for a product→class table)
   products: string[];               // distinct product descriptions
@@ -131,8 +138,9 @@ export function deriveShipmentFreight(stop: any, opts: { stackHeightIn?: number 
   const weightLb = stopWeight != null && stopWeight > 0 ? Math.round(stopWeight)
     : sawLineWeight ? Math.round(lineWeightSum) : null;
 
-  const pallets = Number.isFinite(stop?.pallets) ? Number(stop.pallets) : null;
   const cartons = Number.isFinite(stop?.cartons) ? Number(stop.cartons) : null;
+  const pieces = Number.isFinite(stop?.pallets) ? Number(stop.pallets) : null;
+  const pallets = cartons; // the skid count — never the total-piece count (see header)
   const lbPerPallet = weightLb != null && pallets && pallets > 0 ? round2(weightLb / pallets) : null;
 
   const cubeFt3Dims = dimsCoverage === 'full' && cubeDims > 0 ? round2(cubeDims) : null;
@@ -150,7 +158,7 @@ export function deriveShipmentFreight(stop: any, opts: { stackHeightIn?: number 
 
   return {
     lines, linesWithFullDims, dimsCoverage,
-    weightLb, pallets, cartons, lbPerPallet,
+    weightLb, pallets, cartons, pieces, lbPerPallet,
     skus: [...skuSet], products: [...productSet],
     cubeFt3Dims, cubeFt3PalletEst, cubeFt3Used, cubeSource,
     densityPcf, freightClass, oversize, hasLongCat,
