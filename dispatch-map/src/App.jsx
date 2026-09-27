@@ -4771,11 +4771,18 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
   // so nuvizz-manual-scan-background gates it at dispatcher. Said BEFORE the press, on the
   // button, rather than after it in a bar — see useRoleGate.
   const gate = useRoleGate('dispatcher');
+  // ONLY THE NEWEST PRESS SPEAKS. Past SCAN_SPINNER_SEC the button is freed while this press
+  // keeps polling, so a second press can start before the first one's window ends. The first
+  // must then go quiet — its ending used to stop the second's spinner, put the button on
+  // cooldown under it and write its own sentence over the second's.
+  const pressRef = useRef(0);
   const manualScan = useCallback(async () => {
     if (scanning || scanCooldown) return;
     // Belt as well as braces: the button is disabled, but a stale render or a keyboard
     // activation must not fire a request whose only possible answer is a refusal.
     if (!gate.allowed) { setScanErr(gate.reason); setTimeout(() => setScanErr(null), 6000); return; }
+    const press = ++pressRef.current;
+    const superseded = () => pressRef.current !== press;
     setScanning(true); setScanErr(null);
     try {
       // Fire the ASYNC background scanner (15-min budget) in list-discovery mode (manual=1, NO
@@ -4854,6 +4861,7 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
           // out would either blame this press for an old refusal or miss its own.
           else if (scanRefusalIsThisPress(d?.lastScanRefusal)) refusal = d.lastScanRefusal;
         } catch { /* keep polling — a dropped poll is not an answer */ }
+        if (superseded()) return;
         verdict = scanPressVerdict({ updated, refusal, run, waitedSec: waited() });
         if (verdict.done) break;
         // Past the slowest scan we have measured, stop holding the spinner: the honest
@@ -4866,6 +4874,7 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
       }
       if (!verdict) verdict = scanPressVerdict({ updated, refusal, run: null, waitedSec: waited() });
       await refresh({ silent: true });
+      if (superseded()) return;
       // DELIBERATELY NOT AN EARLY BREAK on seeing a refusal. Two dispatchers share this
       // board: if a viewer is refused at 06:00:10 and a dispatcher presses at 06:00:40, the
       // second press SUCCEEDS and its poll would still see that fresh refusal. Only reporting
@@ -4885,10 +4894,11 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
       setScanCooldown(true);
       setTimeout(() => setScanCooldown(false), 60000);
     } catch (e) {
+      if (superseded()) return;
       setScanErr(e?.message || 'Scan failed');
       setTimeout(() => setScanErr(null), 5000);
     } finally {
-      setScanning(false);
+      if (!superseded()) setScanning(false);
     }
   }, [scanning, scanCooldown, refresh, selectedDate, lastScannedAt, gate.allowed, gate.reason]);
   // `scanDenied` is the sentence for the button's title= and the reason to disable it; null
