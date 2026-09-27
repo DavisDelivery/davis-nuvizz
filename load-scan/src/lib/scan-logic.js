@@ -15,9 +15,15 @@
 // The "2 of 3" piece index is printed as human-readable text ONLY. It is in
 // neither barcode, so it cannot be used for completeness.
 
-/** Match key: last 7 digits. Same rule as the WMS scanner and dispatch-map normalizePro. */
+/**
+ * Match key: last 7 digits. Same rule as the WMS scanner and dispatch-map normalizePro.
+ * A board segment suffix ("007157687-1") is dropped first so the key is the PRO on
+ * the label — the server's normalizePro (lib/manifest.mts) applies the same rule.
+ */
 export function normalizePro(v) {
-  const digits = String(v ?? '').replace(/\D/g, '');
+  const raw = String(v ?? '').trim();
+  const seg = /^(\d{9})-(\d{1,2})$/.exec(raw);
+  const digits = (seg ? seg[1] : raw).replace(/\D/g, '');
   return digits ? digits.slice(-7) : '';
 }
 
@@ -698,4 +704,37 @@ export function sortForLoading(rows) {
     if (ad !== bd) return ad - bd;
     return (a.stop.loadSeq ?? 1e9) - (b.stop.loadSeq ?? 1e9);
   });
+}
+
+/**
+ * Is this piece id ALREADY on the truck? Then the read is the same skid seen
+ * again — never another one — and the answer is the silent duplicate.
+ *
+ * record() must ask this BEFORE the stop-full refusal. With an order open, the top
+ * barcode books a skid the instant it decodes; the PRO on that same label then
+ * completes a pair with the booked id inside the window. On an order's LAST skid
+ * the stop is full because of the piece that just booked, so asking "is the stop
+ * full?" first raised NOT COUNTED, and offered "Add OVER the count", for a skid
+ * that WAS counted. A deliberate override carries no piece id, so it never lands here.
+ *
+ * The id is read EXACTLY as evaluateScan reads it (upper-cased, not trimmed): record()
+ * returns evaluateScan's verdict on this path without booking anything, so "aboard"
+ * here must always be the SILENT duplicate there — never a GREEN that booked nothing.
+ */
+export function pieceAlreadyAboard(pair, liveOgs) {
+  const og = String(pair?.og ?? '').toUpperCase();
+  return !!og && !!liveOgs && liveOgs.has(og);
+}
+
+/**
+ * Is any freight on the truck, judged from the QUEUE rows (scans and hand-confirms)?
+ *
+ * The loaded-sequence stamp is dropped only when the trailer is empty. That was
+ * decided from ScanScreen's React state, which starts as [] and is filled a beat
+ * later, so every reopen of a half-loaded truck read "empty" and deleted the stamp.
+ * The queue is the truck; it has no unhydrated moment.
+ */
+export function queueHasFreightAboard(rows) {
+  const list = rows || [];
+  return activeScans(list.filter((r) => r?.kind !== 'hand')).length > 0 || list.some((r) => r?.kind === 'hand');
 }

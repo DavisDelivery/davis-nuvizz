@@ -4,16 +4,17 @@ import {
   LogOut, Users, ClipboardList, Camera, KeyRound, ChevronRight,
 } from 'lucide-react';
 
-import { fmtDate, fmtDateTime, fmtTime, etToday } from './lib/fmt.js';
-import { shiftDayString } from './lib/shift.js';
+import { fmtDate, fmtDateTime, fmtTime } from './lib/fmt.js';
+import { shiftDayString, addDays } from './lib/shift.js';
 import { watchForUpdate, applyUpdate } from './lib/appupdate.js';
 import ReportScreen from './ReportScreen.jsx';
 import AssignScreen from './AssignScreen.jsx';
+import { assignView } from './lib/assign-day.js';
 import { loadSession, saveSession, clearSession, daysRemaining } from './lib/session.js';
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, findDavisStop, davisPieceId, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode, activeScans } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, findDavisStop, davisPieceId, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode, activeScans, pieceAlreadyAboard, queueHasFreightAboard } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
@@ -1148,7 +1149,9 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // Nothing aboard means nothing to protect. Drop any stamp so the next
       // first piece records the order the route says NOW — otherwise a load
       // whose freight was all voided keeps defending an order nobody loaded to.
-      if (v && !(activeScans(scans).length > 0 || handConfirms.length > 0)) {
+      // Judged from the QUEUE: `scans` is still [] on mount and on a truck switch,
+      // and reading it here deleted the stamp every time the screen opened.
+      if (v && !queueHasFreightAboard(await store.queuedFor(activeLoad, date))) {
         await store.clearLoadedSequence(activeLoad, date);
         if (alive) setLoadedSeq(null);
         return;
@@ -1364,6 +1367,16 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         if (!freshAcquisition(p7)) return null;
       }
 
+      // A PIECE ID ALREADY ABOARD IS THE SAME SKID, SEEN AGAIN — asked before the
+      // stop-full refusal. The top barcode books a skid the moment it decodes and
+      // the PRO on that label then pairs with it; on an order's last skid the stop
+      // is full BECAUSE of that piece, and answering "full" first put NOT COUNTED
+      // and "Add OVER the count" over a skid that was counted. See pieceAlreadyAboard.
+      const liveOgs = new Set([...scannedOgs, ...justBooked.current.map((b) => String(b.og).toUpperCase())]);
+      if (!isOverride && pieceAlreadyAboard(pair, liveOgs)) {
+        return evaluateScan(pair, davisStop ? [davisStop] : stops, liveOgs, otherLoads);
+      }
+
       if (!isOverride && countKnown && done.scanned >= done.expected) {
         if (proOnlyScanner) answerAcquisition(p7);
         return refuse({ pro: p7, count: done.scanned, full: owner.businessName, expected: done.expected });
@@ -1425,7 +1438,6 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         while (used.has(`NOOG-${pro7}-${n}`)) n += 1;
         pair = { ...pair, og: `NOOG-${pro7}-${n}` };
       }
-      const liveOgs = new Set([...scannedOgs, ...justBooked.current.map((b) => String(b.og).toUpperCase())]);
       // A Davis piece is judged against ITS stop only. Handing evaluateScan the whole load
       // would let a Uline stop that shares the same 7-digit key decide the verdict — its
       // appointment warning on Estes freight, or none on a Davis stop that needs one.
@@ -1537,12 +1549,16 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           // that drops them meant a take-back or a damage flag could never leave
           // the device however carefully it was stored.
           scans: slice.filter((r) => r.kind !== 'hand')
-            .map(({ og, pro, scannedAt, stopNbr, engine: eng, voidedAt, voidReason, damaged, damageNote }) => ({
+            .map(({ og, pro, scannedAt, stopNbr, engine: eng, voidedAt, voidReason, damaged, damageNote, voidChangedAt, damageChangedAt }) => ({
               og, pro, scannedAt, stopNbr, engine: eng,
               voidedAt: voidedAt || null,
               voidReason: voidReason || '',
               damaged: !!damaged,
               damageNote: damageNote || '',
+              // WHEN this phone changed a flag; null = it never did. Lets the
+              // server tell a deliberate clear from another phone's default.
+              voidChangedAt: voidChangedAt || null,
+              damageChangedAt: damageChangedAt || null,
             })),
           handConfirms: slice.filter((r) => r.kind === 'hand')
             .map(({ stopNbr, pieces, confirmedAt, reason }) => ({ stopNbr, pieces, confirmedAt, reason })),
@@ -2405,6 +2421,7 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
   const t = data.totals || {};
   const loads = data.loads || [];
   const people = data.people || [];
+  const assign = assignView(data, date);
 
   const TONE = {
     not_started: 'bg-rose-50 ring-rose-300 text-rose-900',
@@ -2533,7 +2550,15 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
       </div>
 
       {tab === 'assign' ? (
-        <AssignScreen session={session} loads={loads} people={people} />
+        // One day for the whole tab: the trucks listed are the board read for the
+        // day the taps are saved under, and the arrows move both. See assign-day.js.
+        <AssignScreen
+          session={session}
+          shiftDay={assign.shiftDay}
+          onShiftDay={onDate}
+          loads={assign.loads}
+          people={people}
+        />
       ) : tab === 'report' ? (
         <ReportScreen session={session} />
       ) : tab === 'trucks' ? (
@@ -3268,7 +3293,9 @@ function DispatcherScreen({ session, onSignOut }) {
   const [boardDays, setBoardDays] = useState(1);
   const [boardNonce, setBoardNonce] = useState(0);
   const [activity, setActivity] = useState(null);
-  const [activityDate, setActivityDate] = useState(etToday());
+  // The SHIFT day, like the loaders' phones: from 8pm the trucks on the dock are
+  // tomorrow's, and the calendar day would open on the board that just finished.
+  const [activityDate, setActivityDate] = useState(shiftDayString());
   const [query, setQuery] = useState('');
   // A board name looking for an existing credential to attach itself to.
   const [attaching, setAttaching] = useState(null);
@@ -3832,12 +3859,17 @@ export default function App() {
   // midnight belong to two different days at once.
   const date = shiftDayString();
 
+  // Resolves true when there is a manifest to work from for what was asked —
+  // fresh, or a saved copy that really holds it — so a pick is opened only then.
   const getManifest = useCallback(
     async (opts = {}) => {
-      if (!session?.token) return;
+      if (!session?.token) return false;
       setLoading(true);
       setErr('');
-      const key = store.cacheKey(date, session.driverNumber);
+      // A truck asked for by number is saved in its OWN slot, never over the
+      // day's pick list. See offline.cacheKey.
+      const want = opts.loadNbr ? String(opts.loadNbr) : '';
+      const key = store.cacheKey(date, session.driverNumber, want);
       try {
         const r = await api.fetchManifest(session.token, { date, ...opts });
         setManifest(r);
@@ -3846,22 +3878,34 @@ export default function App() {
         // A lone load opens itself — except in the loader pick-list, where the
         // rows carry no stops and one truck on the dock is still a choice.
         if (loads.length === 1 && !r.summariesOnly) setActiveLoad(loads[0].loadNbr);
+        return true;
       } catch (e) {
         if (e?.status === 401) {
           clearSession();
           setSession(null);
-          return;
+          return false;
         }
-        // Offline: the cached manifest is the whole point.
-        const cached = await store.getCache(key);
-        if (cached?.value) {
-          setManifest(cached.value);
-          const loads = cached.value.loads || [];
-          if (loads.length === 1) setActiveLoad(loads[0].loadNbr);
+        // Offline: the cached manifest is the whole point — but only a copy that
+        // holds what was asked for. A truck by number: its own slot, then the
+        // day's slot (a driver's own manifest carries its loads).
+        const slots = want ? [key, store.cacheKey(date, session.driverNumber)] : [key];
+        for (const slot of slots) {
+          const cached = await store.getCache(slot);
+          const use = store.manifestFromCache(cached?.value, want);
+          if (!use.manifest) continue;
+          setManifest(use.manifest);
+          if (use.open) setActiveLoad(use.open);
           setErr(`Working from the copy saved ${fmtDateTime(cached.at)}.`);
+          return true;
+        }
+        // Nothing saved can serve it. The picker stays up and says why, rather
+        // than opening a truck this phone has no stops for.
+        if (want && e?.offline) {
+          setErr(`No connection, and ${want} has not been opened on this phone yet — its stops are not saved here.`);
         } else {
           setErr(e?.offline ? 'No connection and no saved manifest yet.' : e?.message || 'Could not load the manifest.');
         }
+        return false;
       } finally {
         setLoading(false);
       }
@@ -3875,6 +3919,9 @@ export default function App() {
 
   useEffect(() => {
     store.pruneSynced().catch(() => {});
+    // Saved manifests are read for the current shift day only. Three days back is
+    // kept as slack; anything older is never read again. See pruneManifestCache.
+    store.pruneManifestCache(addDays(shiftDayString(), -3)).catch(() => {});
   }, []);
 
   function signOut() {
@@ -3968,12 +4015,12 @@ export default function App() {
             // A summary row has no stops: fetch the chosen load before opening
             // it. Same ?loadNbr path the manual entry already used.
             onPick={async (loadNbr) => {
-              if (manifest.summariesOnly) await getManifest({ loadNbr });
+              if (manifest.summariesOnly && !(await getManifest({ loadNbr }))) return;
               setActiveLoad(loadNbr);
               clockIn(loadNbr);
             }}
             onManual={async (loadNbr) => {
-              await getManifest({ loadNbr });
+              if (!(await getManifest({ loadNbr }))) return;
               setActiveLoad(loadNbr);
               clockIn(loadNbr);
             }}

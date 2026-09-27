@@ -133,6 +133,25 @@ export function buildShiftReport(
   const byLoad = new Map(loads.map((l) => [String(l.loadNbr), l]));
   const rows: LoadRow[] = [];
 
+  // Short and closed are facts about the TRUCK. Two people who each loaded half
+  // of it must not both read short against the whole, so the verdict is taken
+  // once per load from everyone's pieces, and each person's row carries it.
+  const truck = new Map<string, { pieces: number; closedOut: boolean }>();
+  for (const s of sessions || []) {
+    const k = String(s.loadNbr);
+    const t = truck.get(k) ?? { pieces: 0, closedOut: false };
+    t.pieces += Number(s.pieces ?? 0) || 0;
+    t.closedOut = t.closedOut || !!s.closedOut;
+    truck.set(k, t);
+  }
+  // The session record's own count, when the board carries it, is the truck's
+  // truth: two sign-ins sharing one phone each report that phone's running
+  // total, and adding those would count the same pieces twice.
+  for (const [k, t] of truck) {
+    const counted = Number(byLoad.get(k)?.scannedPieces);
+    if (byLoad.get(k)?.scannedPieces != null && Number.isFinite(counted)) t.pieces = counted;
+  }
+
   for (const s of sessions || []) {
     const load = byLoad.get(String(s.loadNbr));
     const assignment = (assignments || {})[String(s.loadNbr)];
@@ -142,12 +161,13 @@ export function buildShiftReport(
     const pieces = Number(s.pieces ?? 0) || 0;
 
     const timing: LoadRow['timing'] = s.startedAt && s.finishedAt ? s.source : 'none';
-    const short = expected > 0 && s.closedOut && pieces < expected ? expected - pieces : 0;
+    const t = truck.get(String(s.loadNbr))!;
+    const short = expected > 0 && t.closedOut && t.pieces < expected ? expected - t.pieces : 0;
 
     let status: LoadRow['status'] = 'in_progress';
     if (!s.startedAt) status = 'not_started';
     else if (short > 0) status = 'short';
-    else if (s.closedOut) status = 'complete';
+    else if (t.closedOut) status = 'complete';
 
     rows.push({
       shiftDay,
@@ -243,8 +263,9 @@ export function buildShiftReport(
     workers,
     totals: {
       loads: byLoad.size,
-      loadsStarted: rows.filter((r) => r.startedAt).length,
-      loadsComplete: rows.filter((r) => r.status === 'complete').length,
+      // Trucks, not rows: a two-person truck is one load started.
+      loadsStarted: new Set(rows.filter((r) => r.startedAt).map((r) => r.loadNbr)).size,
+      loadsComplete: new Set(rows.filter((r) => r.status === 'complete').map((r) => r.loadNbr)).size,
       pieces: rows.reduce((n, r) => n + r.pieces, 0),
       workers: workers.length,
       assignedNotStarted: notStarted.length,

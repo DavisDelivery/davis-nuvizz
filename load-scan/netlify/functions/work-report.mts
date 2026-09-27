@@ -111,6 +111,29 @@ export function deriveFromScans(sessions: WorkSession[], scanDocs: any[], creds:
   return out;
 }
 
+/**
+ * Pieces on one truck per its scan-session record for the shift, or undefined
+ * when it has none.
+ *
+ * The record filed under the SHIFT DAY is the truck: the phone has keyed its
+ * session by shiftDayString() since #815 (2026-09-03, src/App.jsx getManifest). A
+ * record under the previous date with the same loadNbr is then the PREVIOUS
+ * shift's truck — loadNbr is the route name, the same every day — and one late
+ * push to it after 8pm pulls it into this shift's window. Adding its count read
+ * a truck with 6 of 10 aboard as complete. Only when nothing is filed under the
+ * shift day (an older record, filed by calendar date, whose evening half sits
+ * under the previous date) are the others summed. An old calendar-keyed truck
+ * split across both dates therefore reads its shift-day half alone: short when
+ * it was not, never complete when it was short — the direction a manager can
+ * check on the dock.
+ */
+export function truckCount(scanDocs: any[], loadNbr: string, shiftDay?: string): number | undefined {
+  const docs = (scanDocs || []).filter((d: any) => String(d?.loadNbr) === String(loadNbr));
+  if (!docs.length) return undefined;
+  const own = shiftDay ? docs.filter((d: any) => String(d?.date) === String(shiftDay)) : [];
+  return (own.length ? own : docs).reduce((n: number, d: any) => n + (Number(d?.scannedCount) || 0), 0);
+}
+
 export default async (req: Request): Promise<Response> => {
   if (req.method !== 'GET') return bad('GET only', 405);
 
@@ -160,13 +183,21 @@ export default async (req: Request): Promise<Response> => {
     // alignment the 8pm rollover was chosen to give.
     let loads: any[] = [];
     try {
-      const stops = (await readStops(TENANT, shiftDay)).map(toManifestStop);
+      // Wrapped, never `.map(toManifestStop)`: map passes the index as `warn`,
+      // and the first skids + loose mismatch then threw and emptied the board.
+      const stops = (await readStops(TENANT, shiftDay)).map((s: any) => toManifestStop(s));
       loads = groupIntoLoads(stops).map((l: any) => ({
         loadNbr: l.loadNbr,
         routeName: l.routeName ?? null,
-        expectedPieces: l.expectedPieces ?? 0,
+        // What has to go ON the truck: deliveries only, the rule the phone and
+        // the Activity view use. A pickup is collected on the route, so counting
+        // it read a truck closed with every delivery aboard as short.
+        expectedPieces: (l.stops || []).filter((s: any) => !s?.isPickup).reduce((n: number, s: any) => n + (Number(s?.expectedPieces) || 0), 0),
         stopCount: (l.stops || []).length,
         hasSession: (scanDocs || []).some((d: any) => String(d?.loadNbr) === String(l.loadNbr)),
+        // The truck's own piece count from its session record(s) — what the
+        // close-out reconciled against. Absent when nothing was scanned.
+        scannedPieces: truckCount(scanDocs, l.loadNbr, shiftDay),
       }));
     } catch {
       // No board cached for that day (a weekend, or before the index existed).
