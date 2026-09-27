@@ -44,12 +44,11 @@ import { dropCancelledEnabled } from '../../src/lib/stop-cancelled.js';
 import { applyAliases, driverKeyOf } from '../../src/lib/driver-territory.js';
 import { shipperOf } from '../../src/lib/label-shippers.js';
 import {
-  weekOf, datesBetween, driversOfWeek, resolveDriver, driverWeek, routeChunks, pathFingerprint, orderPrice, finishedAt,
+  weekOf, datesBetween, isCalendarDay, driversOfWeek, resolveDriver, driverWeek, routeChunks, pathFingerprint, orderPrice, finishedAt,
   loadOf, YARD, COST_NOT_RECORDED,
 } from '../../src/lib/load-lookup.js';
 
 const TENANT = 'davis';
-const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ALIAS_PATH = 'nuvizz_ops/driver_aliases';
 export const LOAD_MILES_COLLECTION = 'load_miles';
 const ROUTES_URL = 'https://routes.googleapis.com/directions/v2:computeRoutes';
@@ -233,8 +232,8 @@ export default async (req: Request): Promise<Response> => {
   const qTo = String(url.searchParams.get('to') || '').trim();
   const qWeek = String(url.searchParams.get('week') || '').trim();
   let range: { from: string; to: string } | null;
-  if (qFrom || qTo) range = DAY_RE.test(qFrom) && DAY_RE.test(qTo) ? (qFrom <= qTo ? { from: qFrom, to: qTo } : { from: qTo, to: qFrom }) : null;
-  else if (qWeek) range = DAY_RE.test(qWeek) ? { from: weekOf(qWeek)!.from, to: weekOf(qWeek)!.to } : null;
+  if (qFrom || qTo) range = isCalendarDay(qFrom) && isCalendarDay(qTo) ? (qFrom <= qTo ? { from: qFrom, to: qTo } : { from: qTo, to: qFrom }) : null;
+  else if (qWeek) range = isCalendarDay(qWeek) ? { from: weekOf(qWeek)!.from, to: weekOf(qWeek)!.to } : null;
   else range = { from: today, to: today };
   if (!range) return jsonResponse({ ok: false, nuvizzCalls: 0, error: 'from and to must be days, YYYY-MM-DD' }, 400);
   const dates = datesBetween(range.from, range.to, MAX_DAYS);
