@@ -36048,7 +36048,12 @@ function useQueueRowEdit(row, google, today, reload, onVerdict) {
   const [f, setF] = React.useState(() => correctedFields(row));
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
-  React.useEffect(() => { setF(correctedFields(row)); }, [row]);
+  // RE-SEEDED WHEN THE ROW'S CORRECTION CHANGES, not whenever a reload hands back a new object.
+  // The list stays mounted through a reload now, so keyed on `row` an open editor kept its box
+  // open and quietly put the dispatcher's typing back to the seed — and the next Save pushed the
+  // seed to NuVizz, not what they typed. Keyed on content, an unchanged row leaves the draft alone.
+  const seed = JSON.stringify(correctedFields(row));
+  React.useEffect(() => { setF(JSON.parse(seed)); }, [seed]);
   // The map lives behind its own toggle rather than always-on: a Google map per row on a
   // 40-row day is 40 map instances, and the queue has to stay usable on a phone.
   const [mapOpen, setMapOpen] = React.useState(false);

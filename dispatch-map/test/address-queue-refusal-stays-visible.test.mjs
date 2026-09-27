@@ -156,3 +156,62 @@ test('both views keep the list mounted while it reloads, and both rows report in
     assert.match(fnSource(row), /useQueueRowEdit\(row, q\.google, today, q\.reload, q\.push\.noteVerdict\)/, `${row} hands the editor the shared recorder`);
   }
 });
+
+// ── review: what the list staying up through a reload must NOT do ────────────────────────────
+//
+// Before this fix a reload unmounted every row, so an editor somebody was typing in CLOSED —
+// a visible loss. Kept mounted, the editor stayed open while its re-seed effect (keyed on the
+// row OBJECT, which every reload replaces) quietly put the typing back to the suggestion. The
+// box still looked like the dispatcher's; the next Save pushed the suggestion to NuVizz.
+
+/** Hooks that run effects only when their deps change, as React does. */
+function effectsRuntime() {
+  const same = (a, b) => !!a && !!b && a.length === b.length && a.every((x, i) => Object.is(x, b[i]));
+  const slots = [];
+  let i = 0;
+  let pending = [];
+  const React = {
+    useState(init) {
+      const k = i++;
+      if (!(k in slots)) slots[k] = { v: typeof init === 'function' ? init() : init };
+      const s = slots[k];
+      return [s.v, (v) => { s.v = typeof v === 'function' ? v(s.v) : v; }];
+    },
+    useRef(v) { const k = i++; if (!(k in slots)) slots[k] = { current: v }; return slots[k]; },
+    useCallback(fn) { i++; return fn; },
+    useMemo(fn) { i++; return fn(); },
+    useEffect(fn, deps) {
+      const k = i++;
+      const prev = slots[k];
+      if (prev && same(prev.deps, deps)) return;
+      slots[k] = { deps };
+      pending.push(fn);
+    },
+  };
+  return { React, render(fn) { i = 0; pending = []; const out = fn(); for (const p of pending) p(); return out; } };
+}
+
+test('a reload caused by ANOTHER row leaves what the dispatcher is typing in an open editor alone', () => {
+  const rt = effectsRuntime();
+  // eslint-disable-next-line no-new-func
+  const useQueueRowEdit = new Function('React', 'saveQueueCorrection', 'db', 'setDoc', 'doc', 'serverTimestamp',
+    `'use strict';\n${SHARED()}\n${fnSource('useQueueRowEdit')}\nreturn useQueueRowEdit;`)(
+    rt.React, async () => ({}), {}, async () => {}, () => null, () => 'ts');
+  const B = { key: 'no_pin__B', signal: 'no_pin', stopNbr: 'B', stopId: '2', shown: { addr1: '10 OLD RD', addr2: '', city: 'BUFORD', state: 'GA', zip: '30518' } };
+  const edit = (row) => rt.render(() => useQueueRowEdit(row, null, '2026-09-28', () => {}));
+  edit(B).setOpen(true);
+  edit(B).setF((p) => ({ ...p, addr1: '12 OLD RD' }));
+  assert.equal(edit(B).f.addr1, '12 OLD RD');
+
+  // Row A's save reloads the list: B comes back as a NEW object carrying the SAME row.
+  const reloaded = JSON.parse(JSON.stringify(B));
+  edit(reloaded);
+  const e = edit(reloaded);
+  assert.equal(e.open, true);
+  assert.equal(e.f.addr1, '12 OLD RD', 'the open editor still holds what was typed — and that is what Save would push');
+
+  // A row whose correction really did change underneath (another dispatcher fixed it) re-seeds.
+  const changed = { ...reloaded, shown: { ...reloaded.shown, addr1: '14 OLD RD' } };
+  edit(changed);
+  assert.equal(edit(changed).f.addr1, '14 OLD RD');
+});
