@@ -311,6 +311,42 @@ export function diffStopAddress(prev: any, next: any): AddressChangeKind | null 
   );
 }
 
+/**
+ * PURE: which of `rows` are NOT already on file in `prior` (the day's rows, newest first).
+ *
+ * WHAT THE DE-DUPE IS FOR. The scan compares the stored board row with the one it is about to
+ * write; one that files a change and then fails to write the stop leaves the old row in place,
+ * and the next scan would file the identical change again, every fifteen minutes.
+ *
+ * SO A REPEAT IS IDENTICAL TO THE NEWEST ROW FOR THAT STOP FROM THE SAME SIDE — the scan's
+ * rows against the scan's, a dispatcher's against the dispatchers' — in every address part
+ * (normalised, so case and punctuation do not make a repeat look new), the kind and the
+ * source. Keying on addr1 alone (audit 2026-09-27) made a zip override, its Reset and a
+ * second zip correction one key, kept only the first, and left the log naming a superseded
+ * override as the address. Comparing only against the NEWEST row keeps "A→B, Reset, A→B
+ * again" as three events; comparing per side keeps a dispatcher's edit in between from
+ * letting the scan re-file what it already filed.
+ */
+export function unrecordedAddressChanges(prior: any[], rows: any[]): any[] {
+  const parts = (p: any) => [normStreetOf(p?.addr1), normStreetOf(p?.addr2), flat(p?.city), flat(p?.state), zip5(p?.zip)].join('|');
+  const keyOf = (r: any) => [s(r?.source), s(r?.kind), parts(r?.before), parts(r?.after)].join('#');
+  const laneOf = (r: any) => `${s(r?.stopNbr)}|${s(r?.source) === 'scan' ? 'scan' : 'dispatch'}`;
+  const newest = new Map<string, string>();
+  for (const r of Array.isArray(prior) ? prior : []) {
+    const lane = laneOf(r);
+    if (!newest.has(lane)) newest.set(lane, keyOf(r));
+  }
+  const out: any[] = [];
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const lane = laneOf(r);
+    const key = keyOf(r);
+    if (newest.get(lane) === key) continue;
+    newest.set(lane, key);
+    out.push(r);
+  }
+  return out;
+}
+
 export interface AddressHistoryQuery {
   /** exact stop number; also matches the 9-digit zero-padded form NuVizz stores */
   stop?: string | null;

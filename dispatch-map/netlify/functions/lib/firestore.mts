@@ -22,7 +22,7 @@ import { fetchWithDeadline } from './fetch-deadline.mts';
 import crypto from 'node:crypto';
 // Pure + dependency-free (matchKey.js only), so importing it here cannot drag anything into
 // this module's cold-start path. See lib/address-history.mts for what it classifies and why.
-import { buildAddressChangeRow, addressHistoryEnabled } from './address-history.mts';
+import { buildAddressChangeRow, addressHistoryEnabled, unrecordedAddressChanges } from './address-history.mts';
 import { finishedGuardEnabled, isFinishedBoardRow } from './finished-guard.mts';
 import { routeMoved, moveClearsDriverEnabled } from './route-identity.mts';
 
@@ -1795,10 +1795,11 @@ export async function recordAddressChanges(tenant: string, dateStr: string, rows
     // board row against the row it is about to write. The first scan after a change records
     // it and then WRITES the new address — so the next scan sees no difference and says
     // nothing. But a scan that fails to write (a thrown writeStops, a capped run) leaves the
-    // old row in place, and the next scan would file the identical change again. Keyed on the
-    // stop plus the exact before/after text, so a real second move still lands.
-    const seen = new Set(prior.map((r: any) => `${r?.stopNbr}|${r?.before?.addr1}|${r?.after?.addr1}|${r?.kind}`));
-    const fresh = rows.filter((r) => !seen.has(`${r?.stopNbr}|${r?.before?.addr1}|${r?.after?.addr1}|${r?.kind}`));
+    // old row in place, and the next scan would file the identical change again. A repeat is
+    // identical in every address part, kind and source to the stop's NEWEST row, so a real
+    // second move — or a Reset and a re-correction of the zip — still lands. See
+    // unrecordedAddressChanges (lib/address-history.mts).
+    const fresh = unrecordedAddressChanges(prior, rows);
     if (!fresh.length) return false;
     const next = [...fresh, ...prior].slice(0, ADDRESS_CHANGE_MAX);
     await setDoc(addressChangePath(tenant, dateStr), {
