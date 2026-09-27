@@ -34954,10 +34954,16 @@ function UlineThreeD({ google, mapsErr, pin, active = true }) {
       const heightPx = holder.current?.clientHeight || 600;
       const cam = cameraFor2dView({ center: { lat: pin.lat, lng: pin.lng }, zoom: 19, heading: 0, heightPx });
       if (!cam) return;   // a made-up camera is worse than none: the dispatcher would believe it
-      if (!elRef.current) {
-        if (building.current) return;
+      // A build already in flight is AWAITED, not abandoned: when the row changed while maps3d was
+      // still loading, the run that started the build is dead by the time it lands, and returning
+      // here left nobody to aim the camera at this row or uncover the pane (audit app-A3-7).
+      if (!elRef.current && building.current) {
+        try { await building.current; } catch (e) { if (!dead) setErr(String(e?.message || 'Google refused the 3D view')); return; }
+      } else if (!elRef.current) {
         if (!webglUsable()) { setErr(MAP3D_NO_WEBGL); return; }
-        building.current = true;
+        let doneBuilding;
+        building.current = new Promise((resolve, reject) => { doneBuilding = { resolve, reject }; });
+        building.current.catch(() => {});   // each waiting run reports the refusal itself
         try {
           const lib = await google.maps.importLibrary('maps3d');
           libRef.current = lib;
@@ -34983,9 +34989,10 @@ function UlineThreeD({ google, mapsErr, pin, active = true }) {
             } catch { /* imagery without a pin still answers most of the question */ }
           }
         } catch (e) {
+          doneBuilding.reject(e);
           if (!dead) setErr(String(e?.message || 'Google refused the 3D view'));
           return;
-        } finally { building.current = false; }
+        } finally { doneBuilding.resolve(); building.current = false; }
       }
       if (dead || !elRef.current) return;
       const mode = libRef.current?.AltitudeMode?.RELATIVE_TO_GROUND ?? 'RELATIVE_TO_GROUND';

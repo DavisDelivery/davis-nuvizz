@@ -273,7 +273,9 @@ test('THE 3D VIEW IS ON BOTH VIEWS, and it keeps every rule the Map\'s 3D learne
 test('ONE 3D ELEMENT, RE-POINTED — Google bills 3D per element created, on its own meter', () => {
   const d3 = fnSource('UlineThreeD');
   assert.match(d3, /if \(!elRef\.current\) \{/);
-  assert.match(d3, /if \(building\.current\) return;/, 'two fast rows cannot both construct');
+  // …and the second row WAITS for the first build rather than returning, so it is still aimed
+  // and uncovered (test/uline-3d-answer-before-load.test.mjs runs it).
+  assert.match(d3, /if \(!elRef\.current && building\.current\) \{\s*try \{ await building\.current; \}/, 'two fast rows cannot both construct');
   assert.match(d3, /elRef\.current\.flyCameraTo\(\{ endCamera: end, durationMillis: 0 \}\)/, 'every later row only moves the camera');
 });
 
