@@ -1,12 +1,19 @@
 // workreport-truck-count.test.mjs — review of A6-S31-5.
 //
 // The shift report now judges a truck by its scan-session record's own count.
-// That count must not include the PREVIOUS shift's truck. loadNbr is the route
-// name — STEVEN every day he works — and the report reads records filed under
-// the shift day AND the day before. Since #815 (2026-09-03) the phone files a truck under
-// its shift day, so the record under the day before is yesterday's truck; one
-// late push to it after 8pm put it in this shift's window, and its 9 pieces were
-// added to tonight's 6 of 10. A short truck read complete.
+// Two things must not distort that verdict:
+//
+//   1. The PREVIOUS shift's truck. loadNbr is the route name — STEVEN every day
+//      he works — and the report reads records filed under the shift day AND the
+//      day before. Since #815 (2026-09-03) the phone files a truck under its
+//      shift day, so the record under the day before is yesterday's truck; one
+//      late push to it after 8pm put it in this shift's window, and its 9 pieces
+//      were added to tonight's 6 of 10. A short truck read complete.
+//   2. A pickup. It is collected on the route and never loads at the dock (the
+//      phone says so on screen: "They are not counted in the piece total"). The
+//      report took the load's expected pieces from groupIntoLoads, which sums
+//      every stop, so a truck closed with every delivery aboard read short by the
+//      pickup — the same defect A5-S30-7 fixed in the Activity view.
 //
 // Driven end to end against the in-memory Firestore.
 
@@ -71,4 +78,28 @@ test('a record filed only under the previous date (the old calendar keying) stil
   await fs.setDoc(`nuvizz_load_scans/davis__${PREV}__STEVEN`, { ...tonight(10), date: PREV });
   const report = await getReport();
   assert.equal(report.rows[0].status, 'complete');
+});
+
+test('a truck closed with every delivery aboard reads complete, not short by its pickup', async () => {
+  await seed();
+  await fs.setDoc(`${STOPS}/007157687`, { stopNbr: '007157687', loadNbr: 'STEVEN', routeName: 'STEVEN', pallets: 2, cartons: 1, volume: 1 });
+  await fs.setDoc(`${STOPS}/RA5732712`, { stopNbr: 'RA5732712', loadNbr: 'STEVEN', routeName: 'STEVEN', pallets: 3, cartons: 3, volume: 0, type: 'PU' });
+  await fs.setDoc(`nuvizz_load_scans/davis__${DAY}__STEVEN`, tonight(2, 2));
+
+  const report = await getReport();
+  assert.equal(report.rows[0].expectedPieces, 2, 'the pickup\'s 3 pieces are not dock freight');
+  assert.equal(report.rows[0].short, 0);
+  assert.equal(report.rows[0].status, 'complete');
+  assert.equal(report.totals.loadsComplete, 1);
+});
+
+test('a truck genuinely short of a delivery piece still reads short with a pickup on it', async () => {
+  await seed();
+  await fs.setDoc(`${STOPS}/007157687`, { stopNbr: '007157687', loadNbr: 'STEVEN', routeName: 'STEVEN', pallets: 2, cartons: 1, volume: 1 });
+  await fs.setDoc(`${STOPS}/RA5732712`, { stopNbr: 'RA5732712', loadNbr: 'STEVEN', routeName: 'STEVEN', pallets: 3, cartons: 3, volume: 0, type: 'PU' });
+  await fs.setDoc(`nuvizz_load_scans/davis__${DAY}__STEVEN`, tonight(1, 2));
+
+  const report = await getReport();
+  assert.equal(report.rows[0].status, 'short');
+  assert.equal(report.rows[0].short, 1);
 });

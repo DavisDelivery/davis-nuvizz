@@ -189,7 +189,10 @@ export default async (req: Request): Promise<Response> => {
       loads = groupIntoLoads(stops).map((l: any) => ({
         loadNbr: l.loadNbr,
         routeName: l.routeName ?? null,
-        expectedPieces: l.expectedPieces ?? 0,
+        // What has to go ON the truck: deliveries only, the rule the phone and
+        // the Activity view use. A pickup is collected on the route, so counting
+        // it read a truck closed with every delivery aboard as short.
+        expectedPieces: (l.stops || []).filter((s: any) => !s?.isPickup).reduce((n: number, s: any) => n + (Number(s?.expectedPieces) || 0), 0),
         stopCount: (l.stops || []).length,
         hasSession: (scanDocs || []).some((d: any) => String(d?.loadNbr) === String(l.loadNbr)),
         // The truck's own piece count from its session record(s) — what the
