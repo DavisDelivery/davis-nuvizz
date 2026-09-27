@@ -27,10 +27,13 @@ const COLUMNS = [
   'date', 'tenant', 'load_nbr', 'stop_nbr', 'primary_pro', 'pros', 'pro_count',
   'business_name', 'customer_account', 'city', 'state', 'zip', 'driver_name',
   'status', 'delivered_dttm',
-  'pallets', 'cartons', 'pieces', 'weight_lb', 'lb_per_pallet',
+  'pallets', 'cartons', 'weight_lb', 'lb_per_pallet',
   'lines', 'lines_with_full_dims', 'dims_coverage', 'skus', 'products',
   'cube_ft3_dims', 'cube_ft3_pallet_est', 'cube_ft3_used', 'cube_source',
   'density_pcf', 'freight_class', 'oversize', 'has_long_cat',
+  // Appended, not inserted beside `cartons`: a reader that takes this CSV by column position
+  // keeps every existing column where it was. `pieces` is NuVizz totalPallets (skids + loose).
+  'pieces',
 ];
 
 function csvCell(v: any): string {

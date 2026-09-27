@@ -50,5 +50,11 @@ test('the freight-class CSV carries the piece count in its own column', async ()
   const src = await readFile(new URL('../netlify/functions/freight-class-report.mts', import.meta.url), 'utf8');
   const cols = src.match(/const COLUMNS = \[([\s\S]*?)\];/)[1];
   assert.match(cols, /'pieces'/, 'COLUMNS lists pieces');
+  // Appended last, so a reader that takes the CSV by position still finds weight_lb, the cube
+  // and the class in the columns they were in before pieces existed.
+  const names = [...cols.matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1]);
+  assert.equal(names[names.length - 1], 'pieces', 'pieces is the last column');
+  assert.deepEqual(names.slice(15, 19), ['pallets', 'cartons', 'weight_lb', 'lb_per_pallet'],
+    'the existing freight columns keep their positions');
   assert.match(src, /pieces:\s*f\.pieces/, 'the row fills pieces from the derived freight');
 });
