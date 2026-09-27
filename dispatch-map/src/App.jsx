@@ -17395,6 +17395,31 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     if (openAfter) setOpen(true);
   };
   const activeProfile = profileList.find((p) => p.name === activeProfileName) || null;
+  // THE PROFILE ARRIVING — from Firestore on a cold start, or because it was selected or
+  // updated on another device. Same question either way, so it is asked with the same
+  // function the mount used: does the profile beat what this device remembers? If it does,
+  // apply it — but only while the bar still reads exactly as it did at mount, so a
+  // dispatcher who started filtering in that first second keeps what they set. Once, ever:
+  // re-running it would yank the bar back mid-plan.
+  //
+  // DECLARED ABOVE THE PERSIST EFFECT ON PURPOSE. React runs a commit's effects in declaration
+  // order, and the snapshot that brings a new selection or save time changes the deps of both.
+  // With the persist effect first, it re-stamped this device's memory with the NEW profile and
+  // time before this read it back, so the profile never beat it: the chip said Chad while the
+  // grid stayed on the whole board, on this load and every one after (audit 2026-09-27).
+  const lateProfileApplied = useRef(false);
+  useEffect(() => {
+    if (lateProfileApplied.current || !activeProfile) return;
+    const r = restoreBar({
+      memory: safeReadJSON(LS_BOTTOM_BAR, null),
+      activeName: activeProfileName,
+      profiles: profileList,
+      width: readViewportSize().w || null,
+    });
+    if (r.from !== 'profile') return;   // this device's own bar still wins — leave it alone
+    lateProfileApplied.current = true;
+    if (sameBar(barSnapshot(), boot)) applyBarSettings(activeProfile.s, { openAfter: false, automatic: true });
+  }, [profileList, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
   // REMEMBER THE BAR — the write that was missing. Without it the settings existed only in
   // this component's useState, and there are THREE mounts of it (Map, Routing phone, Routing
   // desktop), so every screen hop and every reload started from an empty filter while the
@@ -17419,25 +17444,6 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     pendingProfile.current = false;
     safeWriteJSON(LS_BOTTOM_BAR, { ...barSnapshot(), profile: activeProfileName || null, profileAt: activeProfile?.updatedAt ?? null });
   }, [view, statusSel, nvWindow, nvFrom, nvTo, unmappedOnly, stopSort, loadSort, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
-  // THE PROFILE ARRIVING — from Firestore on a cold start, or because it was selected or
-  // updated on another device. Same question either way, so it is asked with the same
-  // function the mount used: does the profile beat what this device remembers? If it does,
-  // apply it — but only while the bar still reads exactly as it did at mount, so a
-  // dispatcher who started filtering in that first second keeps what they set. Once, ever:
-  // re-running it would yank the bar back mid-plan.
-  const lateProfileApplied = useRef(false);
-  useEffect(() => {
-    if (lateProfileApplied.current || !activeProfile) return;
-    const r = restoreBar({
-      memory: safeReadJSON(LS_BOTTOM_BAR, null),
-      activeName: activeProfileName,
-      profiles: profileList,
-      width: readViewportSize().w || null,
-    });
-    if (r.from !== 'profile') return;   // this device's own bar still wins — leave it alone
-    lateProfileApplied.current = true;
-    if (sameBar(barSnapshot(), boot)) applyBarSettings(activeProfile.s, { openAfter: false, automatic: true });
-  }, [profileList, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
   // Does the bar still match the profile named on the chip? An unsaved tweak is normal and
   // stays put — but the chip must not claim a preset that is not what you are looking at.
   // That mismatch, silent, IS the bug this release fixes; a dot is what makes it visible.
