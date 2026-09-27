@@ -297,6 +297,27 @@ export function smsClaimPath(tenant: string, date: string, stopNbr: string, rule
   return `${CLAIM_COLLECTION}/${tenant}__${date}__${String(stopNbr)}`;
 }
 
+/** House shape: default ON, an explicit off-word turns it off, anything malformed leaves it
+ *  ON. FLAG_SMS_BOX_CLAIM_BY_ROUTE=off puts a box-truck conflict back on the per-stop claim. */
+export function boxClaimByRouteEnabled(env: any = process.env): boolean {
+  const v = String(env?.FLAG_SMS_BOX_CLAIM_BY_ROUTE ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/**
+ * PURE. WHAT a row's text claim is keyed on — the subject smsClaimPath is handed.
+ *
+ * A trailer conflict and a box-truck conflict are texted once per LOAD, so they claim the
+ * route; an hours row claims its stop. The box case used to be keyed on the stop by the only
+ * caller, which defeated the route grain smsClaimPath documents: move one stacker dock off
+ * the box and the next dock's row arrived with a fresh key and texted the same load again.
+ */
+export function smsClaimSubject(row: any, env: any = process.env): string {
+  const rule = String(row?.rule ?? '');
+  const byRoute = rule === 'trailer_conflict' || (rule === 'box_truck_conflict' && boxClaimByRouteEnabled(env));
+  return byRoute ? String(row?.routeKey || row?.routeName || row?.stopNbr) : String(row?.stopNbr);
+}
+
 /**
  * PURE. Which rows an evening sweep may text, and in what order.
  *

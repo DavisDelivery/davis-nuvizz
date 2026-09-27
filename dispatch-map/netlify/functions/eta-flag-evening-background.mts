@@ -65,7 +65,7 @@ import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
 import { sweepDue, LEGACY_STEP_MIN } from './lib/flag-sweep-cadence.mts';
 import { earlyCloseOpt } from './lib/flag-policy.mts';
-import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
+import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable, smsClaimSubject, boxClaimByRouteEnabled } from './lib/flag-sms.mts';
 // Only to report WHERE the list came from — the list itself is resolved by smsRecipients.
 import { resolveChannel, channelSpec, recipientsFor } from './lib/alert-recipients.mts';
 // THIS PATH NOW EMAILS TOO, and the header above says it does not - so it is said here as
@@ -287,10 +287,11 @@ export default async (req: Request): Promise<Response> => {
         // route with four conflicts would have nagged four times as they were fixed one by
         // one, and a stop that was BOTH late and on the wrong truck would have sent whichever
         // message came first and silently swallowed the other.
+        // A box-truck conflict is sent at the same load grain (smsClaimSubject; the switch
+        // FLAG_SMS_BOX_CLAIM_BY_ROUTE=off puts it back on the stop).
         const trailer = row.rule === 'trailer_conflict';
-        const claimSubject = trailer
-          ? String(row.routeKey || row.routeName || row.stopNbr)
-          : String(row.stopNbr);
+        const claimSubject = smsClaimSubject(row);
+        const byRoute = trailer || (row.rule === 'box_truck_conflict' && boxClaimByRouteEnabled());
         const claimed = await createDocIfAbsent(smsClaimPath(TENANT, date, claimSubject, row.rule), {
           at: status.at, rule: row.rule ?? 'hours_risk', stopNbr: row.stopNbr ?? null,
           routeName: row.routeKey ?? row.routeName ?? null,
@@ -306,7 +307,7 @@ export default async (req: Request): Promise<Response> => {
         status.texted.push({
           stopNbr: row.stopNbr, customer: row.customer ?? null, tier: row.tier,
           rule: row.rule ?? 'hours_risk',
-          ...(trailer ? { routeName: row.routeKey ?? row.routeName ?? null, routeConflicts: row.routeConflicts ?? 1 } : {}),
+          ...(byRoute ? { routeName: row.routeKey ?? row.routeName ?? null, routeConflicts: row.routeConflicts ?? 1 } : {}),
         });
       }
     }
