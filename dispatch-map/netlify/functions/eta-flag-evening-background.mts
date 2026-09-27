@@ -63,7 +63,7 @@ import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mt
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
-import { sweepDue, LEGACY_STEP_MIN } from './lib/flag-sweep-cadence.mts';
+import { sweepDue, LEGACY_STEP_MIN, daySweepFiresNow, eveningHistoryYieldsEnabled } from './lib/flag-sweep-cadence.mts';
 import { earlyCloseOpt } from './lib/flag-policy.mts';
 import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable, smsClaimSubject, boxClaimByRouteEnabled, smsCapSkipsTextedEnabled } from './lib/flag-sms.mts';
 // Only to report WHERE the list came from — the list itself is resolved by smsRecipients.
@@ -340,7 +340,14 @@ export default async (req: Request): Promise<Response> => {
     // emailedStops is EMPTY on purpose: this path texts, it never emails, and claiming
     // otherwise in the history is the intent-as-outcome mistake that column already carries
     // scar tissue from.
-    if (etMin != null) {
+    //
+    // EXCEPT ON A TICK THE DAY SWEEP ALSO WORKS (6:00-6:59a on a winter weekday): both hold
+    // today's board and both write this whole document, and the later write replaces the
+    // earlier — which is how the day sweep's `emailed: true` got erased. The day sweep owns
+    // the document on those ticks. EVENING_HISTORY_YIELDS_TO_DAY=off puts this write back.
+    const yieldHistory = offsetDays === 0 && eveningHistoryYieldsEnabled() && daySweepFiresNow(new Date(), etMin);
+    if (yieldHistory) status.historySkipped = 'the day sweep writes this board\'s flag history on this tick';
+    if (etMin != null && !yieldHistory) {
       try {
         const path = flagHistoryPath(TENANT, date);
         const prev = await getDoc(path);
