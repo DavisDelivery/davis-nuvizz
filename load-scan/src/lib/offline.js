@@ -166,7 +166,12 @@ export async function enqueueScan(loadNbr, date, scan, cap = null) {
   // undoing the void — putting the freight back on the truck — so it must revive
   // the row rather than be swallowed as a duplicate. Anything already marked on
   // it (damage, most of all) survives: the piece did not stop being damaged.
+  // A revive is a piece becoming real again, so it passes THE CAP below first —
+  // reviving ahead of it let a full stop read 3/2 off a re-read tombstone.
   if (existing?.voidedAt) {
+    if (cap && !cap.force && wouldExceedCap(await allQueued(), { loadNbr, date, scan, cap })) {
+      return ENQUEUE_OVER_CAP;
+    }
     await tx(STORE_QUEUE, 'readwrite', (s) =>
       s.put({ ...existing, voidedAt: null, voidReason: '', syncedAt: null }),
     );
