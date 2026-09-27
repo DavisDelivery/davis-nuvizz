@@ -29,6 +29,7 @@ import {
 } from './history-derive.mts';
 import {
   dayPath, setManifest, getManifest, listStops, listRoutes, listDrivers, histDocId,
+  newWriteBudget, withWriteRetry, retryNote, type WriteBudget,
 } from './history-store.mts';
 
 export const CAPTURE_FAILURES_COLLECTION = 'history_capture_failures';
@@ -44,16 +45,28 @@ export type CaptureStage = 'scan' | 'derive' | 'upsert' | 'verify' | 'seal' | 'e
 
 // LOUD, durable record that a capture could not seal. One doc per date (latest
 // failure wins); cleared the moment the date successfully seals.
+//
+// RETRIED, BOUNDED, AND NOT CUT OFF BY THE RUN'S RETRY DEADLINE. On a throttled night this is
+// the write most likely to meet the same 429 that failed the capture, and a failure record that
+// does not land leaves only a console line — the day then reads "missing" with no reason. It gets
+// the same retry as every other history write (same classifier, same ladder, at most five
+// retries, ~19 s of waiting at worst) but its own budget, so it still tries after the capture's
+// ten-minute deadline has passed. HISTORY_WRITE_RETRY=off: one attempt, as before. `deps` is for
+// tests; production passes nothing.
 export async function recordCaptureFailure(
   tenant: string, date: string, stage: CaptureStage, error: string, countsSoFar: any = null,
+  deps: { setDoc?: (path: string, data: any) => Promise<any>; sleep?: (ms: number) => Promise<void>; now?: () => number; env?: any } = {},
 ): Promise<void> {
   try {
-    await setDoc(captureFailurePath(tenant, date), {
+    const doc = {
       tenant, date, stage,
       error: String(error || '').slice(0, 500),
       counts_so_far: countsSoFar,
       at: new Date().toISOString(),
-    });
+    };
+    const write = deps.setDoc ?? setDoc;
+    await withWriteRetry(() => write(captureFailurePath(tenant, date), doc), newWriteBudget({ env: deps.env }),
+      { sleep: deps.sleep, now: deps.now }, { ignoreDeadline: true });
     console.error(`[history-seal] FAILURE recorded ${date} stage=${stage}: ${error}`);
   } catch (e: any) {
     // A failure while recording the failure must still be loud, but must never
@@ -92,6 +105,7 @@ export interface SealIO {
   recordFailure: (tenant: string, date: string, stage: CaptureStage, error: string, counts: any) => Promise<void>;
   clearFailure: (tenant: string, date: string) => Promise<void>;
   sleep: (ms: number) => Promise<void>;
+  now: () => number;
 }
 
 const DEFAULT_IO: SealIO = {
@@ -99,6 +113,7 @@ const DEFAULT_IO: SealIO = {
   recordFailure: recordCaptureFailure,
   clearFailure: clearCaptureFailure,
   sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+  now: () => Date.now(),
 };
 
 export interface FinalizeInput {
@@ -112,6 +127,18 @@ export interface FinalizeInput {
   absentKeptCount: number;
   healed?: boolean;
   verifyRetries?: number;        // extra readback attempts before giving up
+  // The capture's write budget (history-store). When given: the manifest write is retried inside
+  // it, and — with HISTORY_WRITE_RETRY on — the manifest records write_retries /
+  // write_pushed_back and every failure text leads with the retry count. Absent (the heal path,
+  // history-manifest-heal-background): the seal still retries, on a budget of its own, but the
+  // manifest gets NO retry fields and a verify or seal failure text gets NO retry prefix — a
+  // seal-only budget would under-count the run. (A seal write that is given up on still says so
+  // in the retrier's own sentence, "gave up after N retries on this document".) Pinned by a test.
+  writeBudget?: WriteBudget;
+  // How many of the rows this capture sealed had been changed on the board index AFTER that
+  // day's last scan (frozen-day heal / dispatcher board write). null = the capture did not read
+  // the index (it scanned), so the question does not apply. Absent = not recorded.
+  patchedAfterLastScan?: number | null;
 }
 
 export interface FinalizeResult {
@@ -132,6 +159,10 @@ export async function finalizeCaptureSeal(input: FinalizeInput, io: Partial<Seal
     capture, absentKeptCount, healed = false, verifyRetries = 3,
   } = input;
   const $ = { ...DEFAULT_IO, ...io };
+  const budget: WriteBudget = input.writeBudget ?? newWriteBudget();
+  // With the switch on and the capture's budget in hand, every failure text LEADS with the
+  // retry count (the failure record keeps 500 characters; the front is the part that survives).
+  const noted = (text: string) => (input.writeBudget && budget.enabled ? `${retryNote(budget)} — ${text}` : text);
 
   // IDs must equal the readback doc _ids (the sanitized path segments). stops,
   // routes, and drivers all go through histDocId on write, so the verify set uses
@@ -161,9 +192,9 @@ export async function finalizeCaptureSeal(input: FinalizeInput, io: Partial<Seal
   if (stopIds.size === 0) {
     const emptyCounts = manifestCountsFromReadback([], [], []);
     await $.recordFailure(tenant, date, 'verify',
-      'capture produced ZERO stops — refusing to seal. An empty readback verifies vacuously, '
+      noted('capture produced ZERO stops — refusing to seal. An empty readback verifies vacuously, '
       + 'so sealing here would mint a verified:true/complete:true manifest over a day that was '
-      + 'never actually read. If this date genuinely has no board, tombstone it deliberately.',
+      + 'never actually read. If this date genuinely has no board, tombstone it deliberately.'),
       { intended: { stops: 0, routes: routeIds.size, drivers: driverIds.size }, persisted: emptyCounts });
     return {
       verified: false, sealed: false, counts: emptyCounts, checksum,
@@ -192,8 +223,8 @@ export async function finalizeCaptureSeal(input: FinalizeInput, io: Partial<Seal
 
   if (!verified) {
     await $.recordFailure(tenant, date, 'verify',
-      `verify-by-readback did not converge after ${attempts} attempt(s): ` +
-      `stopsOk=${stopsOk} routesOk=${routesOk} driversOk=${driversOk}`,
+      noted(`verify-by-readback did not converge after ${attempts} attempt(s): ` +
+      `stopsOk=${stopsOk} routesOk=${routesOk} driversOk=${driversOk}`),
       { intended: { stops: stopIds.size, routes: routeIds.size, drivers: driverIds.size }, persisted: counts });
     return { verified: false, sealed: false, counts, checksum, detail };
   }
@@ -213,10 +244,19 @@ export async function finalizeCaptureSeal(input: FinalizeInput, io: Partial<Seal
     absent_kept_count: absentKeptCount,
   };
   if (healed) { manifest.healed = true; manifest.healed_at = new Date().toISOString(); }
+  // Part of the seal's own write (one document the capture owns outright), so recording them
+  // costs no second write that could itself be pushed back. The seal write's OWN retries happen
+  // after this object is built; the capture lineage, written last, carries the final totals.
+  if (input.writeBudget && budget.enabled) {
+    manifest.write_retries = budget.retries;
+    manifest.write_pushed_back = budget.pushedBack;
+  }
+  if (input.patchedAfterLastScan !== undefined) manifest.patched_after_last_scan = input.patchedAfterLastScan;
   try {
-    await $.setManifest(tenant, date, manifest);
+    await withWriteRetry(() => $.setManifest(tenant, date, manifest), budget, { sleep: $.sleep, now: $.now });
   } catch (e: any) {
-    await $.recordFailure(tenant, date, 'seal', e?.message || 'setManifest failed', counts);
+    const msg = e?.message || 'setManifest failed';
+    await $.recordFailure(tenant, date, 'seal', e?.historyWriteGaveUp ? msg : noted(msg), counts);
     return { verified: true, sealed: false, counts, checksum, detail };
   }
   await $.clearFailure(tenant, date);
