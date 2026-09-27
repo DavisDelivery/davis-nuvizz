@@ -24,7 +24,7 @@ delete process.env.FIRESTORE_DATABASE;
 delete process.env.UAT_MIRROR_BOARD_PRUNE;
 
 import {
-  planRefresh, runRefresh, copyBoardDay, boardPruneEnabled, BOARD_COLLECTION,
+  planRefresh, runRefresh, copyBoardDay, boardPruneEnabled, boardRowsToPrune, explainRefresh, BOARD_COLLECTION,
 } from '../netlify/functions/lib/uat-mirror-refresh.mts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -134,4 +134,40 @@ test('with the switch off the copy is upsert-only again, and the endpoint hands 
   // One switch, one place: the endpoint wires the mirror's deleter only when it is on.
   const src = fs.readFileSync(path.join(HERE, '..', 'netlify', 'functions', 'lib', 'uat-mirror-endpoint.mts'), 'utf8');
   assert.match(src, /deleteMirror: boardPruneEnabled\(\) \?/);
+});
+
+// ── THE DRY RUN (review, 2026-09-27) ────────────────────────────────────────────────────────
+// The prune is a delete the nightly does on its own, so ?explain=1 says how many rows it would
+// remove before it removes them — through the same rule (boardRowsToPrune) the copy uses.
+
+test('?explain=1 says how many UAT board rows the next copy would remove, and removes none of them', async () => {
+  const { prod, mirror, deletes, deps } = fakes();
+  prod.set(dayBase(D), { count: 1 });
+  prod.set(`${dayBase(D)}/stops/A`, { stopNbr: 'A' });
+  mirror.set(`${dayBase(D)}/stops/A`, { stopNbr: 'A' });
+  mirror.set(`${dayBase(D)}/stops/STALE`, { stopNbr: 'STALE' });
+  mirror.set(`${dayBase(D)}/stops/UT-007174397`, { stopNbr: 'UT-007174397', uatSeed: { prodStopNbr: '007174397' } });
+  // a day production holds nothing for: the copy removes nothing there, so neither does the dry run
+  mirror.set(`${dayBase('2026-09-22')}/stops/ORPHAN`, { stopNbr: 'ORPHAN' });
+  const plan = boardOnly('2026-09-20');
+  const res = await explainRefresh(deps, plan, { prune: true });
+  const byDate = Object.fromEntries(res.board.map((r) => [r.date, r]));
+  assert.equal(byDate[D].would_remove, 1, 'STALE only — never production\'s row, never the bench\'s');
+  assert.equal(byDate['2026-09-22'].would_remove, 0);
+  assert.deepEqual(deletes, [], 'a dry run deletes nothing');
+  assert.equal(mirror.has(`${dayBase(D)}/stops/STALE`), true);
+
+  // …and it is the same count the copy then acts on.
+  const copy = await copyBoardDay(deps, T, D);
+  assert.equal(copy.pruned, byDate[D].would_remove);
+
+  // With the switch off the explain reads exactly as it did before the prune existed.
+  const off = await explainRefresh(deps, plan, {});
+  assert.equal(off.board.some((r) => 'would_remove' in r), false);
+  assert.deepEqual(boardRowsToPrune([{ _id: 'A' }], [{ _id: 'A' }, { _id: 'B' }, { _id: 'UT-1' }, { _id: 'C', uatSeed: {} }]).map((r) => r._id), ['B']);
+});
+
+test('the explain endpoint asks for the dry run through the same switch the nightly reads', () => {
+  const src = fs.readFileSync(path.join(HERE, '..', 'netlify', 'functions', 'uat-mirror-refresh.mts'), 'utf8');
+  assert.match(src, /explainRefresh\(deps, plan, \{ prune: boardPruneEnabled\(\) \}\)/);
 });

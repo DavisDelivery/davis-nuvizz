@@ -13,7 +13,7 @@ import { isMirrorDeploy, firestoreDatabaseName } from './lib/mirror-guard.mts';
 import { isFirestoreEnabled, getDoc, listDocs, etDayString } from './lib/firestore.mts';
 import { listProdDocs, getProdDoc, prodMirrorReadEnabled } from './lib/prod-mirror-read.mts';
 import { requireUser } from './lib/require-user.mts';
-import { planRefresh, explainRefresh, progressPath, onOff, type RefreshDeps } from './lib/uat-mirror-refresh.mts';
+import { planRefresh, explainRefresh, progressPath, onOff, boardPruneEnabled, type RefreshDeps } from './lib/uat-mirror-refresh.mts';
 
 const TENANT = 'davis';
 const EXPLAIN_MAX_DAYS = 14;
@@ -61,7 +61,8 @@ export default async (req: Request): Promise<Response> => {
       setDoc: async () => { throw new Error('explain never writes'); },
     };
     try {
-      const res = await explainRefresh(deps, plan);
+      // The dry run of the board prune follows the same switch the nightly reads (UAT_MIRROR_BOARD_PRUNE).
+      const res = await explainRefresh(deps, plan, { prune: boardPruneEnabled() });
       return J({ ok: true, database: firestoreDatabaseName(), clamped_to_days: clamped ? EXPLAIN_MAX_DAYS : null, ...res });
     } catch (e: any) {
       return J({ ok: false, error: e?.message || 'explain failed' }, 500);
