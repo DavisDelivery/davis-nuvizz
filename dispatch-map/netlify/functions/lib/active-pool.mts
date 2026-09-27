@@ -62,7 +62,7 @@ export interface ActivePool {
   thin?: boolean;
 }
 
-import { unplanStampOvertaken } from './nuvizz-list.mts';
+import { unplanStampOvertaken } from './unplan-stamp.mts';
 
 const TERMINAL = new Set(['DELIVERED', 'EXCEPTION', 'CANCELLED']);
 const TERMINAL_CODES = new Set(['90', '91', '80', '99']);
@@ -166,6 +166,7 @@ export function poolUsable(pool: ActivePool | null | undefined, opts: { nowMs: n
   if (Number.isFinite(doc) && doc - at > POOL_SUPERSEDE_SLACK_MS) return { ok: false, why: `pool superseded — a board scan at ${opts.newestDocScanAt} never rewrote the ${pool.at} pool` };
   return { ok: true, why: null };
 }
+
 
 function stampNewerThan(row: any, at: string | null | undefined): boolean {
   if (!row?.board_write_at || !at) return false;

@@ -94,7 +94,9 @@ test('ONE definition, three surfaces: the scan, the window and the carry-over fo
   // plan — which is the class of defect this whole fix is about.
   const fs = await import('node:fs');
   const win = fs.readFileSync('netlify/functions/lib/active-pool.mts', 'utf8');
-  const fold = fs.readFileSync('netlify/functions/nuvizz-pull-today-stops.mts', 'utf8');
+  // v1.76.0: the carry-over fold's decisions live in lib/carryover-fold.mts (the board's pull calls
+  // it, and so does the Claude shadow's planner) — that is the surface that must import the rule.
+  const fold = fs.readFileSync('netlify/functions/lib/carryover-fold.mts', 'utf8');
   for (const [name, src] of [['active-pool', win], ['carry-over fold', fold]]) {
     assert.match(src, /import \{[^}]*unplanStampOvertaken[^}]*\} from/, `${name} must IMPORT the rule, not restate it`);
     assert.match(src, /unplanStampOvertaken\(/, `${name} must actually apply it`);

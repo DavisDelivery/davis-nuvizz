@@ -85,6 +85,8 @@ export function blocksTractor(note: any): boolean {
 }
 
 const fold = (s: any) => String(s || '').trim().toUpperCase().replace(/\s+/g, '_');
+/** The employees-roster key a driver's truck class is looked up by (employeeClassMap / CLASS_OVERRIDE). */
+export const classKey = (s: any) => fold(s);
 /** Who drives a load: loads with the same driver share one day. A trip with no driver is its own. */
 export const driverKey = (l: { id: string; driver: string }) => (l.driver && l.driver !== '(no driver)' ? fold(l.driver) : `#${l.id}`);
 const r1 = (v: number) => Math.round(v * 10) / 10;
@@ -94,6 +96,8 @@ export interface BtStop {
   skids: number; loose: number; spots: number; weight: number;
   zip: string | null; city: string | null; name: string | null; k: string | null;
   blocksTractor: boolean;
+  day?: string | null;                // v1.76.0 plan only: the board day the order is filed on (a carried-over order's earlier day)
+  pin?: string | null;                // v1.76.0 plan only: the load it is ALREADY on in NuVizz (a picked roster load) — it stays there
 }
 export interface BtLoad {
   id: string; route: string; driver: string;
@@ -110,6 +114,9 @@ export interface BtLoad {
 export type LbsRaised = { box_truck: { raised: number; of: number; heaviest: number }; tractor: { raised: number; of: number; heaviest: number } };
 export interface BtProblem {
   date: string; loosePerSkid: number; capRule: CapRule;
+  // v1.76.0: 'plan' is a forward plan of a board that has not run (lib/claude-shadow/plan-core.mts):
+  // no dispatch column, and a stop may be left unplanned only when no load has room for it.
+  mode?: 'backtest' | 'plan';
   lbsLimits: { box_truck: number; tractor: number };   // the weight limits this day was held to (lb)
   lbsRaised?: LbsRaised;              // v1.74.1: per class, how many loads dispatch loaded past the limit (so it was raised)
   capMode: 'hard' | 'raised';         // v1.75.0: hard = caps and limits held; raised = the old rule (raised to dispatch's load)
@@ -152,6 +159,22 @@ export interface BtInput {
   depot: { lat: number; lng: number };
   at: string;
   cfg: any;                           // the engine config: the estimator and typical_shift_hours
+}
+
+/** One stored stop row → a planning stop. Shared by the backtest (history rows, which carry
+ *  customerMatchKey) and the planner (board rows, whose key the planner computes the same way). */
+export function toBtStop(r: any, id: number, n: string, loosePerSkid: number, notes: Map<string, any>): BtStop {
+  const skids = num(r.cartons) ?? 0, loose = num(r.volume) ?? 0;
+  const lat = Number(r.lat), lng = Number(r.lng);
+  const k = r.customerMatchKey ? String(r.customerMatchKey) : null;
+  const note = k ? notes.get(k) : null;
+  return {
+    id, n, lat, lng, zone: zoneId(lat, lng),
+    skids, loose, spots: r1(skidSpots(skids, loose, loosePerSkid)), weight: Math.round(num(r.weight) ?? 0),
+    zip: r.zip ? String(r.zip) : null, city: r.city ? tidy(r.city) : null,
+    name: r.businessName ? tidy(r.businessName) : null, k,
+    blocksTractor: blocksTractor(note),
+  };
 }
 
 /** Your cap / the learned cap for this driver and route, combined by the rule; else the profile.
@@ -259,16 +282,7 @@ export function buildBacktestProblem(input: BtInput): BtProblem {
         if (r) { reserved += skidSpots(num(r.cartons) ?? 0, num(r.volume) ?? 0, input.loosePerSkid); reservedLbs += Math.round(num(r.weight) ?? 0); reservedStops++; }
         continue;
       }
-      const skids = num(r.cartons) ?? 0, loose = num(r.volume) ?? 0;
-      const lat = Number(r.lat), lng = Number(r.lng);
-      const note = r.customerMatchKey ? input.notes.get(String(r.customerMatchKey)) : null;
-      const s: BtStop = {
-        id: stops.length + 1, n, lat, lng, zone: zoneId(lat, lng),
-        skids, loose, spots: r1(skidSpots(skids, loose, input.loosePerSkid)), weight: Math.round(num(r.weight) ?? 0),
-        zip: r.zip ? String(r.zip) : null, city: r.city ? tidy(r.city) : null,
-        name: r.businessName ? tidy(r.businessName) : null, k: r.customerMatchKey ? String(r.customerMatchKey) : null,
-        blocksTractor: blocksTractor(note),
-      };
+      const s = toBtStop(r, stops.length + 1, n, input.loosePerSkid, input.notes);
       stops.push(s);
       idOf.set(n, s.id);
       ids.push(s.id);
@@ -556,6 +570,21 @@ export const BT_SYSTEM = [
   'Work method: call evaluate_plan with a COMPLETE assignment (all loads, all stops). It returns each load’s stops, skid spots against its cap, estimated miles, drive minutes, and each driver’s day minutes against their day limit, and every hard-rule violation. Revise and evaluate again until there are no violations and you cannot reduce miles further without breaking a rule. Then call submit_plan with that assignment and a short reason per load. Keep prose short; the tools carry the plan.',
 ].join('\n\n');
 
+// v1.76.0 — A FORWARD PLAN. The day has not run, so nothing proves every stop fits the trucks picked
+// for it. The rules are the backtest's, except one: a stop may be left unplanned when NO load has
+// room for it (skid spots, weight, and the driver's day), with a reason. The evaluator checks the
+// room, so leaving freight off to shorten the miles is refused, exactly as in a backtest.
+export const PLAN_SYSTEM = BT_SYSTEM
+  .replace('You are given one day of delivery stops and the trucks (loads) available that day.', 'You are given the delivery stops still to be planned for one upcoming day and the trucks (loads) the dispatcher picked for it.')
+  .replace(
+    'every stop on exactly one load — the ONLY stop that may be listed unplanned instead is a no-tractor stop no box-truck load has room for, with a reason, and the evaluator refuses any other;',
+    'every stop on exactly one load — a stop may be listed unplanned instead ONLY when no load has room for it (its skid spots, its weight, and the time it would add to the driver\u2019s day), with a reason; the evaluator checks the room and refuses a stop left off a load that could take it;',
+  )
+  .replace(
+    'Leaving a stop unplanned is a failure on a day like this: every stop was delivered. The evaluator refuses it for any stop except a no-tractor stop that no box truck has room for.',
+    'Place as many stops as the trucks can legally carry. Leave a stop unplanned only when no load has room for it, and say why in its reason; the dispatcher reads every one.',
+  ) + '\n\nA stop flagged "keep on Lx" is already on that load in NuVizz: keep it on Lx and plan the other stops around it. Its skid spots, pounds and time count against Lx like any other stop.';
+
 export function btBriefing(p: BtProblem): string {
   const lines: string[] = [];
   lines.push(`DAY ${p.date}. Terminal (start of every load): ${p.depot.lat.toFixed(5)}, ${p.depot.lng.toFixed(5)}. Loose pieces per skid spot: ${p.loosePerSkid}.`);
@@ -570,7 +599,9 @@ export function btBriefing(p: BtProblem): string {
   lines.push('');
   lines.push('STOPS: id | lat,lng | zip | city | customer | skids | loose | spots | lbs | flags');
   for (const s of p.stops) {
-    lines.push(`${s.id} | ${s.lat.toFixed(5)},${s.lng.toFixed(5)} | ${s.zip ?? ''} | ${s.city ?? ''} | ${s.name ?? ''} | ${s.skids} | ${s.loose} | ${s.spots} | ${s.weight} | ${s.blocksTractor ? 'no-tractor' : ''}`);
+    // A backtest stop never carries a pin, so its line is byte-for-byte what it was (a resumed run replays it).
+    const flags = [s.blocksTractor ? 'no-tractor' : '', s.pin ? `keep on ${s.pin}` : ''].filter(Boolean).join(' ');
+    lines.push(`${s.id} | ${s.lat.toFixed(5)},${s.lng.toFixed(5)} | ${s.zip ?? ''} | ${s.city ?? ''} | ${s.name ?? ''} | ${s.skids} | ${s.loose} | ${s.spots} | ${s.weight} | ${flags}`);
   }
   return lines.join('\n');
 }
@@ -645,6 +676,59 @@ export function mayLeaveUnplanned(p: BtProblem): Set<number> {
   return out;
 }
 
+/**
+ * v1.76.0 (plan mode). A load with ROOM for stop `s` as the plan stands, or null. Room is judged by
+ * the evaluator's OWN measure, so the rule can never trap Claude — refusing a stop left off because a
+ * load "has room", then refusing it on that load because the day runs over (review, v1.76.0):
+ *   1. cheap necessary conditions pick the candidates: the load has the skid spots and the pounds,
+ *      it is not a tractor for a no-tractor stop, and the driver's day has at least the stop's
+ *      on-site minutes left;
+ *   2. the nearest few are then measured with the stop ADDED, re-sequenced by the engine exactly as
+ *      an evaluation would, and a load has room only if nothing on it (spots, pounds, equipment, the
+ *      driver's whole day) breaks.
+ * A load past the first ROOM_TRIES, or past the evaluation's re-measure budget, is not tried: the
+ * stop may then be left off with its reason. That errs toward letting a stop off, never toward a trap.
+ */
+export const ROOM_TRIES = 4;
+export const ROOM_BUDGET = 400;
+export function roomFor(
+  p: BtProblem, m: PlanMetrics, s: BtStop, cfg: any,
+  ctx: { seq: Sequencer; assign: Map<string, number[]>; budget: { left: number } },
+): { load: string; why: string } | null {
+  const byId = new Map(p.stops.map((x) => [x.id, x]));
+  const metric = new Map(m.loads.map((l) => [l.id, l]));
+  const dayUsed = new Map<string, number>();
+  for (const l of m.loads) dayUsed.set(driverKey(p.loads.find((x) => x.id === l.id)!), l.driverMin);
+  const service = p.serviceMin ?? DEFAULT_SERVICE_MIN;
+  const candidates: { load: BtLoad; mi: number }[] = [];
+  for (const load of p.loads) {
+    if (s.blocksTractor && load.cls === 'tractor') continue;
+    const lm = metric.get(load.id);
+    const spots = lm?.spots ?? 0, lbs = lm?.weight ?? 0;
+    if (load.cap - spots < s.spots - 1e-9) continue;
+    if (typeof load.maxLbs === 'number' && load.maxLbs - lbs < s.weight) continue;
+    const used = dayUsed.get(driverKey(load)) ?? 0;
+    if (load.maxMin > 0 && used + service > load.maxMin) continue;
+    const onIt = (lm?.order || []).map((id) => byId.get(id)).filter(Boolean) as BtStop[];
+    const mi = onIt.length
+      ? Math.min(...onIt.map((x) => haversineMiles(x.lat, x.lng, s.lat, s.lng)))
+      : haversineMiles(p.depot.lat, p.depot.lng, s.lat, s.lng);
+    candidates.push({ load, mi });
+  }
+  candidates.sort((a, b) => a.mi - b.mi);
+  for (const c of candidates.slice(0, ROOM_TRIES)) {
+    if (ctx.budget.left <= 0) break;
+    ctx.budget.left -= 1;
+    const next = new Map(ctx.assign);
+    next.set(c.load.id, [...(ctx.assign.get(c.load.id) || []), s.id]);
+    const m2 = measurePlan(p, next, cfg, ctx.seq, 0);
+    const lm = m2.loads.find((x) => x.id === c.load.id);
+    if (!lm || lm.over || lm.overWeight || lm.blocked || lm.overTime) continue;
+    return { load: c.load.id, why: `with it on ${c.load.id}: ${r1(lm.spots)} of ${r1(lm.cap)} spots, ${Math.round(lm.weight)}${typeof lm.maxLbs === 'number' && lm.maxLbs > 0 ? ` of ${Math.round(lm.maxLbs)}` : ''} lb, ${c.load.driver}'s day ${Math.round(lm.driverMin)} of ${Math.round(lm.maxMin)} min` };
+  }
+  return null;
+}
+
 /** Check one proposed assignment against every HARD rule and measure it. */
 export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequencer): EvalResult {
   const loadIds = new Set(p.loads.map((l) => l.id));
@@ -669,21 +753,39 @@ export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequ
     if (typeof e?.why === 'string') why.set(load, e.why.slice(0, 300));
   }
   const unplanned: { stop: number; reason: string }[] = [];
-  const leavable = mayLeaveUnplanned(p);
+  const planMode = p.mode === 'plan';
+  const leavable = planMode ? new Set<number>() : mayLeaveUnplanned(p);
   for (const u of Array.isArray(input?.unplanned) ? input.unplanned : []) {
     const id = Number(u?.stop);
     if (!byId.has(id)) { hard.push(`unknown unplanned stop ${JSON.stringify(u?.stop)}`); continue; }
     if (whereIs.has(id)) { hard.push(`stop ${id} is on ${whereIs.get(id)} and also listed unplanned`); continue; }
     whereIs.set(id, 'unplanned');
     const reason = String(u?.reason ?? '').trim().slice(0, 200);
-    if (!leavable.has(id)) hard.push(`stop ${id} must be on a load: it was delivered this day and a load can legally carry it`);
+    if (planMode) { if (!reason) hard.push(`stop ${id} is unplanned with no reason`); }
+    else if (!leavable.has(id)) hard.push(`stop ${id} must be on a load: it was delivered this day and a load can legally carry it`);
     else if (!reason) hard.push(`stop ${id} is unplanned with no reason`);
     unplanned.push({ stop: id, reason });
+  }
+  // PLAN MODE: a stop already on a picked load in NuVizz stays on it.
+  if (planMode) {
+    for (const s of p.stops) {
+      if (s.pin && whereIs.has(s.id) && whereIs.get(s.id) !== s.pin) hard.push(`stop ${s.id} is already on ${s.pin} in NuVizz and stays there (it is on ${whereIs.get(s.id)})`);
+    }
   }
   const missing = p.stops.filter((s) => !whereIs.has(s.id)).map((s) => s.id);
   if (missing.length) hard.push(`${missing.length} stop(s) on no load and not listed unplanned: ${missing.slice(0, MAX_LISTED).join(', ')}${missing.length > MAX_LISTED ? ', …' : ''}`);
 
   const m = measurePlan(p, assign, cfg, seq, unplanned.length);
+  // PLAN MODE: a stop left unplanned while a load has room for it is refused (roomFor, below).
+  if (planMode && unplanned.length) {
+    const ctx = { seq, assign, budget: { left: ROOM_BUDGET } };
+    for (const u of unplanned) {
+      const s = byId.get(u.stop);
+      if (!s) continue;
+      const fits = roomFor(p, m, s, cfg, ctx);
+      if (fits) hard.push(`stop ${u.stop} is left unplanned but ${fits.load} has room for it (${fits.why})`);
+    }
+  }
   const overSaid = new Set<string>();
   for (const l of m.loads) {
     if (l.over) hard.push(`${l.id} is over its cap: ${l.spots} of ${l.cap} skid spots`);
@@ -722,7 +824,7 @@ export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequ
 export function btLoopProblem(p: BtProblem, cfg: any): Problem {
   const seq = makeSequencer(p, cfg);
   return {
-    system: BT_SYSTEM,
+    system: p.mode === 'plan' ? PLAN_SYSTEM : BT_SYSTEM,
     briefing: btBriefing(p),
     tools: BT_TOOLS,
     evaluate: (input: any) => evaluateAssignment(p, input, cfg, seq),

@@ -20,6 +20,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Sparkles, Power, Cpu, KeyRound, FlaskConical, RefreshCw, CheckCircle2, XCircle, CircleDashed, Truck, Pencil } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
 import BacktestPanel, { useOpenDay } from './BacktestPanel.jsx';
+import PlanPanel, { usePlanArea } from './PlanPanel.jsx';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 
@@ -259,7 +260,7 @@ function LearnSummary({ m }) {
       {trips.length > 0 && <p className="text-[11px] text-slate-500">Trips left out of capacity: {trips.join('; ')}.</p>}
       {rows.length > 0 && <p className="text-[11px] text-slate-500">Stops not counted as carried: {rows.join('; ')}.</p>}
       {m.days?.stampGateOff > 0 && <p className="text-[11px] text-slate-500">On {m.days.stampGateOff} day{m.days.stampGateOff === 1 ? '' : 's'} most deliveries carried no same-day stamp, so every delivered stop counted.</p>}
-      <p className="text-[11px] text-slate-500">Cap = the fuller end of what they have carried: the {Math.round((m.capQuantile || 0.95) * 100)}th percentile of their trips in skid spots. Needs {m.minTrips} trips — below that the 95th percentile is just the single fullest trip — so fewer shows none. A backtest plans with these caps as learned from the days before the day it plans, yours on top, held to the ceilings above; nothing is sent or saved with them.</p>
+      <p className="text-[11px] text-slate-500">Cap = the fuller end of what they have carried: the {Math.round((m.capQuantile || 0.95) * 100)}th percentile of their trips in skid spots. Needs {m.minTrips} trips — below that the 95th percentile is just the single fullest trip — so fewer shows none. A backtest plans with these caps as learned from the days before the day it plans, and Plan a day with the caps as they stand now — yours on top, held to the ceilings above; nothing is sent or saved with them.</p>
     </div>
   );
 }
@@ -605,7 +606,7 @@ function PlanCard({ s }) {
   return (
     <section className="rounded-xl border bg-white p-4">
       <h2 className="text-sm font-semibold text-slate-800 inline-flex items-center gap-2"><CircleDashed size={14} /> Nightly plan</h2>
-      <p className="text-xs text-slate-600 mt-1">The Claude router plans past days now (the backtest above). The nightly run on tomorrow’s board is the next set of pieces, each in its own release.</p>
+      <p className="text-xs text-slate-600 mt-1">The Claude router plans a board day onto loads you pick (Plan a day, above) and past days against dispatch (the backtest). A run on its own each night is the next set of pieces, each in its own release.</p>
       <ul className="mt-2 space-y-1">
         {(s.built || []).map((b) => <li key={b} className="text-xs text-emerald-700 inline-flex items-center gap-1 w-full"><CheckCircle2 size={12} /> {b}</li>)}
         {(s.notBuilt || []).map((b) => <li key={b} className="text-xs text-slate-500 inline-flex items-center gap-1 w-full"><CircleDashed size={12} /> {b}</li>)}
@@ -619,7 +620,7 @@ function Header({ onRefresh, loading }) {
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
         <h1 className="text-xl font-bold text-slate-900 inline-flex items-center gap-2"><Sparkles size={18} /> Claude shadow</h1>
-        <p className="text-xs text-slate-500 mt-0.5">Claude plans loads beside the router, for comparison only — tried first on past days, below. It can never send, save or stage anything.</p>
+        <p className="text-xs text-slate-500 mt-0.5">Claude plans loads beside the router, for comparison only: a board day onto the loads you pick, and past days against what dispatch drove. It can never send, save or stage anything.</p>
       </div>
       <button onClick={onRefresh} disabled={loading}
         className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[44px] shrink-0">Refresh</button>
@@ -634,6 +635,7 @@ function DesktopView(h) {
         <Header onRefresh={h.load} loading={h.loading} />
         {h.err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{h.err}</div>}
         {h.loading && !h.status && <div className="text-xs text-slate-500">Loading…</div>}
+        <PlanPanel area={h.plan} />
         <BacktestPanel day={h.day} />
         {h.status && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
@@ -655,6 +657,7 @@ function PhoneView(h) {
         <Header onRefresh={h.load} loading={h.loading} />
         {h.err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{h.err}</div>}
         {h.loading && !h.status && <div className="text-xs text-slate-500">Loading…</div>}
+        <PlanPanel phone area={h.plan} />
         <BacktestPanel phone day={h.day} />
         {h.status && (
           <div className="flex flex-col gap-3">
@@ -674,5 +677,6 @@ export default function ClaudeShadowScreen({ isMobile }) {
   const ed = useCapacityEditor(h.status, h.load);
   // Held here, above the view switch, so a phone turned sideways keeps its open day and map.
   const day = useOpenDay();
-  return isMobile ? <PhoneView {...h} ed={ed} day={day} /> : <DesktopView {...h} ed={ed} day={day} />;
+  const plan = usePlanArea();
+  return isMobile ? <PhoneView {...h} ed={ed} day={day} plan={plan} /> : <DesktopView {...h} ed={ed} day={day} plan={plan} />;
 }
