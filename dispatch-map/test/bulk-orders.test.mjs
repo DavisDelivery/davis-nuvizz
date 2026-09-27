@@ -313,3 +313,17 @@ test('manifestRowsToIntake: a typed email survives onto the row (what the push s
   // Blank stays null rather than an empty string — NuVizz should get no key, not "".
   assert.equal((row.email || '').trim() || null, null);
 });
+
+// THE INCH MARK (Sep 27 audit, B-01). An unquoted cell with an odd number of `"` — an item
+// description like `PIPE 10" LONG` — opened a quoted field that ran to the next quote or the
+// end of the paste, so every order after that line vanished from the grid and was never created.
+test('parseDelimited: a lone inch mark mid-cell (PIPE 10" LONG) never swallows the rows below it', () => {
+  const rows = parseDelimited('Name\tItem\nACME\tPIPE 10" LONG\nBETA\tBOXES\n', '\t');
+  assert.deepEqual(rows, [['Name', 'Item'], ['ACME', 'PIPE 10" LONG'], ['BETA', 'BOXES']]);
+  assert.deepEqual(parseDelimited('Name\tItem\nACME\t24" x 36" SIGN\n', '\t')[1], ['ACME', '24" x 36" SIGN']);
+});
+
+test('parseDelimited: a quote still opens a quoted field at the start of a cell — padded or not', () => {
+  assert.deepEqual(parseDelimited('a,"b, c",d', ',')[0], ['a', 'b, c', 'd']);
+  assert.deepEqual(parseDelimited('a, "b, c", d', ',')[0], ['a', ' b, c', ' d']);
+});

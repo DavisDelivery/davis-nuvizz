@@ -110,7 +110,12 @@ export function parseDelimited(text, delimiter) {
       }
       cell += c; i++; continue;
     }
-    if (c === '"') { inQuotes = true; i++; continue; }
+    // A quote OPENS a quoted field only at the START of a cell (RFC 4180). Mid-cell it is a
+    // character — the inch mark in `PIPE 10" LONG` — and must never eat the rows below: it
+    // used to open a field that ran to the next quote or the end of the paste, so every order
+    // after that line vanished from the grid and was never created. `trim()` keeps a
+    // hand-padded `a, "b, c", d` parsing the way it does today.
+    if (c === '"' && cell.trim() === '') { inQuotes = true; i++; continue; }
     if (c === delim) { row.push(cell); cell = ''; i++; continue; }
     if (c === '\r') { i++; continue; }
     if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; i++; continue; }
