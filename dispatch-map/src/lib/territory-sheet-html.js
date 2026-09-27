@@ -33,6 +33,7 @@
 // passed in rather than read, so the same data renders the same page every time.
 import {
   zipOwnership, territoryCoverage, driverRewrites, driverPoints, mapFrame, rosterOf, territoryModel, ovalOf,
+  splitHidden,
 } from './driver-territory.js';
 import COUNTIES from './ga-north-counties.js';
 
@@ -87,6 +88,17 @@ const { active: activeSet, excluded, inWindow, drivers, circleSets, colourOf } =
 });
 const zips = input.zips || zipOwnership(inWindow, { roster });
 const cov = input.coverage || territoryCoverage(inWindow, { roster });
+// WHAT WAS LEFT OUT is counted over the history BEFORE the sheet's own filter. inWindow holds
+// only active drivers' stops, so a stop with no driver can never be in it — counted there,
+// "had no driver" was always 0. Chad's by-name list (HIDDEN_FROM_RINGS) is set aside first,
+// exactly as territoryModel does, so the people he asked to be off the sheet are not counted.
+const dropped = input.coverage || territoryCoverage(splitHidden(stops).kept, { roster });
+const droppedParts = [
+  dropped.noZip ? `${dropped.noZip} stop${dropped.noZip === 1 ? '' : 's'} had no usable ZIP` : '',
+  dropped.noDriver ? `${dropped.noDriver}${dropped.noZip ? '' : ` stop${dropped.noDriver === 1 ? '' : 's'}`} had no driver` : '',
+].filter(Boolean);
+const droppedLine = droppedParts.length
+  ? `${droppedParts.join(' and ')} — ${droppedParts.length > 1 ? 'both ' : ''}left out.` : '';
 const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n) => `${Math.round((n || 0) * 100)}%`;
 
@@ -381,7 +393,7 @@ ${overview}
 <div class="cov">
   <b>What this is built from.</b> ${cov.usable.toLocaleString()} deliveries across
   <b>${cov.days}</b> working day${cov.days === 1 ? '' : 's'}, ${drivers.length} drivers, ${zips.length} ZIP codes.
-  ${cov.noZip ? `${cov.noZip} stop${cov.noZip === 1 ? '' : 's'} had no usable ZIP and ${cov.noDriver} had no driver — both left out.` : ''}
+  ${droppedLine}
   ${!cov.rosterApplied ? '<br><b>Note:</b> no driver roster was applied, so line-haul carriers may appear in this list alongside people.' : ''}
   <br><b>How to use it.</b> An order comes in for a town — <b>look it up by town</b> (page 2). You want to know
   where somebody runs — find his card; they are in alphabetical order.
