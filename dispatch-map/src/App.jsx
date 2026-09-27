@@ -33465,6 +33465,7 @@ function BulkOrderScreen() {
   };
   const applyImport = () => { if (importer) commitImport(importer.dataRows, importer.mapping, importer.sig); };
   const undoAutoImport = () => {
+    if (busy) return;   // frozen mid-push like addRow/removeRow/clearRows: createAll removes rows by click-time index
     setAutoImportUndo((u) => {
       if (!u) return null;
       setRows(u.prevRows && u.prevRows.length ? u.prevRows : [bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]);
@@ -33482,6 +33483,9 @@ function BulkOrderScreen() {
     if (!live) { setResults({ beta: true, created: 0, updated: 0, failed: 0, rows: [], msg: `○ Beta — would create ${targets.length} order(s) (nothing sent). Flip to ● LIVE to create them in NuVizz.` }); return; }
     persistOrigin();
     const settings = { origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() }, serviceDate, timeZone: 'America/New_York' };
+    // A LIVE push spends the import's Undo: after it, reopening the mapper on the same parse is one
+    // Import away from sending the orders just created a second time.
+    setAutoImportUndo(null);
     setBusy(true); setResults(null); setProgress({ done: 0, total: targets.length });
     const out = [];
     const pushedLogRecords = [];   // durable cloud push-history — feeds the "Pushed to NuVizz" tab
@@ -33621,6 +33625,7 @@ function BulkOrderScreen() {
       loads: [{ loadNbr: nbr, routeName: routeName.trim() || undefined, createNew: true, orderedStopNbrs: payloadRows.map((r) => r.stopNbr), newStops: payloadRows }],
       settings, origin: settings.origin, useImport: true,
     };
+    setAutoImportUndo(null);   // a LIVE push spends the import's Undo (see createAll)
     setBusy(true); setResults(null); setVerifyMsg(`Sending ONE import for load ${nbr} (${payloadRows.length} stops)…`);
     let res;
     try { res = await callWrite('commitBoard', body, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-bulk' }); }
