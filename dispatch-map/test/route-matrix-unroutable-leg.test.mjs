@@ -12,7 +12,7 @@
 // old 0-cost reading (house shape: default ON, explicit off-word, malformed stays ON).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMatrixViaGoogle, haversineMatrix, unroutableEstimateEnabled } from '../netlify/functions/google-route-matrix.mts';
+import matrixHandler, { buildMatrixViaGoogle, haversineMatrix, resolveMatrix, unroutableEstimateEnabled } from '../netlify/functions/google-route-matrix.mts';
 
 const DEPOT = { lat: 34.147791, lng: -83.960911 };
 const A = { lat: 34.237791, lng: -83.960911 };  // ~6 miles north
@@ -99,4 +99,37 @@ test('the switch is house shape: default ON, only an explicit off-word turns it 
   assert.equal(unroutableEstimateEnabled({}), true);
   for (const off of ['off', '0', 'false', 'no', ' Off ']) assert.equal(unroutableEstimateEnabled({ ROUTE_MATRIX_ESTIMATE_UNROUTABLE: off }), false, off);
   for (const on of ['on', 'yes', '1', 'ofF!', '']) assert.equal(unroutableEstimateEnabled({ ROUTE_MATRIX_ESTIMATE_UNROUTABLE: on }), true, on);
+});
+
+// SCOPE (review): the estimate is the BUILD's. The HTTP handler's only caller is the Route
+// Workbench's "road distances" re-sequence on a Compare card, and the workbench is frozen — so it
+// keeps the old reading until Chad names that change.
+test('the build (routing-build-background → resolveMatrix, mode google) prices an unroutable leg at the road estimate', async () => {
+  delete process.env.ROUTE_MATRIX_ESTIMATE_UNROUTABLE;
+  process.env.GOOGLE_ROUTES_API_KEY = 'test-key';
+  const g = stubGoogle((i, j) => (i === 0 && j === 1 ? { condition: 'ROUTE_NOT_FOUND' } : i === j ? routed(0, 0) : routed(600, 9000)));
+  try {
+    const { matrix, source } = await resolveMatrix(DEPOT, [A, B], 'google');
+    assert.equal(source, 'google');
+    assert.equal(matrix.distanceMeters[0][1], haversineMatrix(DEPOT, [A, B]).distanceMeters[0][1]);
+    assert.ok(matrix.durationSec[0][1] > 0);
+  } finally { g.restore(); delete process.env.GOOGLE_ROUTES_API_KEY; }
+});
+
+test('the Route Workbench re-sequence (HTTP handler) is untouched: an unroutable leg still reads 0, switch ON or not', async () => {
+  delete process.env.ROUTE_MATRIX_ESTIMATE_UNROUTABLE;
+  delete process.env.AUTH_REQUIRED;
+  process.env.GOOGLE_ROUTES_API_KEY = 'test-key';
+  const g = stubGoogle((i, j) => (i === 0 && j === 1 ? { condition: 'ROUTE_NOT_FOUND' } : i === j ? routed(0, 0) : routed(600, 9000)));
+  try {
+    const res = await matrixHandler(new Request('https://x.netlify.app/.netlify/functions/google-route-matrix', {
+      method: 'POST', body: JSON.stringify({ depot: DEPOT, stops: [A, B], mode: 'google' }),
+    }));
+    assert.equal(res.status, 200);
+    const j = await res.json();
+    assert.equal(j.source, 'google');
+    assert.equal(j.matrix.durationSec[0][1], 0, 'the frozen workbench keeps its pre-fix reading');
+    assert.equal(j.matrix.distanceMeters[0][1], 0);
+    assert.equal(j.matrix.durationSec[1][0], 600);
+  } finally { g.restore(); delete process.env.GOOGLE_ROUTES_API_KEY; }
 });
