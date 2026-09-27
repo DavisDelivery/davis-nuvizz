@@ -216,7 +216,13 @@ export function buildActivity({
 
   const rows = (loads || []).map((l) => {
     const s = byLoad.get(String(l.loadNbr)) || null;
-    const expected = Number(l.expectedPieces || 0);
+    // What has to go ON the truck: deliveries only. A pickup is collected on the
+    // route, so its pieces never load at the dock — the phone's loadProgress
+    // drops them, and counting them here read a clean close as closed_short.
+    // A board row with no stop list keeps the total it was given.
+    const expected = Array.isArray(l.stops) && l.stops.length
+      ? l.stops.filter((st: any) => !st?.isPickup).reduce((n: number, st: any) => n + Number(st?.expectedPieces || 0), 0)
+      : Number(l.expectedPieces || 0);
     const scannedPieces = Number(s?.scannedPieces ?? s?.scannedCount ?? 0);
     const confirmedPieces = Number(s?.confirmedPieces || 0);
     const scannedCount = Number(s?.scannedCount || 0);
