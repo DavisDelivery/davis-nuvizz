@@ -65,7 +65,7 @@ import { hardCapsEnabled } from './lib/claude-shadow/config.mts';
 import { employeeClassMap, CLASS_OVERRIDE } from './lib/driver-class.mts';
 import { listDocs as listDocsFs } from './lib/firestore.mts';
 import { backtestView, backtestResult, backtestMap, enqueueBacktests, cancelJob, saveRouterSettings, routerRefusal } from './lib/claude-shadow/backtest.mts';
-import { enqueuePlan, planView, planOptionsNow, planPreviewNow, planResultNow, planMapNow } from './lib/claude-shadow/plan-jobs.mts';
+import { enqueuePlan, planView, planOptionsNow, planPreviewNow, planResultNow, planMapNow, planStopsNow } from './lib/claude-shadow/plan-jobs.mts';
 
 export const PROBE_LAST_PATH = 'claude_shadow_meta/probe_last';
 export const PROBE_LOG_COLLECTION = 'claude_shadow_probes';
@@ -202,6 +202,7 @@ export default async (req: Request): Promise<Response> => {
     'plan-preview': (b) => planPreviewNow(b?.plan),
     'plan-result': (b) => planResultNow(String(b?.id || '')),
     'plan-map': (b) => planMapNow(String(b?.id || '')),
+    'plan-stops': (b) => planStopsNow(b?.plan),
   };
   if (typeof body?.action === 'string' && Object.hasOwn(PLAN_READS, body.action)) {
     const viewer = await requireUser(req, { role: 'viewer' });
