@@ -203,6 +203,24 @@ export function reconsignedByListSig(priorSig: string | null | undefined, listSt
   return cur !== priorSig;
 }
 
+// The per-PRO registry record was enriched for a DIFFERENT address than the one the list now
+// carries for this row. The record keeps the list signature of the address it was enriched for
+// (writeEnrichedPros stores the row, addrListSig and all), so this is list↔list and converges:
+// once the live re-read lands, the registry is rewritten under the new signature. Either side
+// without a signature is no evidence (a record from before the field, an address-less row) and
+// keeps the merge exactly as it was. PURE / exported for tests.
+//
+// NUVIZZ_REGISTRY_ADDRESS_GUARD=off puts it back (the registry merges regardless, as before).
+// House shape: default ON, only an explicit off-word turns it off, anything malformed leaves it ON.
+// What it costs while ON: a moved order the registry would have answered gets its one live
+// /stop/info instead — inside the run's existing ENRICH_MAX budget, and once per move.
+export function registryRecordForOtherAddress(listStop: any, record: any, env: Record<string, string | undefined> = process.env): boolean {
+  if (/^(off|0|false|no)$/i.test(String(env?.NUVIZZ_REGISTRY_ADDRESS_GUARD ?? '').trim())) return false;
+  const cur = String(listStop?.addrListSig ?? '').trim();
+  const was = String(record?.addrListSig ?? '').trim();
+  return !!(cur && was && cur !== was);
+}
+
 // ── Two records, one number (the Estes-0828068215 lesson, Aug 4) ──────────────
 //
 // /stop/info looks a stop up BY NUMBER, and NuVizz can hold two different orders under one
@@ -1984,6 +2002,11 @@ export async function runRefreshStops(req: Request): Promise<Response> {
               if (reconsignedNbrs.has(nbr) || staleCacheNbrs.has(nbr)) continue;
               const r = reg.found.get(nbr);
               if (!r) continue;
+              // …and the same for a move the reconsign checks above can no longer see: the scan that
+              // noticed it wrote the row un-enriched (its /stop/info was capped or failed), so this
+              // scan's p.enriched is false and neither check fires. Merging the OLD address's record
+              // here put the new address under the old building's pin, marked enriched, for good.
+              if (registryRecordForOtherAddress(s, r)) continue;
               // A pickup cached before the ship-to fix holds OUR TERMINAL's address, so merging
               // it would mark the row enriched and skip the live read that is the only way back
               // to the real one. This is the cross-day half of the repair: the branch above only
