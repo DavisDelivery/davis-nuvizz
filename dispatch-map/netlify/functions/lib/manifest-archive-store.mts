@@ -33,7 +33,11 @@ export async function archiveManifest(args: {
     const digest = pdfDigest(buf);
 
     const path = manifestDayPath(tenant, day.date);
-    const existing = await getDoc(path).catch(() => null);
+    // STRICT read. Every write below REPLACES the night's record, and the supersede guard
+    // decides against what is on file — so a blip read as null let an OLDER report take the
+    // night, overwrite its PDF and drop its arrivals. A missing record still reads null; a
+    // failed one throws to the catch at the bottom, which reports ok:false and writes nothing.
+    const existing = await getDoc(path);
 
     const base = {
       at, digest, bytes: buf.length,
