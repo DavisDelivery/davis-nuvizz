@@ -69,8 +69,9 @@ const EMPLOYEE_MASK = ['vehicleType', 'externalIds', 'fullName', 'firstName', 'l
 /**
  * THE BOARD A PLAN READS, and everything it is judged with — one read, shared by a plan, its preview and
  * the stop map (v1.78.0), so the map shows exactly the stops a plan of the same settings would see.
+ * Exported for test/map-planner-parity-e2e.test.mjs, which holds its rows to the Map feed's.
  */
-async function readBoard(params: { date: string; lookbackDays: number }, deps: PlanDeps) {
+export async function readBoard(params: { date: string; lookbackDays: number }, deps: PlanDeps) {
   const board = deps.board ?? LIVE_BOARD_READS;
   const date = params.date;
   // A learned model not yet on file plans at the profile caps; one that could not be READ is not that
@@ -92,14 +93,20 @@ async function readBoard(params: { date: string; lookbackDays: number }, deps: P
   let fold: any = null;
   if (params.lookbackDays > 0) {
     const prior = carryPriorDates(date, params.lookbackDays);
-    const [live, retired, pool, reads] = await Promise.all([
+    // IN THE MAP'S ORDER (nuvizz-pull-today-stops.mts mergeCarryover): the three judges, then the
+    // judges' clock, then the prior days. The clock the pool's and the snapshot's 7-day backstops are
+    // measured at is read before the prior-day reads, where the Map reads it; read after them, a
+    // week-old judge crosses its backstop a read-duration early and the two disagree about which
+    // orders are still open (audit feed-refactor F2). One more round trip than reading all at once.
+    const [live, retired, pool] = await Promise.all([
       board.readActiveUnplannedSet(PLAN_TENANT).catch(() => null),
       board.readCarryoverRetired(PLAN_TENANT).catch(() => ({} as Record<string, string>)),
       board.readActivePool(PLAN_TENANT).catch(() => null),
-      Promise.all(prior.map((d) => board.readStops(PLAN_TENANT, d, { mask: LEAN_STOP_FIELDS }).then((r) => ({ d, stops: r.stops || [] })).catch(() => ({ d, stops: [] as any[] })))),
     ]);
+    const judgedAtMs = deps.now().getTime();
+    const reads = await Promise.all(prior.map((d) => board.readStops(PLAN_TENANT, d, { mask: LEAN_STOP_FIELDS }).then((r) => ({ d, stops: r.stops || [] })).catch(() => ({ d, stops: [] as any[] }))));
     // The Map compares its judges against the served board's own orders-scan stamp; so does this.
-    fold = { reads, live, retired, pool, nowMs: () => deps.now().getTime(), lastUnplannedScanAt: day?.meta?.lastUnplannedScanAt ?? null };
+    fold = { reads, live, retired, pool, nowMs: () => deps.now().getTime(), judgedAtMs, lastUnplannedScanAt: day?.meta?.lastUnplannedScanAt ?? null };
   }
   // The Map's three steps, in its order (lib/board-rows.mts): prior-day finished out, carry-over in, cancelled out.
   const { rows, carry, cancelled } = boardRowsAsServed(day?.stops || [], date, fold, deps.env);

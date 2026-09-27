@@ -1,4 +1,4 @@
-// lib/carryover-fold.mts — THE CARRY-OVER RULE, PURE (v1.76.0).
+// lib/carryover-fold.mts — THE CARRY-OVER RULE, PURE (v1.77.0).
 //
 // Which of a prior day's orders are still open work for `date`: the board's own rule, lifted out of
 // nuvizz-pull-today-stops.mts (mergeCarryover) unchanged so that two readers apply ONE rule — the
@@ -43,6 +43,17 @@ export interface FoldInputs {
   retired: Record<string, string>;
   pool: ActivePool | null;
   nowMs: () => number;
+  /**
+   * THE JUDGES' CLOCK: the moment the pool's and the snapshot's 7-day backstops are measured at.
+   * The Map reads it ONCE, after its three judge documents are in and BEFORE its prior-day reads —
+   * exactly where it read the clock for these two checks before v1.77.0 moved this fold out of the
+   * feed (audit feed-refactor F2: read after the reads, a week-old judge crossed its backstop a
+   * read-duration early and the fold fell back to judging nothing). The planner reads it at the
+   * same point. The per-row checks — the 48h confirmed-plan stamp and the 60-minute write grace —
+   * still read nowMs() while the fold runs, after the reads, as they always have. Absent, or not a
+   * finite number: nowMs(), read here, as before.
+   */
+  judgedAtMs?: number;
   lastUnplannedScanAt: string | null;
   log?: (msg: string) => void;
 }
@@ -55,7 +66,8 @@ export function foldCarryover(stops: any[], f: FoldInputs): CarryoverStats {
   const { date, reads, live, retired, pool, nowMs, lastUnplannedScanAt } = f;
   const log = f.log ?? (() => {});
   const seen = new Set(stops.map((s) => String(s.stopNbr)));
-  const poolCheck = poolUsable(pool, { nowMs: nowMs(), newestDocScanAt: lastUnplannedScanAt });
+  const judgedAt = typeof f.judgedAtMs === 'number' && Number.isFinite(f.judgedAtMs) ? f.judgedAtMs : null;
+  const poolCheck = poolUsable(pool, { nowMs: judgedAt ?? nowMs(), newestDocScanAt: lastUnplannedScanAt });
   const poolOk = !!(pool && poolCheck.ok);
   const poolThin = !!(pool && pool.thin === true);
   const poolByNbr = new Map<string, any>();
@@ -77,7 +89,7 @@ export function foldCarryover(stops: any[], f: FoldInputs): CarryoverStats {
   const SNAPSHOT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;   // absolute backstop, not the working rule
   const SUPERSEDE_SLACK_MS = 15 * 60 * 1000;   // same scan ⇒ identical stamps; slack absorbs legacy paths
   const snapAtMs = live?.at ? new Date(live.at).getTime() : NaN;
-  const snapshotAgeMs = Number.isFinite(snapAtMs) ? (nowMs() - snapAtMs) : Infinity;
+  const snapshotAgeMs = Number.isFinite(snapAtMs) ? ((judgedAt ?? nowMs()) - snapAtMs) : Infinity;
   const boardScanMs = lastUnplannedScanAt ? new Date(lastUnplannedScanAt).getTime() : NaN;
   const superseded = Number.isFinite(snapAtMs) && Number.isFinite(boardScanMs)
     && (boardScanMs - snapAtMs) > SUPERSEDE_SLACK_MS;
