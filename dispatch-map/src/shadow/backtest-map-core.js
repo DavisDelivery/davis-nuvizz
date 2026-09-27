@@ -238,9 +238,11 @@ export function planGeo(m, plan, opts = {}) {
 export function coreBounds(m, tail = 0.03) {
   const pts = (m?.stops || []).filter((p) => Number.isFinite(p?.lat) && Number.isFinite(p?.lng));
   if (!pts.length) return { bounds: boundsOf(m), outside: 0 };
-  const q = (vals, t) => { const s = vals.slice().sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.max(0, Math.floor(t * (s.length - 1))))]; };
-  const lats = pts.map((p) => p.lat), lngs = pts.map((p) => p.lng);
-  let south = q(lats, tail), north = q(lats, 1 - tail), west = q(lngs, tail), east = q(lngs, 1 - tail);
+  // The same number of stops off each end, floor(tail · (n − 1)) of them (audit 2026-09-27: the top end's
+  // index was floored too, which cut the northernmost and easternmost stop of every day of 34 or fewer).
+  const cut = Math.max(0, Math.floor(tail * (pts.length - 1)));
+  const ends = (vals) => { const s = vals.slice().sort((a, b) => a - b); return [s[Math.min(cut, s.length - 1)], s[Math.max(0, s.length - 1 - cut)]]; };
+  let [south, north] = ends(pts.map((p) => p.lat)), [west, east] = ends(pts.map((p) => p.lng));
   if (m?.depot && Number.isFinite(m.depot.lat) && Number.isFinite(m.depot.lng)) {
     south = Math.min(south, m.depot.lat); north = Math.max(north, m.depot.lat);
     west = Math.min(west, m.depot.lng); east = Math.max(east, m.depot.lng);
