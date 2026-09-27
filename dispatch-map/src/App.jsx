@@ -111,7 +111,7 @@ import {
   rowsFromAoa, summarizeShiplify, shiplifyBatchId, chunkRowsBySize, decodeIndexLine, SHIPLIFY_SHEET,
 } from './lib/shiplify-import.js';
 import { eligibilityChanged } from './lib/trailer-block.js';
-import { changedNoteFields } from './lib/customer-note-edit.js';
+import { changedNoteFields, answerHoldsDock } from './lib/customer-note-edit.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops, hoursSummary } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
@@ -39349,6 +39349,11 @@ function StopLookupScreen() {
   // handed every field back with its open-time value and undid anything another writer did
   // while the form was open: an unsubscribe, a pin moved to the right door.
   const [editSeed, setEditSeed] = useState(null);
+  // ONLY THE LATEST Edit PRESS MAY FILL THE FORM. Tapping Edit on one dock and at once on
+  // another leaves two reads in flight; if the first answers last, its document landed under
+  // the second dock's name and Save wrote it there — the wrong dock's hours and pin override
+  // onto this one (audit 2026-09-27, app-A4-5). Same shape as drvReqRef below.
+  const editReqRef = useRef(0);
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editErr, setEditErr] = useState(null);
@@ -39564,6 +39569,7 @@ function StopLookupScreen() {
   const openEdit = useCallback(async (dock) => {
     if (!dock?.key) return;
     if (notesGate.reason) { setEditErr(notesGate.reason); return; }
+    const req = ++editReqRef.current;
     setEditDock(dock); setEditErr(null); setEditDraft(null); setEditLoading(true);
     // `base` first, always. It is emptyNote's shape — seven days of { open, close } strings —
     // and it is what keeps every <input type="time"> CONTROLLED on a customer who has never
@@ -39581,6 +39587,7 @@ function StopLookupScreen() {
       setEditSeed(base);
       if (!db) { setEditDraft(base); setEditWas(null); return; }
       const snap = await getDoc(doc(db, 'customer_notes', dock.key));
+      if (req !== editReqRef.current) return;   // a later Edit press owns the form now
       // The stored document wins field by field; `base` only fills what has never been set.
       const seed = snap.exists() ? { ...base, ...snap.data() } : base;
       setEditDraft(seed);
@@ -39588,9 +39595,10 @@ function StopLookupScreen() {
       setEditWas(snap.exists() ? snap.data() : null);
     } catch (e) {
       reportDenied('customer_notes', e);
+      if (req !== editReqRef.current) return;
       setEditErr(`Could not read this customer's note: ${e.message || e}`);
       setEditDraft(null); setEditWas(null);
-    } finally { setEditLoading(false); }
+    } finally { if (req === editReqRef.current) setEditLoading(false); }
   }, [notesGate.reason]);
 
   const cancelEdit = useCallback(() => {
@@ -39662,6 +39670,10 @@ function StopLookupScreen() {
       // exists to prevent, arriving one line later.
       setData((cur) => {
         if (!cur) return cur;
+        // …BUT ONLY IF THAT CARD IS STILL THIS CUSTOMER'S. A new search while the write was in
+        // flight put somebody else's answer on screen; painting this note onto it is the wrong
+        // customer's dock instruction in front of the rep (audit 2026-09-27, app-A4-5).
+        if (!answerHoldsDock(cur, key)) return cur;
         if (cur.view) return { ...cur, noteKey: key, view: { ...cur.view, notes: summary } };
         if (cur.dossier) return { ...cur, dossier: { ...cur.dossier, notes: summary } };
         return cur;

@@ -56,3 +56,21 @@ export function changedNoteFields(draft, seed) {
   }
   return out;
 }
+
+/**
+ * IS THE CUSTOMER THIS SAVE WAS FOR STILL THE ONE ON SCREEN? (audit 2026-09-27, app-A4-5)
+ *
+ * The save's read-back repaints the card. A rep can start a new search while the write is in
+ * flight, and a repaint applied to whatever answer is on screen when it returns painted the old
+ * customer's note onto the new customer's card. The answer holds the dock when:
+ *   • customer view — the dock is one of the docks that answer lists (the only place the
+ *     per-dock Edit buttons come from);
+ *   • an order's page — the order's customer key (the server-derived `matchKey`, or the
+ *     dossier's own) is the dock's key, which is the only key that page's Edit can write.
+ */
+export function answerHoldsDock(answer, key) {
+  if (!answer || typeof answer !== 'object' || !key) return false;
+  if (answer.view) return (Array.isArray(answer.docks) ? answer.docks : []).some((d) => d && d.key === key);
+  if (answer.dossier) return (answer.matchKey || answer.dossier?.identity?.matchKey || null) === key;
+  return false;
+}
