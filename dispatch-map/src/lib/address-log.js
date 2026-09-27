@@ -104,8 +104,9 @@ export async function logAddressOverride({ stop, before, after, source = 'overri
     if (j?.recorded === true) return { recorded: true, outcome: 'recorded', detail: '' };
     // DECLINED IS NOT FAILED. The server says `recorded: false` for two completely different
     // reasons:
-    // the row carried no material change, or the day already holds an identical row (the
-    // scan's de-dupe, firestore.mts — keyed on stop + before/after + kind). Neither is a
+    // the row carried no material change, or it is identical to the stop's newest row from the
+    // same side (unrecordedAddressChanges, lib/address-history.mts — every address part, the
+    // kind and the source). Neither is a
     // fault, and a batch that warned about them would cry wolf on its own correct behaviour.
     // BUT ONLY WHEN THE SERVER SAYS WHICH (audit 2026-09-27). Both refusals carry a `reason`;
     // a recorded:false with none is a row nobody can vouch for — the shape a refused Firestore
