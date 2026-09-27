@@ -264,7 +264,7 @@ const circles = (page) => page.evaluate(() => {
   const latest = (window.__maps || []).at(-1);
   return (window.__circles || []).map((c) => ({
     onMap: !!c.map, onLatest: c.map === latest, clickable: c.opts.clickable, zIndex: c.opts.zIndex,
-    stroke: c.opts.strokeColor, weight: c.opts.strokeWeight, listeners: c.listeners,
+    stroke: c.opts.strokeColor, weight: c.opts.strokeWeight, fill: c.opts.fillOpacity, listeners: c.listeners,
   }));
 });
 const names = (page) => page.evaluate(() => {
@@ -326,6 +326,9 @@ console.log('\nDriver areas — the Map tab, desktop (1440x950)');
       ? ok('every halo is drawn before every ring, so no halo cuts another driver\'s line')
       : bad('halos and rings are interleaved — a later halo will cut an earlier ring');
     cs.every((c) => c.zIndex === 0) ? ok('all at zIndex 0, under the route lines') : bad('a ring is not at zIndex 0');
+    // Twenty-odd rings stack over the metro; any fill at all washes the streets out (seen on the
+    // first real render), so the rings are lines only.
+    cs.every((c) => c.fill === 0) ? ok('every ring is hollow — no fill to stack into a wash over the metro') : bad(`a ring has a fill (${cs.map((c) => c.fill).join(',')})`);
 
     const n = await names(page);
     if (!n) bad('no names were drawn');

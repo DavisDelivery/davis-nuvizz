@@ -275,10 +275,13 @@ export function makeDriverAreaOverlayClass(google) {
       for (const { at } of drawn) {
         this.shapes.push(new google.maps.Circle({ ...at, strokeColor: '#ffffff', strokeOpacity: 0.75, strokeWeight: 5, fillOpacity: 0 }));
       }
-      // HOLLOW, near enough: filled and stacked four deep the metro goes solid and no ring can be
-      // followed round (the sheet learned that on paper first).
+      // HOLLOW — no fill at all. The paper's 5% tint reads fine four rings deep; on the live map
+      // the metro sits under twenty-odd rings at once, and on the first real render (68 rings,
+      // 2026-09-27) even 4% stacked into a brown wash over Gwinnett that hid the streets the
+      // trainee is trying to learn. Lines only, so the base map and every pin read as they do
+      // with the switch off.
       for (const { d, at } of drawn) {
-        this.shapes.push(new google.maps.Circle({ ...at, strokeColor: d.colour, strokeOpacity: 0.95, strokeWeight: 2, fillColor: d.colour, fillOpacity: 0.04 }));
+        this.shapes.push(new google.maps.Circle({ ...at, strokeColor: d.colour, strokeOpacity: 0.95, strokeWeight: 2, fillOpacity: 0 }));
       }
       const labels = drawn.map(({ d, c }) => ({ text: d.label, colour: d.colour, lat: c.lat, lng: c.lng, radiusKm: c.radiusKm }));
       this.names = new RingNames(labels);
