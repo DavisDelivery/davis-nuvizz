@@ -41,7 +41,7 @@
 // would let one day's clear cancel an order another day's bench is still using.
 
 import { readProdDay, catalogueEnabled, CATALOGUE_MASK } from './lib/prod-catalogue.mts';
-import { planSeed, seedIndexRow, unsafeWriteTarget, isUatSeededNbr } from './lib/uat-seed.mts';
+import { planSeed, seedIndexRow, unsafeWriteTarget, isUatSeededNbr, supersededBoardDate } from './lib/uat-seed.mts';
 import { buildStopPayload } from './lib/nuvizz-write-ops.mts';
 import { runOp, resolveWriteCreds } from './lib/nuvizz-write.mts';
 import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
@@ -202,7 +202,17 @@ export default async (req: Request): Promise<Response> => {
       const at = new Date().toISOString();
 
       // ── THE LEDGER GOES FIRST — intent, not success. See the header. ──────
+      // A re-seed from ANOTHER day moves the one UAT order (supersededBoardDate): its old day's
+      // board row goes BEFORE the ledger stops naming that day, or nothing could ever clear it.
+      const priorLedger = new Map((await readLedger()).map((r) => [r.uatStopNbr, r]));
+      const struckDays = new Set<string>();
       for (const p of plan) {
+        const prior = supersededBoardDate(priorLedger.get(p.uatStopNbr), date);
+        if (prior) {
+          await deleteDoc(`${indexBase(prior)}/stops/${p.uatStopNbr}`);
+          struckDays.add(prior);
+          warnings.push(`${p.uatStopNbr} was seeded for ${prior} before — it is one order in the UAT tenant, so its row on ${prior}'s UAT board was removed and it now stands on ${date}.`);
+        }
         await setDoc(`${LEDGER}/${p.uatStopNbr}`, {
           uatStopNbr: p.uatStopNbr, prodStopNbr: p.prodStopNbr, boardDate: date,
           status: 'creating', stopId: null, at, label,
@@ -242,6 +252,7 @@ export default async (req: Request): Promise<Response> => {
       // The board is recounted whatever happened: reporting 0 rows because THIS seed created
       // none would hide the rows a previous seed left standing.
       const meta = await rewriteMeta(date, at);
+      for (const d of struckDays) await rewriteMeta(d, at).catch(() => undefined);
 
       const callsUsed = reqr.getStats().totalThisInstance - before;
       await putOpRecord({ clientOpId: `uatseed_${at}`, op: 'uatSeed', status: failed.length ? 'failed' : 'succeeded', tenant: creds.companyCode, at, result: { date, label, created, failed, skipped } }).catch(() => undefined);

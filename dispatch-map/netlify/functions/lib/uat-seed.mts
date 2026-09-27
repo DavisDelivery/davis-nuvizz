@@ -277,6 +277,21 @@ export function seedIndexRow(
 }
 
 /**
+ * PURE. The UAT board day a re-seed must strike before it repoints this order's ledger row, or
+ * null.
+ *
+ * The ledger is one row per UAT number and the number is derived (rule 2), so seeding the same
+ * production order from another day UPSERTS the same UAT order onto the new service date. Its
+ * row on the day it was seeded for before would then stand for an order the tenant no longer
+ * has there — and once the ledger names only the new day, nothing records that row and Clear can
+ * never remove it. One order, one UAT day.
+ */
+export function supersededBoardDate(ledgerRow: any, date: string): string | null {
+  const prior = str(ledgerRow?.boardDate);
+  return /^\d{4}-\d{2}-\d{2}$/.test(prior) && prior !== date ? prior : null;
+}
+
+/**
  * PURE. May this board row be cancelled by a clear?
  *
  * BOTH halves must hold: the number carries the UT- prefix AND the row is in the seed ledger.
