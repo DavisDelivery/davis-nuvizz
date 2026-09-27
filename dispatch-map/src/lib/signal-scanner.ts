@@ -122,22 +122,31 @@ interface ScannableStop {
 // Scans every occurrence rather than the first: "NO STRAIGHT TRUCK. STRAIGHT TRUCK ONLY
 // AFTER 3PM" is contrived, but a rule that stops at the first hit would take the negated
 // one and drop a real instruction on the floor.
-// Up to two plain words may sit between the negation and the phrase — that is where SEND,
-// USE and DELIVER turn up ("DO NOT SEND STRAIGHT TRUCK") — matching the allowance the
-// no-double-stack rule in handling-flags.js already makes for the same reason.
+// Up to two words may sit between the negation and the phrase — that is where SEND, USE and
+// DELIVER turn up ("DO NOT SEND STRAIGHT TRUCK") — matching the allowance the no-double-stack
+// rule in handling-flags.js already makes for the same reason. WHICH words is NEGATION_BRIDGE
+// below, and it is a closed list on purpose.
 //
 // The inter-word gaps are [^\S\n] (whitespace but NOT a newline) rather than \s, because
 // these comments arrive as SEPARATE NuVizz records joined with '\n'. With plain \s, a stop
 // whose notes read "NO DOCK" then "STRAIGHT TRUCK ONLY" would have the first record's
 // negation reach across the join and cancel the second record's real instruction.
 //
-// ONLY THOSE WORDS MAY BRIDGE THE GAP — a verb of sending and the function words around it
-// (article, determiner, BE, preposition) — never any word. "NO TT STRAIGHT TRUCK ONLY" and "NO SEMI STRAIGHT TRUCK" are TWO instructions written
+// ONLY THOSE WORDS MAY BRIDGE THE GAP — a verb of sending, receiving or loading, the delivery
+// noun, and the function words around them (article, determiner, BE, preposition) — never any
+// word. "NO TT STRAIGHT TRUCK ONLY" and "NO SEMI STRAIGHT TRUCK" are TWO instructions written
 // without punctuation, and a NOUN between the NO and the phrase is what says so: the NO
 // belongs to TT, not to STRAIGHT TRUCK. With \w+ here the first instruction's NO cancelled
 // the second, and nothing else in the list catches it, so the stop lost the one flag that
 // keeps it off a 53ft trailer — the expensive direction to be wrong in.
-const NEGATION_BRIDGE = `(?:SEND|SENT|USE|DELIVER(?:ED)?|SHIP(?:PED)?|BRING|BE|A|AN|THE|ANY|ON|IN|BY|VIA|WITH)`;
+// The RECEIVING side is listed as deliberately as the sending side: "WILL NOT ACCEPT STRAIGHT
+// TRUCK", "CANNOT TAKE STRAIGHT TRUCK", "NO DELIVERY BY STRAIGHT TRUCK" are refusals written
+// by the dock rather than the shipper, and reading one as "straight truck only" is the #886
+// inversion again — the flag forces the 26ft box onto the one stop that said not to. None of
+// these words can be the first half of a two-instruction line the way TT, SEMI, DOCK or
+// LIFTGATE can, which is the only thing this list has to keep out.
+const NEGATION_BRIDGE = `(?:SEND|SENT|USE|DELIVER(?:ED|Y|IES)?|SHIP(?:PED)?|BRING|DISPATCH(?:ED)?|LOAD(?:ED)?|PUT|`
+  + `ACCEPT(?:ED)?|TAKE|RECEIVE(?:D)?|ALLOW(?:ED)?|BE|A|AN|THE|ANY|ON|IN|BY|VIA|WITH)`;
 const NEGATED_BEFORE = new RegExp(
   `\\b(?:NO|NOT|NEVER|DO[^\\S\\n]*N(?:OT|'?T)|CAN[^\\S\\n]*N(?:OT|'?T)|WON'?T)[^\\S\\n]+(?:${NEGATION_BRIDGE}[^\\S\\n]+){0,2}$`, 'i',
 );

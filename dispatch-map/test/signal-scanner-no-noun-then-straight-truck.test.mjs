@@ -57,3 +57,25 @@ test('the refusals the guard was built for are still refusals', () => {
     assert.deepEqual(order(txt), [], `${txt} is a refusal and must not flag`);
   }
 });
+
+test('a dock that refuses the straight truck in its own words is still refusing — "WILL NOT ACCEPT STRAIGHT TRUCK"', () => {
+  // Closing the bridge to nouns must not close it to the RECEIVING verbs. Every one of these
+  // read as a refusal before the bridge became a closed list, and reading one as "straight
+  // truck only" is the #886 inversion: the flag forces the 26ft box onto the stop that said no.
+  for (const txt of [
+    'WILL NOT ACCEPT STRAIGHT TRUCK',
+    'CANNOT ACCEPT A STRAIGHT TRUCK',
+    'CANNOT TAKE STRAIGHT TRUCK',
+    'CAN NOT RECEIVE STRAIGHT TRUCK',
+    'DOES NOT ALLOW STRAIGHT TRUCK',
+    'NO DELIVERY BY STRAIGHT TRUCK',
+    'NO DELIVERIES ON STRAIGHT TRUCK',
+    'DO NOT DISPATCH STRAIGHT TRUCK',
+    'DO NOT LOAD ON STRAIGHT TRUCK',
+    'DO NOT PUT ON STRAIGHT TRUCK',
+  ]) {
+    assert.deepEqual(order(txt), [], `${txt} is a refusal and must not flag`);
+  }
+  // ...while a noun in the same slot is still the first of two instructions.
+  assert.equal(order('NO LOADING DOCK STRAIGHT TRUCK ONLY')[0]?.flagValue, 'uline_straight_truck');
+});
