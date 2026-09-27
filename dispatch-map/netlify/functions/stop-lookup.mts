@@ -147,13 +147,36 @@ async function tryRead<T>(fn: () => Promise<T>, empty: T): Promise<{ value: T; r
   }
 }
 
-/** The first of a stop's id spellings a per-day reader actually answers for. */
+/** The first of a stop's id spellings a per-day reader actually answers for.
+ *
+ *  ONLY A NULL IS A MISS. The readers return null on a 404 and THROW on anything else (a 503,
+ *  a 429, the deadline) — and this used to catch that throw into a null, so a Firestore
+ *  outage reached the ledger as "read, and empty" and the answer called itself complete. A
+ *  spelling that threw no longer ends the search (the next one may still hit), but if none
+ *  hit, the failure is re-thrown so the caller reports the source UNREAD. */
 async function firstHit<T>(ids: string[], read: (id: string) => Promise<T | null>): Promise<T | null> {
+  let failure: unknown = null;
   for (const id of ids) {
-    const doc = await read(id).catch(() => null);
+    let doc: T | null;
+    try { doc = await read(id); } catch (e) { failure = failure || e; continue; }
     if (doc) return doc;
   }
+  if (failure) throw failure;
   return null;
+}
+
+/** Per-day reads over a bounded day set. A day whose read THREW does not blank the days that
+ *  answered — their hits are kept and shown — but the source is reported UNREAD, naming the
+ *  day, because a sweep with a hole in it cannot license "we have never captured this". */
+async function sweepDays<R>(days: string[], one: (date: string) => Promise<R | null>): Promise<{ value: R[]; read: boolean; error: string | null }> {
+  const failed: string[] = [];
+  const rows = await Promise.all(days.map((date) => one(date).catch((e: any) => {
+    failed.push(`${date}: ${String(e?.message || e || 'read failed')}`);
+    return null;
+  })));
+  const value = rows.filter(Boolean) as R[];
+  if (!failed.length) return { value, read: true, error: null };
+  return { value, read: false, error: `${failed.length} of ${days.length} day${days.length === 1 ? '' : 's'} could not be read — ${failed[0]}`.slice(0, 200) };
 }
 
 export default async (req: Request): Promise<Response> => {
@@ -618,33 +641,38 @@ export default async (req: Request): Promise<Response> => {
   // PRO_INDEX=off is a switch somebody threw, not a read that failed — `skipped`, so the
   // ledger says so in grey and the answer is still allowed to call itself complete. The
   // fallback sweep below covers the whole board window when the index gives nothing.
-  const pointers = indexOn
-    ? await tryRead(() => lookupProDays(TENANT, stopRaw), [] as any[])
-    : { value: [] as any[], read: 'skipped' as const, error: 'PRO_INDEX=off — the pointer index was not consulted' };
+  //
+  // lookupProDays swallows a failed read into "no days" — right for its other callers, wrong
+  // here, where a swallowed 503 lets an old order be called never-captured. So its reader is
+  // wrapped to REMEMBER a failure, and the source is reported unread with that reason. The
+  // days it did read are kept.
+  let proFailure: any = null;
+  const proIo = { getDoc: (p: string) => getDoc(p).catch((e: any) => { proFailure = proFailure || e; throw e; }) };
+  const proRead = indexOn ? await tryRead(() => lookupProDays(TENANT, stopRaw, proIo), [] as any[]) : null;
+  const pointers = !proRead
+    ? { value: [] as any[], read: 'skipped' as const, error: 'PRO_INDEX=off — the pointer index was not consulted' }
+    : proFailure
+      ? { value: proRead.value, read: false, error: String(proFailure?.message || proFailure).slice(0, 200) }
+      : proRead;
   const pointerDays = uniqDays(pointers.value.map((p: any) => String(p?.date ?? '')));
   const sealedDays = sealedDaysFor(pointerDays, board, today);
 
   // ── 2. the stop itself, sealed and live, in parallel over bounded day sets ──
   const [sealedR, boardR, addressR, writesR] = await Promise.all([
-    tryRead(async () => {
-      const rows = await Promise.all(sealedDays.map(async (date) => ({
-        // getStop already tries the raw id and NuVizz's zero-padded form; firstHit adds the
-        // segment-stripped and padding-stripped spellings a dispatcher types.
-        date, stop: await firstHit(ids, (id) => getSealedStop(TENANT, date, id)),
-      })));
-      return rows.filter((r) => r.stop);
-    }, [] as any[]),
-    tryRead(async () => {
-      const rows = await Promise.all(board.map(async (date) => {
-        const row = await firstHit(ids, (id) => readStopDoc(TENANT, date, id));
-        if (!row) return null;
-        // The day document's own scan stamp, read ONLY for a day that held the stop, so a
-        // stale board copy can say when it was last looked at rather than implying "now".
-        const meta: any = await getDoc(`nuvizz_stop_index/${TENANT}__${date}`).catch(() => null);
-        return { date, row, scannedAt: meta?.last_scanned_at ?? null };
-      }));
-      return rows.filter(Boolean);
-    }, [] as any[]),
+    sweepDays(sealedDays, async (date) => {
+      // getStop already tries the raw id and NuVizz's zero-padded form; firstHit adds the
+      // segment-stripped and padding-stripped spellings a dispatcher types.
+      const stop = await firstHit(ids, (id) => getSealedStop(TENANT, date, id));
+      return stop ? { date, stop } : null;
+    }),
+    sweepDays(board, async (date) => {
+      const row = await firstHit(ids, (id) => readStopDoc(TENANT, date, id));
+      if (!row) return null;
+      // The day document's own scan stamp, read ONLY for a day that held the stop, so a
+      // stale board copy can say when it was last looked at rather than implying "now".
+      const meta: any = await getDoc(`nuvizz_stop_index/${TENANT}__${date}`).catch(() => null);
+      return { date, row, scannedAt: meta?.last_scanned_at ?? null };
+    }),
     tryRead(async () => {
       const perDay = await Promise.all(board.map((d) => readAddressChanges(TENANT, d)));
       // `all: true` on purpose, the same call nuvizz-stop-explain makes: a formatting row is
@@ -668,18 +696,14 @@ export default async (req: Request): Promise<Response> => {
     ...boardR.value.map((r: any) => r.date),
   ]);
   const [attemptsR, plansR] = await Promise.all([
-    tryRead(async () => {
-      const rows = await Promise.all(eventDays.map(async (date) => ({
-        date, item: await firstHit(ids, (id) => getDoc(`attempts/${TENANT}__${date}/items/${encodeURIComponent(id)}`)),
-      })));
-      return rows.filter((r) => r.item);
-    }, [] as any[]),
-    tryRead(async () => {
-      const rows = await Promise.all(eventDays.map(async (date) => ({
-        date, item: await firstHit(ids, (id) => getDoc(`att_plan/${TENANT}__${date}/stops/${encodeURIComponent(id)}`)),
-      })));
-      return rows.filter((r) => r.item);
-    }, [] as any[]),
+    sweepDays(eventDays, async (date) => {
+      const item = await firstHit(ids, (id) => getDoc(`attempts/${TENANT}__${date}/items/${encodeURIComponent(id)}`));
+      return item ? { date, item } : null;
+    }),
+    sweepDays(eventDays, async (date) => {
+      const item = await firstHit(ids, (id) => getDoc(`att_plan/${TENANT}__${date}/stops/${encodeURIComponent(id)}`));
+      return item ? { date, item } : null;
+    }),
   ]);
 
   // ── 4. the customer, resolved off whatever the days actually told us ───────
