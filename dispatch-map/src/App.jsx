@@ -33165,7 +33165,10 @@ function BulkOrderScreen() {
   const [pushedLabelRefresh, setPushedLabelRefresh] = useState(0);
   const pushedLabels = useOrderLabels(bulkView === 'pushed' ? pushedDate : null, pushedLabelRefresh);
   const [pushedSel, setPushedSel] = useState(() => new Set());   // selected row keys (NuVizz #)
-  useEffect(() => { setPushedSel(new Set()); }, [pushedDate]);
+  // Ticks belong to ONE day's list, so every move of the date clears them — where the date is
+  // moved, not in an effect on pushedDate: that effect also wiped the batch createAll ticks in the
+  // same render it moves the receipt to today, so the receipt opened with nothing ticked.
+  const pickPushedDate = (d) => { setPushedDate(d); setPushedSel(new Set()); };
   const pushedReqRef = useRef(null);   // latest requested date — stale responses must not render under a newer label
   const fetchPushedLog = useCallback(async (date) => {
     if (!date) return;
@@ -33542,7 +33545,7 @@ function BulkOrderScreen() {
         });
       } catch { /* history is best-effort */ }
       const today = etTodayStr();
-      if (pushedDate !== today) setPushedDate(today); else fetchPushedLog(today);
+      if (pushedDate !== today) pickPushedDate(today); else fetchPushedLog(today);
       if (!out.some((o) => !o.ok)) {
         // A clean run lands on the receipt with the batch it just created already ticked, so
         // Print labels is one tap.
@@ -33742,7 +33745,7 @@ function BulkOrderScreen() {
         });
       } catch { /* history is best-effort */ }
       const today = etTodayStr();
-      if (pushedDate !== today) setPushedDate(today); else fetchPushedLog(today);
+      if (pushedDate !== today) pickPushedDate(today); else fetchPushedLog(today);
     }
     const labelSave = labelOrders.length ? await saveOrderLabels(labelOrders) : { ok: true };
     if (labelOrders.length) setPushedLabelRefresh((k) => k + 1);
@@ -34030,11 +34033,11 @@ function BulkOrderScreen() {
                     type="date"
                     value={pushedDate}
                     max={etTodayStr()}
-                    onChange={(e) => setPushedDate(e.target.value || etTodayStr())}
+                    onChange={(e) => pickPushedDate(e.target.value || etTodayStr())}
                     className="border border-slate-300 rounded px-2 py-1 text-[12px]"
                   />
                   {pushedDate !== etTodayStr() && (
-                    <button onClick={() => setPushedDate(etTodayStr())} className="text-[11px] text-blue-700 hover:underline">Today</button>
+                    <button onClick={() => pickPushedDate(etTodayStr())} className="text-[11px] text-blue-700 hover:underline">Today</button>
                   )}
                   <button onClick={() => fetchPushedLog(pushedDate)} title="Refresh" className="text-slate-400 hover:text-slate-700"><RefreshCw size={13} className={pushedLog.loading ? 'animate-spin' : ''} /></button>
                   <span className="ml-auto tabular-nums font-medium">
@@ -34299,8 +34302,8 @@ function BulkOrderScreen() {
               <div className="flex items-center flex-wrap gap-2">
                 <div className="text-[13px] font-semibold text-slate-700 inline-flex items-center gap-1.5"><FileCheck size={14} /> Pushed to NuVizz</div>
                 <span className="text-slate-300">·</span>
-                <input type="date" value={pushedDate} max={etTodayStr()} onChange={(e) => setPushedDate(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-[12px] bg-white focus:outline-none focus:ring-1 focus:ring-blue-300" />
-                {!isToday && <button onClick={() => setPushedDate(etTodayStr())} className="text-[11px] text-blue-600 hover:underline">Today</button>}
+                <input type="date" value={pushedDate} max={etTodayStr()} onChange={(e) => pickPushedDate(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-[12px] bg-white focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                {!isToday && <button onClick={() => pickPushedDate(etTodayStr())} className="text-[11px] text-blue-600 hover:underline">Today</button>}
                 <button onClick={() => fetchPushedLog(pushedDate)} title="Refresh" className="text-slate-400 hover:text-slate-700"><RefreshCw size={13} className={pushedLog.loading ? 'animate-spin' : ''} /></button>
                 <span className="text-[12px] text-slate-500">{pushedLog.loading ? 'loading…' : `${recs.length} pushed`}{isToday ? ' today' : ''}</span>
                 {pushedLog.error && <span className="text-[11px] text-amber-700">History unavailable: {pushedLog.error}</span>}
