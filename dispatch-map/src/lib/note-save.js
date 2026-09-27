@@ -50,3 +50,28 @@ export async function commitNoteDraft(save, draft) {
     return false;
   }
 }
+
+/**
+ * THE CUSTOMER # BLOCK's result line — what it may say after a save, given whether the
+ * customer half (the customer_notes doc: what Text / Call read and the NEXT order finds)
+ * landed, and setStopContact's answer for the order half in NuVizz.
+ *
+ * It used to open with "Saved" whatever the customer half did, because that save never said
+ * whether it had worked; a refused number was reported as saved (A1-S3-4). The three sentences
+ * for a landed save are the ones the block has always used. When the customer half did NOT
+ * land, the line says so first — the red reason is printed in the still-open editor above it —
+ * and still reports the NuVizz half truthfully. Always amber then: something needs doing.
+ */
+export function contactSaveLine(savedHere, r) {
+  const out = (r && (r.result || r)) || {};
+  const ok = !!(r && r.ok);
+  const why = (r && r.error) || out.error || 'the write failed.';
+  if (savedHere === true) {
+    if (ok && out.unchanged) return { kind: 'ok', text: 'Saved — the order already carried this contact in NuVizz.' };
+    if (ok) return { kind: 'ok', text: 'Saved, and written onto the order in NuVizz.' };
+    return { kind: 'warn', text: `Saved here, but NuVizz did not take it: ${why}` };
+  }
+  if (ok && out.unchanged) return { kind: 'warn', text: 'Not saved here — the order in NuVizz already carries this contact.' };
+  if (ok) return { kind: 'warn', text: 'Not saved here — but it is written onto the order in NuVizz.' };
+  return { kind: 'warn', text: `Not saved here, and NuVizz did not take it either: ${why}` };
+}

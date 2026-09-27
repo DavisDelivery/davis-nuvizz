@@ -33,7 +33,7 @@ import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaul
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { mergeStopHistory } from './lib/stop-history.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
-import { noteContentKey, commitNoteDraft } from './lib/note-save.js';
+import { noteContentKey, commitNoteDraft, contactSaveLine } from './lib/note-save.js';
 import { readViewportSize } from './lib/viewport.js';
 import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
@@ -9462,18 +9462,21 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
     setBusy(true); setPush(null);
     try {
       // Firestore FIRST, and unconditionally: it is the durable half, and a vendor write that
-      // fails must never cost the dispatcher the number they just typed.
-      await onSaveContacts({ name, phone });
-      setEditing(false);
+      // fails must never cost the dispatcher the number they just typed. It closes the editor
+      // only if it LANDED (A1-S3-4): a refusal keeps the editor — and the red saveError printed
+      // inside it — on screen, instead of the line below calling an unsaved number "Saved".
+      const savedHere = await commitNoteDraft(onSaveContacts, { name, phone });
+      if (savedHere) setEditing(false);
       if (!toNuvizz || !pro || !(name.trim() || phone.trim())) return;
       setPush({ kind: 'busy', text: 'Writing it onto the order in NuVizz…' });
       // stopId pins the write to THIS record: two NuVizz orders can share one number
       // (Estes-0828068215), and the server refuses rather than write the other twin.
       const r = await setStopContact(pro, { name: name.trim(), phone: phone.trim() }, { stopId: stop?.stopId || undefined });
       const out = r?.result || r || {};
-      if (r?.ok && out.unchanged) setPush({ kind: 'ok', text: 'Saved — the order already carried this contact in NuVizz.' });
-      else if (r?.ok) {
-        setPush({ kind: 'ok', text: 'Saved, and written onto the order in NuVizz.' });
+      // Every sentence comes from contactSaveLine — amber, not red, when NuVizz refused a number
+      // that IS on file for the customer, and never "Saved" for one that is not.
+      setPush(contactSaveLine(savedHere, r));
+      if (r?.ok && !out.unchanged) {
         // Pull the order back so the "Order lists …" line stops quoting the number we just
         // replaced. Same wrong-twin rule as the write: never repaint this card with a record
         // that isn't the one it is showing.
@@ -9481,9 +9484,7 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
           const d = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
           if (d?.ok && d.stop && (!stop?.stopId || !d.stop.stopId || String(d.stop.stopId) === String(stop.stopId))) onRefreshed?.(d.stop);
         } catch { /* the contact landed; the refresh is a nicety */ }
-      // amber, not red, and the saved half is stated FIRST — the number IS on file for this
-      // customer either way, and a dispatcher reading a red error assumes they lost it.
-      } else setPush({ kind: 'warn', text: `Saved here, but NuVizz did not take it: ${r?.error || out.error || 'the write failed.'}` });
+      }
     } finally { setBusy(false); }
   };
   const working = busy || saving;
@@ -10629,7 +10630,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
   const saveContacts = onSave ? async (patch) => {
     const next = { ...D, contacts: mergeSavedContact(D.contacts, patch) };
     setDraft(next);
-    await onSave(next);
+    return onSave(next); // whether it landed — the Customer # block reports it (A1-S3-4)
   } : null;
 
   return (
@@ -12387,7 +12388,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
   const saveContacts = onSave ? async (patch) => {
     const next = { ...D, contacts: mergeSavedContact(D.contacts, patch) };
     setDraft(next);
-    await onSave(next);
+    return onSave(next); // whether it landed — see StopSidebar (A1-S3-4)
   } : null;
 
   const hasUnsaved = editing && JSON.stringify(draft) !== JSON.stringify(note || emptyNote(stop));
