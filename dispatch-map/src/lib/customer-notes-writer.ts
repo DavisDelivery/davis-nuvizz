@@ -287,19 +287,25 @@ export function decideWrite(
     if (hoursWouldChange && intendedHours) {
       payload.receiving_hours = intendedHours;
     }
-    // Audit trail regardless of override.
-    payload.auto_sources = {
-      ...payload.auto_sources,
-      receiving_hours: [stop.hoursResult.matchedSource],
-    };
-    payload.auto_matches = {
-      ...payload.auto_matches,
-      receiving_hours: [{
-        source: stop.hoursResult.matchedSource,
-        text: stop.hoursResult.matchedText,
-        pattern: 'hours_range',
-      }],
-    };
+    // Audit trail regardless of the LOCK — but only on hours the scanner owns (it wrote them,
+    // or the field is empty). auto_sources.receiving_hours is the very fingerprint
+    // scannerOwnsHours reads as "the scanner wrote these", so stamping it on somebody's
+    // hand-entered hours signed them over: this scan left them alone, the next one
+    // overwrote them. (hoursWouldChange already implies scannerOwnsHours.)
+    if (scannerOwnsHours) {
+      payload.auto_sources = {
+        ...payload.auto_sources,
+        receiving_hours: [stop.hoursResult.matchedSource],
+      };
+      payload.auto_matches = {
+        ...payload.auto_matches,
+        receiving_hours: [{
+          source: stop.hoursResult.matchedSource,
+          text: stop.hoursResult.matchedText,
+          pattern: 'hours_range',
+        }],
+      };
+    }
   }
 
   // Closed days: union with anything previously detected (don't drop days
