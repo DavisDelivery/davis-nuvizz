@@ -2187,7 +2187,15 @@ function useStops(date, carryDays = 0) {
   // the board can only ever show this many or fewer.
   const [scanUnplannedCount, setScanUnplannedCount] = useState(null);
 
+  // EVERY REFRESH TAKES A TICKET, AND ONLY THE NEWEST TICKET MAY WRITE. A date change makes
+  // a new `refresh` and fires a new pull; a later poll or a manual Refresh does the same. An
+  // older request still in flight — including one sitting in fetchJsonWithRetry's 1.5 s
+  // backoff after a 502 — used to land AFTER the newer one and paint the previous day's
+  // stops, counts and scan stamps under the date the picker now shows, until the next
+  // silent poll two minutes later. Superseded answers (and their errors) are dropped.
+  const reqSeq = useRef(0);
   const refresh = useCallback(async ({ silent = false } = {}) => {
+    const seq = ++reqSeq.current;
     if (!silent) setLoading(true);
     setError(null);
     try {
@@ -2197,6 +2205,7 @@ function useStops(date, carryDays = 0) {
       if (!MOCK_MODE && carryDays > 0) params += (params ? '&' : '?') + `carryDays=${carryDays}`;
       const url = '/.netlify/functions/nuvizz-pull-today-stops' + params;
       const data = await fetchJsonWithRetry(url);
+      if (seq !== reqSeq.current) return; // superseded — a newer refresh owns the board now
       if (!data.ok) throw new Error(data.error || 'NuVizz function returned ok:false');
       // Attach the match key now so every consumer downstream can hit it.
       const decorated = (data.stops || []).map((s) => ({
@@ -2217,9 +2226,10 @@ function useStops(date, carryDays = 0) {
       setScanUnplannedCount(typeof data.unplannedCount === 'number' ? data.unplannedCount : null);
       setLastRefreshed(new Date());
     } catch (e) {
-      if (!silent) setError(e.message); // a failed silent poll shouldn't surface an error banner
+      // a failed silent poll shouldn't surface an error banner — nor should a superseded one
+      if (!silent && seq === reqSeq.current) setError(e.message);
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && seq === reqSeq.current) setLoading(false);
     }
   }, [date, carryDays]);
 
