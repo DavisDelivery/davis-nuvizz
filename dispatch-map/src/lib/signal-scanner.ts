@@ -483,9 +483,17 @@ const CLOSURE_BEFORE_DAY = /\b(?:CLOSE[SD]?|NOT\s+OPEN|NO\s+DELIVER\w*)\s+(?:ON\
 // The width is what keeps a real window next to the word a window: "MON-FRI 8-12 CLOSED FOR
 // LUNCH" is a morning, "NO LUNCH MON-FRI 8-5" is a working day, and "MON-FRI 8-12 LUNCH
 // 12-1" names its own lunch hour — all three stay hours.
-const LUNCH_BEFORE_DAY = /\b(?:LUNCH|BREAK)\s*[:\-]?\s*(?:ON\s+)?$/i;
-const FOR_LUNCH_AFTER = /^\s*FOR\s+(?:LUNCH|BREAK)\b/i;
-const LUNCH_AFTER_UNTIMED = new RegExp(`^\\s*(?:CLOSED?\\s+)?(?:FOR\\s+)?(?:LUNCH|BREAK)\\b(?!\\s*[:\\-]?\\s*${TIME_RANGE})`, 'i');
+// BREAK DOWN IS A HANDLING INSTRUCTION, NOT A BREAK. "BREAK DOWN PALLETS" / "BREAK DOWN SKIDS"
+// arrive as their own comment record, so a short Friday window whose NEXT record was that line
+// ("FRI 8-10" ⏎ "BREAK DOWN SKIDS") read as a lunch and the Friday hours were dropped.
+const LUNCH_WORD = '(?:LUNCH|BREAK(?!\\s*DOWN\\b))';
+const LUNCH_BEFORE_DAY = new RegExp(`\\b${LUNCH_WORD}\\s*[:\\-]?\\s*(?:ON\\s+)?$`, 'i');
+// ...unless the word before it says the dock is NOT shut: "AFTER LUNCH FRI 1-3" names the
+// REOPENING (the same phrase continuation 2d reads as the afternoon half), and "NO LUNCH" /
+// "NO LUNCH BREAK" says there is no closure at all. Either way the range is receiving hours.
+const LUNCH_NEGATED_BEFORE_DAY = /\b(?:AFTER|NO)\s+(?:LUNCH\s+)?(?:LUNCH|BREAK)\s*[:\-]?\s*(?:ON\s+)?$/i;
+const FOR_LUNCH_AFTER = new RegExp(`^\\s*FOR\\s+${LUNCH_WORD}\\b`, 'i');
+const LUNCH_AFTER_UNTIMED = new RegExp(`^\\s*(?:CLOSED?\\s+)?(?:FOR\\s+)?${LUNCH_WORD}\\b(?!\\s*[:\\-]?\\s*${TIME_RANGE})`, 'i');
 function lunchShaped(rangeText: string, w: { open: string; close: string }): boolean {
   const toMin = (t: string) => parseInt(t.slice(0, 2), 10) * 60 + parseInt(t.slice(3), 10);
   const wroteMeridiem = /(A|P)M?\.?\s*(?:-|TO|—)|(A|P)M?\.?\s*$/i.test(rangeText) || /NOON/i.test(rangeText);
@@ -516,7 +524,7 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
     const parsed = parseTimeRange(m[2]);
     if (!days.length || !parsed) continue;
     const afterRange = normalized.slice(m.index + m[0].length);
-    const namesLunch = LUNCH_BEFORE_DAY.test(beforeSpan)
+    const namesLunch = (LUNCH_BEFORE_DAY.test(beforeSpan) && !LUNCH_NEGATED_BEFORE_DAY.test(beforeSpan))
       || FOR_LUNCH_AFTER.test(afterRange) || LUNCH_AFTER_UNTIMED.test(afterRange);
     if (namesLunch && lunchShaped(m[2], parsed)) continue;
     const env = envelopeClose(normalized, m.index + m[0].length, parsed.close);

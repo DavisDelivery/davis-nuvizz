@@ -59,3 +59,17 @@ test('ordinary day-qualified schedules are untouched', () => {
   assert.deepEqual(h.byDay.mon, { open: '06:30', close: '16:00' });
   assert.deepEqual(h.byDay.fri, { open: '08:00', close: '12:00' });
 });
+
+test('a short day window next to a lunch word that is NOT a closure keeps its hours', () => {
+  // "BREAK DOWN SKIDS" is a handling instruction that arrives as its own record; it named no
+  // lunch, and reading it as one dropped a real Friday 8-10.
+  assert.deepEqual(hours('SPL-INSTR-TEXT: FRI 8-10\nSPL-INSTR-TEXT: BREAK DOWN SKIDS').byDay.fri, { open: '08:00', close: '10:00' });
+  assert.deepEqual(hours('FRI 8-10 BREAK DOWN PALLETS').byDay.fri, { open: '08:00', close: '10:00' });
+  // AFTER LUNCH names the REOPENING: the range that follows is when they take freight.
+  assert.deepEqual(hours('AFTER LUNCH FRI 1-3').byDay.fri, { open: '13:00', close: '15:00' });
+  // NO LUNCH / NO BREAK says there is no closure at all.
+  assert.deepEqual(hours('NO BREAK MON-FRI 11-12').byDay.mon, { open: '11:00', close: '12:00' });
+  // ...and the lunch closures themselves are still refused.
+  assert.ok(!isLunchWindow(hours('LUNCH BREAK MON-FRI 12-1')));
+  assert.ok(!isLunchWindow(hours('MON-FRI 12-1 FOR BREAK')));
+});
