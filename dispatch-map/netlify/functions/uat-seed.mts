@@ -256,7 +256,7 @@ export default async (req: Request): Promise<Response> => {
 
       const callsUsed = reqr.getStats().totalThisInstance - before;
       await putOpRecord({ clientOpId: `uatseed_${at}`, op: 'uatSeed', status: failed.length ? 'failed' : 'succeeded', tenant: creds.companyCode, at, result: { date, label, created, failed, skipped } }).catch(() => undefined);
-      return J({ ok: failed.length === 0, op, date, bench, seeded: created.length, failed: failed.length, boardRows: meta.count, callsUsed, created, failed, skipped, warnings });
+      return J({ ok: failed.length === 0, op, date, bench, seeded: created.length, boardRows: meta.count, callsUsed, created, failed, skipped, warnings });
     }
 
     // ── CLEAR — strike the set ────────────────────────────────────────────────

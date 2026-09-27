@@ -36,6 +36,21 @@ export function windowLabel(r) {
   return 'no window';
 }
 
+/**
+ * PURE. The one-line result of a Seed, from what the server actually sent.
+ *
+ * `failed` arrives as the LIST of refused orders (netlify/functions/uat-seed.mts), so the count
+ * is its length. Read as a number, an empty list is truthy and prints as nothing — every clean
+ * seed said "Seeded 3,  failed" — and one refusal printed "[object Object] failed". The board's
+ * size is stated only when the server read it: a refused seed read no board.
+ */
+export function seedHeadline(result) {
+  const r = result && typeof result === 'object' ? result : {};
+  const nFailed = Array.isArray(r.failed) ? r.failed.length : 0;
+  const board = typeof r.boardRows === 'number' && Number.isFinite(r.boardRows) ? ` · board now holds ${r.boardRows}` : '';
+  return `Seeded ${r.seeded ?? 0}${nFailed ? `, ${nFailed} failed` : ''} · ${r.callsUsed ?? 0} UAT call(s)${board}`;
+}
+
 /** PURE. Free-text match over the fields a dispatcher would actually type. An empty query
  *  shows everything rather than nothing — a filter that hides the list when you clear it is
  *  a filter people stop using. */

@@ -32,7 +32,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Beaker, Check, RefreshCw, Trash2, Eye, AlertTriangle, Loader2 } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
 // Pure core, thin edges: every judgement about a row lives in the lib and is tested there.
-import { rowSubtitle, windowLabel, matchesQuery, benchToday, BENCH_MAX } from '../lib/uat-bench-view.js';
+import { rowSubtitle, windowLabel, matchesQuery, benchToday, seedHeadline, BENCH_MAX } from '../lib/uat-bench-view.js';
 
 const FN = '/.netlify/functions/uat-seed';
 
@@ -301,7 +301,7 @@ function BenchResult({ result }) {
     <div className="bg-white border rounded p-3 space-y-2 text-sm">
       <div className="font-semibold text-slate-800">
         {op === 'preview' && `Preview — ${result.willCreate ?? payloads.length} order(s) would be created, 0 NuVizz calls spent`}
-        {op === 'seed' && `Seeded ${result.seeded ?? 0}${result.failed ? `, ${result.failed} failed` : ''} · ${result.callsUsed ?? 0} UAT call(s) · board now holds ${result.boardRows ?? 0}`}
+        {op === 'seed' && seedHeadline(result)}
         {op === 'clear' && `Cancelled ${result.cancelled ?? 0}${result.unplannedFirst ? ` (${result.unplannedFirst} unplanned first)` : ''}${result.alreadyGone ? ` · ${result.alreadyGone} already gone` : ''} · ${result.callsUsed ?? 0} UAT call(s)`}
       </div>
 
