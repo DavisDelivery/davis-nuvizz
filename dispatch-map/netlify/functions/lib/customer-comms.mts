@@ -242,7 +242,12 @@ export function testRecipientAllowed(to: string, allow = process.env.COMMS_TEST_
 }
 
 export async function readConfig(): Promise<CommsConfig> {
-  const doc = await getDoc(CONFIG_DOC).catch(() => null);
+  // Lenient on purpose: the sweep reads through here, and an unreadable document yields
+  // DEFAULT_CONFIG (enabled:false), so an outage stops the mail rather than starting it.
+  return configFromDoc(await getDoc(CONFIG_DOC).catch(() => null));
+}
+
+function configFromDoc(doc: any): CommsConfig {
   if (!doc) return { ...DEFAULT_CONFIG, htmlTemplate: DEFAULT_HTML };
   return {
     enabled: doc.enabled === true,
@@ -259,7 +264,14 @@ export async function readConfig(): Promise<CommsConfig> {
 }
 
 export async function writeConfig(cfg: Partial<CommsConfig>, by = 'dispatch-ui'): Promise<CommsConfig> {
-  const cur = await readConfig();
+  // STRICT read, not readConfig(). The write below REPLACES the document, so building it on
+  // the lenient read turned one Firestore blip into a saved DEFAULT_CONFIG — mailer switched
+  // off, custom template gone — behind a 200. A 404 is still "nothing saved yet" (getDoc
+  // returns null); anything else refuses the save so the person can retry.
+  let doc: any;
+  try { doc = await getDoc(CONFIG_DOC); }
+  catch (e: any) { throw new Error(`Could not read the current email settings, so nothing was saved — try again. (${e?.message || e})`); }
+  const cur = configFromDoc(doc);
   const next: CommsConfig = {
     ...cur,
     ...cfg,
