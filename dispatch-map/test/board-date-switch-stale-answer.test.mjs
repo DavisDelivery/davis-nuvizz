@@ -40,9 +40,14 @@ test('a slow board read for the previous date cannot overwrite the newly selecte
   assert.match(hook, /const selectionRef = useRef\(''\);\s*selectionRef\.current = `\$\{date\}\|\$\{carryDays\}`;/);
   // …and every read remembers which selection it was asked for.
   assert.match(refresh, /const asked = `\$\{date\}\|\$\{carryDays\}`;/);
-  const guard = refresh.indexOf('if (asked !== selectionRef.current) return;');
-  assert.ok(guard > 0, 'an answer for a selection no longer on screen is dropped');
-  assert.ok(guard > refresh.indexOf('await fetchJsonWithRetry(url)'), 'checked AFTER the wait, where the race is');
+  const wait = refresh.indexOf('await fetchJsonWithRetry(url)');
+  assert.ok(wait > 0, 'the board read is awaited inside refresh');
+  // Checked twice: before the read starts (an old closure called after the switch) and
+  // AFTER the wait, where the race is.
+  const early = refresh.indexOf('if (asked !== selectionRef.current) return;');
+  assert.ok(early > 0 && early < refresh.indexOf('setLoading(true)'), 'a read already stale when called raises no spinner');
+  const guard = refresh.indexOf('if (asked !== selectionRef.current) return;', wait);
+  assert.ok(guard > wait, 'an answer for a selection no longer on screen is dropped');
   const firstSet = refresh.indexOf('setStops(');
   assert.ok(firstSet > 0 && guard < firstSet, 'before it can reach the board');
 });
@@ -51,4 +56,69 @@ test('a stale failure cannot put an error banner over the current board, nor cle
   const { refresh } = refreshSource();
   assert.match(refresh, /catch \(e\) \{\s*if \(!silent && asked === selectionRef\.current\) setError\(e\.message\);/);
   assert.match(refresh, /finally \{\s*if \(!silent && asked === selectionRef\.current\) setLoading\(false\);\s*\}/);
+});
+
+// ── THE RACE, RUN ─────────────────────────────────────────────────────────────
+// The source pins above say the guard is there; these drive the REAL useStops source through
+// a minimal hook runtime (state cells by call order, effects not run) and a board fetch whose
+// answers are released by hand, so the order of arrival is the test's to choose.
+function mountUseStops() {
+  const cells = [];
+  let at = 0;
+  const useState = (init) => {
+    const k = at++;
+    if (!(k in cells)) cells[k] = { v: typeof init === 'function' ? init() : init };
+    const cell = cells[k];
+    return [cell.v, (nv) => { cell.v = typeof nv === 'function' ? nv(cell.v) : nv; }];
+  };
+  const useRef = (init) => { const k = at++; if (!(k in cells)) cells[k] = { current: init }; return cells[k]; };
+  const useCallback = (fn) => { at++; return fn; };
+  const useEffect = () => { at++; };
+  const asks = [];
+  const fetchJsonWithRetry = (url) => new Promise((resolve, reject) => { asks.push({ url, resolve, reject }); });
+  const useStops = new Function(
+    'useState', 'useRef', 'useCallback', 'useEffect', 'MOCK_MODE', 'fetchJsonWithRetry',
+    'normalizeMatchKey', 'applyPlanOverlay', 'STOPS_REFRESH_MS', 'document',
+    `${fnSource('useStops')}\nreturn useStops;`,
+  )(useState, useRef, useCallback, useEffect, false, fetchJsonWithRetry, () => 'k', (s) => s, 120000, undefined);
+  const render = (date, carry = 0) => { at = 0; return useStops(date, carry); };
+  const answer = (i, stops) => asks[i].resolve({ ok: true, stops, lastScannedAt: null });
+  return { render, asks, answer };
+}
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('RUN: Tuesday\'s read landing after Wednesday\'s leaves Wednesday\'s board on screen', async () => {
+  const h = mountUseStops();
+  const tue = h.render('2026-09-22').refresh();
+  const wed = h.render('2026-09-23').refresh();
+  h.answer(1, [{ stopNbr: 'WED-1' }]); await wed;
+  h.answer(0, [{ stopNbr: 'TUE-1' }, { stopNbr: 'TUE-2' }]); await tue;
+  const board = h.render('2026-09-23');
+  assert.deepEqual(board.stops.map((s) => s.stopNbr), ['WED-1'], 'the late Tuesday answer did not paint over Wednesday');
+  assert.equal(board.loading, false);
+});
+
+test('RUN: an old refresh called AFTER the day changed (a save\'s re-read) does not leave the new day stuck on "Loading stops…"', async () => {
+  const h = mountUseStops();
+  const staleRefresh = h.render('2026-09-22').refresh; // held by an awaited save callback
+  const wed = h.render('2026-09-23').refresh();
+  h.answer(0, [{ stopNbr: 'WED-1' }]); await wed;
+  assert.equal(h.render('2026-09-23').loading, false, 'Wednesday finished loading');
+  const late = staleRefresh(); // the save's POST came back; its closure still says Tuesday
+  if (h.asks.length > 1) h.answer(1, [{ stopNbr: 'TUE-1' }]);
+  await late; await tick();
+  const board = h.render('2026-09-23');
+  assert.equal(h.asks.length, 1, 'no read is spent on a day nobody is looking at');
+  assert.equal(board.loading, false, 'the spinner is not raised by a read whose answer would be dropped');
+  assert.deepEqual(board.stops.map((s) => s.stopNbr), ['WED-1']);
+});
+
+test('RUN: a read for the day on screen still lands', async () => {
+  const h = mountUseStops();
+  const p = h.render('2026-09-23', 7).refresh();
+  assert.match(h.asks[0].url, /date=2026-09-23&carryDays=7/);
+  h.answer(0, [{ stopNbr: 'WED-1' }]); await p;
+  const board = h.render('2026-09-23', 7);
+  assert.deepEqual(board.stops.map((s) => s.stopNbr), ['WED-1']);
+  assert.equal(board.loading, false);
 });

@@ -2198,6 +2198,11 @@ function useStops(date, carryDays = 0) {
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
     const asked = `${date}|${carryDays}`;
+    // A caller still holding an OLDER refresh (a save's re-read that awaited its server call
+    // while the dispatcher changed day) asks about a board nobody is looking at. Its answer
+    // would be dropped below — and starting it would raise a spinner that only the dropped
+    // answer could lower (silent polls never lower it), so the new day read "Loading stops…".
+    if (asked !== selectionRef.current) return;
     if (!silent) setLoading(true);
     setError(null);
     try {
