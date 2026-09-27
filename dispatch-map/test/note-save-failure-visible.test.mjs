@@ -4,7 +4,7 @@
 // The customer-notes Save bar on both stop panels ran `onSave(D); setEditing(false);` — it did
 // not wait for the write and left edit mode on the same click. The only place the panel prints
 // saveError is INSIDE that save bar, which the same click had just unmounted. So a refused
-// write (a role that may not write customer_notes, a Firestore rules refusal, offline) looked
+// write (a role that may not write customer_notes, a Firestore rules refusal, a write error) looked
 // exactly like a saved one: the dispatcher typed the receiving hours a customer gave them on
 // the phone, pressed Save, watched the editor close, and the flag engine kept working off
 // nothing. Both saves (the Map's handleSave and the Routing screen's saveStopNote) also
@@ -36,7 +36,7 @@ test('a dispatcher without write access presses Save — the save is reported as
   assert.equal(await commitNoteDraft(async () => undefined, draft), false);
 });
 
-test('Firestore refuses or is offline — the save is reported as NOT landed, and nothing throws into the click', async () => {
+test('Firestore refuses the write — the save is reported as NOT landed, and nothing throws into the click', async () => {
   assert.equal(await commitNoteDraft(async () => { throw new Error('Missing or insufficient permissions.'); }, draft), false);
   assert.equal(await commitNoteDraft(async () => false, draft), false);
 });
