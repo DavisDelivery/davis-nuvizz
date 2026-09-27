@@ -232,7 +232,11 @@ export function classifyChange(before: AddressParts, after: AddressParts): Addre
   // A zip is only a move when BOTH sides have one — see materialDiff. Without that guard a row
   // that simply gained its zip would report as a different building. Checked FIRST and outside
   // the swap guard below: a changed zip is a different place however the lines are arranged.
-  if (materialDiff(zip5(before?.zip), zip5(after?.zip))) return 'moved';
+  // BOTH, as the sentence says: materialDiff only rules out the zip that APPEARED, so a zip
+  // that DISAPPEARED ('30071' → '') filed as `moved` (audit 2026-09-27). A lost zip falls
+  // through to `region` below, beside a lost city or state.
+  const zb = zip5(before?.zip), za = zip5(after?.zip);
+  if (zb && za && zb !== za) return 'moved';
 
   const linePair = (p: AddressParts) => [normStreetOf(p?.addr1), normStreetOf(p?.addr2)].filter(Boolean).sort().join('|');
   // The lines must actually have MOVED for this to be a swap. Testing only that they carry
@@ -247,8 +251,9 @@ export function classifyChange(before: AddressParts, after: AddressParts): Addre
     if (streetBodyOf(b1) !== streetBodyOf(a1)) return 'renamed';
     if (unitTokensOf(before) !== unitTokensOf(after)) return 'suite';
   }
-  // Reachable either way: a swap that ALSO corrected the city is still a region change.
-  if (fields.includes('city') || fields.includes('state')) return 'region';
+  // Reachable either way: a swap that ALSO corrected the city is still a region change. A
+  // `zip` still in `fields` here can only be one that was LOST (see above).
+  if (fields.includes('city') || fields.includes('state') || fields.includes('zip')) return 'region';
 
   // Text moved; the freight did not. The suite migrating between addr1 and addr2 lands here
   // (our own "Fix & move pin" does exactly that swap), as does a contact name appearing in

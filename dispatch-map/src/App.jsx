@@ -34319,7 +34319,7 @@ const ADDR_KINDS = [
   { key: 'cleared', label: 'Cleared', hint: 'The street line disappeared — nothing should do this', cls: 'bg-red-100 text-red-800 border-red-200' },
   { key: 'renamed', label: 'Renamed', hint: 'Same number and zip, different street line', cls: 'bg-amber-100 text-amber-800 border-amber-200' },
   { key: 'suite', label: 'Suite', hint: 'Only the unit/suite changed — matters on an inside delivery', cls: 'bg-amber-100 text-amber-800 border-amber-200' },
-  { key: 'region', label: 'City/State', hint: 'City or state changed with the street intact', cls: 'bg-sky-100 text-sky-800 border-sky-200' },
+  { key: 'region', label: 'City/State', hint: 'City or state changed, or the zip went missing, with the street intact', cls: 'bg-sky-100 text-sky-800 border-sky-200' },
   { key: 'filled', label: 'Filled in', hint: 'We had no street line and now we do', cls: 'bg-slate-100 text-slate-700 border-slate-200' },
   { key: 'formatting', label: 'Formatting', hint: 'The text moved, the freight did not', cls: 'bg-slate-100 text-slate-500 border-slate-200' },
 ];

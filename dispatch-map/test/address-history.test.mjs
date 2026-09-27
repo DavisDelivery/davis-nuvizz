@@ -168,10 +168,12 @@ test('a zip we simply did not have before is LEARNED, never a move', () => {
 });
 
 test('a zip that DISAPPEARS is still reported — losing a field is not learning one', () => {
+  // Reported as `region`, like a lost city or state — not `moved`: the same street and house
+  // number is the same building (audit 2026-09-27; see address-change-zip-lost.test.mjs).
   assert.equal(classifyChange(
     { addr1: '5965 PEACHTREE STREET', city: 'NORCROSS', zip: '30071' },
     { addr1: '5965 PEACHTREE STREET', city: 'NORCROSS', zip: null },
-  ), 'moved');
+  ), 'region');
 });
 
 test('an empty street line that fills in is FILLED, not a move', () => {
