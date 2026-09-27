@@ -10568,6 +10568,10 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
   // not close that stop's editor (the Save bar waits for the write, A1-S4-1).
   const shownStopRef = useRef(stop?.stopNbr);
   shownStopRef.current = stop?.stopNbr;
+  // Counts the dispatcher's edits (setD). The editor stays live while a Save is in flight, so
+  // anything typed after the press was NOT in that write — closing the editor when it lands
+  // would drop those keystrokes without a word. The Save bar closes only if none happened.
+  const editsRef = useRef(0);
   // Re-init only when a DIFFERENT stop opens.
   useEffect(() => {
     setDraft(note || emptyNote(stop));
@@ -10621,7 +10625,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
   // setD merges a PARTIAL patch and marks the draft dirty (guards background
   // writes from clobbering in-progress edits). All field helpers live in the
   // shared <StopNotesEditor>.
-  const setD = (patch) => { dirtyRef.current = true; setDraft({ ...D, ...patch }); };
+  const setD = (patch) => { dirtyRef.current = true; editsRef.current += 1; setDraft({ ...D, ...patch }); };
   // Adding a customer number from the card writes through the SAME path as the notes
   // editor's Save — one route into customer_notes — and folds the change into the open
   // draft so a later Save can't quietly revert the number that was just added. NOT marked
@@ -10699,7 +10703,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
                 "saved" into thin air. Closes the editor only once the write LANDED (A1-S4-1):
                 a refused or failed save stays open, typed values intact, saveError beside it. */}
             <button
-              onClick={async () => { const at = stop?.stopNbr; if (await commitNoteDraft(onSave, D) && shownStopRef.current === at) { dirtyRef.current = false; setEditing(false); } }}
+              onClick={async () => { const at = stop?.stopNbr; const seq = editsRef.current; if (await commitNoteDraft(onSave, D) && shownStopRef.current === at && editsRef.current === seq) { dirtyRef.current = false; setEditing(false); } }}
               disabled={saving || !!saveDenied}
               title={saveDenied || undefined}
               className="px-3 py-1.5 text-xs text-white font-semibold rounded inline-flex items-center gap-1 disabled:opacity-50"
@@ -12359,6 +12363,8 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
   // See StopSidebar: a save landing after another stop opened must not close its editor.
   const shownStopRef = useRef(stop?.stopNbr);
   shownStopRef.current = stop?.stopNbr;
+  // See StopSidebar: edits typed while a Save is in flight keep the editor open.
+  const editsRef = useRef(0);
 
   // Reset draft when a different stop opens.
   useEffect(() => {
@@ -12383,7 +12389,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
   const [live, onRefreshed] = useLiveStop(stop);
   if (!stop) return null;
   const D = draft;
-  const setD = (patch) => { dirtyRef.current = true; setDraft({ ...D, ...patch }); };
+  const setD = (patch) => { dirtyRef.current = true; editsRef.current += 1; setDraft({ ...D, ...patch }); };
   // Same one-write-path rule as StopSidebar — see the comment there.
   const saveContacts = onSave ? async (patch) => {
     const next = { ...D, contacts: mergeSavedContact(D.contacts, patch) };
@@ -12458,7 +12464,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
                 needs its own gate. Same rule as the desktop sidebar above — including closing
                 only once the write LANDED (A1-S4-1). */}
             <button
-              onClick={async () => { const at = stop?.stopNbr; if (await commitNoteDraft(onSave, D) && shownStopRef.current === at) { dirtyRef.current = false; setEditing(false); } }}
+              onClick={async () => { const at = stop?.stopNbr; const seq = editsRef.current; if (await commitNoteDraft(onSave, D) && shownStopRef.current === at && editsRef.current === seq) { dirtyRef.current = false; setEditing(false); } }}
               disabled={saving || !!saveDenied}
               title={saveDenied || undefined}
               className="px-4 py-2 text-sm text-white font-semibold rounded inline-flex items-center gap-1.5 disabled:opacity-50"

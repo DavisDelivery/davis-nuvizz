@@ -101,3 +101,23 @@ for (const [view, name] of [['desktop stop panel', 'StopSidebar'], ['phone stop 
     assert.match(body, /\{editing && \([\s\S]{0,400}\{saveError && </, 'the save bar prints saveError');
   });
 }
+
+// ── typing while the save is in flight ───────────────────────────────────────
+// The editor stays live now while Save waits for Firestore, so a dispatcher can press Save and
+// then correct a typo before the write answers. That correction was not in the write. Closing
+// the editor when the write lands would drop it without a word — and the next background
+// snapshot would re-adopt the stored note over the draft. Before these fixes the editor closed
+// on the click, so the window did not exist; waiting for the write opened it.
+
+for (const [view, name] of [['desktop stop panel', 'StopSidebar'], ['phone stop drawer', 'MobileStopDetailDrawer']]) {
+  test(`${view}: a correction typed while Save is in flight keeps the editor open, so it is not dropped`, () => {
+    const body = fnBody(name);
+    const counter = (body.match(/const setD = \(patch\) => \{ dirtyRef\.current = true; (\w+)\.current \+= 1;/) || [])[1];
+    assert.ok(counter, 'every edit bumps a counter');
+    const line = body.split('\n').find((l) => /commitNoteDraft\(onSave, D\)/.test(l));
+    const snap = line.match(new RegExp(`const (\\w+) = ${counter}\\.current;`));
+    assert.ok(snap && line.indexOf(snap[0]) < line.indexOf('await commitNoteDraft(onSave, D)'), 'the count is taken at the press, before the write');
+    assert.match(line, new RegExp(`if \\(await commitNoteDraft\\(onSave, D\\)[^)]*&& ${counter}\\.current === ${snap[1]}[^)]*\\) \\{[^}]*setEditing\\(false\\)`),
+      'the editor closes only when nothing was typed since the press');
+  });
+}
