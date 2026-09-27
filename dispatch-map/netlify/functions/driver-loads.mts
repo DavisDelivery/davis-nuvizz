@@ -239,7 +239,7 @@ export default async (req: Request): Promise<Response> => {
   if (!range) return jsonResponse({ ok: false, nuvizzCalls: 0, error: 'from and to must be days, YYYY-MM-DD' }, 400);
   const dates = datesBetween(range.from, range.to, MAX_DAYS);
   const week = { from: dates[0] || range.from, to: range.to, dates, clipped: dates[0] !== range.from ? MAX_DAYS : null };
-  const dropCancelled = dropCancelledEnabled();
+  const dropCancelled = dropCancelledEnabled(process.env);
   // SHORT RANGES READ WHOLE DAYS (the v1.69.0 path, unchanged). A month or a year cannot: ~800
   // orders a day × 365 is past this function's 26 seconds. There, a sealed day is read as its
   // small drivers list first, and only the chosen driver's own orders are fetched afterwards.
