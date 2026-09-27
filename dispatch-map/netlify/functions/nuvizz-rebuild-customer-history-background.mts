@@ -33,7 +33,7 @@ import { listStops } from './lib/history-store.mts';
 import { updateCustomerRollupsForDay } from './lib/history-customers.mts';
 import { updateProIndexForDay, proIndexEnabled } from './lib/history-pro-index.mts';
 import {
-  BACKFILL_PROGRESS_PATH, backfillBusy, planBackfill, stepBackfill, finishBackfill, refusalPatch,
+  BACKFILL_PROGRESS_PATH, backfillBusy, planBackfill, stepBackfill, finishBackfill, refusalPatch, heartbeatFields,
 } from './lib/customer-history-backfill.mts';
 
 const TENANT = 'davis';
@@ -118,15 +118,16 @@ export default async (req: Request): Promise<Response> => {
       results.push(row);
       // THE HEARTBEAT. A run killed by the platform mid-loop stops moving here, which is how
       // the lock above learns to let go and how the strip can say "stalled" instead of
-      // "running" for ever. Never allowed to fail the day it is reporting.
+      // "running" for ever. Never allowed to fail the day it is reporting. Field-masked to the
+      // run's own fields, so a refusal written by a second run (last_refused) is not erased.
       progress = stepBackfill(progress, row, now());
-      await setDoc(BACKFILL_PROGRESS_PATH, progress).catch((e: any) => console.error('rebuild-customer-history: progress write failed', e?.message));
+      await updateDocFields(BACKFILL_PROGRESS_PATH, heartbeatFields(progress)).catch((e: any) => console.error('rebuild-customer-history: progress write failed', e?.message));
     }
     progress = finishBackfill(progress, now());
   } catch (e: any) {
     progress = finishBackfill(progress, now(), e?.message || 'backfill threw');
   }
-  await setDoc(BACKFILL_PROGRESS_PATH, progress).catch((e: any) => console.error('rebuild-customer-history: final progress write failed', e?.message));
+  await updateDocFields(BACKFILL_PROGRESS_PATH, heartbeatFields(progress)).catch((e: any) => console.error('rebuild-customer-history: final progress write failed', e?.message));
   console.log('rebuild-customer-history:', JSON.stringify(results));
   return new Response(JSON.stringify({ ok: !progress.error, days: dates.length, results, error: progress.error }), { status: progress.error ? 500 : 200, headers });
 };
