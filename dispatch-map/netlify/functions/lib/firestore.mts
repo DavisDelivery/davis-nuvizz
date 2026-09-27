@@ -1782,9 +1782,24 @@ const ADDRESS_CHANGE_MAX = 800;
 const addressChangePath = (tenant: string, dateStr: string) => `${OPS_COLLECTION}/addr_changes__${tenantKey(tenant)}__${dateStr}`;
 
 /** Append rows to the day's address log (newest first). BEST-EFFORT BY DESIGN: a log that
- *  can break a scan is worse than no log, so every failure swallows and reports false. */
+ *  can break a scan is worse than no log, so every failure swallows and reports false.
+ *  A caller that has to tell a repeat from a failure uses appendAddressChanges below. */
 export async function recordAddressChanges(tenant: string, dateStr: string, rows: any[]): Promise<boolean> {
-  if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return false;
+  return (await appendAddressChanges(tenant, dateStr, rows)).status === 'written';
+}
+
+/**
+ * The same append, saying WHICH of its outcomes happened (audit 2026-09-27):
+ *   written    the rows are on file
+ *   duplicate  every row was already on file — a correct refusal
+ *   nothing    no rows were given, or Firestore is off
+ *   error      the read or the write failed; nothing new is on file
+ * One `false` for all of them let a write Firestore refused reach the browser as
+ * "already recorded", which the queue's group run counts as logged. Never throws.
+ */
+export type AddressAppendResult = { status: 'written' | 'duplicate' | 'nothing' } | { status: 'error'; error: string };
+export async function appendAddressChanges(tenant: string, dateStr: string, rows: any[]): Promise<AddressAppendResult> {
+  if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return { status: 'nothing' };
   try {
     // THE READ THAT THROWS (audit 2026-09-27). This append is read-merge-REPLACE — setDoc has no
     // mask — so a transient 503 that read back as [] replaced the day's whole log with this one
@@ -1800,14 +1815,14 @@ export async function recordAddressChanges(tenant: string, dateStr: string, rows
     // second move — or a Reset and a re-correction of the zip — still lands. See
     // unrecordedAddressChanges (lib/address-history.mts).
     const fresh = unrecordedAddressChanges(prior, rows);
-    if (!fresh.length) return false;
+    if (!fresh.length) return { status: 'duplicate' };
     const next = [...fresh, ...prior].slice(0, ADDRESS_CHANGE_MAX);
     await setDoc(addressChangePath(tenant, dateStr), {
       tenant: tenantKey(tenant), date: dateStr, updated_at: new Date().toISOString(),
       count: next.length, rowsJson: JSON.stringify(next),
     } as any);
-    return true;
-  } catch { return false; }
+    return { status: 'written' };
+  } catch (e: any) { return { status: 'error', error: String(e?.message || e || 'address log write failed') }; }
 }
 
 /** The day's address log, newest first; [] when none was written or the read fails. */
