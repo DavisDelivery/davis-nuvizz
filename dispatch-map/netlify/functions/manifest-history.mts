@@ -77,6 +77,8 @@ export default async (req: Request): Promise<Response> => {
   try {
     const url = new URL(req.url);
 
+    const one = url.searchParams.get('date');
+
     // HEADERLESS EXCEPTION — ?pdf=1 IS NOT GATED, and this is checked, not assumed.
     // The JSON paths below are all reached by fetch() and can carry a bearer token. The PDF
     // URL cannot: App.jsx hands the SAME string to three consumers, and two of them have no
@@ -87,21 +89,13 @@ export default async (req: Request): Promise<Response> => {
     // disputed Uline manifest gets a JSON error, and a shared link is dead on arrival.
     // Closing it needs a signed, time-limited URL (or the viewer fetching bytes only, which
     // it already does for pdf.js) — a client change, and a separate decision.
-    const wantsPdf = url.searchParams.get('pdf') === '1';
-    if (!wantsPdf) {
-      // Gate at viewer: the manifest archive lists every night's Uline document and the
-      // orders that were missing off it. Inert until AUTH_REQUIRED=true.
-      const gate = await requireUser(req, { role: 'viewer' });
-      if (!gate.ok) return gate.response;
-    }
-
-    if (url.searchParams.get('selftest') === '1') {
-      const r = await blobSelfTest();
-      return J({ ok: r.ok, selftest: r, note: r.ok ? 'the blob store accepted and returned the same bytes' : 'PDFs are NOT being stored — day records will read pdfStored:false' });
-    }
-
-    const one = url.searchParams.get('date');
-
+    //
+    // THE EXCEPTION IS EXACTLY THE PDF BRANCH, and it is enforced by ORDER, not by a flag: the
+    // branch below runs first and returns on every path, and the gate sits directly under it.
+    // It used to be decided from the bare `pdf` parameter while the branch also needs a real
+    // date — so `?pdf=1` with no date skipped the gate and fell through to the 30-night
+    // history JSON (and ?selftest=1 beside it reached the blob write). Nothing but a request
+    // this branch actually answers can skip the gate now.
     // ── the PDF itself ────────────────────────────────────────────────────────
     if (one && DATE_RE.test(one) && url.searchParams.get('pdf') === '1') {
       const doc = await getDoc(manifestDayPath(TENANT, one));
@@ -122,6 +116,16 @@ export default async (req: Request): Promise<Response> => {
           'Cache-Control': 'no-store',
         },
       });
+    }
+
+    // Gate at viewer: the manifest archive lists every night's Uline document and the
+    // orders that were missing off it. Inert until AUTH_REQUIRED=true.
+    const gate = await requireUser(req, { role: 'viewer' });
+    if (!gate.ok) return gate.response;
+
+    if (url.searchParams.get('selftest') === '1') {
+      const r = await blobSelfTest();
+      return J({ ok: r.ok, selftest: r, note: r.ok ? 'the blob store accepted and returned the same bytes' : 'PDFs are NOT being stored — day records will read pdfStored:false' });
     }
 
     // ── THE MANIFEST AS ROWS, WITH THE OFF-BOARD ONES MARKED ──────────────────
