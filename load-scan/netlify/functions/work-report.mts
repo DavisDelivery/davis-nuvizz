@@ -111,6 +111,17 @@ export function deriveFromScans(sessions: WorkSession[], scanDocs: any[], creds:
   return out;
 }
 
+/**
+ * Pieces on one truck per its scan-session record(s) for the shift, or
+ * undefined when it has none. Summed because a shift crossing midnight can file
+ * one truck under two calendar dates.
+ */
+export function truckCount(scanDocs: any[], loadNbr: string): number | undefined {
+  const docs = (scanDocs || []).filter((d: any) => String(d?.loadNbr) === String(loadNbr));
+  if (!docs.length) return undefined;
+  return docs.reduce((n: number, d: any) => n + (Number(d?.scannedCount) || 0), 0);
+}
+
 export default async (req: Request): Promise<Response> => {
   if (req.method !== 'GET') return bad('GET only', 405);
 
@@ -169,6 +180,9 @@ export default async (req: Request): Promise<Response> => {
         expectedPieces: l.expectedPieces ?? 0,
         stopCount: (l.stops || []).length,
         hasSession: (scanDocs || []).some((d: any) => String(d?.loadNbr) === String(l.loadNbr)),
+        // The truck's own piece count from its session record(s) — what the
+        // close-out reconciled against. Absent when nothing was scanned.
+        scannedPieces: truckCount(scanDocs, l.loadNbr),
       }));
     } catch {
       // No board cached for that day (a weekend, or before the index existed).

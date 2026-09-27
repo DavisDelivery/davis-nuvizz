@@ -49,3 +49,25 @@ test('a stop whose skids + loose disagree with its piece total no longer empties
     'and both show as untouched — the absence is the finding',
   );
 });
+
+// A6-S31-5, the handler half: the board row carries the session record's own
+// piece count for the truck, so buildShiftReport can judge the truck by it.
+test('the report judges a truck by its session record\'s own piece count', async () => {
+  fake.docs.clear();
+  await fs.setDoc('driver_auth/1', { driverNumber: '1', displayName: 'Dispatcher', role: 'dispatcher', active: true, pinHash: '' });
+  await fs.setDoc(`nuvizz_stop_index/davis__${DAY}/stops/007157687`, { stopNbr: '007157687', loadNbr: 'STEVEN', routeName: 'STEVEN', pallets: 10, cartons: 10, volume: 0 });
+  // Two people, one phone: each worker's running count reads 8 (A's 4 + B's 4 on
+  // the same device), but the truck itself holds 8 of 10.
+  const at = '2026-08-07T01:30:00.000Z';
+  await fs.setDoc(`nuvizz_load_scans/davis__${DAY}__STEVEN`, {
+    tenant: 'davis', date: DAY, loadNbr: 'STEVEN', closedAt: at, expectedPieces: 10, scannedCount: 8,
+    workedBy: [
+      { driverNumber: '4471', role: 'loader', pieces: 8, firstAt: at, lastAt: at },
+      { driverNumber: '4472', role: 'loader', pieces: 8, firstAt: at, lastAt: at },
+    ],
+  });
+  const report = await getReport();
+  assert.equal(report.rows.length, 2);
+  for (const row of report.rows) assert.equal(row.status, 'short', `${row.worker}: the truck is 2 short`);
+  assert.equal(report.totals.loadsComplete, 0);
+});
