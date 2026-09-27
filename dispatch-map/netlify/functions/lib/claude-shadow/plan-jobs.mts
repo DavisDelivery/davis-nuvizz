@@ -14,7 +14,7 @@ import { shadowSet, shadowPatch, shadowCreate } from './store.mts';
 import { claudeShadowEnabled, shadowModel } from './config.mts';
 import { btLoopProblem } from './backtest-core.mts';
 import {
-  listJobs, jobPath, routerSettingsFrom, routerRefusal, ceilingView, ROUTER_SETTINGS_PATH, JOB_KINDS,
+  listJobs, jobPath, routerSettingsFrom, routerRefusal, ceilingView, ROUTER_SETTINGS_PATH, JOB_KINDS, settingsUnreadRefusal, type RouterSettings,
 } from './backtest.mts';
 import { readPlanDay, validatePlanParams, planOptions, planPreview, planResult, planMap, planStops, nothingToPlace, type PlanDeps } from './plan.mts';
 import { planCapacity } from './plan-core.mts';
@@ -34,7 +34,9 @@ export async function enqueuePlan(raw: any, by: string | null, deps: PlanJobDeps
   const v = validatePlanParams(raw);
   if (!v.ok) return { status: 400, body: { ok: false, errors: v.errors } };
   const params = v.params!;
-  const rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null));
+  let rs: RouterSettings;
+  try { rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH)); }
+  catch (e: any) { return { status: 502, body: { ok: false, error: settingsUnreadRefusal(e) } }; }
   const every = await listJobs(deps as any, JOB_KINDS);
   const busy = every.find((j: any) => j.kind === 'plan' && ACTIVE.has(j.status) && !j.cancelRequested && j.params?.date === params.date);
   if (busy) return { status: 409, body: { ok: false, error: `a plan of ${params.date} is already ${busy.status} — let it finish or Stop it before queuing another` } };

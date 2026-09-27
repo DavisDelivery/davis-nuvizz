@@ -100,6 +100,12 @@ export function routerSettingsFrom(doc: any): RouterSettings {
   };
 }
 
+/** A READ THAT FAILED IS NOT "NO SETTINGS" (audit 2026-09-27). Swallowed as a missing document, a
+ *  throttled read queued the day on the defaults — a $5 cap where $1 was set, another cap rule, other
+ *  weight limits — frozen into the job and run to the end. So anything about to spend refuses instead. */
+export const settingsUnreadRefusal = (e: any) =>
+  `not queued — the Router settings could not be read, so the cap and rules set there are not known (${String(e?.message || e).slice(0, 200)}); nothing was written or spent — press again`;
+
 /** Which weight limits the stored settings PIN (a number of Chad's) as against leaving the default.
  *  The resolved settings cannot say: a stored 10,000 and no stored value both read 10,000. The form
  *  needs the difference so that opening and saving it untouched does not quietly pin the defaults. */
@@ -271,7 +277,9 @@ export async function enqueueBacktests(dates: any, by: string | null, deps: BtDe
   const sealed = new Set(sealedDaysFrom(manifests).map((s) => s.date));
   const notSealed = list.filter((d) => !sealed.has(d));
   if (notSealed.length) return { status: 400, body: { ok: false, error: `not sealed history days: ${notSealed.join(', ')}` } };
-  const rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null));
+  let rs: RouterSettings;
+  try { rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH)); }
+  catch (e: any) { return { status: 502, body: { ok: false, error: settingsUnreadRefusal(e) } }; }
   const model = shadowModel(deps.env).model;
   const active = new Set((await listJobs(deps)).filter((j) => ACTIVE.has(j.status)).map((j) => j.date));
   const at = deps.now().toISOString();
@@ -455,7 +463,8 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
     }
     if (!state.ended) return { ok: true, job: id, rounds: state.rounds.length, usd: state.usd, continuing: true };
     if (job.kind === 'plan') {
-      const rsNow = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null));
+      // The cost rates come from here: a failed read throws (the next tick finishes it), never a result without them.
+      const rsNow = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH));
       return await finishPlan(id, job, problem, cfg, state, rsNow, deps, () => wasCancelled(id, deps), jobPath);
     }
     return await finishJob(id, job, problem, cfg, state, deps);
@@ -489,7 +498,8 @@ export async function finishJob(id: string, job: any, problem: BtProblem, cfg: a
     await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at, updatedAt: at, error: `no plan without a hard-rule violation: ${state.endNote || state.ended}` });
     return { ok: true, job: id, failed: state.ended };
   }
-  const rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null));
+  // The cost rates come from here: a failed read throws (the next tick finishes it), never a result without them.
+  const rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH));
   const cmp = compareBacktest(problem, plan, cfg, { perMile: rs.costPerMile, perDriveHour: rs.costPerDriveHour });
   const submitted = !!state.final;
   const result = {
