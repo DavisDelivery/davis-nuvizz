@@ -328,6 +328,14 @@ export function toBoardStop(r: any): any {
   };
 }
 
+/** NUVIZZ_PAST_OVERRIDE_CLAMP — house shape: default ON, an explicit off-word turns it off,
+ *  anything malformed leaves it ON. ON = a dispatcher-set board date that is already in the
+ *  past no longer pulls an open ROUTED stop back onto that past day (A3-S18-1). */
+export function pastOverrideClampEnabled(env: any = process.env): boolean {
+  const v = String(env?.NUVIZZ_PAST_OVERRIDE_CLAMP ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
 // Group board stops by their board day (YYYY-MM-DD). The day is boardDate (Estimated Arrival,
 // falling back to Requested Date), with one correction for live work: an OPEN (not delivered
 // /exception) stop that's ASSIGNED TO A ROUTE never buckets onto a PAST day. NuVizz does not
@@ -351,10 +359,15 @@ export function boardDayFor(s: any, today: string = etDayString(), overrides?: R
   // deferral looks broken ten minutes after it was made. Finished stops are exempt: where a
   // delivery actually happened is history, not a plan, and history is never re-filed.
   const set = overrides && s.stopNbr != null ? overrides[String(s.stopNbr)] : null;
-  if (set && !finishedEarly) return set;
+  const onRoute = !!s.loadNbr;
+  // A deferral whose day has PASSED does not outrank the live-route clamp below. The scan
+  // reads the override map unpruned (it is only pruned on its next write), so yesterday's
+  // "not until the 11th" used to park a stop the driver is carrying today on the 11th's
+  // board, off today's route. NUVIZZ_PAST_OVERRIDE_CLAMP=off restores the old filing.
+  const pastOnRoute = !!set && onRoute && set < today && pastOverrideClampEnabled();
+  if (set && !finishedEarly && !pastOnRoute) return set;
   let d = s.boardDate || s.requestedDate || s.scheduledDate || null;
   const finished = finishedEarly;
-  const onRoute = !!s.loadNbr;
   if (!finished && onRoute && (!d || d < today)) d = today; // live route work → today, not the past
   // A DATELESS open order is live work too — NuVizz's "-1" re-delivery duplicates arrive with
   // no Estimated Arrival and no Requested Date, and returning null here made bucketByDate drop
