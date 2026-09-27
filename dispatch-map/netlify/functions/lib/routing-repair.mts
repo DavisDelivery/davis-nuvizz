@@ -218,8 +218,12 @@ export function repair(input: SolverInput, output: SolverOutput): SolverOutput {
   // ── Phase A: shrink each truck until valid ───────────────────────────────────
   for (const truck of input.trucks) {
     let stops = sets.get(truck.id) ?? [];
+    // Budget fixed BEFORE the loop: each pass removes one stop, so a cap that re-read
+    // stops.length halved as it went and quit with violators still on the truck (the same
+    // trap routing-solver's Phase 3 documents). n passes suffice; +2 is slack.
+    const maxIters = stops.length + 2;
     let guard = 0;
-    while (stops.length && guard++ < stops.length + 2) {
+    while (stops.length && guard++ < maxIters) {
       const ordered = orderForTruck(stops, input, indexById);
       const etas = etasFor(ordered, indexById, input.matrix, depart);
       const v = worstViolator(ordered, etas, truck, enforceWindows);
