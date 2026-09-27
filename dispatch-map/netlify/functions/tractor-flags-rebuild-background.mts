@@ -15,11 +15,17 @@
 //   POST /.netlify/functions/tractor-flags-rebuild-background        → ALL captured days
 //     ?date=YYYY-MM-DD                → single day
 //     ?from=YYYY-MM-DD&to=YYYY-MM-DD  → inclusive range
+//
+// ONLY THE ALL-DAYS RUN OVERWRITES. A window has seen a slice of each location's history, so
+// writing it as a full overwrite replaced lifetime counts, first-served dates and drivers with
+// the window's. A window is folded in day by day through the nightly pass's sticky merge
+// (mergeTractorDay): dates only widen, drivers only add, a day already counted is not counted
+// again. It can backfill; it cannot un-flag or re-tag — that is what the all-days run is for.
 import { isFirestoreEnabled, listDocs } from './lib/firestore.mts';
 import { requireUserForBackground } from './lib/background-gate.mts';
 import { HISTORY_COLLECTION, listStops } from './lib/history-store.mts';
 import {
-  loadTractorRoster, aggregateTractorStops, writeTractorLocationsFresh,
+  loadTractorRoster, aggregateTractorStops, writeTractorLocationsFresh, mergeTractorDay,
   normalizeDriverAlias, type TractorLocAgg,
 } from './lib/tractor-flags.mts';
 
@@ -57,10 +63,12 @@ export default async (req: Request): Promise<Response> => {
   const to = url.searchParams.get('to');
 
   let dates = await listCapturedDates();
-  if (one && DATE_RE.test(one)) dates = dates.filter((d) => d === one);
+  let windowed = false;
+  if (one && DATE_RE.test(one)) { dates = dates.filter((d) => d === one); windowed = true; }
   else if (from && to && DATE_RE.test(from) && DATE_RE.test(to)) {
     const lo = from < to ? from : to, hi = from < to ? to : from;
     dates = dates.filter((d) => d >= lo && d <= hi);
+    windowed = true;
   }
 
   const roster = await loadTractorRoster(true);
@@ -74,11 +82,14 @@ export default async (req: Request): Promise<Response> => {
   const agg = new Map<string, TractorLocAgg>();
   let stopsScanned = 0;
   let matchedStops = 0;
+  let mergedWrites = 0;
   for (const date of dates) {
     const stops = await listStops(TENANT, date);
     stopsScanned += stops.length;
     const before = [...agg.values()].reduce((s, a) => s + a.delivery_count, 0);
     aggregateTractorStops(stops, roster, agg);
+    // A window merges each day into the lifetime docs, oldest first; see the header.
+    if (windowed) mergedWrites += await mergeTractorDay(TENANT, date, aggregateTractorStops(stops, roster));
     const after = [...agg.values()].reduce((s, a) => s + a.delivery_count, 0);
     matchedStops = after;
     for (const s of stops) {
@@ -90,7 +101,7 @@ export default async (req: Request): Promise<Response> => {
     console.log(`[tractor-rebuild] ${date}: ${stops.length} stops, +${after - before} tractor deliveries (running: ${after} across ${agg.size} locations)`);
   }
 
-  const written = await writeTractorLocationsFresh(TENANT, agg);
+  const written = windowed ? mergedWrites : await writeTractorLocationsFresh(TENANT, agg);
   const zeroHitAliases = [...aliasHits.entries()]
     .filter(([, n]) => n === 0)
     .map(([a]) => ({ alias: a, employee: roster.aliasToName.get(a) || null }));
@@ -98,6 +109,8 @@ export default async (req: Request): Promise<Response> => {
   const summary = {
     ok: true,
     tenant: TENANT,
+    // 'window-merge' folded the window into existing docs; 'full-overwrite' recomputed all of them.
+    mode: windowed ? 'window-merge' : 'full-overwrite',
     datePartitionsScanned: dates.length,
     stopsEvaluated: stopsScanned,
     tractorDriversLoaded: roster.aliasSet.size,

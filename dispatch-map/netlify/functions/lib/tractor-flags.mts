@@ -279,10 +279,23 @@ export async function updateTractorFlagsForDay(
   if (!roster.aliasSet.size) return { matched: 0, locations: 0, written: 0 };
   const dayAggs = aggregateTractorStops(stops, roster);
   if (!dayAggs.size) return { matched: 0, locations: 0, written: 0 };
-  let written = 0;
   let matched = 0;
+  for (const agg of dayAggs.values()) matched += agg.delivery_count;
+  const written = await mergeTractorDay(tenant, date, dayAggs);
+  console.log(`[tractor-flags] ${date}: ${matched} tractor stop(s) → ${dayAggs.size} location(s), ${written} doc(s) upserted`);
+  return { matched, locations: dayAggs.size, written };
+}
+
+// THE STICKY MERGE OF ONE DAY INTO THE LIFETIME DOCS — shared by the nightly pass above and by
+// a WINDOWED run of tractor-flags-rebuild-background (?date= / ?from&to). A window cannot be
+// written with writeTractorLocationsFresh: that is a whole-document overwrite built from the
+// window alone, so a dock served 40 times since January, rebuilt for one day, came back as one
+// delivery first served that day. Only a run over EVERY captured day may overwrite.
+export async function mergeTractorDay(
+  tenant: string, date: string, dayAggs: Map<string, TractorLocAgg>,
+): Promise<number> {
+  let written = 0;
   for (const agg of dayAggs.values()) {
-    matched += agg.delivery_count;
     const existing = await getDoc(tractorLocPath(tenant, agg.match_key));
     if (!existing) {
       await setDoc(tractorLocPath(tenant, agg.match_key), toDoc(tenant, agg));
@@ -305,6 +318,5 @@ export async function updateTractorFlagsForDay(
     await setDoc(tractorLocPath(tenant, agg.match_key), merged);
     written++;
   }
-  console.log(`[tractor-flags] ${date}: ${matched} tractor stop(s) → ${dayAggs.size} location(s), ${written} doc(s) upserted`);
-  return { matched, locations: dayAggs.size, written };
+  return written;
 }
