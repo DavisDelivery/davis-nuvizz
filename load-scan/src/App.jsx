@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 
 import { fmtDate, fmtDateTime, fmtTime } from './lib/fmt.js';
-import { shiftDayString } from './lib/shift.js';
+import { shiftDayString, addDays } from './lib/shift.js';
 import { watchForUpdate, applyUpdate } from './lib/appupdate.js';
 import ReportScreen from './ReportScreen.jsx';
 import AssignScreen from './AssignScreen.jsx';
@@ -3915,6 +3915,9 @@ export default function App() {
 
   useEffect(() => {
     store.pruneSynced().catch(() => {});
+    // Saved manifests are read for the current shift day only. Three days back is
+    // kept as slack; anything older is never read again. See pruneManifestCache.
+    store.pruneManifestCache(addDays(shiftDayString(), -3)).catch(() => {});
   }, []);
 
   function signOut() {

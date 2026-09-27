@@ -363,6 +363,29 @@ export function manifestFromCache(cached, loadNbr = '') {
   return { manifest: m, open: loads.length === 1 && !m.summariesOnly ? loads[0].loadNbr : null };
 }
 
+/**
+ * Drop saved manifests for shift days before `keepFromDay` (YYYY-MM-DD).
+ *
+ * Only the CURRENT shift day's slots are ever read, and every truck opened by
+ * number now has a slot of its own — each carrying its stops' full board rows —
+ * so without this the store grew by every truck opened, every night, for good.
+ * Keys only are read (never the manifests themselves), and nothing but
+ * `manifest::<day>::…` slots is touched: the loaded-sequence stamps stay.
+ * A malformed day prunes nothing.
+ */
+export async function pruneManifestCache(keepFromDay) {
+  const keep = String(keepFromDay || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(keep)) return 0;
+  const keys = (await tx(STORE_CACHE, 'readonly', (s) => s.getAllKeys())) || [];
+  const stale = keys.filter((k) => {
+    const m = /^manifest::(\d{4}-\d{2}-\d{2})::/.exec(String(k));
+    return !!m && m[1] < keep;
+  });
+  if (!stale.length) return 0;
+  await tx(STORE_CACHE, 'readwrite', (s) => stale.forEach((k) => s.delete(k)));
+  return stale.length;
+}
+
 // ── Loaded-against sequence ──────────────────────────────────────────────────
 //
 // The trailer is a physical record of one particular route order. If dispatch
