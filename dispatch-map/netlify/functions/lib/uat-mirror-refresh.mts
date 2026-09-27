@@ -371,7 +371,7 @@ export interface RefreshProgress {
   done: { static: boolean; history: string[]; board: string[] };
   counts: {
     static: StaticCounts | null;
-    history: Record<string, { stops: number; routes: number; drivers: number; roster: boolean; ledger: boolean; remined: boolean; skipped?: boolean }>;
+    history: Record<string, { stops: number; routes: number; drivers: number; roster: boolean; ledger: boolean; remined: boolean; skipped?: boolean; remine_failed?: string[] }>;
     board: Record<string, { stops: number; parent: boolean; roster: boolean; pruned?: number }>;
   };
   history_dates_in_prod: string[];   // the dates the window resolved to, so a resume plans the same set
@@ -471,13 +471,20 @@ export async function runRefresh(
       const roster = await copyRosterDay(deps, plan.tenant, date);
       const ledger = await copyLedgerDay(deps, plan.tenant, date);
       let remined = false;
+      let mineFailed: string[] | null = null;
       if (plan.remine && deps.remine && copy.manifest && copy.stopRecords.length) {
-        await deps.remine(plan.tenant, date, copy.stopRecords);
-        remined = true;
+        // The OUTCOME, not the attempt: runPostSealHooks catches every miner's failure and
+        // answers ok:false, so "remined" was logged for a day whose miners all threw.
+        const res = await deps.remine(plan.tenant, date, copy.stopRecords);
+        if (res && res.ok === false) {
+          mineFailed = Object.entries(res.hooks || {}).filter(([, h]: [string, any]) => !h?.ok).map(([n]) => n);
+        } else {
+          remined = true;
+        }
       }
-      p.counts.history[date] = { stops: copy.stops, routes: copy.routes, drivers: copy.drivers, roster, ledger, remined };
+      p.counts.history[date] = { stops: copy.stops, routes: copy.routes, drivers: copy.drivers, roster, ledger, remined, ...(mineFailed ? { remine_failed: mineFailed } : {}) };
       p.done.history.push(date);
-      say(`history ${date}: ${copy.stops} stops${roster ? ', roster' : ''}${ledger ? ', ledger' : ''}${remined ? ', remined' : ''}`);
+      say(`history ${date}: ${copy.stops} stops${roster ? ', roster' : ''}${ledger ? ', ledger' : ''}${remined ? ', remined' : ''}${mineFailed ? `, miners FAILED (${mineFailed.join(', ') || 'unnamed'})` : ''}`);
       await persist();
     }
   }
