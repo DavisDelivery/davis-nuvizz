@@ -97,3 +97,27 @@ test('a Preview that cannot reach the server says so and frees the buttons', asy
   assert.match(textOf(errorBanner(tree)), /Failed to fetch/);
   assert.equal(button(tree, 'Preview').props.disabled, false, 'nothing is left spinning');
 });
+
+test('the list reloaded after a Seed is the day now in the box, even if the tester moved while it ran', async () => {
+  const b = mountBench();
+  catalogueCalls(b)[0].answer(catalogue('2026-09-27', []));
+  await b.settle();
+  await pickDate(b, '2026-09-22');
+  catalogueCalls(b)[1].answer(TUE);
+  let tree = await b.settle();
+  tableRows(tree)[0].props.onClick();
+  button(b.render(), 'Seed into UAT').props.onClick();
+  const seed = b.calls.find((c) => c.method === 'POST');
+  assert.equal(seed.body.date, '2026-09-22');
+
+  await pickDate(b, '2026-09-23');           // the tester moves on while the seed runs
+  seed.answer({ ok: true, op: 'seed', seeded: 1, created: [], failed: [], skipped: [], warnings: [], callsUsed: 1, boardRows: 1 });
+  await b.settle();
+  // Answer every read still open with the day it asked for, in the order they were sent.
+  for (const c of catalogueCalls(b).slice(2)) c.answer(/date=2026-09-22/.test(c.url) ? TUE : WED);
+  tree = await b.settle();
+
+  assert.equal(dateBox(tree).props.value, '2026-09-23');
+  assert.match(textOf(tableRows(tree)), /WEDNESDAY CUSTOMER/);
+  assert.doesNotMatch(textOf(tableRows(tree)), /TUESDAY CUSTOMER/, 'Tuesday\'s reload never lands under Wednesday');
+});

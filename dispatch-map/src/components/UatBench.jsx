@@ -47,9 +47,11 @@ export default function UatBench() {
   const [onlyUnplanned, setOnlyUnplanned] = useState(false);
   const [label, setLabel] = useState('');
   const [result, setResult] = useState(null);
-  // The newest catalogue read. A date box fires a read per change, and a slower answer for a day
-  // the tester already moved off would otherwise land last and list that day under this one.
+  // The newest catalogue read, and the day in the box. A date box fires a read per change, and a
+  // slower answer for a day the tester already moved off would otherwise land last and list that
+  // day under this one — so only the newest read, for the day still in the box, fills the list.
   const catSeq = useRef(0);
+  const dateRef = useRef(date);
 
   const call = useCallback(async (body, method = 'POST') => {
     const res = method === 'GET'
@@ -65,11 +67,11 @@ export default function UatBench() {
     setLoading(true); setErr(null);
     try {
       const j = await call({ date: d }, 'GET');
-      if (seq !== catSeq.current) return;   // a newer read owns the list now
+      if (seq !== catSeq.current || d !== dateRef.current) return;   // a newer read, or another day, owns the list now
       if (!j?.ok) { setErr(j?.error || 'could not read production\'s day'); setCat(null); }
       else { setCat(j); setPicked(new Set()); }
     } catch (e) {
-      if (seq !== catSeq.current) return;
+      if (seq !== catSeq.current || d !== dateRef.current) return;
       setErr(e?.message || 'could not reach the server'); setCat(null);
     } finally { if (seq === catSeq.current) setLoading(false); }
   }, [call]);
@@ -99,7 +101,8 @@ export default function UatBench() {
       const j = await call(body);
       setResult({ op, ...j });
       if (!j?.ok && j?.error) setErr(j.error);
-      if (op === 'seed' || op === 'clear') await loadCatalogue(date);
+      // The day in the box NOW — the tester may have moved while this ran.
+      if (op === 'seed' || op === 'clear') await loadCatalogue(dateRef.current);
     } catch (e) {
       setErr(e?.message || 'could not reach the server');
     } finally { setBusy(null); }
@@ -139,7 +142,7 @@ export default function UatBench() {
               type="date" value={date}
               // A new day empties the old day's list and picks at once, so neither can sit under
               // the new date while its read is in flight (or after it fails).
-              onChange={(e) => { setDate(e.target.value); setCat(null); setPicked(new Set()); }}
+              onChange={(e) => { dateRef.current = e.target.value; setDate(e.target.value); setCat(null); setPicked(new Set()); }}
               className="border rounded px-2 py-1 text-sm min-h-[38px]"
               aria-label="Production board day to pick from"
             />
