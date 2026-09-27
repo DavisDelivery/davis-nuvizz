@@ -1021,14 +1021,16 @@ function lineItem(d) {
   };
 }
 
-/** PURE: the comment trail, newest first, with who said it and when. */
+/** PURE: the comment trail, newest first, with who said it and when.
+ *  `addedBy` / `addedOn` FIRST — they are what the scan actually stores (StopComment, written
+ *  by extractAllComments in lib/nuvizz-scan.mts); the other names are kept as fallbacks. */
 function comments(stop) {
   const raw = Array.isArray(stop?.allComments) ? stop.allComments : [];
   return raw
     .map((c) => ({
       text: s(c?.comment ?? c?.text ?? c?.note),
-      by: s(c?.userName ?? c?.author ?? c?.createdBy) || null,
-      at: s(c?.createdTime ?? c?.commentDTTM ?? c?.at) || null,
+      by: s(c?.addedBy ?? c?.userName ?? c?.author ?? c?.createdBy) || null,
+      at: s(c?.addedOn ?? c?.createdTime ?? c?.commentDTTM ?? c?.at) || null,
       kind: s(c?.commentType ?? c?.type) || null,
     }))
     .filter((c) => c.text)
