@@ -277,3 +277,22 @@ test('007174083-1 — off today\'s board because today\'s BUFORD does not hold i
   has(out.findings, /steps: roster .* → membership read: DAVIS000203661 holds 7 of them/);
   has(out.findings, new RegExp(`It is filed on ${D1}`));
 });
+
+// A3-S18-1: boardDayFor no longer lets a PAST dispatcher date hold an open stop that is on a
+// route. The explain said "the scan files the order there regardless" for every date on file,
+// which after that change is wrong on exactly the stop somebody would ask about: one sitting on
+// today's route with yesterday's deferral still in the map.
+test('a dispatcher date that has passed: the explain no longer says it holds a routed stop there', () => {
+  const past = explainStop(base({ copies: [{ day: today, row: planned() }], override: D1 })).findings;
+  has(past, new RegExp(`board date of ${D1} is on file, but that day has passed`));
+  has(past, /files one of those on today's board/);
+  hasNot(past, /regardless of NuVizz's arrival date/);
+  // A deferral to today or later still holds, and says so.
+  const later = addDays(today, 3);
+  has(explainStop(base({ copies: [{ day: today, row: planned() }], override: later })).findings, new RegExp(`board date of ${later} is on file; the scan files the order there regardless`));
+  has(explainStop(base({ copies: [{ day: today, row: planned() }], override: today })).findings, /the scan files the order there regardless/);
+  // NUVIZZ_PAST_OVERRIDE_CLAMP=off (the endpoint passes the switch's position): the old filing, the old sentence.
+  const off = explainStop(base({ copies: [{ day: today, row: planned() }], override: D1, pastOverrideClamp: false })).findings;
+  has(off, new RegExp(`board date of ${D1} is on file; the scan files the order there regardless`));
+  hasNot(off, /that day has passed/);
+});

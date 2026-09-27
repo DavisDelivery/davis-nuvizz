@@ -44,6 +44,9 @@ export interface StopFacts {
   retiredOn: string | null;
   /** the dispatcher-set board date (setStopDate), when any */
   override: string | null;
+  /** NUVIZZ_PAST_OVERRIDE_CLAMP's position as the endpoint read it (A3-S18-1). Absent = ON, the
+   *  switch's own default: a PAST dispatcher date no longer holds an open stop that is on a route. */
+  pastOverrideClamp?: boolean;
   /** the scan's plan-verdict ledger rows for THIS stop, newest first */
   verdicts: any[];
   /** write-journal rows that mention the stop (or its route on this day), newest first */
@@ -220,7 +223,15 @@ export function explainStop(f: StopFacts): StopExplanation {
   if (f.writes?.length) say(`Write journal: ${f.writes.slice(0, 5).map((w) => `${clock(w.at)} ${w.op} ${w.status} — ${w.summary}`).join('; ')}.`);
   if (f.history) say(`Sealed history records it ${f.history.status} on ${f.history.day} — the scan drops a stale open copy of a stop history has sealed finished.`);
   if (f.retiredOn) say(`It is on the retired list (proven finished on ${f.retiredOn}); the carry-over fold will not serve it.`);
-  if (f.override) say(`A dispatcher-set board date of ${f.override} is on file; the scan files the order there regardless of NuVizz's arrival date.`);
+  if (f.override) {
+    // boardDayFor (nuvizz-list.mts) lets a PAST dispatcher date give way to the live-route clamp
+    // (A3-S18-1), so "files it there regardless" is only true of a date that has not passed.
+    if (f.override < f.today && f.pastOverrideClamp !== false) {
+      say(`A dispatcher-set board date of ${f.override} is on file, but that day has passed: it no longer holds an open stop that is on a route (the scan files one of those on today's board); an unrouted order still files on ${f.override}. NUVIZZ_PAST_OVERRIDE_CLAMP=off puts the old filing back.`);
+    } else {
+      say(`A dispatcher-set board date of ${f.override} is on file; the scan files the order there regardless of NuVizz's arrival date.`);
+    }
+  }
   const disagreeing = copies.filter((c) => c.row && c.day !== served.copy?.day && !isFinished(c.row) && c.row.isPlanned === true && (!plan || !plan.isPlanned || routeOf(c.row) !== plan.route));
   if (disagreeing.length) say(`Another day's copy still holds it planned: ${disagreeing.map((c) => `${c.day} on ${routeOf(c.row) ?? '?'}`).join(', ')} — a frozen day is never rewritten, so that copy is history, not a plan.`);
 
