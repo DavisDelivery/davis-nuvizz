@@ -30,7 +30,7 @@ import { normalizeMatchKey, placeKeyOfStop } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
-import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
+import { routeLoadLine, podPhotoFetchOffer, podPhotoPullOutcome, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { mergeStopHistory } from './lib/stop-history.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
 import { noteContentKey, commitNoteDraft, contactSaveLine } from './lib/note-save.js';
@@ -8414,8 +8414,11 @@ function PodDocsSection({ stop, onRefreshed }) {
     try {
       const r = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
       const d = await r.json();
-      if (d.ok && d.stop) { setTried(true); onRefreshed?.(d.stop); }
-      else setErr(d.reason || 'not found');
+      // The fold funnel refuses the OTHER order sharing this number — show that refusal
+      // rather than "none on file" for an order the pull never looked at.
+      const out = podPhotoPullOutcome(d, onRefreshed);
+      if (out.tried) setTried(true);
+      if (out.err) setErr(out.err);
     } catch (e) { setErr(e.message); }
     finally { setLoading(false); }
   };

@@ -65,6 +65,19 @@ export function podPhotoFetchOffer(stop, { tried } = {}) {
   };
 }
 
+// ── what a "View delivery photos" pull settled ───────────────────────────────
+// `d` is the pro-lookup answer; `fold` is the card's fold funnel (useLiveStop's
+// onRefreshed), which returns a refusal message when the by-number pull answered
+// with the OTHER order sharing this number, and null when it merged. A refused
+// pull looked at a different order, so it is NOT "tried" — counting it would
+// print "No delivery photos on file" for an order nobody asked about.
+export function podPhotoPullOutcome(d, fold) {
+  if (!(d && d.ok && d.stop)) return { tried: false, err: (d && d.reason) || 'not found' };
+  const refusal = typeof fold === 'function' ? fold(d.stop) : null;
+  if (refusal) return { tried: false, err: refusal };
+  return { tried: true, err: null };
+}
+
 // ── folding a fresh /stop/info pull over the open card ───────────────────────
 // The client folded a refresh in with a raw spread, so ANY key the pull returned
 // shadowed the card's — including an EMPTY one. normalizeStop always emits a
