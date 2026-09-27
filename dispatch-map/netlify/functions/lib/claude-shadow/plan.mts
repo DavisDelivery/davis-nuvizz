@@ -29,7 +29,7 @@ import { readSettings } from './settings.mts';
 import { ceilingsInForce, withOverrides } from './settings-core.mts';
 import { hardCapsEnabled, shadowModel } from './config.mts';
 import { loosePerSkidFrom } from './learn.mts';
-import type { LoopState } from './plan-loop.mts';
+import { noPlanReason, type LoopState } from './plan-loop.mts';
 
 export const PLANS_COLLECTION = 'claude_shadow_plans';
 export const planResultPath = (id: string) => `${PLANS_COLLECTION}/${id}`;
@@ -364,7 +364,7 @@ export async function finishPlan(id: string, job: any, problem: BtProblem, cfg: 
   if (await wasCancelled()) return { ok: true, job: id, cancelled: true, usd: state.usd };
   const plan = state.final ?? state.bestClean;
   if (!plan) {
-    await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at, updatedAt: at, error: `no plan without a hard-rule violation: ${state.endNote || state.ended}` });
+    await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at, updatedAt: at, error: noPlanReason(state) });
     return { ok: true, job: id, failed: state.ended };
   }
   const rates = { perMile: rs.costPerMile ?? null, perDriveHour: rs.costPerDriveHour ?? null };

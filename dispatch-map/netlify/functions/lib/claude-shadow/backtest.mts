@@ -32,7 +32,7 @@ import {
   BT_TENANT, BT_JOBS, BT_RESULTS, BT_STOP_MASK, LEARN_DAY_MASK, CAP_RULES,
   buildBacktestProblem, btLoopProblem, compareBacktest, backtestMapPayload, PROFILE_MAX_LBS, type BtProblem, type CapRule,
 } from './backtest-core.mts';
-import { restoreState, runRounds, type LoopState, type LoopSettings, type RoundRecord } from './plan-loop.mts';
+import { restoreState, runRounds, noPlanReason, type LoopState, type LoopSettings, type RoundRecord } from './plan-loop.mts';
 import { finishPlan } from './plan.mts';
 import { effectiveEngineConfig, engineConfigPath } from '../routing-engine-config.mts';
 import { DEPOT } from '../routing-types.mts';
@@ -495,7 +495,7 @@ export async function finishJob(id: string, job: any, problem: BtProblem, cfg: a
   if (await wasCancelled(id, deps)) return { ok: true, job: id, cancelled: true, usd: state.usd };
   const plan = state.final ?? state.bestClean;
   if (!plan) {
-    await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at, updatedAt: at, error: `no plan without a hard-rule violation: ${state.endNote || state.ended}` });
+    await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at, updatedAt: at, error: noPlanReason(state) });
     return { ok: true, job: id, failed: state.ended };
   }
   // The cost rates come from here: a failed read throws (the next tick finishes it), never a result without them.
