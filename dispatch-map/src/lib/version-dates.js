@@ -8,6 +8,8 @@
 // the standing example — it has a changelog row but never existed as a running APP_VERSION.
 export const VERSION_DATES = {
   '1.76.0': '2026-09-26T23:05:47.000Z',
+  '1.75.2': '2026-09-26T23:23:01.000Z',
+  '1.75.1': '2026-09-26T23:01:28.000Z',
   '1.75.0': '2026-09-26T22:24:21.000Z',
   '1.74.4': '2026-09-26T21:37:14.000Z',
   '1.74.3': '2026-09-26T21:07:10.000Z',

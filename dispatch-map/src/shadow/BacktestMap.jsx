@@ -199,7 +199,7 @@ function Swatch({ side, sel, m }) {
   return <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0 mt-1" style={{ background: side?.loadId ? colorFor(m, sel, side.loadId) : '#7b8190', opacity: dim ? 0.5 : 1 }} />;
 }
 
-function StoryRows({ story, sel, m }) {
+function StoryRows({ story, sel, m, only }) {
   const s = story.stop;
   const d = story.driven, c = story.claude;
   const on = (x) => `${x.route} · ${x.driver} · stop ${x.seq} of ${x.of}`;
@@ -207,8 +207,8 @@ function StoryRows({ story, sel, m }) {
   return (
     <div className="space-y-0.5">
       <div className="font-semibold text-slate-800 truncate">{s.name || s.n}</div>
-      <div className="text-slate-500">{[s.city, s.zip].filter(Boolean).join(' ')} · {s.skids ?? '—'} skids · {s.loose ?? '—'} loose · {s.spots} spots · {Number(s.lbs || 0).toLocaleString('en-US')} lb{s.noTractor ? ' · no-tractor' : ''} · #{s.n}</div>
-      <div className="flex items-start gap-1.5"><Swatch side={d} sel={sel} m={m} /><span><span className="text-slate-500">Dispatch{dWord}:</span> {d ? on(d) : '—'}</span></div>
+      <div className="text-slate-500">{[s.city, s.zip].filter(Boolean).join(' ')} · {s.skids ?? '—'} skids · {s.loose ?? '—'} loose · {s.spots} spots · {Number(s.lbs || 0).toLocaleString('en-US')} lb{s.noTractor ? ' · no-tractor' : ''} · #{s.n}{only && s.day && s.day !== m.date ? ` · filed ${s.day}, carried over` : ''}</div>
+      {!only && <div className="flex items-start gap-1.5"><Swatch side={d} sel={sel} m={m} /><span><span className="text-slate-500">Dispatch{dWord}:</span> {d ? on(d) : '—'}</span></div>}
       <div className="flex items-start gap-1.5">
         {c?.unplanned
           ? <><span className="inline-block w-2.5 h-2.5 rounded-full shrink-0 mt-1 border-2 border-slate-900 bg-white" /><span><span className="text-indigo-700">Claude:</span> <b className="text-rose-700">left unplanned</b>{c.reason ? ` — ${c.reason}` : ''}</span></>
@@ -218,7 +218,7 @@ function StoryRows({ story, sel, m }) {
   );
 }
 
-function StopCard({ stories, sel, m, onPick, onOpenRoute, onClose }) {
+function StopCard({ stories, sel, m, onPick, onOpenRoute, onClose, only }) {
   if (!stories?.length) return null;
   const trucks = [...new Set(stories.flatMap((x) => [x.driven?.loadId, x.claude?.loadId]).filter(Boolean))];
   const first = stories[0];
@@ -229,9 +229,9 @@ function StopCard({ stories, sel, m, onPick, onOpenRoute, onClose }) {
         <div className="text-[11px] text-slate-500 pt-1">{stories.length > 1 ? `${stories.length} stops at this address` : 'Stop'}</div>
         <button onClick={onClose} aria-label="Close the stop" className="rounded-lg border bg-white min-h-[44px] min-w-[44px] inline-flex items-center justify-center shrink-0"><X size={14} /></button>
       </div>
-      {stories.map((x) => <StoryRows key={x.stop.id} story={x} sel={sel} m={m} />)}
+      {stories.map((x) => <StoryRows key={x.stop.id} story={x} sel={sel} m={m} only={only} />)}
       <div className="flex flex-wrap gap-2">
-        {trucks.length > 0 && <button onClick={() => onPick(trucks)} className="rounded-lg border border-indigo-200 bg-white px-3 text-indigo-700 font-semibold min-h-[44px]">{trucks.length === 1 ? 'Show this truck' : `Show ${trucks.length === 2 ? 'both' : `all ${trucks.length}`} trucks`}</button>}
+        {!only && trucks.length > 0 && <button onClick={() => onPick(trucks)} className="rounded-lg border border-indigo-200 bg-white px-3 text-indigo-700 font-semibold min-h-[44px]">{trucks.length === 1 ? 'Show this truck' : `Show ${trucks.length === 2 ? 'both' : `all ${trucks.length}`} trucks`}</button>}
         {opens.map((x) => <button key={x.loadId} onClick={() => onOpenRoute(x.loadId)} className="rounded-lg border bg-white px-3 text-slate-700 min-h-[44px] inline-flex items-center gap-1"><Route size={12} /> Open {x.route}</button>)}
       </div>
     </div>
@@ -259,16 +259,18 @@ function ModeButton({ value, label, mode, setMode }) {
   );
 }
 
-export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus, zoomTick = 0, onOpenRoute, onAllRoutes, partners = 0, partnersShown = false, onShowPartners, onHidePartners, note }) {
+// `only` (v1.76.0, the planning area): one plan and one pane — a forward plan has no dispatch side, so
+// there is no second map to load, no Dispatch | Claude switch, and no rings for stops that changed hands.
+export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus, zoomTick = 0, onOpenRoute, onAllRoutes, partners = 0, partnersShown = false, onShowPartners, onHidePartners, note, only = null, cardKey = undefined, dayNotes = true }) {
   const [g, setG] = useState(null);
   const [gErr, setGErr] = useState(null);
-  const [mode, setMode] = useState(phone ? 'claude' : 'both');
+  const [mode, setMode] = useState(only || (phone ? 'claude' : 'both'));
   const [stories, setStories] = useState(null);
   // The filters last the visit: the shadow screen keeps nothing in the page.
   const [filters, setFilters] = useState({ ...MAP_FILTER_DEFAULTS });
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filtersOn = MAP_FILTER_ROWS.filter(([k]) => filters[k]).length;
-  const standing = focus && m ? focusStatus(m, focus) : null;
+  const standing = focus && m && !only ? focusStatus(m, focus) : null;
   const maps = useRef({ a: null, b: null });
   const [paneTick, setPaneTick] = useState(0);
 
@@ -316,16 +318,19 @@ export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus
     for (const mp of [maps.current.a, maps.current.b]) if (mp) mp.fitBounds(b, 48);
   }, [focus, zoomTick, m, paneTick]);
 
-  const oddOrder = m ? orderNote(m) : null;
+  // Which dispatch trucks are drawn in a planned order — a backtest's question; a plan has no dispatch side.
+  const oddOrder = m && !only && dayNotes ? orderNote(m) : null;
+  // A stop card belongs to the visit it was opened on (v1.77.1 route drawer, review).
+  useEffect(() => { if (cardKey !== undefined) setStories(null); }, [cardKey]);
   const onStop = useCallback((stopId) => setStories(m ? storiesAt(m, stopId) : null), [m]);
 
   const header = (
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1"><MapPinned size={13} /> Map</span>
-      {!phone && <ModeButton value="both" label="Side by side" mode={mode} setMode={setMode} />}
-      <ModeButton value="driven" label="Dispatch" mode={mode} setMode={setMode} />
-      <ModeButton value="claude" label="Claude" mode={mode} setMode={setMode} />
-      {focus && <button onClick={onAllRoutes} className="rounded-lg border bg-white px-3 text-xs font-semibold min-h-[44px] inline-flex items-center gap-1"><Layers size={13} /> All routes</button>}
+      {!only && !phone && <ModeButton value="both" label="Side by side" mode={mode} setMode={setMode} />}
+      {!only && <ModeButton value="driven" label="Dispatch" mode={mode} setMode={setMode} />}
+      {!only && <ModeButton value="claude" label="Claude" mode={mode} setMode={setMode} />}
+      {focus && onAllRoutes && <button onClick={onAllRoutes} className="rounded-lg border bg-white px-3 text-xs font-semibold min-h-[44px] inline-flex items-center gap-1"><Layers size={13} /> All routes</button>}
       {focus && partners > 0 && (partnersShown
         ? <button onClick={onHidePartners} className="rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-indigo-700 min-h-[44px]">Hide the {partners} truck{partners === 1 ? '' : 's'} it traded with</button>
         : <button onClick={onShowPartners} className="rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-indigo-700 min-h-[44px]">Show the {partners} truck{partners === 1 ? '' : 's'} Claude traded with</button>)}
@@ -338,7 +343,9 @@ export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus
   );
   const outside = m ? coreBounds(m).outside : 0;
   // What the marks mean, for the view that is up — under the maps, always.
-  const legend = focus
+  const legend = only
+    ? <p className="text-[11px] text-slate-600">{focus ? <><b>This route only.</b> Numbered dots are its stops in the order the engine would run them. Faint grey dots are every other truck — click one, or its line, to open that route.</> : <><b>Every truck in its own colour.</b> Click any stop or line to open that route; the dot beside each route in the list is its colour. A hollow ring is a stop left unplanned.</>}</p>
+    : focus
     ? <p className="text-[11px] text-slate-600"><b>This route only.</b> Numbered dots are its stops in that plan’s order. On Dispatch’s map a <span style={{ color: RING_OFF }} className="font-semibold">red ring</span> is a stop Claude took off this truck (hollow: left unplanned); on Claude’s map a <span style={{ color: RING_ON }} className="font-semibold">green ring</span> is a stop Claude brought here. Faint grey dots are every other truck — click one, or its line, to open that route.</p>
     : <p className="text-[11px] text-slate-600"><b>Every truck in its own colour</b>, the same on both maps. Click any stop or line to open that route; the dot beside each route in the list is its colour. A hollow ring on Claude’s map is a stop left unplanned.</p>;
   const hint = <p className="text-[11px] text-slate-500">Lines run from Buford (black square) in each plan’s stop order; miles are the engine’s estimate, not these lines. Filters: satellite, the terminal marker, unplanned only, place labels, every truck’s line, the stem-out leg. Ctrl + scroll (two fingers on a phone) moves the map.</p>;
@@ -353,7 +360,7 @@ export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus
   const planA = mode === 'both' ? 'driven' : mode;
   const height = phone ? 420 : mode === 'both' ? 460 : 540;
   const paneProps = { g, m, sel, phone, focus, onStop, onOpenRoute, register, height, filters, standing };
-  const card = <StopCard stories={stories} sel={sel} m={m} onPick={onPick} onOpenRoute={onOpenRoute} onClose={() => setStories(null)} />;
+  const card = <StopCard stories={stories} sel={sel} m={m} onPick={onPick} onOpenRoute={onOpenRoute} onClose={() => setStories(null)} only={only} />;
   return (
     <div className="space-y-2">
       {header}
@@ -362,7 +369,7 @@ export default function BacktestMap({ m, phone, sel, onPick, onClearPicks, focus
       {outsideLine}
       <div className={!phone && mode === 'both' ? 'grid grid-cols-2 gap-2' : ''}>
         <PlanPane {...paneProps} slot="a" plan={planA} label={PLAN_LABEL[planA]} />
-        {!phone && <div className={mode === 'both' ? 'min-w-0' : 'hidden'}><PlanPane {...paneProps} slot="b" plan="claude" label={PLAN_LABEL.claude} /></div>}
+        {!phone && !only && <div className={mode === 'both' ? 'min-w-0' : 'hidden'}><PlanPane {...paneProps} slot="b" plan="claude" label={PLAN_LABEL.claude} /></div>}
       </div>
       {legend}
       {noteLine}

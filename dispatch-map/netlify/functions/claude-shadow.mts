@@ -22,6 +22,16 @@
 //                                         left for the next press or the nightly run. Returns the run
 //                                         record itself: 200, 403 (role) or 409 (refused, and why).
 //                                         Firestore reads; writes claude_shadow_* only; 0 NuVizz calls.
+//   GET ?view=plans                       v1.76.0 THE PLANNING AREA: the plan jobs, their spend, the
+//                                         ceiling they share with backtests, the router settings.
+//   POST {action:"plan-options", date}    the picker: days with a board, the day's roster loads and
+//                                         every driver, each with the cap a plan would hold. Reads only.
+//   POST {action:"plan-preview", plan}    the plan exactly as Plan would build it — the stops (the
+//                                         Map's own carry-over rule over the look-back picked), the
+//                                         loads and their caps, and what they cannot carry. Reads only.
+//   POST {action:"plan", plan, confirm}   queue it (dispatcher): built and frozen now, run by the
+//                                         backtest worker under the same per-run cap and 24-hour ceiling.
+//   POST {action:"plan-result"|"plan-map", id}   a finished plan, and its map.
 //   POST {action:"probe", dry:true}       the exact request that WOULD be sent. No call.
 //   POST {action:"probe", confirm:true}   ONE Messages API call (at most ~4.9¢ at list price —
 //                                         see PROBE_INPUT_TOKEN_BOUND — and usually well under 1¢),
@@ -55,6 +65,7 @@ import { hardCapsEnabled } from './lib/claude-shadow/config.mts';
 import { employeeClassMap, CLASS_OVERRIDE } from './lib/driver-class.mts';
 import { listDocs as listDocsFs } from './lib/firestore.mts';
 import { backtestView, backtestResult, backtestMap, enqueueBacktests, cancelJob, saveRouterSettings, routerRefusal } from './lib/claude-shadow/backtest.mts';
+import { enqueuePlan, planView, planOptionsNow, planPreviewNow, planResultNow, planMapNow } from './lib/claude-shadow/plan-jobs.mts';
 
 export const PROBE_LAST_PATH = 'claude_shadow_meta/probe_last';
 export const PROBE_LOG_COLLECTION = 'claude_shadow_probes';
@@ -79,7 +90,7 @@ function statusBody(lastProbe: any, lastProbeNote: string | null, learned: any =
     keyConfigured: anthropicKeyConfigured(),
     prefix: SHADOW_PREFIX,
     probe: { effort: PROBE_EFFORT, maxTokens: PROBE_MAX_TOKENS, ceilingUsd: probeCeilingUsd(m.model) },
-    built: ['switches', 'write gateway', 'isolation guard', 'test call', 'learned truck capacity and route order', 'capacity settings', 'Claude router + backtest on past days'],
+    built: ['switches', 'write gateway', 'isolation guard', 'test call', 'learned truck capacity and route order', 'capacity settings', 'Claude router + backtest on past days', 'planning area: plan a board day onto picked loads'],
     notBuilt: ['nightly snapshot', 'nightly plan run', 'late-manifest flag', 'grading against the 8:30 plan', 'nightly comparison'],
     lastProbe,
     lastProbeNote,
@@ -104,6 +115,11 @@ export default async (req: Request): Promise<Response> => {
     // THE CLAUDE ROUTER'S BACKTESTS (v1.71.0): the sealed days, the latest result per day, the queue.
     if (view === 'backtests') {
       try { return J(await backtestView()); }
+      catch (e: any) { return J({ ok: false, error: String(e?.message || e), calls: 0 }, 502); }
+    }
+    // THE PLANNING AREA (v1.76.0): the plan jobs and the ceiling they share with backtests.
+    if (view === 'plans') {
+      try { return J(await planView()); }
       catch (e: any) { return J({ ok: false, error: String(e?.message || e), calls: 0 }, 502); }
     }
     if (view === 'learn-plan') {
@@ -180,6 +196,20 @@ export default async (req: Request): Promise<Response> => {
     catch (e: any) { return J({ ok: false, error: String(e?.message || e), calls: 0 }, 502); }
   }
 
+  // THE PLANNING AREA's reads (v1.76.0) — Firestore only, 0 NuVizz calls, nothing spent or written.
+  const PLAN_READS: Record<string, (b: any) => Promise<{ status: number; body: any } | any>> = {
+    'plan-options': async (b) => ({ status: 200, body: await planOptionsNow(typeof b?.date === 'string' ? b.date : null) }),
+    'plan-preview': (b) => planPreviewNow(b?.plan),
+    'plan-result': (b) => planResultNow(String(b?.id || '')),
+    'plan-map': (b) => planMapNow(String(b?.id || '')),
+  };
+  if (typeof body?.action === 'string' && Object.hasOwn(PLAN_READS, body.action)) {
+    const viewer = await requireUser(req, { role: 'viewer' });
+    if (!viewer.ok) return viewer.response;
+    try { const r = await PLAN_READS[body.action](body); return J({ ...r.body, calls: 0 }, r.status); }
+    catch (e: any) { return J({ ok: false, error: String(e?.message || e), calls: 0 }, 502); }
+  }
+
   // Dispatcher, not viewer: these POSTs spend an Anthropic call or change a setting. Inert until AUTH_REQUIRED=true.
   const gate = await requireUser(req, { role: 'dispatcher' });
   if (!gate.ok) return gate.response;
@@ -204,6 +234,17 @@ export default async (req: Request): Promise<Response> => {
     const r = await enqueueBacktests(body?.dates, gate.user?.username ?? null);
     return J({ ...r.body, calls: 0 }, r.status);
   }
+  // A PLAN (v1.76.0): queued like a backtest; the same worker, per-run cap and 24-hour ceiling.
+  if (body?.action === 'plan') {
+    const refused = routerRefusal(process.env);
+    if (refused) return J({ ok: false, error: `the router is off here: ${refused}`, calls: 0 }, 409);
+    if (body?.confirm !== true) return J({ ok: false, error: 'a plan spends money at the model: send confirm:true to queue it', calls: 0 }, 400);
+    try {
+      const r = await enqueuePlan({ ...(body?.plan && typeof body.plan === 'object' ? body.plan : {}), expectBoardAt: typeof body?.expectBoardAt === 'string' ? body.expectBoardAt : null }, gate.user?.username ?? null);
+      return J({ ...r.body, calls: 0 }, r.status);
+    } catch (e: any) { return J({ ok: false, error: `whether the plan was queued is unknown: ${String(e?.message || e)} — refresh to see`, calls: 0 }, 502); }
+  }
+  // Stop: a backtest (bt__…) or a plan (pl__…).
   if (body?.action === 'backtest-cancel') {
     const r = await cancelJob(String(body?.jobId || ''), gate.user?.username ?? null);
     return J({ ...r.body, calls: 0 }, r.status);
