@@ -77,6 +77,17 @@ export function rollbackTargets(versionLog, currentVersion, limit = 12, landedAt
 }
 
 /**
+ * PURE: the reason as ONE single-quoted bash word, on one line. Inside double quotes bash still
+ * expands backticks, $VAR and $( ) — a reason typed "the `Send` button broke after $PR merged"
+ * ran `Send` on the operator's machine and recorded "the  button broke after  merged". Single
+ * quotes expand nothing; a ' inside is closed, escaped and reopened ('\''). Line breaks become
+ * spaces so the line someone copies is the whole command.
+ */
+function shellQuote(text) {
+  return `'${String(text).replace(/\s*[\r\n]+\s*/g, ' ').replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * PURE: the body of the rollback request that reaches GitHub.
  *
  * Written for whoever picks it up — a person or a coding agent — to act on WITHOUT asking a
@@ -101,7 +112,7 @@ export function rollbackRequestBody({ version, undoes, reason, appVersion, build
     '',
     '```bash',
     `npm run rollback -- v${version}`,
-    `npm run rollback -- v${version} --execute --because "${String(reason || 'rollback requested from the footer').replace(/"/g, "'")}"`,
+    `npm run rollback -- v${version} --execute --because ${shellQuote(reason || 'rollback requested from the footer')}`,
     '```',
     '',
     'The first is a dry run and moves nothing — **read what it says the rollback costs before**',

@@ -96,11 +96,12 @@ test('the request says CODE ONLY, because that is the dangerous misreading', () 
 
 test('a quote in the reason cannot break out of the --because argument', () => {
   // Chad types in prose. The reason is interpolated into a shell command in the issue body,
-  // and a stray double quote would end the argument early for whoever pastes it.
+  // and a stray double quote would end the argument early for whoever pastes it. The argument is
+  // single-quoted (test/rollback-reason-shell-safe.test.mjs runs it through bash), so a double
+  // quote inside it is plain text and is kept as he typed it.
   const body = rollbackRequestBody({ version: '1.30.2', undoes: 1, reason: 'he said "send it" and it broke', appVersion: '1.38.0' });
   const line = body.split('\n').find((l) => l.includes('--because'));
-  assert.equal((line.match(/"/g) || []).length, 2, 'exactly the two quotes that delimit the argument');
-  assert.match(line, /'send it'/);
+  assert.match(line, /--because 'he said "send it" and it broke'$/);
 });
 
 test('a missing reason is stated, never silently blank', () => {
