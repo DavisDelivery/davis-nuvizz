@@ -7282,6 +7282,10 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       if (geoErr) {
         setPush({ kind: 'warn', text: `Address saved, but the pin could not be moved — ${geoErr.message}. It still points at the old spot, so this stop is now on the problem-address queue under “Pin not moved”. Drag it with “Correct pin location” to finish.` });
       }
+      // THE PIN WARNING OUTLIVES THE VENDOR HALF. `push` is one message slot, and the NuVizz
+      // answer below used to overwrite the warning above — a green "NuVizz now reads …" over a
+      // pin still on the old building (audit 2026-09-27). Carried into every message that follows.
+      const pinWarn = geoErr ? ` But the pin could not be moved — ${geoErr.message}. It still points at the old spot, so this stop is now on the problem-address queue under “Pin not moved”. Drag it with “Correct pin location” to finish.` : '';
 
       if (!(canPush && toNuvizz)) {
         // Board-only, exactly as this modal has always behaved. Not awaited into the happy
@@ -7325,7 +7329,7 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
         landed = addressReachedNuvizz(r);
         clean = r?.ok === true;
         why = r?.error || out.error || 'the write failed.';
-        if (landed && clean) setPush({ kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order in NuVizz.' });
+        if (landed && clean) setPush({ kind: pinWarn ? 'warn' : 'ok', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order in NuVizz.'}${pinWarn}` });
       } catch (e) {
         why = e?.message || 'the write failed.';
       }
@@ -7338,9 +7342,9 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       // green success with a warning attached, never as a failed write — and it must not send
       // anybody to the portal to re-type an address that is already correct there.
       if (landed && !clean) {
-        setPush({ kind: 'warn', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order in NuVizz.'} The write also touched something else on the order, so check it in the portal before the truck goes: ${why}` });
+        setPush({ kind: 'warn', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order in NuVizz.'} The write also touched something else on the order, so check it in the portal before the truck goes: ${why}${pinWarn}` });
       } else if (!landed) {
-        setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${why} The driver's manifest still has the old address — fix the order in the portal.` });
+        setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${why} The driver's manifest still has the old address — fix the order in the portal.${pinWarn}` });
       }
       // Logged ONCE, after the vendor half resolves, so the row records what happened rather
       // than what was attempted. `nuvizz` is the outcome: see lib/address-log.js.
