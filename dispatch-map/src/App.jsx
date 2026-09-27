@@ -37771,6 +37771,18 @@ function OrderDetailPanel({ loading, err, data, stacked, onClose, onOpenHistory 
 function OrderDetailInner({ loading, err, data, onOpenHistory, wide }) {
   if (loading) return <div className="text-sm text-slate-500">Loading the order…</div>;
   if (err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3 break-words">{err}</div>;
+  // A READ THAT FAILED IS NOT A MISSING ORDER. The endpoint says `complete: false` (and why)
+  // when Firestore did not answer; "we hold no record" is only ever printed over a read that did.
+  if (data && !data.stop && (data.complete === false || data.error)) {
+    return (
+      <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+        <div className="text-sm font-semibold text-red-900">We could not read {data.stopNbr} on {formatDateLong(data.date)} just now.</div>
+        <div className="text-xs text-red-800 mt-1 break-words">
+          This is a failed read, not a missing order — close it and open it again to retry.{data.error ? ` (${data.error})` : ''}
+        </div>
+      </div>
+    );
+  }
   if (data && !data.stop) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
