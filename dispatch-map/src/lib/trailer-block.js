@@ -197,7 +197,9 @@ export function isTrailerBlockerKey(key, resolve) {
 // count of those across the 763 docks: ZERO, so nothing changes under him today.
 //
 // TRAILER_ALERT_ANY_RESTRICTION=off restores the dispatcher-owned rule below, on every side at
-// once — the flag panel, the map's R7 card and the 9pm text all read this one function.
+// once — the flag panel, the map's R7 card and the 9pm text all read this one function. The
+// browser only sees it because vite.config.js passes the un-prefixed name into the bundle at
+// build time; without that it reached the server alone.
 export function trailerAlertAnyRestriction(env) {
   let raw = env;
   if (!raw) {
