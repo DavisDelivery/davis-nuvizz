@@ -37346,7 +37346,22 @@ function CustomerNotesEditPanel({ dock, draft, setDraft, loading, saving, err, o
 
           {loading
             ? <div className="text-sm text-slate-500">Reading what is on file…</div>
-            : (
+            : !draft
+              ? (
+                // THE READ FAILED (offline, or denied): there is no draft, so there is no form.
+                // Mounting the editor over a null draft threw on its first line and, with no
+                // error boundary, took the whole app to a white screen — board included — and
+                // the reason openEdit prepared never showed. Say it here instead. Cancel is on
+                // the title line below xl; at xl the rail is not drawn, so it is here.
+                <div className="space-y-2 max-w-2xl">
+                  <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-2 break-words">
+                    {err || 'This customer’s note could not be read, so there is nothing to edit yet. Nothing was changed.'}
+                  </div>
+                  <button onClick={onCancel}
+                    className="hidden xl:inline-flex items-center rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50">Cancel</button>
+                </div>
+              )
+              : (
               <>
                 {/* THE SAME EDITOR THE MAP USES. `drivers` is empty here on purpose — the barred-
                     driver list is chosen off the board's own roster, which this screen does not
@@ -37365,7 +37380,7 @@ function CustomerNotesEditPanel({ dock, draft, setDraft, loading, saving, err, o
         {/* THE RAIL — a monitor only. Sticky, so the buttons ride along with a form that is
             taller than the screen, and the dock is named beside them so the rep confirms what
             they are saving to without scrolling back up. */}
-        {!loading && (
+        {!loading && draft && (
           <aside className="hidden xl:block xl:sticky xl:top-4 space-y-3 rounded-lg border bg-slate-50 p-3">
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Saving to</div>
