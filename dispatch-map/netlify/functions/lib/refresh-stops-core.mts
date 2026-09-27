@@ -719,10 +719,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // clamped to safe bounds: an empty/missing doc or a read failure = the proven
   // env/default behavior. Overlaid on defaults inside scanDecision/intervalForHour.
   let scanCfg: Record<string, any> = {};
-  if (fsOn) { try { scanCfg = clampScanConfig(await readScanConfig()); } catch { scanCfg = {}; } }
+  let scanCfgRead = !fsOn;
+  if (fsOn) { try { scanCfg = clampScanConfig(await readScanConfig()); scanCfgRead = true; } catch { scanCfg = {}; } }
   if (typeof scanCfg.dailyCeiling === 'number') ceiling = scanCfg.dailyCeiling;
-  // Apply the configured spend cap to the per-call breaker for THIS invocation.
-  setDailyCeilingOverride(typeof scanCfg.dailyCeiling === 'number' ? scanCfg.dailyCeiling : null);
+  // Apply the configured spend cap to the per-call breaker for THIS invocation — but only when
+  // the read ANSWERED. A failed read is not "nothing is saved": handing null over here marked
+  // the 2,000 default as Chad's setting, and breakerTripped() below released a trip his lower
+  // ceiling had taken. Left alone, the breaker's own hydrator re-reads, and keeps what it had.
+  if (scanCfgRead) setDailyCeilingOverride(typeof scanCfg.dailyCeiling === 'number' ? scanCfg.dailyCeiling : null);
 
   let decision = scanDecision(now, isManual, lastLoadScanAt, scanCfg);
 

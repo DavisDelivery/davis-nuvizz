@@ -237,6 +237,10 @@ export function isTimeoutAbort(err: any, callerSignal?: AbortSignal | null): boo
 let __dailyCeilingOverride: number | null = null;
 let __ceilingLoadedAtMs = 0;
 let __ceilingLoadFailed = false;
+// Has this process EVER learned the saved setting (including "nothing is saved")? A cold
+// instance whose first read failed has not: its override is null because it knows nothing, not
+// because nobody decided, and the 2,000 it falls through to is a guess.
+let __ceilingEverLoaded = false;
 export function setDailyCeilingOverride(n: number | null | undefined): void {
   __dailyCeilingOverride = (typeof n === 'number' && Number.isFinite(n) && n > 0) ? clampCeiling(n) : null;
   // A caller that sets this has just resolved it from the stored config itself (the scanner
@@ -244,6 +248,7 @@ export function setDailyCeilingOverride(n: number | null | undefined): void {
   // the hydrator go read the same document again this minute.
   __ceilingLoadedAtMs = Date.now();
   __ceilingLoadFailed = false;
+  __ceilingEverLoaded = true;
 }
 
 /** Test seam: forget both the value and its freshness. */
@@ -251,6 +256,12 @@ export function __resetDailyCeilingCache(): void {
   __dailyCeilingOverride = null;
   __ceilingLoadedAtMs = 0;
   __ceilingLoadFailed = false;
+  __ceilingEverLoaded = false;
+}
+
+/** False while the ceiling in force is the default only because the saved setting could not be read. */
+export function dailyCeilingKnown(): boolean {
+  return __ceilingEverLoaded;
 }
 
 // How long a hydrated ceiling is trusted before we re-read the config document. A Firestore
@@ -297,6 +308,7 @@ export async function hydrateDailyCeiling(
       __dailyCeilingOverride = Number.isFinite(n) && n > 0 ? clampCeiling(n) : null;
       __ceilingLoadedAtMs = now();
       __ceilingLoadFailed = false;
+      __ceilingEverLoaded = true;
     } catch {
       // Keep the previous value and try again after CEILING_RETRY_MS — not on the next call.
       __ceilingLoadedAtMs = now();
@@ -663,6 +675,10 @@ async function readCircuitSelfHealing(): Promise<boolean> {
   const c = await readCircuit();
   if (!c.open) return false;
   const ceiling = await resolveDailyCeiling();
+  // WHEN WE CANNOT TELL, IT STAYS OPEN: a process that has never read the saved ceiling is
+  // holding the 2,000 default, and releasing a trip Chad's lower setting took against that
+  // guess would write open:false to the shared breaker for every instance.
+  if (!dailyCeilingKnown()) return true;
   let dayCount = NaN;
   try { dayCount = (await readCallStats(etDayString())).count; } catch { return true; }
   if (circuitStillBinding(true, dayCount, ceiling)) return true;

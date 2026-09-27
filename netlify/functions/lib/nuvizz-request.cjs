@@ -50,6 +50,9 @@ const CEILING_RETRY_MS = 5000;
 let __savedCeiling = null;
 let __ceilingLoadedAtMs = 0;
 let __ceilingLoadFailed = false;
+// Has this process EVER read the saved setting (including "nothing is saved")? A cold instance
+// whose first read failed has not, and the fallback it returns is then a guess, not an answer.
+let __ceilingEverLoaded = false;
 
 async function resolveDailyCeiling(fallback) {
   const ttl = __ceilingLoadFailed ? CEILING_RETRY_MS : CEILING_TTL_MS;
@@ -62,6 +65,7 @@ async function resolveDailyCeiling(fallback) {
         : null;
       __ceilingLoadedAtMs = Date.now();
       __ceilingLoadFailed = false;
+      __ceilingEverLoaded = true;
     } catch {
       __ceilingLoadedAtMs = Date.now();
       __ceilingLoadFailed = true;
@@ -75,6 +79,12 @@ function __resetCeilingCache() {
   __savedCeiling = null;
   __ceilingLoadedAtMs = 0;
   __ceilingLoadFailed = false;
+  __ceilingEverLoaded = false;
+}
+
+/** False while the ceiling in force is the fallback only because the saved setting could not be read. */
+function dailyCeilingKnown() {
+  return __ceilingEverLoaded;
 }
 
 /**
@@ -149,7 +159,8 @@ function createRequester(config = {}) {
         const ceiling = await ceilingNow();
         let dayCount = NaN;
         try { dayCount = await fs_db.readCallCounter(today()); } catch { dayCount = NaN; }
-        breakerOpen = circuitStillBinding(true, dayCount, ceiling);
+        // An unread ceiling is NaN here, which binds: releasing on a guess frees the whole fleet.
+        breakerOpen = circuitStillBinding(true, dayCount, dailyCeilingKnown() ? ceiling : NaN);
         if (!breakerOpen) {
           const reason = `released: day count ${dayCount} is under the ceiling now in force (${ceiling})`;
           try { await fs_db.setCircuit(false, reason, new Date().toISOString()); } catch { /* the read still returns closed */ }
@@ -234,6 +245,7 @@ async function breakerTripped() {
     const c = await fs_db.readCircuit();
     if (!c.open) return false;
     const ceiling = await resolveDailyCeiling(DEFAULT_CONFIG.dailyCeiling);
+    if (!dailyCeilingKnown()) return true;   // when we cannot tell, it stays open
     let dayCount = NaN;
     try { dayCount = await fs_db.readCallCounter(today()); } catch { return true; }
     if (circuitStillBinding(true, dayCount, ceiling)) return true;
@@ -252,6 +264,7 @@ module.exports = {
   savedCeiling,
   resolveDailyCeiling,
   circuitStillBinding,
+  dailyCeilingKnown,
   __resetCeilingCache,
   CEILING_SANITY_MAX,
   DEFAULT_DAILY_CEILING,

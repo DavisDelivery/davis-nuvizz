@@ -42,7 +42,7 @@ import { rwbEngineBlocked, takeRwbLoginRefusal, holdRwbLogin, rwbLoginHeld } fro
 import { personalLoginsMode, publicIdentity, type Identity } from './lib/nuvizz-identity.mts';
 import { resolveWriteIdentity, watchPersonalRefusals, refusalAfterWrite, markLoginRejected } from './lib/nuvizz-write-identity.mts';
 import { getUser, patchUser } from './lib/auth-store.mts';
-import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
+import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, dailyCeilingKnown, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
 import { outboundAllowed, outboundRefusal } from './lib/mirror-guard.mts';
@@ -324,7 +324,10 @@ export default async (req: Request): Promise<Response> => {
   // 5) Pre-flight budget — refuse to start at/over the ceiling. The breaker itself defaults to
   //    ENFORCE (nuvizz-request.mts:70), so this is the polite refusal before the hard one.
   if (ops.current >= ops.ceiling) {
-    return J({ ok: false, op, tenant, live, error: `daily NuVizz call ceiling reached (${ops.current}/${ops.ceiling}) — write refused`, ops }, 429);
+    // Say when the number is the DEFAULT only because the saved setting could not be read —
+    // "(2000/2000)" under a card reading 3,000 is the contradiction of 2026-09-09.
+    const guess = dailyCeilingKnown() ? '' : ` — the saved ceiling could not be read, so the ${ops.ceiling} default is in force`;
+    return J({ ok: false, op, tenant, live, error: `daily NuVizz call ceiling reached (${ops.current}/${ops.ceiling})${guess} — write refused`, ops }, 429);
   }
 
   // 6) Fire. Attribute the spike distinctly so Diagnostics shows live-write volume.
