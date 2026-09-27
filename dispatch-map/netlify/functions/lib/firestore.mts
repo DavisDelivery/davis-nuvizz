@@ -1703,7 +1703,10 @@ const planVerdictPath = (tenant: string, dateStr: string) => `${OPS_COLLECTION}/
 export async function recordPlanVerdicts(tenant: string, dateStr: string, rows: PlanVerdictRow[]): Promise<boolean> {
   if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return false;
   try {
-    const prior = await readPlanVerdicts(tenant, dateStr);
+    // THE READ THAT THROWS. This append is read-merge-REPLACE (setDoc has no mask), so a read
+    // that failed and came back as [] would replace the day's verdicts with this scan's alone.
+    // A failed read skips the write instead: this scan's rows are lost, the day's are not.
+    const prior = await readPlanVerdictsOrThrow(tenant, dateStr);
     const next = [...rows, ...prior].slice(0, PLAN_VERDICT_MAX);
     await setDoc(planVerdictPath(tenant, dateStr), {
       tenant: tenantKey(tenant), date: dateStr, updated_at: new Date().toISOString(),
@@ -1715,10 +1718,20 @@ export async function recordPlanVerdicts(tenant: string, dateStr: string, rows: 
 
 /** The day's ledger, newest first; [] when none was ever written or the read fails. */
 export async function readPlanVerdicts(tenant: string, dateStr: string): Promise<PlanVerdictRow[]> {
+  try { return await readPlanVerdictsOrThrow(tenant, dateStr); } catch { return []; }
+}
+
+/** The same read, but a FAILED read throws — only an absent document is an empty day. For the
+ *  writer above, which replaces the document with whatever this returns plus its own rows. */
+export async function readPlanVerdictsOrThrow(tenant: string, dateStr: string): Promise<PlanVerdictRow[]> {
   if (!isFirestoreEnabled()) return [];
+  return ledgerRowsOf(await getDoc(planVerdictPath(tenant, dateStr)));
+}
+
+/** A day-ledger document's rows; [] for an absent document or an unparseable rowsJson. */
+function ledgerRowsOf(doc: any): any[] {
+  if (!doc) return [];
   try {
-    const doc = await getDoc(planVerdictPath(tenant, dateStr));
-    if (!doc) return [];
     const arr = JSON.parse(doc.rowsJson || '[]');
     return Array.isArray(arr) ? arr : [];
   } catch { return []; }
@@ -1773,7 +1786,11 @@ const addressChangePath = (tenant: string, dateStr: string) => `${OPS_COLLECTION
 export async function recordAddressChanges(tenant: string, dateStr: string, rows: any[]): Promise<boolean> {
   if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return false;
   try {
-    const prior = await readAddressChanges(tenant, dateStr);
+    // THE READ THAT THROWS (audit 2026-09-27). This append is read-merge-REPLACE — setDoc has no
+    // mask — so a transient 503 that read back as [] replaced the day's whole log with this one
+    // row and reported success. A failed read now skips the write: at worst this row is
+    // missing, never the day's earlier corrections.
+    const prior = await readAddressChangesOrThrow(tenant, dateStr);
     // DE-DUPE ON RE-OBSERVATION. The scan runs every fifteen minutes and compares the stored
     // board row against the row it is about to write. The first scan after a change records
     // it and then WRITES the new address — so the next scan sees no difference and says
@@ -1794,13 +1811,15 @@ export async function recordAddressChanges(tenant: string, dateStr: string, rows
 
 /** The day's address log, newest first; [] when none was written or the read fails. */
 export async function readAddressChanges(tenant: string, dateStr: string): Promise<any[]> {
+  try { return await readAddressChangesOrThrow(tenant, dateStr); } catch { return []; }
+}
+
+/** The same read, but a FAILED read throws — only an absent document is an empty day. For the
+ *  writer above, and for the address-history screen, where "could not read" and "nothing
+ *  changed" must never be the same answer. */
+export async function readAddressChangesOrThrow(tenant: string, dateStr: string): Promise<any[]> {
   if (!isFirestoreEnabled()) return [];
-  try {
-    const doc = await getDoc(addressChangePath(tenant, dateStr));
-    if (!doc) return [];
-    const arr = JSON.parse(doc.rowsJson || '[]');
-    return Array.isArray(arr) ? arr : [];
-  } catch { return []; }
+  return ledgerRowsOf(await getDoc(addressChangePath(tenant, dateStr)));
 }
 
 // ── The last refused scan, where the BOARD's own poll can see it ─────────────
