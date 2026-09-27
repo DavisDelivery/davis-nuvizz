@@ -258,7 +258,11 @@ export default async (): Promise<Response> => {
         // PERSISTED AND LOGGED — this response body is discarded by the platform. The log
         // line names the record, not the error text, so it can never carry an address.
         out.failureRecorded = await markDayReportSendFailed(TENANT, date, String(res.error || ''), new Date().toISOString(), out.firing);
-        console.error(`[day-completion] ${date}: the end-of-day report was NOT sent (${out.firing} firing) — the mailer's answer is on day_completion/${TENANT}__${date}.lastSendFailure`);
+        // The pointer is printed only when the write landed — a log line naming a field that
+        // was never written sends the next person to an empty record.
+        console.error(out.failureRecorded
+          ? `[day-completion] ${date}: the end-of-day report was NOT sent (${out.firing} firing) — the mailer's answer is on day_completion/${TENANT}__${date}.lastSendFailure`
+          : `[day-completion] ${date}: the end-of-day report was NOT sent (${out.firing} firing) — and recording the mailer's answer on day_completion/${TENANT}__${date} failed too, so it is not stored anywhere`);
       }
       // ONLY ON A CONFIRMED SEND. This stamp is what stands the next firing down, so writing
       // it on a failure would recreate the exact hole it replaced.

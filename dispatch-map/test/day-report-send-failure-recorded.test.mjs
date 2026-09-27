@@ -29,7 +29,7 @@ function envForSend() {
   return () => { for (const [k, v] of Object.entries(keep)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
 }
 
-async function runEvening(resendAnswer) {
+async function runEvening(resendAnswer, { failFailureRecord = false } = {}) {
   const restoreEnv = envForSend();
   const errs = [];
   const origErr = console.error;
@@ -38,6 +38,17 @@ async function runEvening(resendAnswer) {
     if (url.startsWith('https://api.resend.com/')) return resendAnswer();
     throw new Error(`unexpected fetch in test: ${url}`);
   });
+  if (failFailureRecord) {
+    // Firestore refuses ONLY the field-masked write of lastSendFailure; everything else lands.
+    const inner = globalThis.fetch;
+    globalThis.fetch = async (input, init = {}) => {
+      const u = String(input?.url ?? input);
+      if ((init.method || 'GET').toUpperCase() === 'PATCH' && u.includes('updateMask.fieldPaths=lastSendFailure')) {
+        return new Response('{"error":{"status":"UNAVAILABLE"}}', { status: 503 });
+      }
+      return inner(input, init);
+    };
+  }
   mock.timers.enable({ apis: ['Date'], now: new Date(NOW) });
   try {
     const handler = (await import('../netlify/functions/day-completion-report-background.mts')).default;
@@ -78,4 +89,23 @@ test('a confirmed send stamps `sent` and records no failure', async () => {
   const doc = fake.store.get(DAY);
   assert.ok(doc?.sent?.at);
   assert.equal(doc.lastSendFailure, undefined);
+});
+
+test('when the failure itself cannot be recorded, the log says so instead of pointing at an empty field', async () => {
+  // Never report an intent as an outcome: a log line naming lastSendFailure when that write
+  // was refused sends the next person to a record that does not hold the answer.
+  const { fake, body, errs } = await runEvening(
+    () => new Response('{"message":"Too many requests"}', { status: 429 }),
+    { failFailureRecord: true },
+  );
+  assert.equal(body.emailed, false);
+  assert.equal(body.failureRecorded, false);
+  const doc = fake.store.get(DAY);
+  assert.equal(doc?.lastSendFailure, undefined, 'the write really was refused');
+  assert.equal(needsSending(doc), true, 'still owed — the spare firing will retry it');
+  const line = errs.find((l) => l.includes('[day-completion]') && l.includes(DATE) && /not sent/i.test(l));
+  assert.ok(line, 'the refusal is still logged');
+  assert.ok(!/is on day_completion\/.*\.lastSendFailure/.test(line), 'and it does not claim the answer was stored');
+  assert.match(line, /failed too/);
+  assert.ok(!errs.some((l) => l.includes('ops@example.com')), 'the log never carries the recipient address');
 });
