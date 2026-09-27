@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { rebasePicks, asPick, pickKey } from '../src/shadow/plan-pick-core.js';
+import { rebasePicks, asPick, pickKey, nextSectionPicks } from '../src/shadow/plan-pick-core.js';
 
 const row = (route, driver, o = {}) => ({ route, driver, loadNbr: `DAVIS${route.replace(/\W/g, '')}`, cls: driver ? 'tractor' : null, cap: 26, source: 'learned', onBoard: 0, ...o });
 const picksOf = (...rows) => new Map(rows.map((l) => { const p = asPick(l); return [pickKey(p), p]; }));
@@ -58,6 +58,34 @@ test('PlanPanel rebuilds the picks from the roster it just read, not only filter
   const src = readFileSync(new URL('../src/shadow/PlanPanel.jsx', import.meta.url), 'utf8');
   const read = src.slice(src.indexOf("pl.post({ action: 'plan-options', date })"), src.indexOf('}, [date, pl.post, optsTick]);'));
   assert.match(read, /setPicks\(\(cur\) => rebasePicks\(cur, j\.roster\?\.loads \|\| \[\]\)\)/);
-  assert.match(src, /import \{ asPick, pickKey, rebasePicks \} from '\.\/plan-pick-core\.js';/);
+  assert.match(src, /import \{ asPick, pickKey, rebasePicks, nextSectionPicks \} from '\.\/plan-pick-core\.js';/);
   assert.doesNotMatch(src, /const asPick = /, 'one definition of a roster pick, shared with the re-read');
+});
+
+// Review of the fix above: "Plan the next section" puts the finished plan's picks back — as its request
+// carried them. On the same day nothing re-reads the roster, so after a Refresh had shown JOE SMITH on
+// "1 SATL" the next section went out as the old driverless box truck again, with his row ticked.
+test('"Plan the next section" after a Refresh showed a tractor driver on the load: the section is planned with him, not the finished plan\'s box-truck guess', () => {
+  const finished = [{ kind: 'roster', route: '1 SATL', driver: null, cls: 'box_truck', loadNbr: 'DAVIS1SATL' }];
+  const opts = { date: '2026-09-28', roster: { loads: [row('1 SATL', 'JOE SMITH', { cls: 'tractor', cap: 30 })] } };
+  const next = nextSectionPicks(finished, opts, '2026-09-28');
+  assert.deepEqual(sent(next), [{ kind: 'roster', route: '1 SATL', driver: 'JOE SMITH', cls: null, loadNbr: 'DAVIS1SATL' }]);
+  assert.equal(next.get('r:DAVIS1SATL').cap, 30);
+});
+
+test('"Plan the next section" keeps the finished plan\'s picks as they were when the roster on screen is another day\'s (the day change re-reads it)', () => {
+  const finished = [{ kind: 'roster', route: '1 SATL', driver: null, cls: 'tractor', loadNbr: 'DAVIS1SATL' }, { kind: 'truck', route: 'SPARE BOX 1', driver: null, cls: 'box_truck', loadNbr: null }];
+  const other = { date: '2026-09-29', roster: { loads: [] } };
+  assert.deepEqual(sent(nextSectionPicks(finished, other, '2026-09-28')), finished);
+  assert.deepEqual(sent(nextSectionPicks(finished, null, '2026-09-28')), finished, 'no roster read yet: nothing to hold them to');
+  // Same day, row still driverless: the class the dispatcher chose for the finished plan stays.
+  const same = { date: '2026-09-28', roster: { loads: [row('1 SATL', null)] } };
+  assert.deepEqual(sent(nextSectionPicks(finished, same, '2026-09-28')), finished);
+});
+
+test('PlanPanel\'s "Plan the next section" starts from nextSectionPicks against the roster on screen', () => {
+  const src = readFileSync(new URL('../src/shadow/PlanPanel.jsx', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('const nextSection = useCallback('), src.indexOf('return {', src.indexOf('const nextSection = useCallback(')));
+  assert.match(fn, /setPicks\(nextSectionPicks\(p\.picks, opts, res\?\.date \|\| date\)\);/);
+  assert.match(fn, /\}, \[opts, date\]\);/, 'the callback reads the roster on screen now, not the one it was made with');
 });

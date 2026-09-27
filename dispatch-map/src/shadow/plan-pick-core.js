@@ -37,3 +37,16 @@ export function rebasePicks(cur, rosterLoads) {
   }
   return next;
 }
+
+/**
+ * THE PICKS "PLAN THE NEXT SECTION" STARTS FROM: the finished plan's loads as its request carried them,
+ * held to the roster on screen when that roster is of the same day — exactly as a Refresh would hold
+ * them (review of the 2026-09-27 audit fix: after a Refresh showed JOE SMITH on a load, "Plan the next
+ * section" put the finished plan's driverless box-truck pick back, and the plan went out as that).
+ * A roster of another day is not the one on screen for long: the day change re-reads it and that read
+ * rebases these picks, so they are handed back as the plan had them.
+ */
+export function nextSectionPicks(planPicks, opts, day) {
+  const restored = new Map((planPicks || []).map((pk) => [pickKey(pk), { ...pk }]));
+  return opts && day && opts.date === day ? rebasePicks(restored, opts.roster?.loads || []) : restored;
+}

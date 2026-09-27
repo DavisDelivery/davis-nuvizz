@@ -25,7 +25,7 @@ import BacktestMap from './BacktestMap.jsx';
 import StopPicker from './StopPicker.jsx';
 import { truckColor } from './backtest-map-core.js';
 import { pruneSel, selTotals } from './stop-pick-core.js';
-import { asPick, pickKey, rebasePicks } from './plan-pick-core.js';
+import { asPick, pickKey, rebasePicks, nextSectionPicks } from './plan-pick-core.js';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 const PLANS_URL = '/.netlify/functions/claude-shadow?view=plans';
@@ -728,7 +728,8 @@ export function usePlanArea() {
     if (res?.date) setDate(res.date);
     setLookback(Number.isInteger(p.lookbackDays) ? p.lookbackDays : 0);
     setScope(p.scope === 'open' ? 'open' : 'unplanned');
-    setPicks(new Map((p.picks || []).map((pk) => [pickKey(pk), { ...pk }])));
+    // Held to the roster on screen when it is that day's, as a Refresh holds them (review, audit 2026-09-27).
+    setPicks(nextSectionPicks(p.picks, opts, res?.date || date));
     setSectionMode(true);
     setSection(new Set());
     setAfter(res.jobId);
@@ -736,7 +737,7 @@ export function usePlanArea() {
     setPv(null);
     setOpenId(null);
     setPickerOpen(true);
-  }, []);
+  }, [opts, date]);
   return {
     pl, date, setDate: changeDate, lookback, setLookback, scope, setScope, picks, setPicks, opts, optsErr,
     pv, pvErr, previewing, fresh, preview, run, openId, setOpenId, result, refresh,
