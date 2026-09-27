@@ -1549,12 +1549,16 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           // that drops them meant a take-back or a damage flag could never leave
           // the device however carefully it was stored.
           scans: slice.filter((r) => r.kind !== 'hand')
-            .map(({ og, pro, scannedAt, stopNbr, engine: eng, voidedAt, voidReason, damaged, damageNote }) => ({
+            .map(({ og, pro, scannedAt, stopNbr, engine: eng, voidedAt, voidReason, damaged, damageNote, voidChangedAt, damageChangedAt }) => ({
               og, pro, scannedAt, stopNbr, engine: eng,
               voidedAt: voidedAt || null,
               voidReason: voidReason || '',
               damaged: !!damaged,
               damageNote: damageNote || '',
+              // WHEN this phone changed a flag; null = it never did. Lets the
+              // server tell a deliberate clear from another phone's default.
+              voidChangedAt: voidChangedAt || null,
+              damageChangedAt: damageChangedAt || null,
             })),
           handConfirms: slice.filter((r) => r.kind === 'hand')
             .map(({ stopNbr, pieces, confirmedAt, reason }) => ({ stopNbr, pieces, confirmedAt, reason })),

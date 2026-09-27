@@ -173,7 +173,7 @@ export async function enqueueScan(loadNbr, date, scan, cap = null) {
       return ENQUEUE_OVER_CAP;
     }
     await tx(STORE_QUEUE, 'readwrite', (s) =>
-      s.put({ ...existing, voidedAt: null, voidReason: '', syncedAt: null }),
+      s.put({ ...existing, voidedAt: null, voidReason: '', voidChangedAt: new Date().toISOString(), syncedAt: null }),
     );
     return true;
   }
@@ -205,8 +205,11 @@ export async function voidScan(loadNbr, og, reason = '') {
   const key = queueKey(loadNbr, og);
   const row = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
   if (!row || row.voidedAt) return false;
+  // voidChangedAt tells the server this phone MEANT it (see mergeFlagsByTime):
+  // another phone's copy of the row carries a default, not a decision.
+  const at = new Date().toISOString();
   await tx(STORE_QUEUE, 'readwrite', (s) =>
-    s.put({ ...row, voidedAt: new Date().toISOString(), voidReason: String(reason || ''), syncedAt: null }),
+    s.put({ ...row, voidedAt: at, voidReason: String(reason || ''), voidChangedAt: at, syncedAt: null }),
   );
   return true;
 }
@@ -217,7 +220,7 @@ export async function unvoidScan(loadNbr, og) {
   const row = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
   if (!row || !row.voidedAt) return false;
   await tx(STORE_QUEUE, 'readwrite', (s) =>
-    s.put({ ...row, voidedAt: null, voidReason: '', syncedAt: null }),
+    s.put({ ...row, voidedAt: null, voidReason: '', voidChangedAt: new Date().toISOString(), syncedAt: null }),
   );
   return true;
 }
@@ -238,6 +241,9 @@ export async function markDamaged(loadNbr, og, damaged = true, note = '') {
       damaged: !!damaged,
       damageNote: damaged ? String(note || '') : '',
       damagedAt: damaged ? new Date().toISOString() : null,
+      // Stamped on a mark AND an un-mark, so a deliberate clear can outrank the
+      // mark while another phone's never-touched default cannot.
+      damageChangedAt: new Date().toISOString(),
       syncedAt: null,
     }),
   );
