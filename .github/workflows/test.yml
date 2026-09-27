@@ -323,3 +323,13 @@ jobs:
       - run: npm run verify:wb-own-day
         env:
           SMOKE_PORT: '8814'
+      # THE TRAINEE'S DRIVER-AREA RINGS (v1.78.0). Chad, 2026-09-27: "we were going to build an overlay
+      # for the map that we could toggle on and off." The unit tests pin the rings, the name placement
+      # and the words; this proves the bundle wires them. Google is stood in with recorded Circles and a
+      # name overlay that gets real panes: the switch must be in the Filters card on desktop AND the
+      # phone, read the rings once, draw every ring over its halo without taking a click, leave nothing
+      # behind when turned off, carry the rings across a map rebuild, say a failed read in red, and
+      # never be offered, read or drawn on the wall. Fails on the code before it. Rides the keyed build.
+      - run: npm run verify:driver-areas
+        env:
+          SMOKE_PORT: '8816'

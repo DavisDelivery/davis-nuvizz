@@ -32,8 +32,7 @@
 // PURE: no Firestore, no network, no filesystem, no clock of its own. `input.generatedAt` is
 // passed in rather than read, so the same data renders the same page every time.
 import {
-  zipOwnership, driverCore, territoryCoverage, activeDrivers, driverCircles, driverRewrites,
-  driverPoints, driverKeyOf, mapFrame, rosterOf,
+  zipOwnership, territoryCoverage, driverRewrites, driverPoints, mapFrame, rosterOf, territoryModel,
 } from './driver-territory.js';
 import COUNTIES from './ga-north-counties.js';
 
@@ -53,36 +52,24 @@ export function territorySheetHtml(input = {}) {
 const stops = input.stops || [];
 const roster = input.roster ? rosterOf(input.roster) : null;
 
-// ONLY DRIVERS WHO HAVE ACTUALLY RUN IN THE WINDOW. Chad: "terry hasn't ran for me in a long
-// time ... just guys that have ran in last 4 weeks."
-const { active: activeSet, excluded } = activeDrivers(stops, { roster, minStops: input.minStops ?? 5 });
-// THE KEY COMES FROM ONE PLACE. This filter used to re-derive it inline — uppercase, spaces to
-// underscores — which is what the key looks like for most names and is NOT what canonicalDriver
-// does. For "COLIN/DJ 1" the inline version produced COLIN/DJ_1, which is in no active set, so
-// Colin's second load vanished from the town table and the cards while driverCircles (which
-// asks properly) still drew it. Half the sheet disagreeing with the other half, silently.
-const inWindow = stops.filter((s) => activeSet.has(driverKeyOf(s)));
+// ONE PIPELINE FOR THE PAPER AND THE MAP OVERLAY — territoryModel in driver-territory.js decides
+// who is still running (Chad: "just guys that have ran in last 4 weeks"), draws the rings and
+// picks each man's colour. The overlay reads the same function, so a trainee holding this sheet
+// beside the screen sees the same ring in the same colour on both.
+const { active: activeSet, excluded, inWindow, drivers, circleSets, colourOf } = territoryModel(stops, {
+  roster, minStops: input.minStops, drivers: input.drivers, circles: input.circles,
+});
 const zips = input.zips || zipOwnership(inWindow, { roster });
-const drivers = input.drivers || driverCore(inWindow, { roster });
 const cov = input.coverage || territoryCoverage(inWindow, { roster });
 const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n) => `${Math.round((n || 0) * 100)}%`;
 
-// COLOUR TELLS RINGS APART. IT DOES NOT NAME ANYBODY.
-//
-// Ten swatches across 59 drivers means six men share every colour, so a colour cannot identify a
-// person — and the first sheet printed a legend that implied it could, which cost a whole page
-// and told the reader something false. There is no legend now. On the big map the colours exist
-// so that two rings crossing each other read as two rings; the NAME in the middle is the answer.
-// Varied lightness as well as hue, because this sheet gets photocopied.
-const PALETTE = ['#1f4e79', '#a4462d', '#3f7d3f', '#6b4a8a', '#8a6d1f',
-                 '#256b6b', '#8a3060', '#4a5a6b', '#2f6f9e', '#7a3b1e'];
+// COLOUR TELLS RINGS APART. IT DOES NOT NAME ANYBODY — see RING_PALETTE in driver-territory.js,
+// which is where the palette and the reason there is no legend now live, shared with the map.
 const depot = input.depot || { lat: 34.14838, lng: -83.95948, name: 'Buford Terminal' };
-const circleSets = input.circles || driverCircles(stops, { roster, active: activeSet });
 const pointsBy = driverPoints(inWindow, { roster, active: activeSet });
 const allPoints = [...pointsBy.values()].flat();
 const frame = mapFrame(allPoints, { include: [depot] });
-const colourOf = new Map(drivers.map((d, i) => [d.key, PALETTE[i % PALETTE.length]]));
 
 // ── the shared projection ───────────────────────────────────────────────────
 function projector(W) {
