@@ -11237,7 +11237,12 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
   }, [moreOpen]);
   return (
     <header
-      className="flex-shrink-0 z-30 flex items-center justify-between gap-2 px-3 text-white relative"
+      // z-40, not z-30: this bar is a stacking context, so its menu's z-50 is scoped INSIDE it.
+      // The Map's floating launchers (Messages, Ask AI) sit in a sibling subtree at z-[39] and
+      // painted over the menu's bottom rows on a 390px phone — measured: elementFromPoint on
+      // "Roll back the app" answered "Open messages". Above 39 and still under every fixed
+      // modal (z-[60]) and the debug sheet.
+      className="flex-shrink-0 z-40 flex items-center justify-between gap-2 px-3 text-white relative"
       style={{
         background: BRAND,
         // minHeight (not a fixed height) + the notch inset as padding so the bar
@@ -11294,7 +11299,12 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
             // w-max sizes the menu to its longest label — 140px alone was narrower than
             // "Manifest check" + icon, so rows wrapped onto two lines. Capped to the screen
             // so a future long label can't push it off the right edge.
-            className="absolute top-full right-0 mt-1 bg-white text-slate-800 rounded shadow-lg border border-slate-200 text-xs w-max min-w-[200px] max-w-[calc(100vw-24px)] z-50"
+            // max-h + overflow-y-auto: with More open this menu is ~706px tall, and it is the
+            // phone's ONLY way to another screen. The shell is a fixed-height overflow-hidden box,
+            // so on a 360x640 or 375x667 phone the last rows — Diagnostics, Roll back the app,
+            // Debug this view — sat below the viewport with no way to reach them (measured on the
+            // built bundle). The menu now scrolls inside itself; 100dvh tracks the iOS toolbars.
+            className="absolute top-full right-0 mt-1 bg-white text-slate-800 rounded shadow-lg border border-slate-200 text-xs w-max min-w-[200px] max-w-[calc(100vw-24px)] max-h-[calc(100dvh-64px)] overflow-y-auto overscroll-contain z-50"
             role="menu"
           >
             {/* MAP FIRST (Chad, v0.54.82). It is the screen you come back to between
