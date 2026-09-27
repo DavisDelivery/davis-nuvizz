@@ -35503,14 +35503,21 @@ function AddressHistoryScreen() {
     return p.toString();
   }, [searching, stopQ, range.from, range.to, today, kind, source, showNoise]);
 
+  // ONLY THE NEWEST REQUEST MAY PAINT. Each keystroke pause and each pill starts its own
+  // 60-day read, and they can answer out of order: a late empty answer for a half-typed PRO
+  // would overwrite the real one and read "No address changed for <PRO>". Same guard as
+  // LabelsScreen's reqRef.
+  const loadReqRef = React.useRef(0);
   const load = React.useCallback(async () => {
+    const id = ++loadReqRef.current;
     setLoading(true); setErr(null);
     try {
       const r = await apiFetch(`/.netlify/functions/address-history?${qs}`);
       const j = await r.json();
+      if (id !== loadReqRef.current) return;
       if (!j.ok) throw new Error(j.error || 'read failed');
       setData(j);
-    } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
+    } catch (e) { if (id === loadReqRef.current) setErr(String(e.message || e)); } finally { if (id === loadReqRef.current) setLoading(false); }
   }, [qs]);
   // Only the log and carrier sections read the change ledger. The queue has its own endpoint,
   // and firing this one behind it would be a Firestore read per keystroke for a screen nobody
