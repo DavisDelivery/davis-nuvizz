@@ -33,6 +33,7 @@ import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaul
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { mergeStopHistory } from './lib/stop-history.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
+import { noteContentKey } from './lib/note-save.js';
 import { readViewportSize } from './lib/viewport.js';
 import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
@@ -10577,6 +10578,16 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
     setEditing(!note);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note?.id]);
+  // ...and when the SAME note changes (A1-S3-3). Its id is the match key, so another
+  // dispatcher's save or the scanner never moves it — and Save writes the whole draft back, so
+  // a draft that missed the update wrote the old fields over the new ones. Leaves `editing`
+  // alone: a background write must not close an editor the dispatcher just opened.
+  const noteKey = noteContentKey(note);
+  useEffect(() => {
+    if (dirtyRef.current) return;
+    setDraft(note || emptyNote(stop));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteKey]);
 
   // The live overlay: a Refresh / timeline open updates the status badge below, so a board
   // stop still tagged Scheduled flips to Delivered once its real status comes back.
