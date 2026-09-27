@@ -527,7 +527,18 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
       deadline.cancel();
       const ms = now() - started;
       // Count + log every actual network round-trip (success or failure).
-      const total = await deps.recordCall(meta, 1);
+      // NuVizz HAS ANSWERED by this line, so the counter cannot decide this call's outcome: a
+      // counter write that fails is logged and the vendor's answer still goes back. Rejecting
+      // here turned a Save NuVizz had applied into a failure on the dispatcher's screen. An
+      // unknown total trips nothing (NaN >= ceiling is false), exactly like a commit that
+      // returned no transform result.
+      let total: number;
+      try {
+        total = await deps.recordCall(meta, 1);
+      } catch (err: any) {
+        total = NaN;
+        log({ event: 'call-count-failed', route: meta.route, tenant: meta.tenant, status: resp.status, error: String(err?.message || err).slice(0, 200) });
+      }
       totalThisInstance++;
       log({ app: APP_NAME, trigger: meta.trigger ?? __callTrigger ?? 'unknown', source: meta.source, route: meta.route, tenant: meta.tenant, status: resp.status, ms, dayTotal: total, mode: cfg.breakerMode });
       // At the ceiling: enforce → trip + (next call) block; monitor → warn only.
@@ -540,8 +551,14 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
         if (cfg.breakerMode === 'enforce') {
           if (!breakerOpen) {
             breakerOpen = true; breakerCheckedAt = now();
-            await deps.tripCircuit(`daily ceiling ${ceiling} reached (count=${total})`);
-            log({ event: 'circuit-tripped', route: meta.route, tenant: meta.tenant, dayTotal: total, ceiling });
+            // Saving the trip is bookkeeping too: this process is already halted (above), and a
+            // failed save must not turn the call that reached the ceiling into a failure.
+            try {
+              await deps.tripCircuit(`daily ceiling ${ceiling} reached (count=${total})`);
+              log({ event: 'circuit-tripped', route: meta.route, tenant: meta.tenant, dayTotal: total, ceiling });
+            } catch (err: any) {
+              log({ event: 'circuit-trip-failed', route: meta.route, tenant: meta.tenant, dayTotal: total, ceiling, error: String(err?.message || err).slice(0, 200) });
+            }
           }
         } else if (!wouldTripLogged) {
           wouldTripLogged = true;
