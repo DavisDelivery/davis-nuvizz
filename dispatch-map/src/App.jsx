@@ -12359,12 +12359,15 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
     dirtyRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stop?.stopNbr]);
-  // Adopt a note that loads/updates after open — unless mid-edit.
+  // Adopt a note that loads/updates after open — unless mid-edit. Keyed on the note's CONTENT,
+  // not its id (A1-S4-5): the id is the match key, so a same-customer update never moved it and
+  // Save wrote the stale draft back over it. See StopSidebar.
+  const noteKey = noteContentKey(note);
   useEffect(() => {
     if (dirtyRef.current) return;
     setDraft(note || emptyNote(stop));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [note?.id]);
+  }, [noteKey]);
 
   // Live overlay so the status badge below updates on Refresh / timeline open (a board
   // stop tagged Scheduled flips to Delivered once its real status 90 comes back).
