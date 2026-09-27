@@ -22,8 +22,14 @@ import { isFirestoreEnabled, getDoc, setDoc, etDayString } from './lib/firestore
 
 const OPS = 'nuvizz_ops';
 const BATCH_LIMIT = 200;
+// A5-S29-11: each recipient is a SimpleTexting call plus a thread write, one after another, so a
+// long list can outrun the function (26s in netlify.toml). Past this budget no NEW send starts;
+// the rest come back by name as not sent, and the cap is still written for what went out —
+// instead of a platform kill that leaves the dispatcher unable to tell who got the text.
+export const SEND_BUDGET_MS = 20_000;
 
 export default async (req: Request): Promise<Response> => {
+  const startedAt = Date.now();
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   if (req.method !== 'POST') return new Response(JSON.stringify({ ok: false, error: 'POST only' }), { status: 405, headers: cors });
@@ -83,6 +89,7 @@ export default async (req: Request): Promise<Response> => {
   let sent = 0, failed = unresolved.length, capped = 0;
   for (const r of recipients) {
     if (sent >= remaining) { capped++; results.push({ to: r.to, label: r.label, ok: false, error: 'daily cap reached' }); continue; }
+    if (Date.now() - startedAt >= SEND_BUDGET_MS) { failed++; results.push({ to: r.to, label: r.label, ok: false, error: 'not sent — ran out of time; send again to this recipient' }); continue; }
     const res = await sendSms({ to: r.to, text });
     if (res.ok) {
       sent++;
