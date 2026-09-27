@@ -36,7 +36,7 @@ import {
 } from '../lib/account-client.js';
 import {
   fmtWhen, modeSentence, nuvizzBadge, checkLine, readiness, rolloutSteps,
-  newPersonProblem, nuvizzUsernameProblem, ROLE_CHOICES,
+  newPersonProblem, nuvizzUsernameProblem, ROLE_CHOICES, resetAnswer,
 } from '../lib/account-view.js';
 import { useSortable, SortableTh } from '../lib/useSortable.jsx';
 
@@ -690,8 +690,10 @@ function PersonManage({ m, me, user, mailConfigured, mode, site, onChanged, onRe
               <div className="flex flex-wrap gap-2">
                 <Btn m={m} kind="danger" busy={busy === 'reset'} onClick={async () => {
                   const r = await act('reset', { action: 'reset', ...(confirm === 'reset' ? { tempPassword: true } : {}) });
-                  if (r?.tempPassword) setTemp(r.tempPassword);
-                  else if (r?.emailed) setNote(`Reset link emailed to ${user.email}.`);
+                  const out = resetAnswer(r, { email: user.email, asked: confirm === 'reset' ? 'temp' : 'email' });
+                  if (out?.temp) setTemp(out.temp);
+                  else if (out?.note) setNote(out.note);
+                  else if (out?.error) setErr(out.error);
                 }}>Yes, reset it</Btn>
                 <Btn m={m} kind="ghost" onClick={() => setConfirm(null)}>Cancel</Btn>
               </div>
