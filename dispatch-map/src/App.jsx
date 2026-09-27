@@ -39624,6 +39624,11 @@ function StopLookupScreen() {
   const saveEdit = useCallback(async () => {
     if (!editDock?.key || !editDraft) return;
     if (notesGate.reason) { setEditErr(notesGate.reason); return; }
+    // THE FORM THIS SAVE BELONGS TO. The Edit buttons stay live while a save is in flight, so a
+    // rep can open (and start typing in) another dock's form before this one returns. Closing
+    // "the form" on success then shut THAT form and threw its typing away, straight after its
+    // Save button had read "Saving…" — which looks exactly like a save that worked.
+    const req = editReqRef.current;
     setEditSaving(true); setEditErr(null);
     try {
       if (!db) throw new Error('Firestore is not configured in this build.');
@@ -39682,7 +39687,7 @@ function StopLookupScreen() {
         if (cur.dossier) return { ...cur, dossier: { ...cur.dossier, notes: summary } };
         return cur;
       });
-      setEditDock(null); setEditDraft(null); setEditWas(null);
+      if (req === editReqRef.current) { setEditDock(null); setEditDraft(null); setEditWas(null); }
     } catch (e) {
       // 'write' — a refused WRITE and a refused READ are different sentences in the
       // permission banner, and a dispatcher told "read denied" goes looking in the wrong place.

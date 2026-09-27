@@ -113,8 +113,9 @@ test('a late read failure for the first dock does not blank the second dock’s 
 
 // ── the save's read-back ─────────────────────────────────────────────────────────────────────
 
-function saveScope({ dock, onScreen }) {
+function saveScope({ dock, onScreen, duringWrite = null }) {
   const e = editorState();
+  const editReqRef = { current: 1 };
   const seed = { ...emptyNote({ businessName: dock.name, matchKey: dock.key, addr1: dock.addr1, city: dock.city, state: dock.state, zip: dock.zip }), ...STORED[dock.key] };
   const draft = { ...seed, dock_notes: 'Wendell: BACK dock — ring twice' };
   const written = [];
@@ -122,15 +123,41 @@ function saveScope({ dock, onScreen }) {
   const scope = {
     ...e, editDock: dock, editDraft: draft, editWas: STORED[dock.key], editSeed: seed,
     notesGate: { reason: null }, db: {}, doc: (_d, c, k) => `${c}/${k}`,
-    setDoc: async (path, payload) => { written.push({ path, payload }); },
+    setDoc: async (path, payload) => { written.push({ path, payload }); if (duringWrite) duringWrite({ e, editReqRef }); },
     getDoc: async () => ({ exists: () => true, data: () => ({ ...STORED[dock.key], dock_notes: draft.dock_notes }) }),
     serverTimestamp: () => 'TS', eligibilityChanged: () => false, buildingTypeChanged: () => false,
     NOTES_UPDATED_BY: 'dispatcher', notesSummary, changedNoteFields, answerHoldsDock, reportDenied: () => {},
-    NOTE_SAVE_CHANGED_ONLY_ON: true,
+    NOTE_SAVE_CHANGED_ONLY_ON: true, editReqRef,
     setData: (fn) => { screen = fn(screen); },
   };
-  return { save: build(SAVE_SRC, scope), screen: () => screen, written };
+  e.st.dock = dock; e.st.draft = draft;
+  return { save: build(SAVE_SRC, scope), screen: () => screen, written, st: e.st };
 }
+
+test('a save that returns after the rep opened another dock’s form leaves that form, and its typing, open', async () => {
+  // Wendell's Save is pressed; while the write is in flight the rep taps Edit on Northside
+  // (openEdit bumps the sequence and fills the form) and starts typing. Closing "the form" on
+  // Wendell's success shut Northside's and dropped what was typed — right after its Save
+  // button had read "Saving…", which looks like a save that worked.
+  const same = { mode: 'customer', noteKey: WENDELL.key, docks: [NORTHSIDE, WENDELL], view: { notes: { text: 'old' } } };
+  const typed = { ...STORED[NORTHSIDE.key], dock_notes: 'Northside: front door — call first' };
+  const { save, st, written } = saveScope({
+    dock: WENDELL, onScreen: same,
+    duringWrite: ({ e, editReqRef }) => { editReqRef.current += 1; e.setEditDock(NORTHSIDE); e.setEditDraft(typed); },
+  });
+  await save();
+  assert.equal(written.length, 1, 'Wendell’s save still happened');
+  assert.equal(st.dock?.key, NORTHSIDE.key, 'Northside’s form is still open');
+  assert.equal(st.draft?.dock_notes, 'Northside: front door — call first', 'and what the rep typed is still in it');
+});
+
+test('a save with no other Edit pressed closes its own form, as before', async () => {
+  const same = { mode: 'customer', noteKey: WENDELL.key, docks: [NORTHSIDE, WENDELL], view: { notes: { text: 'old' } } };
+  const { save, st } = saveScope({ dock: WENDELL, onScreen: same });
+  await save();
+  assert.equal(st.dock, null);
+  assert.equal(st.draft, null);
+});
 
 test('a save that returns after the rep searched a different customer does not paint the old note onto the new card', async () => {
   const other = { mode: 'customer', noteKey: 'acme__1_main_st__atlanta__30303', docks: [{ key: 'acme__1_main_st__atlanta__30303' }], view: { notes: { text: 'ACME: side door' } } };
