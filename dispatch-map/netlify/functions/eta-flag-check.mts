@@ -30,7 +30,7 @@ import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses 
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, alertRecipients, ALERT_CC_REJECTED, DAILY_ALERT_CAP, ALERT_MIN_TIER, alertTiersFor, normalizeMinTier, AMBER_LEAD_GATE_MIN, ALERT_LATE_FLOOR_MIN, bandOfCandidate, finiteMinutes, ALERT_RULES } from './lib/flag-alert.mts';
+import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, alertRecipients, DAILY_ALERT_CAP, ALERT_MIN_TIER, alertTiersFor, normalizeMinTier, AMBER_LEAD_GATE_MIN, ALERT_LATE_FLOOR_MIN, bandOfCandidate, finiteMinutes, ALERT_RULES } from './lib/flag-alert.mts';
 import { flattenForConsumers } from './lib/flag-rows.mts';
 import { emailEnabled } from './lib/email.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -561,7 +561,11 @@ export default async (req: Request): Promise<Response> => {
       // that used to look identical from here.
       ccSource: ccStoreError ? 'unknown' : ccResolved.source,
       ...(ccStoreError ? { ccStoreError } : {}),
-      ccRejected: ccResolved.source === 'saved' ? ccResolved.savedRejected.map((r: any) => r.value) : ALERT_CC_REJECTED,
+      // From the same resolution as `recipients` — the older module-load parser refused
+      // "Name <address>" entries this list mails, so the two fields named one person twice.
+      ccRejected: ccResolved.source === 'saved'
+        ? ccResolved.savedRejected.map((r: any) => r.value)
+        : ccResolved.envRejected.map((r: any) => r.value),
       dailyCap: DAILY_ALERT_CAP,
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },
       // WHICH ROWS THE EARLY-CLOSE FLOOR IS CARRYING, by name, on this board. A policy that
