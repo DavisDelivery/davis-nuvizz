@@ -27,7 +27,7 @@ import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { claudeShadowFixtureFor, guardOpenBacktestDay, guardOpenFirstRoute } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, guardOpenBacktestDay, guardOpenFirstRoute, guardOpenStopPicker } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -101,6 +101,11 @@ const PROBES = {
   claudeshadow: [{
     name: 'a backtested day open, one route opened',
     open: async (page) => (await guardOpenBacktestDay(page)) && guardOpenFirstRoute(page),
+  }, {
+    // v1.78.0: the planning area's section stop map, open in its drawer (the map itself needs a key and
+    // is measured by verify-shadow-map.mjs; here it says it could not load, and the rest is measured).
+    name: 'a section’s stop map open',
+    open: async (page) => guardOpenStopPicker(page),
   }],
   routing: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
   map: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],

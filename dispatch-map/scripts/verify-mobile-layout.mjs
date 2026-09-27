@@ -38,7 +38,7 @@ import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay, guardOpenFirstRoute } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay, guardOpenFirstRoute, guardOpenStopPicker } from './lib/claude-shadow-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
 import { accountAnswer, ADMIN_SESSION, SESSION_KEY } from './lib/account-fixture.mjs';
@@ -290,6 +290,11 @@ const PROBES = {
   claudeshadow: [{
     name: 'a backtested day open, one route opened',
     open: async (page) => (await guardOpenBacktestDay(page)) && guardOpenFirstRoute(page),
+  }, {
+    // v1.78.0: the planning area's section stop map, open in its drawer (the map itself needs a key and
+    // is measured by verify-shadow-map.mjs; here it says it could not load, and the rest is measured).
+    name: 'a section’s stop map open',
+    open: async (page) => guardOpenStopPicker(page),
   }],
   routing: [
     { name: 'Setup sheet open', open: async (page) => { await page.getByRole('button', { name: /^setup/i }).first().click(); await page.waitForTimeout(600); return page.getByText(/Select stops/i).first().isVisible().catch(() => false); } },
