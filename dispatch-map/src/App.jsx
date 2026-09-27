@@ -63,7 +63,7 @@ import { rollbackTargets, rollbackRequestBody } from './lib/rollback-targets.js'
 // ONE rule decides whether a typed box is a PRO or a customer name, and the screen and the
 // endpoint (netlify/functions/stop-lookup.mts) both read it from here — so the box can never
 // be classified one way by the client and the other way by the server.
-import { classifyQuery, notesSummary } from './lib/stop-lookup.js';
+import { classifyQuery, notesSummary, promptedCallsOnScreen } from './lib/stop-lookup.js';
 import { DEVICE_SWITCHES, switchReport, encodeValue, describeValue } from './lib/device-switches.js';
 // The trainee's driver-area rings on the Map tab — the printed sheet's page one, drawn live.
 import { DRIVER_AREAS_URL, driverAreasStatus, makeDriverAreaOverlayClass } from './lib/driver-area-overlay.js';
@@ -39567,10 +39567,13 @@ function StopLookupScreen() {
       const r = await apiFetch(`/.netlify/functions/stop-lookup-prompted?stop=${encodeURIComponent(term)}`, { cache: 'no-store' });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'NuVizz could not be asked');
+      // EVERY CALL IT COST STAYS ON THE COUNT, found or not — the header chip reads it, and a
+      // "NuVizz has nothing either" under a chip saying "0 NuVizz calls" is a spend nobody sees.
       if (j.prompted?.ok && j.dossier) {
-        setData(j); setLedgerOpen(false); setPromptMsg(j.prompted);
+        setData({ ...j, nuvizzCalls: promptedCallsOnScreen(data?.nuvizzCalls, j.nuvizzCalls) }); setLedgerOpen(false); setPromptMsg(j.prompted);
         if (j.detail) { setDetail({ stopNbr: j.detail.stopNbr, date: j.detail.date }); setDetailData(j.detail); setDetailErr(null); setDetailLoading(false); }
       } else {
+        setData((cur) => (cur ? { ...cur, nuvizzCalls: promptedCallsOnScreen(cur.nuvizzCalls, j.nuvizzCalls) } : cur));
         setPromptMsg(j.prompted || { attempted: true, ok: false, reason: 'error', text: 'No answer came back.' });
       }
     } catch (e) { setPromptMsg({ attempted: true, ok: false, reason: 'error', text: String(e.message || e) }); }

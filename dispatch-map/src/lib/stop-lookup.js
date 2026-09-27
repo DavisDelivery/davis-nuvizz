@@ -444,6 +444,17 @@ export function promptedOutcome(res) {
   return { ok: false, spent: true, reason: 'error', text: `NuVizz could not answer: ${r || 'unknown error'}.` };
 }
 
+/**
+ * PURE: the call count of what is on screen after a prompted answer. EVERY call a prompted
+ * answer cost stays on it — a "NuVizz has nothing either" spent its call just as surely as a
+ * found order did, and a retry after an error adds to the first attempt rather than replacing
+ * it. Anything that is not a positive number counts as nothing.
+ */
+export function promptedCallsOnScreen(onScreen, answer) {
+  const n = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0);
+  return n(onScreen) + n(answer);
+}
+
 /** PURE: the ledger row for the source this answer came from — the calls it cost, on request.
  *  `calls` is what the requester counted (a retried busy answer costs more than one); absent,
  *  it is one. */
