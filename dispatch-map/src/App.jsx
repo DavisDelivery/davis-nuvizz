@@ -14006,6 +14006,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     const listener = google.maps.event.addListenerOnce(mapRef.current, 'tilesloaded', () => setTvMapDrew(true));
     return () => { try { listener.remove(); } catch { /* the map is already gone */ } };
   }, [tvMode, google, mapReady]);
+  // Leaving the live map forgets that it drew: the next time it is ticked it is a new map on
+  // a new pane, and "it drew last time" says nothing about whether this one did.
+  useEffect(() => { if (tvStatic) setTvMapDrew(false); }, [tvStatic]);
   // ESCAPE IS THE WAY OUT, and it is the documented one. The on-screen exit is deliberately
   // faint (see the button) because Chad does not want furniture on the map; a key that
   // always works means the faint control never has to become a loud one.
@@ -14694,7 +14697,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     setMapReady((n) => n + 1);
     // mapIdKey, not hideLabels: this flips only when the map genuinely has to be rebuilt,
     // so a build with no VITE_GOOGLE_MAP_ID still inits exactly once.
-  }, [google, mapIdKey(mapIdForView, mapFilters.hideLabels)]); // eslint-disable-line
+    // tvStatic: the wall's live-map pane unmounts while it shows the picture, so re-ticking
+    // "Live map" mounts a NEW div that needs a new map. Always false off the wall.
+  }, [google, mapIdKey(mapIdForView, mapFilters.hideLabels), tvStatic]); // eslint-disable-line
 
   // The bottom data grid is an ABSOLUTE OVERLAY inside the map container, so Google's canvas
   // extends UNDERNEATH it — a flat 60px fitBounds pad framed a route's southern stops behind
