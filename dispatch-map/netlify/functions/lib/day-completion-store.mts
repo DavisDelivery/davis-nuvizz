@@ -128,6 +128,26 @@ export async function markDayReportSent(tenant: string, date: string, to: string
   return updateDocFields(dayCompletionPath(tenant, date), { sent: { at, to } });
 }
 
+/**
+ * THE MAILER SAID NO — written down where the next person looking will find it.
+ *
+ * The send failure used to live only in the run's response body, which Netlify discards for a
+ * *-background function, so a missing report had a heartbeat, no `sent` stamp and no reason.
+ * This records the mailer's answer on the day's own record. Field-masked for the same reason
+ * as markDayReportSent; never stamps `sent`, so the spare firing still retries. Best-effort:
+ * failing to record a failure must not cost the run its reconciliation step.
+ */
+export async function markDayReportSendFailed(tenant: string, date: string, error: string, at: string, firing: string): Promise<boolean> {
+  try {
+    return await updateDocFields(dayCompletionPath(tenant, date), {
+      lastSendFailure: { at, firing, error: String(error || 'send failed').slice(0, 500) },
+    });
+  } catch (e: any) {
+    console.error(`[day-completion] could not record the failed send for ${date}: ${e?.message}`);
+    return false;
+  }
+}
+
 /** PURE. Does this stored day still owe somebody an email? Absent document and a document
  *  with no `sent` stamp both mean nobody was mailed — the second is the case that used to be
  *  invisible. Deliberately NOT keyed on the snapshot: that was the bug. */

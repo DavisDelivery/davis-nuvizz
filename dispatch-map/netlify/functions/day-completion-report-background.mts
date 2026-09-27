@@ -36,7 +36,7 @@ import { isFirestoreEnabled, readStops, etDayString, getDoc, readAlertRecipients
 import { recipientsFor } from './lib/alert-recipients.mts';
 import { buildDayCompletion, reconcileDay, dayCompletionSubject, dayCompletionText, dayCompletionHtml, attachFlagHistory } from './lib/day-completion.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
-import { readDayCompletion, writeDaySnapshot, writeDayReconciliation, markDayReportSent, needsSending, recordRun } from './lib/day-completion-store.mts';
+import { readDayCompletion, writeDaySnapshot, writeDayReconciliation, markDayReportSent, markDayReportSendFailed, needsSending, recordRun } from './lib/day-completion-store.mts';
 import { emailEnabled, sendEmail } from './lib/email.mts';
 
 const TENANT = 'davis';
@@ -253,7 +253,13 @@ export default async (): Promise<Response> => {
       out.emailed = res.ok;
       out.to = to.join(', ');
       if (recipientStoreError) out.recipientStoreError = recipientStoreError;
-      if (!res.ok) out.emailError = res.error;
+      if (!res.ok) {
+        out.emailError = res.error;
+        // PERSISTED AND LOGGED — this response body is discarded by the platform. The log
+        // line names the record, not the error text, so it can never carry an address.
+        out.failureRecorded = await markDayReportSendFailed(TENANT, date, String(res.error || ''), new Date().toISOString(), out.firing);
+        console.error(`[day-completion] ${date}: the end-of-day report was NOT sent (${out.firing} firing) — the mailer's answer is on day_completion/${TENANT}__${date}.lastSendFailure`);
+      }
       // ONLY ON A CONFIRMED SEND. This stamp is what stands the next firing down, so writing
       // it on a failure would recreate the exact hole it replaced.
       if (res.ok) out.sentStamped = await markDayReportSent(TENANT, date, to.join(', '), new Date().toISOString());
