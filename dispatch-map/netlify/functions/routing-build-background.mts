@@ -19,12 +19,15 @@ import { profileToSolverTruck, getTruckProfile, type TruckProfile } from './lib/
 import { runPipeline, type PipelineRequest, type PipelineStopInput } from './lib/routing-pipeline.mts';
 import { resolveMatrix } from './google-route-matrix.mts';
 import { isAnthropicEnabled, parseIntentModel, geometryAssistModel, explainModel } from './anthropic-routing.mts';
-import { DEPOT, type EquipmentReq, type SolverTruck } from './lib/routing-types.mts';
+import { DEPOT, type SolverTruck } from './lib/routing-types.mts';
 import { getDoc } from './lib/firestore.mts';
 import { normalizeMatchKey } from '../../src/lib/matchKey.js';
 import { stopTimeRestriction, boardDefaultSlots, timeRestrictionsEnabled } from './lib/routing-time-windows.mts';
 import { withDeadline } from './lib/async-util.mts';
 import { requireUserForBackground } from './lib/background-gate.mts';
+// The truck/stop rule is shared with step 4's "Fill my loads" (routing-cleanup-core) — one rule,
+// two builders, so the same stop cannot ride a tractor from one button and a box from the other.
+import { equipmentReqsFrom } from './lib/routing-equipment.mts';
 
 // Overall job deadline (belt-and-suspenders with the per-call 8s timeouts). A
 // normal deterministic build finishes in well under a second; this only fires if
@@ -34,19 +37,6 @@ const BUILD_DEADLINE_MS = 25000;
 // can never become an unbounded sequential loop. Off by default → never runs.
 const GEO_ASSIST_CAP = 10;
 
-const KNOWN_REQS = new Set<EquipmentReq>([
-  'no_tractor_trailer', 'uline_straight_truck', 'straight_truck_only', 'box_truck_only',
-  '26ft_max', 'no_53', 'no_overhead_clearance', 'liftgate_required',
-]);
-
-// Equipment requirements a 53' tractor-trailer can't satisfy. A dispatcher's
-// explicit "tractor OK" (green) mark suppresses these — green wins over an
-// auto-detected restriction. Liftgate is orthogonal and is never suppressed.
-const TRAILER_BLOCKERS = new Set<EquipmentReq>([
-  'no_tractor_trailer', 'uline_straight_truck', 'straight_truck_only', 'box_truck_only',
-  '26ft_max', 'no_53', 'no_overhead_clearance',
-]);
-
 // ONE read of the customer note per stop. The equipment rule and the clock rule
 // (routing-time-windows) both read it; neither reads the other's fields.
 async function readNoteFor(stop: any): Promise<any | null> {
@@ -54,27 +44,6 @@ async function readNoteFor(stop: any): Promise<any | null> {
     const key = normalizeMatchKey(stop.businessName, stop.addr1, stop.city, stop.zip);
     return (await getDoc(`customer_notes/${key}`)) || null;
   } catch { return null; }
-}
-
-function equipmentReqsFrom(note: any, opts?: { tractorOnlyGreen?: boolean }): EquipmentReq[] {
-  try {
-    let reqs: EquipmentReq[] = [];
-    const arr = note?.equipment_restrictions;
-    if (Array.isArray(arr)) for (const r of arr) if (KNOWN_REQS.has(r)) reqs.push(r);
-    if (note?.liftgate_required === true && !reqs.includes('liftgate_required')) reqs.push('liftgate_required');
-    // Dispatcher-set vehicle eligibility (the Routing green/red marking — a property
-    // of the LOCATION). Green ('tractor') = a 53' fits → drop any trailer-blocking
-    // restriction (green wins over an auto-detected one). Red ('box_only') → force a
-    // straight/box truck. And when the build opts into "trailer = green only", any
-    // stop NOT marked green is held to a box truck too, so only green rides a 53'.
-    const elig = note?.vehicle_eligibility;
-    if (elig === 'tractor') {
-      reqs = reqs.filter((r) => !TRAILER_BLOCKERS.has(r));
-    } else if (elig === 'box_only' || opts?.tractorOnlyGreen === true) {
-      if (!reqs.includes('box_truck_only')) reqs.push('box_truck_only');
-    }
-    return reqs;
-  } catch { return []; }
 }
 
 // Resolve the pipeline's stop inputs from selectedStopIds against the live cache.

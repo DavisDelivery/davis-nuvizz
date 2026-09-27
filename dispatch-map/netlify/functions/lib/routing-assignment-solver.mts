@@ -97,6 +97,12 @@ export interface AssignStop {
   // top drivers ∪ customer habit ∪ area fallback (see candidateDriversFor). An
   // EMPTY array means unseen geography → any driver is allowed (open fallback).
   candidates?: string[];
+  // HARD, unlike `candidates`: the only driver_keys that may carry this stop at all. Set by
+  // "Fill my loads" under the Build rules, where a truck/stop pairing is decided per truck
+  // (green/red marks, liftgate, 26ft/no-53/overhead) and one blocksTractor bit cannot say
+  // it. Read by driverCanServe, which every placement path in this file goes through.
+  // Absent everywhere else, so the nightly shadow and the driver draft are unchanged.
+  servableBy?: string[];
 }
 
 // Is a driver an allowed candidate for this stop? Empty/absent candidates ⇒ the
@@ -151,7 +157,10 @@ export interface AssignDriver {
   // can only ever restrict, never inflate: a profile claiming 40 skids on a box
   // truck still lands on the class bound. Absent on every learned-driver path,
   // which is why the shadow's behavior is unchanged.
-  cap_override?: { skids?: number | null; weightLb?: number | null };
+  // `exact` (cleanup under the Build rules only): the stated number IS the truck, in both
+  // directions — the Build button loads a load to its profile, so "Fill my loads" does too.
+  // A tractor profile of 28 is no longer cut to an empty shell's fleet-average p85.
+  cap_override?: { skids?: number | null; weightLb?: number | null; exact?: boolean };
 }
 
 export interface AssignInput {
@@ -235,6 +244,7 @@ const isTractor = (d: AssignDriver) => String(d.truck_class || '') === 'tractor'
 
 export function driverCanServe(driver: AssignDriver, stop: AssignStop): boolean {
   if (stop.blocksTractor && isTractor(driver)) return false;
+  if (Array.isArray(stop.servableBy) && !stop.servableBy.includes(driver.driver_key)) return false;
   return true;
 }
 
@@ -335,6 +345,13 @@ function applyCapOverride<T extends { soft: number; hard: number; weightLb: numb
   const skids = Number(ov.skids);
   const lb = Number(ov.weightLb);
   const out = { ...caps };
+  if (ov.exact === true) {
+    // THE PROFILE IS THE TRUCK. Same "only a real positive number constrains" rule as below:
+    // a missing value leaves the learned/class bound exactly where it was.
+    if (Number.isFinite(skids) && skids > 0) { out.hard = skids; out.soft = Math.min(out.soft, skids); }
+    if (Number.isFinite(lb) && lb > 0) out.weightLb = lb;
+    return out;
+  }
   if (Number.isFinite(skids) && skids > 0 && skids < out.hard) {
     out.hard = skids;
     out.soft = Math.min(out.soft, skids);

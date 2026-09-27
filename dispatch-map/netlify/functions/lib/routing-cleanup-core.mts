@@ -39,14 +39,21 @@ import { readStops } from './firestore.mts';
 import { DEPOT } from './history-derive.mts';
 import { ENGINE_VERSION, loadEngineConfig, type EngineConfig } from './routing-engine-config.mts';
 import { type ZonePrecisions } from './zones.mts';
-import { loadPlanInputs, type PlanInputs } from './routing-plan-core.mts';
+import { hasUsableCoords, loadPlanInputs, type PlanInputs } from './routing-plan-core.mts';
 import {
   driverEnvelope, driverZoneAffinity, fleetTripChain, zoneOwnersAsOf,
 } from './routing-envelope.mts';
 import {
-  solveAssignment, capsFor, stopSkidEquiv, type AssignStop, type AssignDriver,
+  solveAssignment, capsFor, stopSkidEquiv, driverCanServe, type AssignStop, type AssignDriver,
 } from './routing-assignment-solver.mts';
-import { solveRoute, type EngineStop } from './routing-engine-solver.mts';
+import { solveRoute, haversineMiles, travelMinutesForMiles, type EngineStop } from './routing-engine-solver.mts';
+import { equipmentReqsFrom, TRAILER_BLOCKERS } from './routing-equipment.mts';
+import { equipmentOk } from './routing-constraints.mts';
+import { insertByWindow } from './routing-repair.mts';
+import {
+  stopTimeRestriction, boardDefaultSlots, timeRestrictionsEnabled, type StopTimeRestriction,
+} from './routing-time-windows.mts';
+import type { TruckCapabilities } from './routing-types.mts';
 import { pickReferences } from './routing-reference.mts';
 import { serviceTimeAsOf } from './routing-service-times.mts';
 import { liveStopToAssignStop, liveMatchKey, modalWarehouseOf, LIVE_SOLVER_MS } from './routing-draft-core.mts';
@@ -99,6 +106,67 @@ export const CLEANUP_MAX_TRUCKS = 12;
 // Past this the pool is old enough that dispatch has probably planned against it.
 export const CLEANUP_STALE_MIN = 90;
 
+// ── "FILL MY LOADS" FOLLOWS THE BUILD RULES (Chad, 2026-09-26) ───────────────
+//
+// Asked what he meant by handing step 4's engine routes, he picked: the empty loads he ticks
+// in 2 · Plan onto, filled from whatever is still unplanned — "Fill my loads, fixed to follow
+// the Build rules." Measured off the code before this, the two buttons disagreed on the
+// same stop in five ways, and every one of them was a way to put freight on the wrong truck:
+//
+//   1. WHICH TRUCK. Build reads the green Tractor OK / red Box only mark and step 3's "only
+//      green on a 53'"; the engine read one blocksTractor bit off equipment_restrictions and
+//      nothing else — a red stop could ride a trailer, a green one could be kept off it.
+//   2. LIFTGATE. Build checks it per truck, from the array AND the note's boolean; the engine
+//      read the array only, and only asked whether ANY picked truck had a gate.
+//   3. HOW MUCH. Build loads a load to its profile; the engine could only TIGHTEN a learned
+//      cap, so an empty tractor shell was cut to the mixed fleet's p85 and freight was called
+//      "needs another truck" with a 53' half empty.
+//   4. WHAT IS ALREADY ON IT. Step 2 lists loads that already hold stops. The engine offered
+//      each one a whole empty truck, so a half-full load could be handed a full one's worth.
+//   5. THE CLOCK. Build sequences around appointment windows and receiving hours and, on
+//      strict, leaves an unmeetable stop off; the engine's order was geographic and it only
+//      named early closers that landed in the back half.
+//
+// Under the Build rules the ENGINE still decides what the engine is good at — who gets which
+// stop by geography, the learned stop order, learned service minutes and drive times, the
+// typical start — and the BUILD decides what the Build decides: what a truck may carry, how
+// much, and what the clock allows. One rule each, imported, not copied.
+//
+// PUT IT BACK: FILL_MY_LOADS_BUILD_RULES=off. One switch, every side at once — the server
+// ignores the new request fields and runs the engine's own rules exactly as before, and the
+// response says which ran (`rules`), so the panel can never claim rules that did not apply.
+// House shape: default ON, an explicit off-word turns it off, anything malformed leaves it ON.
+export function fillMyLoadsBuildRules(env: Record<string, any> = process.env): boolean {
+  const v = String(env?.FILL_MY_LOADS_BUILD_RULES ?? '').trim().toLowerCase();
+  return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
+}
+
+// WHAT THE BROWSER SAYS IS ON A LOAD, typed and bounded — the only fields the fill reads. Used
+// only for a stop the server's board does not have (a carry-over from another day on the card).
+// null stays null: Number(null) is 0 and 0 is finite, so a stop with no freight numbers would
+// read as an EMPTY one and a missing latitude as the equator.
+export function existingStopsFromBody(list: any): Array<Record<string, any>> | null {
+  if (!Array.isArray(list)) return null;
+  const n = (v: any) => { if (v == null || v === '') return null; const k = Number(v); return Number.isFinite(k) ? k : null; };
+  const str = (v: any) => (v == null ? null : String(v).slice(0, 200));
+  return list.slice(0, 300).map((x: any) => ({
+    stopNbr: str(x?.stopNbr), cartons: n(x?.cartons), volume: n(x?.volume), pallets: n(x?.pallets), weight: n(x?.weight),
+    lat: n(x?.lat), lng: n(x?.lng), businessName: str(x?.businessName), addr1: str(x?.addr1), city: str(x?.city), zip: str(x?.zip),
+    scheduledFrom: str(x?.scheduledFrom), scheduledTo: str(x?.scheduledTo),
+  })).filter((x: any) => x.stopNbr);
+}
+
+// The clock pass's own wall-clock budget. Measured on buildCleanupPlan alone in a 4-CPU dev
+// container (not production, no Firestore reads): 400 stops — CLEANUP_MAX_POOL — and 12 loads,
+// the engine alone ~20.1s and strict ~22.1s. Inside the 26s function limit, but not by much. Past this budget strict still takes EVERY late stop off (that is the
+// rule), it just stops re-inserting after each removal and stops re-offering, so a slow
+// container costs polish, never correctness.
+export const CLEANUP_CLOCK_MS = 2_500;
+
+// When the engine has no typical start for a truck, the Build button's own departure.
+// Same number as routing-types DEFAULT_DEPART_HHMM ('08:00').
+export const CLEANUP_DEFAULT_DEPART_MIN = 8 * 60;
+
 export interface CleanupTruckInput {
   // Does this truck carry a liftgate? A residential / no-dock consignee marked
   // liftgate_required cannot be served without one — the driver cannot get the
@@ -114,6 +182,19 @@ export interface CleanupTruckInput {
   max_skids?: number | null;         // the dispatcher's vehicle profile — tightens only
   max_weight_lb?: number | null;
   driver_user_name?: string | null;  // known only when the shell already holds board stops
+  // BUILD RULES ONLY. The picked load's vehicle profile capabilities, exactly what the Build
+  // button hands its solver — per truck, so a box without a gate and a box with one are two
+  // different trucks. Absent → derived from truck_class + liftgate.
+  capabilities?: Partial<TruckCapabilities> | null;
+  // BUILD RULES ONLY. What this load already carries, in its running order — its open card's
+  // order when one is open, else its board stops. Counted against the profile and run through
+  // first on the clock, because staging appends the engine's stops after them.
+  existing_stop_nbrs?: string[] | null;
+  // The same stops as the browser sees them (freight, coordinates, name/address, schedule).
+  // The server's board row wins when it has one; this covers what the server cannot see — an
+  // order from another day staged on the card (a carry-over) is not on this day's board, and
+  // left uncounted it let a 14-skid box be filled to 20.
+  existing_stops?: Array<Record<string, any>> | null;
 }
 
 export interface CleanupLeftover {
@@ -121,7 +202,7 @@ export interface CleanupLeftover {
   businessName: string | null;
   city: string | null;
   skids: number;
-  reason: 'no_coords' | 'equipment' | 'over_capacity' | 'too_big' | 'closed_today';
+  reason: 'no_coords' | 'equipment' | 'over_capacity' | 'too_big' | 'closed_today' | 'time_window';
   detail: string;
 }
 
@@ -142,7 +223,17 @@ export interface CleanupTruck {
     // null means nothing is on file, NOT that the dock is open all day.
     close_min: number | null; close_label: string | null; early_close: boolean;
     pickup: boolean;
+    // BUILD RULES ONLY — the clock the Build rules read for this stop and what the truck
+    // does against it, on the engine's own drive times and service minutes.
+    window_label?: string | null;   // "8:00a–2:00p", "by 3:00p", "opens 10:00a" — null: nothing on file
+    eta_label?: string | null;      // when service starts (after any wait for the dock)
+    late?: boolean;                 // arrives after it shuts — kept only in advisory mode
   }>;
+  // BUILD RULES ONLY — freight the load already carried before this fill.
+  existing?: { stops: number; skid_equiv: number; weight_lb: number } | null;
+  depart_label?: string | null;
+  full?: boolean;                   // no room left before this fill — took no part in it
+  full_by?: 'skids' | 'weight';
   stop_count: number;
   skid_equiv: number;
   weight_lb: number;
@@ -157,6 +248,9 @@ export interface CleanupTruck {
 
 export interface CleanupResult {
   ok: boolean;
+  // Which rule set actually ran — read off the switch at solve time, never assumed.
+  rules: 'build' | 'engine';
+  rules_detail?: { tractor_only_green: boolean; window_mode: 'strict' | 'advisory'; time_restrictions: boolean };
   tenant: string;
   date: string;
   engine_version: string;
@@ -267,7 +361,8 @@ export function sweepSeed(
     return Math.min(c.hard, (totalEq * c.hard) / totalCap);
   };
   const fits = (d: AssignDriver, s: AssignStop, bound: 'share' | 'cap') => {
-    if (s.blocksTractor && d.truck_class === 'tractor') return false;
+    // The solver's own gate: blocksTractor, plus the per-truck allowlist the Build rules set.
+    if (!driverCanServe(d, s)) return false;
     const c = caps.get(d.driver_key);
     if (!c) return false;
     const u = used.get(d.driver_key)!;
@@ -319,6 +414,16 @@ export interface BuildCleanupOpts {
   trucks: CleanupTruckInput[];
   excludeStopNbrs?: string[];
   nowIso?: string;
+  // Which rules; absent → the FILL_MY_LOADS_BUILD_RULES switch.
+  rules?: 'build' | 'engine';
+  // Step 3's two toggles, read only under the Build rules.
+  tractorOnlyGreen?: boolean;
+  windowMode?: 'strict' | 'advisory';
+  // ROUTING_TIME_RESTRICTIONS, the Build button's own clock switch. Absent → the env.
+  timeRestrictions?: boolean;
+  // The clock pass's time budget (CLEANUP_CLOCK_MS). Tests set 0 to prove the out-of-time
+  // path still takes every late stop off in strict.
+  clockBudgetMs?: number;
 }
 
 // The pure core: pool → solve → one trip per shell → proposal. No I/O.
@@ -350,6 +455,31 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   // isUnplanned already means "not planned AND not terminal" (a cancelled or
   // delivered stop is not leftovers), so this is the whole leftover pile.
   const exclude = new Set((opts.excludeStopNbrs || []).map(String));
+  // ── WHICH RULES — decided once, reported back, never assumed (see fillMyLoadsBuildRules) ──
+  const buildRules = (opts.rules ?? (fillMyLoadsBuildRules() ? 'build' : 'engine')) === 'build';
+  const tractorOnlyGreen = buildRules && opts.tractorOnlyGreen === true;
+  const windowMode: 'strict' | 'advisory' = opts.windowMode === 'strict' ? 'strict' : 'advisory';
+  const timeOn = buildRules && (opts.timeRestrictions ?? timeRestrictionsEnabled());
+  // The WHOLE customer note (noteByKey) is what the Build rules read — the eligibility mark
+  // and the liftgate boolean live there, not in equipment_restrictions. Production loads both
+  // off the same listDocs; a caller holding only the restriction slice still gets that much.
+  const noteOf = (mk: string | null): any => {
+    if (!mk) return null;
+    const n = inputs.noteByKey?.get(mk);
+    if (n) return n;
+    const r = inputs.notesRestrictions?.get(mk);
+    return r && r.length ? { equipment_restrictions: r } : null;
+  };
+  // Vendor default creation slots, detected over the WHOLE board exactly as the Build does —
+  // a five-stop pool could never see the pattern.
+  const defaultSlots = timeOn ? boardDefaultSlots(liveStops || []) : null;
+  const clockOf = new Map<string, StopTimeRestriction>();   // stopNbr → the Build's clock for it
+  // What each picked load already carries is ON a truck — never leftovers, even if a stale
+  // row still reads unplanned.
+  if (buildRules) for (const t of truckInputs) {
+    for (const x of t.existing_stop_nbrs || []) exclude.add(String(x));
+    for (const x of t.existing_stops || []) if (x?.stopNbr != null) exclude.add(String(x.stopNbr));
+  }
   const unplannedRows = (liveStops || []).filter((s) => s?.isUnplanned === true);
   const byId = new Map<string, any>();
   const pool: AssignStop[] = [];
@@ -405,6 +535,12 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       const w = dayReceivingWindow(note, dayKey);
       if (w && Number.isFinite(w.closeMin)) clockByStop.set(as.id, w.closeMin);
     }
+    // THE BUILD'S CLOCK: order window ∩ receiving hours for the board day, through the same
+    // resolver the Build button and the map use (routing-time-windows).
+    if (timeOn) {
+      const tr = stopTimeRestriction({ stop: s, note: noteOf(as.matchKey), date, defaultSlots });
+      if (tr && !tr.closedToday && (tr.openMin != null || tr.closeMin != null)) clockOf.set(as.id, tr);
+    }
     if (as.freight_unknown) unknownFreight++;
     if (String(s?.stopType || '').toUpperCase() === 'PU') pickups++;
     if (s?.isAttempt === true) attempts++;
@@ -442,7 +578,105 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   });
   const truckByKey = new Map(drivers.map((d, i) => [d.driver_key, truckInputs[i]] as const));
 
+  // ── BUILD RULES: each truck's own equipment, and what it already carries ──
+  const boardById = new Map<string, any>();
+  for (const r of liveStops || []) { const k = String(r?.stopNbr ?? ''); if (k && !boardById.has(k)) boardById.set(k, r); }
+  const capabilitiesOf = new Map<string, TruckCapabilities>();
+  const existingOf = new Map<string, { rows: any[]; eq: number; lb: number }>();
+  const fullCapByKey = new Map<string, { skids: number; weightLb: number }>();   // the whole truck, for the card
+  const fullTrucks: string[] = [];
+  const fullBy = new Map<string, 'skids' | 'weight'>();
+  if (buildRules) {
+    for (const d of drivers) {
+      const t = truckByKey.get(d.driver_key)!;
+      const c = t.capabilities || {};
+      const tractor = typeof c.tractor === 'boolean' ? c.tractor : d.truck_class === 'tractor';
+      capabilitiesOf.set(d.driver_key, {
+        tractor,
+        liftgate: t.liftgate === true || c.liftgate === true,
+        lengthClassFt: Number.isFinite(Number(c.lengthClassFt)) && Number(c.lengthClassFt) > 0 ? Number(c.lengthClassFt) : (tractor ? 53 : 26),
+        overheadClearance: c.overheadClearance !== false,
+      });
+      // Freight already on the load, counted the way the pool is (skids + loose share, one
+      // position for a row with no freight numbers yet) so the two sides of "room" agree.
+      const sent = new Map((t.existing_stops || []).map((x) => [String(x?.stopNbr ?? ''), x] as const));
+      const ids = (t.existing_stop_nbrs && t.existing_stop_nbrs.length ? t.existing_stop_nbrs : [...sent.keys()]).map(String).filter(Boolean);
+      const rows: any[] = [];
+      let unseen = 0, unread = 0;
+      // The browser sends { stopNbr } alone for an id it could not see either. That row is as
+      // unread as a missing one — no freight, no position — so it is NAMED like one; it stays
+      // in the rows so its service time still runs on the clock, and counts one position below.
+      const blank = (r: any) => ['cartons', 'volume', 'pallets', 'weight', 'lat', 'lng'].every((f) => r?.[f] == null || r[f] === '');
+      for (const id of ids) {
+        const r = boardById.get(id) || sent.get(id);
+        if (!r) { unseen++; unread++; continue; }
+        rows.push(r);
+        if (!boardById.has(id) && blank(r)) unread++;
+      }
+      if (unread) notes.push(`${t.key}: ${unread} stop${unread === 1 ? '' : 's'} on it could not be read — counted as one skid each, so its room may be understated.`);
+      let eq = unseen, lb = 0;
+      for (const r of rows) {
+        const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+        const skids = num(r?.cartons), loose = num(r?.volume), pallets = num(r?.pallets);
+        const unknown = skids <= 0 && loose <= 0 && pallets <= 0;
+        eq += stopSkidEquiv({ skids, loose, pallets: unknown ? 1 : pallets } as AssignStop, cfg);
+        lb += num(r?.weight);
+      }
+      existingOf.set(d.driver_key, { rows, eq, lb });
+      // THE PROFILE IS THE TRUCK (Build rule): stated skids/weight win in both directions; a
+      // value not stated falls back to the learned/class bound, as before.
+      const learned = capsFor({ ...d, cap_override: undefined }, cfg);
+      const skCap = t.max_skids && t.max_skids > 0 ? t.max_skids : learned.hard;
+      const lbCap = t.max_weight_lb && t.max_weight_lb > 0 ? t.max_weight_lb
+        : (Number.isFinite(learned.weightLb) ? learned.weightLb : Infinity);
+      fullCapByKey.set(d.driver_key, { skids: skCap, weightLb: lbCap });
+      const roomSk = skCap - eq, roomLb = lbCap - lb;
+      if (roomSk <= 1e-9 || roomLb <= 1e-9) { fullTrucks.push(d.driver_key); fullBy.set(d.driver_key, roomSk <= 1e-9 ? 'skids' : 'weight'); }
+      d.cap_override = { exact: true, skids: Math.max(roomSk, 1e-6), weightLb: Number.isFinite(roomLb) ? Math.max(roomLb, 1e-6) : null };
+    }
+  }
+  // A load with no room left takes no part in the solve — it is reported, not filled.
+  const fullSet = new Set(fullTrucks);
+  const active = drivers.filter((d) => !fullSet.has(d.driver_key));
+
   const capsByKey = new Map(drivers.map((d) => [d.driver_key, capsFor(d, cfg)] as const));
+
+  // Which picked trucks may carry this stop under the Build rules — the Build button's own
+  // requirement list (equipmentReqsFrom) checked against each truck's capabilities
+  // (equipmentOk). Reasons are the Build's own words.
+  type Elig = { reqs: string[]; ok: string[]; reasons: string[]; toggleOnly: boolean };
+  const eligibility = (s: AssignStop): Elig => {
+    const note = noteOf(s.matchKey);
+    const reqs = equipmentReqsFrom(note, { tractorOnlyGreen });
+    // The same stop with step 3's toggle off, to tell a truck the TOGGLE excludes from one its
+    // own equipment excludes — the first is fixed by a green mark or a checkbox, the second
+    // only by a different truck, and the dispatcher needs to know which he is looking at.
+    const base = tractorOnlyGreen ? equipmentReqsFrom(note, { tractorOnlyGreen: false }) : reqs;
+    const ok: string[] = []; const reasons = new Set<string>();
+    let byToggle = 0;
+    for (const d of drivers) {
+      const caps = { capabilities: capabilitiesOf.get(d.driver_key)! } as any;
+      const r = equipmentOk({ equipmentReqs: reqs } as any, caps);
+      if (r.ok) { ok.push(d.driver_key); continue; }
+      const rb = equipmentOk({ equipmentReqs: base } as any, caps);
+      if (rb.ok) byToggle++; else for (const x of rb.reasons) reasons.add(x);
+    }
+    return { reqs, ok, reasons: [...reasons], toggleOnly: byToggle > 0 };
+  };
+  const eligOf = new Map<string, Elig>();
+  // A stop left for CAPACITY while some picked load had room must say why that load could not
+  // take it. "Every truck you picked is full" with two trailers half empty is the confident
+  // wrong answer — it sends the dispatcher for another truck he does not need.
+  const onlyLoadsDetail = (s: AssignStop, e: Elig | undefined): string => {
+    if (!e || e.ok.length >= drivers.length) return 'every truck you picked is full — this needs another truck';
+    const names = e.ok.map((k) => truckByKey.get(k)?.key || k);
+    const one = names.length === 1;
+    const why = [
+      e.toggleOnly ? 'it is not marked green, so “only green on a 53′” keeps it off the trailers' : null,
+      e.reasons.length ? `the others: ${e.reasons.join('; ')}` : null,
+    ].filter(Boolean).join('; ') || 'the others cannot carry it';
+    return `${names.join(', ')} ${one ? 'is the only load' : 'are the only loads'} it may ride and ${one ? 'it is' : 'they are'} full — ${why}`;
+  };
 
   // ── freight that does not fit on ANY truck he picked, pulled out FIRST ──
   //
@@ -461,11 +695,8 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   // tractor-blocked stop is not judged against the trailer's cap. If no truck can
   // take it on equipment grounds at all, it stays in the pool and comes back
   // through the 'equipment' path below, which says so in those words.
-  const canServe = (d: AssignDriver, s: AssignStop) => {
-    if (s.blocksTractor && d.truck_class === 'tractor') return false;
-    return true;
-  };
-  const servingCaps = (s: AssignStop) => drivers
+  const canServe = (d: AssignDriver, s: AssignStop) => driverCanServe(d, s);
+  const servingCaps = (s: AssignStop) => active
     .filter((d) => canServe(d, s))
     .map((d) => capsByKey.get(d.driver_key)!)
     .filter(Boolean);
@@ -484,8 +715,46 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   };
 
   const routable: AssignStop[] = [];
+  // How many stops reached this point — the "nothing unplanned" note is about THIS, not about
+  // what is left after equipment and size refusals (which are listed with their reasons).
+  const poolEntered = pool.length;
+  let tooBig = 0;
   for (const s of pool) {
-    if (needsLiftgate(s) && !liftgateTrucks.length) {
+    if (buildRules) {
+      // THE BUILD'S EQUIPMENT RULE, per truck, and HARD: the solver may only put this stop on
+      // a truck listed in servableBy (driverCanServe). blocksTractor is re-read from the same
+      // requirement list so the one bit and the list can never disagree — a green mark lifts
+      // an auto-detected blocker here exactly as it does on the Build button.
+      const e = eligibility(s);
+      eligOf.set(s.id, e);
+      s.blocksTractor = e.reqs.some((r) => TRAILER_BLOCKERS.has(r));
+      const open = e.ok.filter((k) => !fullSet.has(k));
+      if (!e.ok.length) {
+        const raw = byId.get(s.id);
+        left.push({
+          stopNbr: s.id, businessName: raw?.businessName ?? null, city: raw?.city ?? null,
+          skids: s.skids, reason: 'equipment',
+          detail: drivers.length
+            ? `${[
+              e.toggleOnly ? 'not marked green, and “only green on a 53′” is on' : null,
+              ...e.reasons,
+            ].filter(Boolean).join('; ') || 'equipment'} — none of the loads you picked can take it`
+            : 'no loads were picked to route onto',
+        });
+        continue;
+      }
+      if (!open.length) {
+        const raw = byId.get(s.id);
+        left.push({
+          stopNbr: s.id, businessName: raw?.businessName ?? null, city: raw?.city ?? null,
+          skids: s.skids, reason: 'over_capacity',
+          detail: onlyLoadsDetail(s, e),
+        });
+        continue;
+      }
+      s.servableBy = open;
+    }
+    if (!buildRules && needsLiftgate(s) && !liftgateTrucks.length) {
       const raw = byId.get(s.id);
       left.push({
         stopNbr: s.id, businessName: raw?.businessName ?? null, city: raw?.city ?? null,
@@ -494,7 +763,15 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       });
       continue;
     }
-    const caps = servingCaps(s);
+    // Under the Build rules "too big" is judged on the WHOLE truck: a stop that fits an empty
+    // one but not the room a half-full load has left is a capacity question, answered later
+    // (make-room, then over_capacity with the load named) — not "it needs a bigger truck".
+    const caps = buildRules
+      ? active.filter((d) => canServe(d, s)).map((d) => {
+        const f = fullCapByKey.get(d.driver_key)!;
+        return { hard: f.skids, weightLb: f.weightLb };
+      })
+      : servingCaps(s);
     if (!caps.length) { routable.push(s); continue; }   // equipment path owns this one
     const need = stopSkidEquiv(s, cfg);
     const needLb = Number(s.weight) || 0;
@@ -506,6 +783,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     const overLb = needLb > biggestLb + 1e-9;
     if (!overEq && !overLb) { routable.push(s); continue; }
     const raw = byId.get(s.id);
+    tooBig++;
     left.push({
       stopNbr: s.id, businessName: raw?.businessName ?? null, city: raw?.city ?? null,
       skids: s.skids, reason: 'too_big',
@@ -514,7 +792,8 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
         : `this stop alone is ${Math.round(needLb)} lb and the biggest truck you picked is rated ${Math.round(biggestLb)} lb — it needs a bigger truck or splitting across two`,
     });
   }
-  const tooBig = pool.length - routable.length;
+  // Engine rules keep their old count exactly (switch-off parity): every refusal in this loop.
+  if (!buildRules) tooBig = pool.length - routable.length;
   pool.length = 0;
   pool.push(...routable);
   if (tooBig) {
@@ -525,15 +804,56 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   const poolEq = pool.reduce((a, s) => a + stopSkidEquiv(s, cfg), 0);
   const capacityEq = drivers.reduce((a, d) => a + (capsByKey.get(d.driver_key)?.hard || 0), 0);
   const perTruckAvg = drivers.length ? capacityEq / drivers.length : 0;
-  const fit = {
+  const trucksNeededWhole = () => {
+    const whole = drivers.reduce((a, d) => a + (fullCapByKey.get(d.driver_key)?.skids || 0), 0);
+    const avg = drivers.length ? whole / drivers.length : 0;
+    const carried = drivers.reduce((a, d) => a + (existingOf.get(d.driver_key)?.eq || 0), 0);
+    return avg > 0 ? Math.ceil((poolEq + carried) / avg) : 0;
+  };
+  const fit: {
+    pool_skid_equiv: number; capacity_skid_equiv: number; fits: boolean; shortfall_skid_equiv: number;
+    trucks_needed_estimate: number; constrained?: { trucks: string[]; skid_equiv: number; room: number } | null;
+  } = {
     pool_skid_equiv: r1(poolEq),
     capacity_skid_equiv: r1(capacityEq),
     fits: poolEq <= capacityEq,
     shortfall_skid_equiv: r1(Math.max(0, poolEq - capacityEq)),
-    trucks_needed_estimate: perTruckAvg > 0 ? Math.ceil(poolEq / perTruckAvg) : 0,
+    // Build rules: a truck's cap here is the ROOM IT HAS LEFT, so averaging it would count a
+    // full load as a zero-size truck and double the estimate. "How many trucks this size" is
+    // asked of the WHOLE trucks instead, against everything they must carry — what is already on
+    // them plus the pool. (Measured on a full-box board: 5 before, the honest 4 after.)
+    trucks_needed_estimate: buildRules ? trucksNeededWhole() : (perTruckAvg > 0 ? Math.ceil(poolEq / perTruckAvg) : 0),
   };
   if (!fit.fits) {
     notes.push(`The pool is ${fit.pool_skid_equiv} skid-equivalents and these ${drivers.length} truck${drivers.length === 1 ? '' : 's'} hold about ${fit.capacity_skid_equiv} — roughly ${fit.trucks_needed_estimate} trucks would clear it. The overflow is listed, not hidden.`);
+  }
+  // ── IT FITS IN TOTAL — BUT DOES IT FIT WHERE THE RULES ALLOW? (Build rules) ──
+  // Total skids against total room says nothing when some freight may ride only some trucks:
+  // 57 skids against 65 of room "fits", and still leaves box-only freight on the dock when the
+  // one box is full. For every group of trucks some freight is limited to, the freight limited
+  // to that group must fit that group's room (Hall's condition on the sets the board actually
+  // has). The worst shortfall is reported instead of a green "it all fits".
+  let constrainedFit: { trucks: string[]; skid_equiv: number; room: number } | null = null;
+  if (buildRules && fit.fits) {
+    const groups = new Map<string, string[]>();
+    for (const x of pool) if (x.servableBy) groups.set([...x.servableBy].sort().join('|'), x.servableBy);
+    let worst = 0;
+    for (const K of groups.values()) {
+      const k = new Set(K);
+      if (k.size >= active.length) continue;   // freight free to ride any truck is the total check above
+      const eq = pool.filter((x) => (x.servableBy || []).every((y) => k.has(y))).reduce((a, x) => a + stopSkidEquiv(x, cfg), 0);
+      const room = K.reduce((a, y) => a + (capsByKey.get(y)?.hard || 0), 0);
+      if (eq > room + 1e-9 && eq - room > worst) {
+        worst = eq - room;
+        constrainedFit = { trucks: K.map((y) => truckByKey.get(y)?.key || y), skid_equiv: r1(eq), room: r1(room) };
+      }
+    }
+    if (constrainedFit) {
+      fit.fits = false;
+      fit.shortfall_skid_equiv = r1(worst);
+      const one = constrainedFit.trucks.length === 1;
+      notes.push(`It fits in total, but not where the rules allow it: ${constrainedFit.skid_equiv} skid-equivalents may ride only ${constrainedFit.trucks.join(', ')}, which ${one ? 'has' : 'have'} room for ${constrainedFit.room}. The rest is listed with the reason.`);
+    }
   }
 
   const fleet = fleetTripChain(inputs.driverDaysBefore, date, cfg);
@@ -550,17 +870,17 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   };
 
   const capsForSeed = new Map([...capsByKey].map(([k, c]) => [k, { hard: c.hard, weightLb: c.weightLb }] as const));
-  const result = pool.length
+  const result = pool.length && active.length
     ? solveAssignment({
-      date, stops: pool, drivers, fleetChain: fleet, cfg,
+      date, stops: pool, drivers: active, fleetChain: fleet, cfg,
       depot: { lat: DEPOT.lat, lng: DEPOT.lng }, serviceMedianFor,
       zoneOwners: zoneOwnersAsOf(inputs.referencesBefore, date, precisions, cfg),
       // One shell, one truckload — see the header.
       max_loads_per_driver: 1,
       // GEOMETRY IS THE SIGNAL HERE — see sweepSeed.
-      seedAssignment: sweepSeed(pool, drivers, capsForSeed, { lat: DEPOT.lat, lng: DEPOT.lng }, cfg),
+      seedAssignment: sweepSeed(pool, active, capsForSeed, { lat: DEPOT.lat, lng: DEPOT.lng }, cfg),
     })
-    : { date, shifts: [], unassigned: [] as AssignStop[], cost: 0, drivers_used: 0, tie_margin: null };
+    : { date, shifts: [], unassigned: (active.length ? [] : pool.slice()) as AssignStop[], cost: 0, drivers_used: 0, tie_margin: null };
 
   for (const s of result.unassigned) {
     const raw = byId.get(s.id);
@@ -572,9 +892,11 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       skids: s.skids, reason: 'equipment',
       detail: !drivers.length
         ? 'no loads were picked to route onto'
-        : (s.blocksTractor
-          ? 'this customer bars a tractor/trailer and every load you picked is one'
-          : 'none of the loads you picked can take it'),
+        : (buildRules && !active.length)
+          ? 'every load you picked is already full'
+          : (s.blocksTractor
+            ? 'this customer bars a tractor/trailer and every load you picked is one'
+            : 'none of the loads you picked can take it'),
     });
   }
 
@@ -651,7 +973,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     const need = stopSkidEquiv(s, cfg), needLb = Number(s.weight) || 0;
     let best: AssignDriver | null = null, bestDist = Infinity;
     for (const d of drivers) {
-      if (s.blocksTractor && d.truck_class === 'tractor') continue;   // equipment is inviolable
+      if (!driverCanServe(d, s)) continue;   // equipment is inviolable — the solver's own gate
       const room = roomFor(d);
       if (room.eq + 1e-9 < need || room.lb + 1e-9 < needLb) continue;
       // Nearest-first keeps the refill compact: distance to what the truck already
@@ -667,10 +989,317 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     }
     if (best) { kept.get(best.driver_key)!.push(s); refilled.push(s); }
   }
-  const stillOver = new Set(spill.filter((s) => !refilled.includes(s)).map((s) => s.id));
-  if (refilled.length) {
-    notes.push(`${refilled.length} stop${refilled.length === 1 ? '' : 's'} moved onto trucks that still had room.`);
+  // ── MAKE ROOM (Build rules): freight that may ride only SOME trucks gets them first ──
+  //
+  // Run on a sample of Chad's own shape — one box, two 53s, "only green on a 53'" on — the
+  // solve put GREEN stops (free to ride a trailer) on the box, the box filled, and six stops
+  // that may ride only the box came back "every truck you picked is full" with both trailers
+  // holding 6–10 skids of room. So before anything is called overflow: for a stop that did
+  // not fit, look at the trucks it MAY ride and move off them freight that is free to ride
+  // another truck with room — the smallest single move that frees enough, else biggest-first
+  // — and only then put it on. Equipment is never bent: every move goes through driverCanServe.
+  let madeRoom = 0;
+  if (buildRules) {
+    const dist = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.hypot((a.lat - b.lat) * 69, (a.lng - b.lng) * 57);
+    const nearTo = (d: AssignDriver, x: AssignStop) => {
+      const load = kept.get(d.driver_key)!;
+      return load.length ? Math.min(...load.map((y) => dist(y, x))) : dist(DEPOT, x);
+    };
+    const pending = spill.filter((x) => !refilled.includes(x));
+    for (const s of pending) {
+      const need = stopSkidEquiv(s, cfg), needLb = Number(s.weight) || 0;
+      const targets = active.filter((d) => driverCanServe(d, s)).sort((a, b) => nearTo(a, s) - nearTo(b, s) || a.driver_key.localeCompare(b.driver_key));
+      for (const d of targets) {
+        const room = roomFor(d);
+        const defEq = need - room.eq, defLb = needLb - room.lb;
+        // Room opened up by an earlier move in this pass — it just goes on, nothing else moves.
+        if (defEq <= 1e-9 && defLb <= 1e-9) {
+          kept.get(d.driver_key)!.push(s); refilled.push(s); madeRoom++;
+          break;
+        }
+        // Freight on d that another truck may carry and has room for, nearest home first.
+        const movable = kept.get(d.driver_key)!.map((f) => {
+          let best: AssignDriver | null = null, bd = Infinity;
+          for (const d2 of active) {
+            if (d2 === d || !driverCanServe(d2, f)) continue;
+            const r2 = roomFor(d2);
+            if (r2.eq + 1e-9 < stopSkidEquiv(f, cfg) || r2.lb + 1e-9 < (Number(f.weight) || 0)) continue;
+            const dd = nearTo(d2, f);
+            if (dd < bd) { bd = dd; best = d2; }
+          }
+          return best ? { f, to: best } : null;
+        }).filter(Boolean) as Array<{ f: AssignStop; to: AssignDriver }>;
+        if (!movable.length) continue;
+        const frees = (m: { f: AssignStop }) => ({ eq: stopSkidEquiv(m.f, cfg), lb: Number(m.f.weight) || 0 });
+        let plan: Array<{ f: AssignStop; to: AssignDriver }> | null = null;
+        const single = movable.filter((m) => frees(m).eq + 1e-9 >= defEq && frees(m).lb + 1e-9 >= defLb)
+          .sort((a, b) => frees(a).eq - frees(b).eq || a.f.id.localeCompare(b.f.id));
+        if (single.length) plan = [single[0]];
+        else {
+          // Biggest first, re-checking each destination's room as the moves stack up.
+          const used = new Map<string, { eq: number; lb: number }>();
+          let gotEq = 0, gotLb = 0;
+          const picks: Array<{ f: AssignStop; to: AssignDriver }> = [];
+          for (const m of [...movable].sort((a, b) => frees(b).eq - frees(a).eq || a.f.id.localeCompare(b.f.id))) {
+            const r2 = roomFor(m.to), u = used.get(m.to.driver_key) || { eq: 0, lb: 0 };
+            const fr = frees(m);
+            if (r2.eq - u.eq + 1e-9 < fr.eq || r2.lb - u.lb + 1e-9 < fr.lb) continue;
+            used.set(m.to.driver_key, { eq: u.eq + fr.eq, lb: u.lb + fr.lb });
+            picks.push(m); gotEq += fr.eq; gotLb += fr.lb;
+            if (gotEq + 1e-9 >= defEq && gotLb + 1e-9 >= defLb) { plan = picks; break; }
+          }
+        }
+        if (!plan) continue;
+        for (const m of plan) {
+          const from = kept.get(d.driver_key)!;
+          from.splice(from.indexOf(m.f), 1);
+          kept.get(m.to.driver_key)!.push(m.f);
+        }
+        kept.get(d.driver_key)!.push(s);
+        refilled.push(s);
+        madeRoom++;
+        break;
+      }
+    }
   }
+  const stillOver = new Set(spill.filter((s) => !refilled.includes(s)).map((s) => s.id));
+  if (madeRoom) {
+    notes.push(`${madeRoom} stop${madeRoom === 1 ? '' : 's'} that may ride only some of your loads got on by moving freight that can ride another one.`);
+  }
+  if (refilled.length - madeRoom > 0) {
+    notes.push(`${refilled.length - madeRoom} stop${refilled.length - madeRoom === 1 ? '' : 's'} moved onto trucks that still had room.`);
+  }
+  // ── sequence every truck on the ENGINE's learned order (both rule sets) ──
+  const seq = new Map<string, { order: AssignStop[]; travelMin: number; mode: 'guided' | 'unguided'; refsUsed: number }>();
+  for (const d of drivers) {
+    const stops = kept.get(d.driver_key) || [];
+    if (!stops.length) { seq.set(d.driver_key, { order: [], travelMin: 0, mode: 'unguided', refsUsed: 0 }); continue; }
+    const engineStops: EngineStop[] = stops.map((s) => ({ id: s.id, lat: s.lat, lng: s.lng, zone: s.zone }));
+    const picked = pickReferences(
+      inputs.referencesBefore,
+      {
+        date, zones: new Set(engineStops.map((s) => s.zone)),
+        driverUserName: d.driver_user_name, truckClass: d.truck_class,
+        warehouse: modalWarehouse || null, minOverlap: cfg.min_reference_zone_overlap,
+      },
+      { topK: cfg.reference_top_k, halfLifeDays: cfg.reference_half_life_days, sameDriverMultiplier: cfg.same_driver_multiplier },
+    );
+    const solved = solveRoute({
+      loadKey: `cleanup__${date}__${d.driver_key}`,
+      stops: engineStops, depot: { lat: DEPOT.lat, lng: DEPOT.lng },
+      referenceZoneSeq: null,
+      references: picked.length ? picked.map((p) => ({ zone_seq: p.ref.zone_seq, weight: p.weight })) : null,
+      cfg: seqCfg,
+    });
+    const byStopId = new Map(stops.map((s) => [s.id, s] as const));
+    seq.set(d.driver_key, {
+      order: solved.order.map((o) => byStopId.get(o.id)!).filter(Boolean),
+      travelMin: solved.travelMin,
+      mode: picked.length ? 'guided' : 'unguided',
+      refsUsed: picked.length,
+    });
+  }
+
+  // ── BUILD RULES: THE CLOCK ─────────────────────────────────────────────────
+  //
+  // The Build's rule, on the ENGINE's clock. Windows come from the same resolver the Build
+  // button uses (order window ∩ receiving hours for the board day); each windowed stop is
+  // inserted into the engine's learned order by the Build's own insertion rule
+  // (insertByWindow — on time first, then least idle, then least added distance). The clock
+  // it is judged on is the engine's: the truck's learned typical start, the engine's drive
+  // times and each customer's learned service minutes. A load that already carries stops
+  // runs them FIRST, because staging appends the engine's stops after them.
+  // Advisory (default): a stop that still cannot make it stays on and is flagged with its ETA.
+  // Strict: it comes off, is offered to any other picked load that can reach it on time and
+  // has room, and is listed with the reason when none can.
+  const etaOf = new Map<string, { eta: number; late: boolean }>();
+  const departOf = new Map<string, number>();
+  const timeLeftovers: AssignStop[] = [];
+  let timeMoved = 0;
+  if (buildRules) {
+    const svcRow = (r: any) => serviceMedianFor({ matchKey: liveMatchKey(r), pallets: Number(r?.pallets) || 0 } as AssignStop);
+    type Pre = { clock: number; lat: number; lng: number; anchor: number | null; depart: number | null };
+    // The pool's own coordinate rule (hasUsableCoords), not a finite check: Number(null) is 0, so
+    // a stop on the load with no latitude would start the clock from the equator.
+    const posOf = (r: any) => (hasUsableCoords(r) ? { lat: Number(r.lat), lng: Number(r.lng) } : null);
+    const legMin = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => travelMinutesForMiles(haversineMiles(a.lat, a.lng, b.lat, b.lng), cfg);
+    // THE CLOCK'S START. The engine's learned start (envelope.start_minute_typical) is the
+    // median FIRST DELIVERY of the day, not the minute the truck leaves Buford — so it anchors
+    // the arrival at the first stop, and the drive to it is not counted a second time. With no
+    // learned start, the Build button's own departure: 8:00 from the dock.
+    const prefixOf = (d: AssignDriver): Pre => {
+      const learned = d.start_minute != null && Number.isFinite(Number(d.start_minute)) ? Number(d.start_minute) : null;
+      const rows = existingOf.get(d.driver_key)?.rows || [];
+      if (!rows.length) {
+        return learned != null
+          ? { clock: learned, lat: DEPOT.lat, lng: DEPOT.lng, anchor: learned, depart: null }
+          : { clock: CLEANUP_DEFAULT_DEPART_MIN, lat: DEPOT.lat, lng: DEPOT.lng, anchor: null, depart: CLEANUP_DEFAULT_DEPART_MIN };
+      }
+      // A load that already carries stops runs them FIRST (staging appends after them), and a
+      // truck early to one of THEIR docks waits for it too — skipping that wait is what made a
+      // stop behind a 10am dock read on time at 8:29.
+      const first = rows.map(posOf).find(Boolean);
+      let clock = learned != null && first ? learned - legMin(DEPOT, first) : (learned ?? CLEANUP_DEFAULT_DEPART_MIN);
+      const depart = clock;
+      let at: { lat: number; lng: number } = DEPOT;
+      for (const r of rows) {
+        const pos = posOf(r);
+        if (pos) { clock += legMin(at, pos); at = pos; }
+        const tr = timeOn ? stopTimeRestriction({ stop: r, note: noteOf(liveMatchKey(r)), date, defaultSlots }) : null;
+        const open = tr && !tr.closedToday ? tr.openMin : null;
+        if (open != null && clock < open) clock = open;
+        clock += svcRow(r);   // a stop with no map position still takes its service time
+      }
+      return { clock, lat: at.lat, lng: at.lng, anchor: null, depart };
+    };
+    const closeOf = (s: AssignStop): number | null => {
+      const tr = clockOf.get(s.id);
+      return tr ? (tr.closeMin ?? 24 * 60 - 1) : null;
+    };
+    const tlFor = (pre: Pre) => (order: AssignStop[]) => {
+      const etas: number[] = [], waits: number[] = [];
+      let clock = pre.clock, lat = pre.lat, lng = pre.lng;
+      for (let i = 0; i < order.length; i++) {
+        const s = order[i];
+        // Anchored: the learned first delivery IS the arrival at the first stop.
+        if (i === 0 && pre.anchor != null) clock = pre.anchor;
+        else clock += travelMinutesForMiles(haversineMiles(lat, lng, s.lat, s.lng), cfg);
+        const open = clockOf.get(s.id)?.openMin ?? null;
+        const startAt = open != null && clock < open ? open : clock;   // a truck early to the dock WAITS
+        waits.push(startAt - clock); clock = startAt; etas.push(clock);
+        clock += serviceMedianFor(s);
+        lat = s.lat; lng = s.lng;
+      }
+      return { etas, waits };
+    };
+    const miles = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => haversineMiles(a.lat, a.lng, b.lat, b.lng);
+    const edf = (a: AssignStop, b: AssignStop) =>
+      ((closeOf(a) ?? 1e9) - (closeOf(b) ?? 1e9))
+      || ((clockOf.get(a.id)?.openMin ?? 0) - (clockOf.get(b.id)?.openMin ?? 0)) || a.id.localeCompare(b.id);
+    // Engine order for the stops with no clock; the windowed ones inserted by the Build's rule.
+    // A dock this truck cannot reach before it shuts even going there FIRST is hopeless on
+    // this truck. Left in the insertion it trades minutes with the stops that CAN be made —
+    // measured on the sample board: a 5–7am bakery nobody could reach pushed a 10am school 4
+    // minutes late. So a hopeless stop keeps the engine's place and does not bid for the
+    // front; it is still flagged (advisory) or taken off and re-offered (strict).
+    const hopeless = (pre: Pre, s: AssignStop) => {
+      const c = closeOf(s);
+      const earliest = pre.anchor != null ? pre.anchor : pre.clock + travelMinutesForMiles(haversineMiles(pre.lat, pre.lng, s.lat, s.lng), cfg);
+      return c != null && earliest > c;
+    };
+    const orderWithClock = (pre: Pre, engineOrder: AssignStop[]) =>
+      insertByWindow(
+        engineOrder.filter((s) => !clockOf.has(s.id) || hopeless(pre, s)),
+        engineOrder.filter((s) => clockOf.has(s.id) && !hopeless(pre, s)).sort(edf),
+        {
+          timeline: tlFor(pre),
+          // A hopeless stop has no deadline worth trading for: counting its lateness would make
+          // a reachable stop late to save minutes on one that is late anyway.
+          closeOf: (s) => (hopeless(pre, s) ? null : closeOf(s)),
+          added: (prev, w, next) => {
+            const from = prev || pre;
+            return miles(from, w) + (next ? miles(w, next) - miles(from, next) : 0);
+          },
+        },
+      );
+    const lateness = (pre: Pre, order: AssignStop[]) => {
+      const { etas } = tlFor(pre)(order);
+      return order.map((s, i) => { const c = closeOf(s); return c != null && etas[i] > c ? etas[i] - c : 0; });
+    };
+    const clockDeadline = Date.now() + (opts.clockBudgetMs ?? CLEANUP_CLOCK_MS);
+    const overBudget = () => Date.now() >= clockDeadline;
+    const pres = new Map(drivers.map((d) => [d.driver_key, prefixOf(d)] as const));
+    for (const d of drivers) {
+      const pre = pres.get(d.driver_key)!;
+      const cur = seq.get(d.driver_key)!;
+      let order = orderWithClock(pre, cur.order);
+      if (windowMode === 'strict') {
+        // Worst lateness first, one at a time, re-inserting after each — the Build's Phase A.
+        // Bounded by the count at the START: `order` shrinks by one per pass, and a bound read
+        // off it each pass stopped after about half the removals — strict then kept late stops
+        // on the truck and the note blamed "advisory".
+        const n0 = order.length;
+        for (let guard = 0; guard <= n0; guard++) {
+          const late = lateness(pre, order);
+          let worst = -1;
+          late.forEach((m, i) => { if (m > 0 && (worst < 0 || m > late[worst])) worst = i; });
+          if (worst < 0) break;
+          const k = kept.get(d.driver_key)!;
+          if (overBudget()) {
+            // Out of time: every stop still late comes off at once — strict is never broken.
+            const gone = order.filter((_, i) => late[i] > 0);
+            for (const g of gone) { timeLeftovers.push(g); k.splice(k.indexOf(g), 1); }
+            order = order.filter((x) => !gone.includes(x));
+            break;
+          }
+          const gone = order[worst];
+          timeLeftovers.push(gone);
+          k.splice(k.indexOf(gone), 1);
+          order = orderWithClock(pre, order.filter((x) => x !== gone));
+        }
+      }
+      cur.order = order;
+    }
+    // Strict removals get one more chance: any other picked load that may carry it, has the
+    // room, and gets there on time WITHOUT making anything already on it late.
+    if (timeLeftovers.length) {
+      const pending = timeLeftovers.splice(0).sort(edf);
+      for (const s of pending) {
+        let placed = false;
+        if (overBudget()) { timeLeftovers.push(s); continue; }
+        for (const d of active) {
+          if (!driverCanServe(d, s)) continue;
+          const room = roomFor(d);
+          if (room.eq + 1e-9 < stopSkidEquiv(s, cfg) || room.lb + 1e-9 < (Number(s.weight) || 0)) continue;
+          const pre = pres.get(d.driver_key)!;
+          const cand = orderWithClock(pre, [...seq.get(d.driver_key)!.order, s]);
+          if (lateness(pre, cand).some((m) => m > 0)) continue;
+          kept.get(d.driver_key)!.push(s);
+          seq.get(d.driver_key)!.order = cand;
+          timeMoved++; placed = true;
+          break;
+        }
+        if (!placed) timeLeftovers.push(s);
+      }
+    }
+    // ROOM A TIME REMOVAL FREED goes back to freight that was left for capacity — otherwise
+    // strict takes a stop off, and the freight behind it is still told "that load is full".
+    for (const s of spill) {
+      if (!stillOver.has(s.id) || overBudget()) continue;
+      const need = stopSkidEquiv(s, cfg), needLb = Number(s.weight) || 0;
+      for (const d of active) {
+        if (!driverCanServe(d, s)) continue;
+        const room = roomFor(d);
+        if (room.eq + 1e-9 < need || room.lb + 1e-9 < needLb) continue;
+        const pre = pres.get(d.driver_key)!, cur = seq.get(d.driver_key)!;
+        const lateBefore = lateness(pre, cur.order).filter((m) => m > 0).length;
+        const cand = orderWithClock(pre, [...cur.order, s]);
+        const lateAfter = lateness(pre, cand).filter((m) => m > 0).length;
+        if (windowMode === 'strict' ? lateAfter > 0 : lateAfter > lateBefore) continue;
+        kept.get(d.driver_key)!.push(s);
+        cur.order = cand;
+        stillOver.delete(s.id);
+        timeMoved++;
+        break;
+      }
+    }
+    for (const d of drivers) {
+      const pre = pres.get(d.driver_key)!;
+      const cur = seq.get(d.driver_key)!;
+      const { etas } = tlFor(pre)(cur.order);
+      const late = lateness(pre, cur.order);
+      cur.order.forEach((s, i) => etaOf.set(s.id, { eta: etas[i], late: late[i] > 0 }));
+      departOf.set(d.driver_key, pre.anchor != null
+        ? (cur.order.length ? pre.anchor - legMin(DEPOT, cur.order[0]) : NaN)
+        : (pre.depart ?? CLEANUP_DEFAULT_DEPART_MIN));
+      // Drive minutes over the stops this fill adds, from where the truck is when it starts them.
+      let t = 0, at: { lat: number; lng: number } = pre;
+      for (const s of cur.order) { t += travelMinutesForMiles(miles(at, s), cfg); at = s; }
+      void at;
+      cur.travelMin = t;
+    }
+  }
+
   const out: CleanupTruck[] = drivers.map((d) => {
     const t = truckByKey.get(d.driver_key)!;
     const caps = capsByKey.get(d.driver_key)!;
@@ -683,37 +1312,17 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     // fleet cannot put 22 skids on a box truck; most run 12-15. Labelling it
     // 'driver' also suppressed the one warning written to catch exactly this.
     const envSource = String((d.envelope as any)?.source || '');
+    const full = fullCapByKey.get(d.driver_key);
     const capSource: 'profile' | 'driver' | 'fleet' | 'class' =
-      (t.max_skids && t.max_skids > 0 && t.max_skids <= caps.hard + 1e-9) ? 'profile'
+      (buildRules ? (t.max_skids && t.max_skids > 0) : (t.max_skids && t.max_skids > 0 && t.max_skids <= caps.hard + 1e-9)) ? 'profile'
         : (caps.learned && d.driver_user_name && envSource === 'driver') ? 'driver'
           : caps.learned ? 'fleet' : 'class';
-    const stops = kept.get(d.driver_key) || [];
-    let travelMin = 0, mode: 'guided' | 'unguided' = 'unguided', refsUsed = 0;
-    let ordered = stops;
-    if (stops.length) {
-      const engineStops: EngineStop[] = stops.map((s) => ({ id: s.id, lat: s.lat, lng: s.lng, zone: s.zone }));
-      const picked = pickReferences(
-        inputs.referencesBefore,
-        {
-          date, zones: new Set(engineStops.map((s) => s.zone)),
-          driverUserName: d.driver_user_name, truckClass: d.truck_class,
-          warehouse: modalWarehouse || null, minOverlap: cfg.min_reference_zone_overlap,
-        },
-        { topK: cfg.reference_top_k, halfLifeDays: cfg.reference_half_life_days, sameDriverMultiplier: cfg.same_driver_multiplier },
-      );
-      const solved = solveRoute({
-        loadKey: `cleanup__${date}__${d.driver_key}`,
-        stops: engineStops, depot: { lat: DEPOT.lat, lng: DEPOT.lng },
-        referenceZoneSeq: null,
-        references: picked.length ? picked.map((p) => ({ zone_seq: p.ref.zone_seq, weight: p.weight })) : null,
-        cfg: seqCfg,
-      });
-      const byStopId = new Map(stops.map((s) => [s.id, s] as const));
-      ordered = solved.order.map((o) => byStopId.get(o.id)!).filter(Boolean);
-      travelMin = solved.travelMin;
-      refsUsed = picked.length;
-      mode = picked.length ? 'guided' : 'unguided';
-    }
+    const cur = seq.get(d.driver_key)!;
+    const ordered = cur.order;
+    const ex = existingOf.get(d.driver_key);
+    const capSkids = buildRules && full ? full.skids : caps.hard;
+    const capLb = buildRules && full ? full.weightLb : caps.weightLb;
+    const depart = departOf.get(d.driver_key);
     return {
       key: t.key,
       name: t.name ?? null,
@@ -721,11 +1330,11 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
       loadId: t.loadId ?? null,
       truck_class: d.truck_class || 'box_truck',
       driver_user_name: d.driver_user_name,
-      cap: { skids: r1(caps.hard), weight_lb: Number.isFinite(caps.weightLb) ? caps.weightLb : null, source: capSource },
+      cap: { skids: r1(capSkids), weight_lb: Number.isFinite(capLb) ? capLb : null, source: capSource },
       stops: ordered.map((s) => {
         const raw = byId.get(s.id);
         const closeMin = clockByStop.has(s.id) ? clockByStop.get(s.id)! : null;
-        return {
+        const base = {
           stopNbr: s.id, businessName: raw?.businessName ?? null, addr1: raw?.addr1 ?? null, city: raw?.city ?? null,
           lat: s.lat, lng: s.lng, skids: s.skids, loose: s.loose, weight: s.weight, miles: r1(s.miles),
           close_min: closeMin,
@@ -733,15 +1342,39 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
           early_close: closeMin != null && closeMin < CLEANUP_EARLY_CLOSE_MIN,
           pickup: String(raw?.stopType || '').toUpperCase() === 'PU',
         };
+        if (!buildRules) return base;
+        const e = etaOf.get(s.id);
+        return {
+          ...base,
+          window_label: clockOf.get(s.id)?.label || null,
+          eta_label: e ? fmtMin(Math.round(e.eta)) : null,
+          late: !!e?.late,
+        };
       }),
       stop_count: ordered.length,
       skid_equiv: r1(ordered.reduce((a, s) => a + stopSkidEquiv(s, cfg), 0)),
       weight_lb: Math.round(ordered.reduce((a, s) => a + (Number(s.weight) || 0), 0)),
-      travel_min_est: r1(travelMin),
-      mode,
-      references_used: refsUsed,
+      travel_min_est: r1(cur.travelMin),
+      mode: cur.mode,
+      references_used: cur.refsUsed,
+      ...(buildRules ? {
+        existing: ex && ex.rows.length ? { stops: ex.rows.length, skid_equiv: r1(ex.eq), weight_lb: Math.round(ex.lb) } : null,
+        depart_label: depart != null && Number.isFinite(depart) ? fmtMin(Math.round(((depart % 1440) + 1440) % 1440)) : null,
+        full: fullSet.has(d.driver_key),
+        ...(fullSet.has(d.driver_key) ? { full_by: fullBy.get(d.driver_key) } : {}),
+      } : {}),
     };
   });
+
+  for (const s of timeLeftovers) {
+    const raw = byId.get(s.id);
+    const tr = clockOf.get(s.id);
+    left.push({
+      stopNbr: s.id, businessName: raw?.businessName ?? null, city: raw?.city ?? null,
+      skids: s.skids, reason: 'time_window',
+      detail: `no load you picked reaches it inside its time restriction${tr?.label ? ` (${tr.label})` : ''} — strict leaves it off`,
+    });
+  }
 
   for (const s of spill) {
     if (!stillOver.has(s.id)) continue;
@@ -749,7 +1382,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     left.push({
       stopNbr: s.id, businessName: raw?.businessName ?? null, city: raw?.city ?? null,
       skids: s.skids, reason: 'over_capacity',
-      detail: 'every truck you picked is full — this needs another truck',
+      detail: buildRules ? onlyLoadsDetail(s, eligOf.get(s.id)) : 'every truck you picked is full — this needs another truck',
     });
   }
 
@@ -760,8 +1393,11 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   // feature would otherwise cause. The sequencer is geographic and does not know
   // about clocks, so rather than pretend otherwise, name the ones at risk and let
   // the dispatcher drag them up — which is a thing he can actually do on the card.
+  // Under the Build rules the clock is COMPUTED, not guessed from a position in the list, so
+  // this heuristic stands down and the ETA-based lines below speak instead — a "move it up"
+  // note on a stop the clock says arrives on time would be a warning about nothing.
   const lateEarlyClosers: string[] = [];
-  for (const t of out) {
+  if (!buildRules) for (const t of out) {
     t.stops.forEach((st, i) => {
       if (st.early_close && i >= Math.floor(t.stops.length / 2)) {
         lateEarlyClosers.push(`${st.businessName || st.stopNbr} (shuts ${st.close_label}, ${i + 1} of ${t.stops.length} on ${t.key})`);
@@ -772,7 +1408,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     notes.push(`Sequenced late but shuts early — move ${lateEarlyClosers.length === 1 ? 'it' : 'them'} up or the truck arrives to a closed dock: ${lateEarlyClosers.join('; ')}.`);
   }
   const routed = out.reduce((a, t) => a + t.stop_count, 0);
-  if (!pool.length) notes.push('nothing is sitting unplanned on this board — there is nothing to clean up');
+  if (buildRules ? !poolEntered : !pool.length) notes.push('nothing is sitting unplanned on this board — there is nothing to clean up');
   if (pickups || attempts) {
     const bits = [pickups ? `${pickups} pickup${pickups === 1 ? '' : 's'}` : null,
       attempts ? `${attempts} re-delivery attempt${attempts === 1 ? '' : 's'}` : null].filter(Boolean);
@@ -781,19 +1417,45 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   if (unknownFreight) {
     notes.push(`${unknownFreight} stop${unknownFreight === 1 ? '' : 's'} have no freight numbers yet — each is counted as one skid, so the fills below are an estimate.`);
   }
-  const emptyTrucks = out.filter((t) => !t.stop_count).map((t) => t.key);
-  if (emptyTrucks.length && pool.length) {
-    notes.push(`${emptyTrucks.join(', ')} got nothing — the pool fit on the others.`);
+  const fullNames = fullTrucks.map((k) => truckByKey.get(k)?.key || k);
+  const emptyTrucks = out.filter((t) => !t.stop_count && !fullNames.includes(t.key)).map((t) => t.key);
+  if (emptyTrucks.length && pool.length && (!buildRules || routed > 0)) {
+    // "The pool fit on the others" is only true when the pool DID fit. Under the Build rules a
+    // truck can come back empty while stops are left over — its room too small for any of them,
+    // or its clock too late for their docks — and saying the pool fit would be false; the
+    // leftovers carry their own reasons, so point at them instead.
+    const stillLeft = buildRules ? poolEntered - routed : 0;
+    notes.push(stillLeft > 0
+      ? `${emptyTrucks.join(', ')} got nothing — the ${stillLeft} stop${stillLeft === 1 ? '' : 's'} still left over ${stillLeft === 1 ? 'is' : 'are'} listed below with the reason.`
+      : `${emptyTrucks.join(', ')} got nothing — the pool fit on the others.`);
+  }
+  if (buildRules) {
+    if (fullNames.length) {
+      notes.push(`${fullNames.join(', ')} ${fullNames.length === 1 ? 'is' : 'are'} already full with what ${fullNames.length === 1 ? 'is' : 'are'} on ${fullNames.length === 1 ? 'it' : 'them'} — nothing added.`);
+    }
+    const lateAdvisory: string[] = [];
+    for (const t of out) for (const st of t.stops) {
+      if (st.late) lateAdvisory.push(`${st.businessName || st.stopNbr} (arrives ${st.eta_label}, ${st.window_label}, on ${t.key})`);
+    }
+    if (lateAdvisory.length && windowMode === 'advisory') {
+      notes.push(`${lateAdvisory.length} stop${lateAdvisory.length === 1 ? '' : 's'} can't make ${lateAdvisory.length === 1 ? 'its' : 'their'} time restriction and ${lateAdvisory.length === 1 ? 'is' : 'are'} kept on, because time restrictions are advisory — tick “Respect time restrictions strictly” in step 3 to leave ${lateAdvisory.length === 1 ? 'it' : 'them'} off: ${lateAdvisory.join('; ')}.`);
+    }
+    if (timeMoved) {
+      notes.push(`${timeMoved} stop${timeMoved === 1 ? '' : 's'} placed after the clock check — moved to a load that reaches ${timeMoved === 1 ? 'it' : 'them'} in time, or into room a late stop left behind.`);
+    }
   }
 
   return {
-    ok: true, tenant, date, engine_version: ENGINE_VERSION, generated_at: nowIso,
+    ok: true,
+    rules: buildRules ? 'build' : 'engine',
+    ...(buildRules ? { rules_detail: { tractor_only_green: tractorOnlyGreen, window_mode: windowMode, time_restrictions: !!timeOn } } : {}),
+    tenant, date, engine_version: ENGINE_VERSION, generated_at: nowIso,
     pool: {
       board_stops: (liveStops || []).length, unplanned: unplannedRows.length,
       excluded_held: excludedHeld, no_coords: noCoords, routed,
       pickups, attempts, unknown_freight: unknownFreight, duplicates, no_id: noId, closed_today: closedToday,
     },
-    fit,
+    fit: buildRules ? { ...fit, constrained: constrainedFit } : fit,
     staleness: {
       last_scanned_at: meta?.last_scanned_at ?? null,
       last_load_scan_at: meta?.lastLoadScanAt ?? null,
@@ -812,6 +1474,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
 // ZERO NuVizz calls — readStops and loadPlanInputs are Firestore-only.
 export async function runCleanup(
   tenant: string, date: string, trucks: CleanupTruckInput[], excludeStopNbrs?: string[],
+  ruleOpts: { tractorOnlyGreen?: boolean; windowMode?: 'strict' | 'advisory' } = {},
 ): Promise<{ ok: true; plan: CleanupResult } | { ok: false; status: number; error: string }> {
   if (!Array.isArray(trucks) || !trucks.length) {
     return { ok: false, status: 400, error: 'pick at least one load to route onto' };
@@ -850,5 +1513,13 @@ export async function runCleanup(
   // draft path stamps these and says why; cleanup had simply omitted the line.
   const stamped = (stops || []).map((s: any) => ({ ...s, customerMatchKey: liveMatchKey(s) }));
   const inputs = await loadPlanInputs(tenant, date, stamped.filter((s: any) => s?.isUnplanned === true));
-  return { ok: true, plan: buildCleanupPlan(tenant, date, { cfg, inputs, liveStops: stamped, meta, trucks, excludeStopNbrs }) };
+  return {
+    ok: true,
+    plan: buildCleanupPlan(tenant, date, {
+      cfg, inputs, liveStops: stamped, meta, trucks, excludeStopNbrs,
+      rules: fillMyLoadsBuildRules() ? 'build' : 'engine',
+      tractorOnlyGreen: ruleOpts.tractorOnlyGreen === true,
+      windowMode: ruleOpts.windowMode === 'strict' ? 'strict' : 'advisory',
+    }),
+  };
 }
