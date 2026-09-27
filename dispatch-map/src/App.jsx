@@ -34480,6 +34480,19 @@ function queueNoteText(row, fields, today) {
   return `Davis dispatch corrected the delivery address on ${today}: was "${was}" — now "${now}".`;
 }
 
+/** THE IDEMPOTENCY KEY FOR ONE QUEUE PUSH — the row AND the address being sent. The write ledger
+ *  replays any key that already succeeded, without calling NuVizz. Keyed on the row alone, a
+ *  re-push of a CORRECTED address (the zip fixed after a failed geocode) was answered with the
+ *  first push's result and never went out (audit 2026-09-27). A re-press of the same correction
+ *  still replays for free. Each field is kept apart, so moving text between the street and
+ *  suite lines — which is what a mis-split fix is — counts as a different address. */
+function queueClientOpId(row, fields) {
+  const s = JSON.stringify(['addr1', 'addr2', 'city', 'state', 'zip'].map((k) => String(fields?.[k] ?? '').trim()));
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return `op_queue_${row.key}_${h.toString(16).padStart(8, '0')}`;
+}
+
 /** A stop the SERVER will refuse anyway, judged here for free. The refusal costs a NuVizz call
  *  and carries no boolean to branch on — only prose — so spending one to be told no is waste. */
 const queueRowExecuted = (row) => ['DELIVERED', 'ARRIVED', 'EXCEPTION'].includes(String(row?.status || ''));
@@ -35760,8 +35773,8 @@ async function saveQueueCorrection({ row, fields, google, push, today, clientOpI
   }
 
   // The note rides the SAME partialUpdate as the address — no extra vendor call. See
-  // nuvizzWrite.js. A stable clientOpId per ROW makes a re-press replay a succeeded row for
-  // free instead of re-firing it.
+  // nuvizzWrite.js. A clientOpId per ROW AND ADDRESS (queueClientOpId) makes a re-press replay a
+  // succeeded row for free instead of re-firing it, while a corrected address still goes out.
   const j = await setStopAddress(row.stopNbr, fields, {
     stopId: row.stopId || undefined,
     note: queueNoteText(row, fields, today),
@@ -35822,7 +35835,7 @@ function useQueuePush(today, reload) {
         // for nothing.
         const sendToVendor = push && worthPushing(row);
         const { pushed, geoErr, logged } = await saveQueueCorrection({
-          row, fields: correctedFields(row), google, push: sendToVendor, today, clientOpId: `op_queue_${row.key}`,
+          row, fields: correctedFields(row), google, push: sendToVendor, today, clientOpId: queueClientOpId(row, correctedFields(row)),
         });
         // `logged` is an OBJECT now, and every object is truthy — counting it directly would
         // report a perfect run whatever happened. A DECLINE is not a failure either: the
@@ -36032,7 +36045,7 @@ function useQueueRowEdit(row, google, today, reload) {
     setBusy(true); setMsg(null);
     try {
       const { geoErr, pushed } = await saveQueueCorrection({
-        row, fields: f, google, push, today, clientOpId: `op_queue_${row.key}`,
+        row, fields: f, google, push, today, clientOpId: queueClientOpId(row, f),
       });
       // NEVER AN INTENT AS AN OUTCOME — quote what NuVizz stored, and say plainly when the pin
       // could not be moved rather than letting a corrected address sit on a stale pin silently.
