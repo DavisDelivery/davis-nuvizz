@@ -30,6 +30,7 @@ import { normalizeMatchKey, placeKeyOfStop } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
+import { snapshotSharedWindows, snapshotStopTimeliness, snapshotOnTime } from './lib/driver-snapshot-timeliness.js';
 import { routeLoadLine, podPhotoFetchOffer, podPhotoPullOutcome, podSectionVisible, isPodImageExt, foldFreshStop, stopRecordIdentity, trackStopRecord } from './lib/stop-card-sections.js';
 import { mergeStopHistory } from './lib/stop-history.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
@@ -10769,18 +10770,6 @@ function fmtDurationHm(secs) {
   return `${h}h ${m}m`;
 }
 
-function classifyTimeliness(scheduledIso, actualIso) {
-  if (!scheduledIso || !actualIso) return null;
-  const sched = new Date(scheduledIso).getTime();
-  const act = new Date(actualIso).getTime();
-  if (Number.isNaN(sched) || Number.isNaN(act)) return null;
-  const deltaMin = Math.round((act - sched) / 60000);
-  let kind = 'ontime';
-  if (deltaMin > 15) kind = 'late';
-  else if (deltaMin < -15) kind = 'early';
-  return { deltaMin, kind };
-}
-
 function StopStatusIcon({ status }) {
   if (status === 'completed') return <span style={{ color: '#16a34a' }}>✓</span>;
   if (status === 'en_route' || status === 'current')
@@ -10869,15 +10858,10 @@ function DriverSnapshotBody({ driver, snapshot, loading, error, onPanToStop }) {
     return { minutes: mins, clock: formatEtaClockTime(mins) };
   }, [driver?.lat, driver?.lng, nextStop?.lat, nextStop?.lng]);
 
-  const onTimePct = useMemo(() => {
-    const completed = stops.filter((s) => s.status === 'completed');
-    if (!completed.length) return null;
-    const onTime = completed.filter((s) => {
-      const t = classifyTimeliness(s.scheduledTime, s.actualArrival || s.actualCompletion);
-      return t?.kind === 'ontime' || t?.kind === 'early';
-    }).length;
-    return { onTime, total: completed.length, pct: Math.round((onTime / completed.length) * 100) };
-  }, [stops]);
+  // A load's shared "Estimated Arrival" window is not an appointment (same rule as the route
+  // card), so a stop carrying only that window is neither marked late nor counted in the rate.
+  const sharedWindows = useMemo(() => snapshotSharedWindows(stops), [stops]);
+  const onTimePct = useMemo(() => snapshotOnTime(stops, sharedWindows), [stops, sharedWindows]);
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto text-sm" data-sheet-scroll>
@@ -10929,7 +10913,7 @@ function DriverSnapshotBody({ driver, snapshot, loading, error, onPanToStop }) {
               ) : (
                 <ul className="space-y-0.5">
                   {stops.map((s, i) => {
-                    const timeliness = classifyTimeliness(s.scheduledTime, s.actualArrival || s.actualCompletion);
+                    const timeliness = snapshotStopTimeliness(s, sharedWindows);
                     const late = timeliness?.kind === 'late';
                     const isClickable = s.lat != null && s.lng != null && onPanToStop;
                     // tap-target-y because this tap row is an <li>, not a <button>: the phone
