@@ -60,6 +60,7 @@ import { ChangePasswordScreen, ResetPasswordScreen } from './components/Password
 // functions goes through apiFetch; nothing else may build an Authorization header.
 import { apiFetch } from './lib/api.js';
 import { rollbackTargets, rollbackRequestBody } from './lib/rollback-targets.js';
+import { tuningSaveBody, hasBlankEdit } from './lib/engine-tuning.js';
 // ONE rule decides whether a typed box is a PRO or a customer name, and the screen and the
 // endpoint (netlify/functions/stop-lookup.mts) both read it from here — so the box can never
 // be classified one way by the client and the other way by the server.
@@ -29138,12 +29139,14 @@ function EngineTuningPanel({ onClose }) {
   const effVal = (k) => (resets.includes(k) ? data.defaults[k] : (edits[k] !== undefined ? edits[k] : data.config[k]));
   const isOverridden = (k) => data.stored && data.stored[k] !== undefined && !resets.includes(k);
   const dirty = Object.keys(edits).length > 0 || resets.length > 0;
+  // A cleared box is "no change", never 0 — and Save waits until it holds a number again
+  // (lib/engine-tuning.js says why: Number('') is 0, and 0 clamps to the knob's MINIMUM).
+  const blank = hasBlankEdit(edits);
 
   const save = async () => {
     setSaving(true); setErr(''); setNote('');
     try {
-      const body = { updatedBy: 'engine-tab', reset: resets };
-      for (const [k, v] of Object.entries(edits)) { const n = Number(v); if (Number.isFinite(n)) body[k] = n; }
+      const body = tuningSaveBody(edits, resets);
       const resp = await apiFetch('/.netlify/functions/routing-engine-tuning', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
@@ -29233,8 +29236,9 @@ function EngineTuningPanel({ onClose }) {
                 time you reach Save — the failure was indistinguishable from a dead button. `data`
                 means the panel already loaded, so an err here can only be from Save / Re-score. */}
             {err && data && <span className="text-[10px] text-red-600 max-w-[220px]">⚠ {err}</span>}
-            <button onClick={save} disabled={!dirty || saving}
-              className={`text-[11px] font-semibold py-1.5 px-3 rounded text-white ${dirty && !saving ? '' : 'opacity-40'}`}
+            <button onClick={save} disabled={!dirty || saving || blank}
+              title={blank ? 'A cleared box has no value to save — type a number or press ↺' : undefined}
+              className={`text-[11px] font-semibold py-1.5 px-3 rounded text-white ${dirty && !saving && !blank ? '' : 'opacity-40'}`}
               style={{ background: BRAND }}>{saving ? 'Saving…' : 'Save'}</button>
           </div>
         </div>
