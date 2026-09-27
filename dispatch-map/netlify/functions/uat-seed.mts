@@ -280,6 +280,14 @@ export default async (req: Request): Promise<Response> => {
         try { read = await runOp(reqr, 'getStop' as any, { stopNbr: nbr }, creds); }
         catch (e: any) { read = { ok: false, error: e?.message || 'getStop threw' }; }
         if (!read?.ok || !read.stop?.stopId) {
+          // ONLY NuVizz's own "no such stop" proves it is gone — the same 404 the inline-create
+          // gate in nuvizz-write.mts relies on. A read that did not complete (breaker open, 401,
+          // 5xx, timeout, an answer naming no stop) proves nothing: forgetting the order then
+          // would leave it live in the tenant and in no ledger, which nothing can ever clear.
+          if (read?.httpStatus !== 404) {
+            stuck.push({ stopNbr: nbr, error: `could not confirm it is gone from the UAT tenant (${read?.httpStatus ? `NuVizz answered ${read.httpStatus}` : (read?.error || 'no answer')}) — kept in the ledger so a later clear can finish it` });
+            continue;
+          }
           // Not in the tenant: a create that never landed, or something already cancelled.
           // Nothing to cancel, so the ledger row and any board row go.
           gone.push(nbr);
