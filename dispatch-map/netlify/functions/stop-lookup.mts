@@ -478,14 +478,22 @@ export default async (req: Request): Promise<Response> => {
     // distinct ADDRESSES are not, because one customer with two docks is still one customer to
     // the rep on the phone and the view lists their locations underneath.
     const byName = new Map<string, { name: string; nameKey: string; stops: number; today: number; lastDate: string | null; source: string }>();
-    const note = (name: string, date: string, source: string) => {
+    // A past day's order is in `swept` TWICE — its board copy and its sealed copy — so a stop is
+    // counted once per day + stop number, the same key buildCustomerView merges on. Otherwise
+    // the chooser says "2 stops" and the view the rep lands on says 1.
+    const counted = new Set<string>();
+    const note = (name: string, date: string, source: string, id: string) => {
       const key = customerNameKey(name);
       if (!key) return;
       const cur = byName.get(key) || { name, nameKey: key, stops: 0, today: 0, lastDate: null as string | null, source };
-      if (date) { cur.stops += 1; if (date === today) cur.today += 1; if (!cur.lastDate || date > cur.lastDate) cur.lastDate = date; }
+      const once = id ? `${key}|${date}|${id}` : null;
+      if (date && !(once && counted.has(once))) {
+        if (once) counted.add(once);
+        cur.stops += 1; if (date === today) cur.today += 1; if (!cur.lastDate || date > cur.lastDate) cur.lastDate = date;
+      }
       byName.set(key, cur);
     };
-    for (const r of swept) note(String(r.stop?.businessName ?? ''), r.date, 'board');
+    for (const r of swept) note(String(r.stop?.businessName ?? ''), r.date, 'board', String(r.stop?.stopNbr ?? '').trim() || String(r.stop?.pro ?? '').trim());
 
     // The rollup is consulted too — a customer with no stop in the window still has to be
     // FINDABLE, or "we have not been there recently" reads identically to "no such customer".
