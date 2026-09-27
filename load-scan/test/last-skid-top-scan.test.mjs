@@ -54,6 +54,18 @@ test('a new piece id, or no piece id at all, is never mistaken for one already a
   assert.equal(pieceAlreadyAboard({ pro: '7173250', og: 'OG6028250002' }, null), false);
 });
 
+test('"already aboard" is always the silent duplicate — never a green that booked nothing', () => {
+  // record() returns evaluateScan's verdict on this path WITHOUT booking. If the two
+  // ever disagreed about an id, the loader would see a green for a skid never written.
+  const liveOgs = new Set(['OG6028250001', 'OG6028250002']);
+  const ids = ['OG6028250002', 'og6028250002', ' OG6028250002 ', 'OG6028250002\r', 'OG6028250003', '', null, undefined];
+  for (const og of ids) {
+    const pair = { pro: '7173250', og };
+    const silent = evaluateScan(pair, [STOP], liveOgs).outcome === OUTCOME.SILENT;
+    assert.equal(pieceAlreadyAboard(pair, liveOgs), silent, `og ${JSON.stringify(og)}`);
+  }
+});
+
 test('record() asks "is this piece already aboard?" BEFORE "is the stop full?"', async () => {
   // record() is a React callback over IndexedDB and cannot run here, so the order
   // of its two questions is pinned on the source: it is a contract between the

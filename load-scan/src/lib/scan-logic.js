@@ -710,9 +710,13 @@ export function sortForLoading(rows) {
  * the stop is full because of the piece that just booked, so asking "is the stop
  * full?" first raised NOT COUNTED, and offered "Add OVER the count", for a skid
  * that WAS counted. A deliberate override carries no piece id, so it never lands here.
+ *
+ * The id is read EXACTLY as evaluateScan reads it (upper-cased, not trimmed): record()
+ * returns evaluateScan's verdict on this path without booking anything, so "aboard"
+ * here must always be the SILENT duplicate there — never a GREEN that booked nothing.
  */
 export function pieceAlreadyAboard(pair, liveOgs) {
-  const og = String(pair?.og ?? '').trim().toUpperCase();
+  const og = String(pair?.og ?? '').toUpperCase();
   return !!og && !!liveOgs && liveOgs.has(og);
 }
 
