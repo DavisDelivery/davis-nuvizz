@@ -55,21 +55,37 @@ function isMessageable(e: any): boolean {
   return status === '' || status === 'active' || status === 'enabled' || status === 'available';
 }
 
+// A3-S18-5: the name → phone lookup behind "Text driver" skips the same rows the contact picker
+// does, so a terminated employee is never texted — and never wins a name (first-wins) over an
+// active one who shares it. DRIVER_PHONE_ACTIVE_ONLY=off puts back the every-row lookup.
+// House shape: default ON, an explicit off-word turns it off, anything malformed leaves it ON.
+export function driverPhoneActiveOnlyEnabled(env: any = process.env): boolean {
+  const v = String(env?.DRIVER_PHONE_ACTIVE_ONLY ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+// PURE: normalized name → phone for every (messageable, when activeOnly) roster row. First wins.
+export function buildDriverPhoneIndex(rows: any[], activeOnly: boolean): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const e of rows || []) {
+    if (activeOnly && !isMessageable(e)) continue;
+    const phone = normalizePhone(e?.phone);
+    if (!validUsPhone(phone)) continue;
+    const names = [
+      e?.fullName,
+      [e?.firstName, e?.lastName].filter(Boolean).join(' '),
+      ...(Array.isArray(e?.aliases) ? e.aliases : []),
+    ];
+    for (const n of names) { const k = normName(n); if (k && !map.has(k)) map.set(k, phone); }
+  }
+  return map;
+}
+
 async function loadMap(): Promise<Map<string, string>> {
   if (__cache && Date.now() - __cache.at < TTL_MS) return __cache.map;
-  const map = new Map<string, string>();
+  let map = new Map<string, string>();
   try {
-    const rows = await listDocs(COLLECTION);
-    for (const e of rows) {
-      const phone = normalizePhone(e?.phone);
-      if (!validUsPhone(phone)) continue;
-      const names = [
-        e?.fullName,
-        [e?.firstName, e?.lastName].filter(Boolean).join(' '),
-        ...(Array.isArray(e?.aliases) ? e.aliases : []),
-      ];
-      for (const n of names) { const k = normName(n); if (k && !map.has(k)) map.set(k, phone); }
-    }
+    map = buildDriverPhoneIndex(await listDocs(COLLECTION), driverPhoneActiveOnlyEnabled());
   } catch (e: any) { console.warn(`[marginiq] employees load failed: ${e?.message}`); }
   __cache = { at: Date.now(), map };
   return map;
