@@ -695,7 +695,7 @@ export function useOpenDay() {
   return { openDay, setOpenDay, showMap, setShowMap, focus, setFocus, sel, setSel, q, setQ, sortBy, setSortBy, drawer, setDrawer, drawerFocus, setDrawerFocus, drawerSel, setDrawerSel };
 }
 
-export default function BacktestPanel({ phone, day }) {
+export default function BacktestPanel({ phone, day, onSettingsSaved }) {
   const b = useBacktests();
   const [picked, setPicked] = useState(() => new Set());
   const own = useOpenDay();
@@ -741,7 +741,8 @@ export default function BacktestPanel({ phone, day }) {
             <div className="text-xs font-semibold text-slate-700 mb-1 inline-flex items-center gap-1"><TrendingDown size={13} /> Across every day backtested — Claude against dispatch as driven</div>
             <Totals t={totals} phone={phone} spend={v.spend} />
           </div>
-          <RouterSettings v={v} onSave={b.saveSettings} />
+          {/* A save here also refreshes the planning area above, whose Plan button states the $ ceiling (audit 2026-09-27). */}
+          <RouterSettings v={v} onSave={async (change) => { const r = await b.saveSettings(change); if (r.ok) onSettingsSaved?.(); return r; }} />
           {openDay && <DayDetail key={`${openDay}|${days.find((d) => d.date === openDay)?.result?.at || ''}`} date={openDay} loadResult={b.loadResult} phone={phone} rates={rates} showMap={showMap} setShowMap={setShowMap} route={dayState} onClose={() => setOpenDay(null)} />}
           <div className="flex flex-wrap items-center gap-2">
             <button disabled={!picked.size || b.busy || !!v.refused} onClick={async () => { if (await b.queue([...picked], v.settings.maxUsd, v.ceiling)) setPicked(new Set()); }}

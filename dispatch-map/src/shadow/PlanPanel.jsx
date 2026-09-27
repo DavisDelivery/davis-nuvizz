@@ -75,7 +75,8 @@ function usePlans() {
       const j = await r.json().catch(() => null);
       if (!r.ok || !j?.ok) throw new Error(j?.error || `HTTP ${r.status}`);
       setView(j); setErr(null);
-    } catch (e) { setErr(String(e?.message || e)); }
+      return j;
+    } catch (e) { setErr(String(e?.message || e)); return null; }
   }, []);
   useEffect(() => { load(); }, [load]);
   const anyActive = !!view?.jobs?.some((j) => ACTIVE.has(j.status));
@@ -86,13 +87,20 @@ function usePlans() {
   }, [anyActive, load]);
 
   const queue = useCallback(async (params, preview) => {
-    const maxUsd = view?.settings?.maxUsd;
-    const daily = view?.ceiling;
-    const cap = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd)} at the model (no round starts that could pass it), usually less.${daily ? ` Plans and backtests together stop at ${usd(daily.usd)} per 24 hours.` : ''}` : '';
-    const short = preview?.capacity?.short?.spots > 0 ? ` The picked loads are ${one(preview.capacity.short.spots)} skid spots short, so some stops will be left off, each with a reason.` : '';
-    if (!window.confirm(`Plan ${fmtDay(params.date)} with Claude onto ${params.picks.length} load${params.picks.length === 1 ? '' : 's'}?${cap}${short} Nothing is sent to NuVizz.`)) return null;
-    setBusy(true); setMsg(null);
+    // THE CEILING STATED IS THE ONE IN FORCE (audit 2026-09-27): the job is held to the settings as they
+    // are when it is queued, and Router settings saved since this area last read them (on this screen or
+    // another) would not be in `view` — so they are read again before the confirm says what it may spend.
+    // Busy from the start, so a second press during that read cannot open a second confirm.
+    setBusy(true);
     try {
+      const now = await load();
+      if (!now) { setMsg('Not queued: the spend ceiling in force could not be read — press Refresh and try again.'); return null; }
+      const maxUsd = now.settings?.maxUsd;
+      const daily = now.ceiling;
+      const cap = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd)} at the model (no round starts that could pass it), usually less.${daily ? ` Plans and backtests together stop at ${usd(daily.usd)} per 24 hours.` : ''}` : '';
+      const short = preview?.capacity?.short?.spots > 0 ? ` The picked loads are ${one(preview.capacity.short.spots)} skid spots short, so some stops will be left off, each with a reason.` : '';
+      if (!window.confirm(`Plan ${fmtDay(params.date)} with Claude onto ${params.picks.length} load${params.picks.length === 1 ? '' : 's'}?${cap}${short} Nothing is sent to NuVizz.`)) return null;
+      setMsg(null);
       const { r, j } = await post({ action: 'plan', plan: params, confirm: true, expectBoardAt: preview?.boardAt ?? null });
       if (!j) setMsg(`HTTP ${r.status} — no readable answer; press Refresh to see whether it was queued.`);
       else if (!r.ok || !j.ok) setMsg(`Not queued: ${j.error || (j.errors || []).join('; ') || `HTTP ${r.status}`}`);
@@ -100,13 +108,13 @@ function usePlans() {
         const when = j.waiting === 'ceiling' ? ` It waits while the 24-hour ceiling is spent (${usd(daily?.spent24h)} of ${usd(daily?.usd)} used) and starts when it rolls on.`
           : typeof j.ahead === 'number' && j.ahead > 0 ? ` It starts after the ${j.ahead} job${j.ahead === 1 ? '' : 's'} ahead of it, a few minutes each.`
           : ' It starts within about three minutes and takes a few more.';
-        setMsg(`Queued${typeof j.stops === 'number' && typeof j.loads === 'number' ? `: ${j.stops} stops onto ${j.loads} loads` : ''}.${when}`);
+        setMsg(`Queued${typeof j.stops === 'number' && typeof j.loads === 'number' ? `: ${j.stops} stops onto ${j.loads} loads` : ''}${typeof j.maxUsd === 'number' ? `, held to at most ${usd(j.maxUsd)} at the model` : ''}.${when}`);
       }
       await load();
       return j?.ok ? j.jobId : null;
     } catch (e) { setMsg(`Whether it was queued is unknown: ${String(e?.message || e)} — press Refresh.`); return null; }
     finally { setBusy(false); }
-  }, [post, load, view]);
+  }, [post, load]);
 
   const cancel = useCallback(async (jobId) => {
     if (!window.confirm('Stop this plan? A round already at the model still finishes and is billed.')) return;

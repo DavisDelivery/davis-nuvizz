@@ -636,7 +636,7 @@ function DesktopView(h) {
         {h.err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{h.err}</div>}
         {h.loading && !h.status && <div className="text-xs text-slate-500">Loading…</div>}
         <PlanPanel area={h.plan} />
-        <BacktestPanel day={h.day} />
+        <BacktestPanel day={h.day} onSettingsSaved={h.plan.pl.load} />
         {h.status && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
             <SwitchCard s={h.status} />
@@ -658,7 +658,7 @@ function PhoneView(h) {
         {h.err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{h.err}</div>}
         {h.loading && !h.status && <div className="text-xs text-slate-500">Loading…</div>}
         <PlanPanel phone area={h.plan} />
-        <BacktestPanel phone day={h.day} />
+        <BacktestPanel phone day={h.day} onSettingsSaved={h.plan.pl.load} />
         {h.status && (
           <div className="flex flex-col gap-3">
             <CapacityCard s={h.status} phone learning={h.learning} learnMsg={h.learnMsg} onLearn={h.learnNow} ed={h.ed} />
