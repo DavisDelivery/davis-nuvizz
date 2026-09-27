@@ -51,6 +51,7 @@
 // `raw`, because the Map's order popups read it. ?lean=0 keeps it on history too.
 
 import { dayPath, HISTORY_COLLECTION } from './history-store.mts';
+import { isUatSeededNbr } from './uat-seed.mts';
 
 export const PROGRESS_COLLECTION = 'uat_mirror_refresh';
 export const BOARD_COLLECTION = 'nuvizz_stop_index';
@@ -146,6 +147,16 @@ export function onOff(v: any): boolean {
   return !/^(0|false|off|no)$/i.test(String(v ?? '').trim());
 }
 
+/**
+ * PURE: does a board copy remove the mirror's rows production no longer holds?
+ * UAT_MIRROR_BOARD_PRUNE=off puts back the upsert-only copy (house shape: unset or malformed = on).
+ * The endpoint reads it ONCE and hands the core a deleter only when it is on, so the switch
+ * covers the whole change.
+ */
+export function boardPruneEnabled(env: Record<string, any> = process.env): boolean {
+  return onOff(env.UAT_MIRROR_BOARD_PRUNE);
+}
+
 export interface RefreshDeps {
   /** production side — read only (lib/prod-mirror-read.mts) */
   listProd: (collectionPath: string, opts?: { mask?: string[] }) => Promise<any[]>;
@@ -154,6 +165,8 @@ export interface RefreshDeps {
   setDoc: (path: string, data: any) => Promise<boolean>;
   listMirror: (collectionPath: string, opts?: { mask?: string[] }) => Promise<any[]>;
   getMirror: (docPath: string) => Promise<any | null>;
+  /** mirror side: remove one document. Absent = a board copy never removes anything (UAT_MIRROR_BOARD_PRUNE=off). */
+  deleteMirror?: (path: string) => Promise<any>;
   /** the post-seal miners, run over a copied day's stop records (history-postseal.runPostSealHooks) */
   remine?: (tenant: string, date: string, stopRecords: any[]) => Promise<any>;
   /** persist progress after each unit of work (crash-safe resume) */
@@ -293,21 +306,44 @@ export function mirroredDayIsCurrent(
   return { current: true, why: 'unchanged in production since it was copied' };
 }
 
-export interface BoardDayCopy { date: string; parent: boolean; stops: number }
+export interface BoardDayCopy { date: string; parent: boolean; stops: number; pruned?: number }
 
-/** Copy one board day: the parent meta doc as production has it, plus every stop row, raw and all. */
+/** PURE: a mirror board row the UAT bench seeded (uat-seed.mts) — production never had it, so a
+ *  copy of production's day must never remove it. The UT- number, or the bench's provenance. */
+function benchSeededRow(row: any): boolean {
+  return isUatSeededNbr(row?._id) || isUatSeededNbr(row?.stopNbr) || !!row?.uatSeed;
+}
+
+/**
+ * Copy one board day: the parent meta doc as production has it, plus every stop row, raw and all.
+ *
+ * THEN REMOVE WHAT PRODUCTION DROPPED (when deps.deleteMirror is given). Production's scan prunes
+ * a stop that leaves the day — cancelled, re-planned, moved to another day — and an upsert-only
+ * copy never did, so a cancelled order stayed on the UAT board for ever and a moved one sat on
+ * both days, planned by the UAT engine as freight production no longer has. The bench's own
+ * seeded rows are exempt. A day production holds nothing for returns above, before this, so
+ * "nothing there" is never read as "delete everything".
+ */
 export async function copyBoardDay(deps: RefreshDeps, tenant: string, date: string, opts: { nowIso?: string } = {}): Promise<BoardDayCopy> {
   const base = `${BOARD_COLLECTION}/${tenant}__${date}`;
   const [parent, stops] = await Promise.all([deps.getProd(base), deps.listProd(`${base}/stops`)]);
   if (!parent && !stops.length) return { date, parent: false, stops: 0 };
   const items = stops.map((s: any) => ({ path: `${base}/stops/${s._id}`, data: stripId(s) }));
   const nStops = await writeAll(deps, items);
+  let pruned: number | undefined;
+  if (deps.deleteMirror) {
+    const keep = new Set(stops.map((s: any) => String(s._id)));
+    const onMirror = await deps.listMirror(`${base}/stops`, { mask: ['stopNbr', 'uatSeed'] });
+    const drop = onMirror.filter((r: any) => !keep.has(String(r._id)) && !benchSeededRow(r));
+    for (const r of drop) await deps.deleteMirror(`${base}/stops/${r._id}`);
+    pruned = drop.length;
+  }
   if (parent) {
     const nowIso = opts.nowIso || deps.nowIso?.() || new Date().toISOString();
     await deps.setDoc(base, { ...parent, mirrored_from: '(default)', mirrored_at: nowIso });
   }
-  deps.log?.(`[mirror-refresh] board ${date}: ${nStops} stop(s)${parent ? '' : ' (no parent meta in production)'}`);
-  return { date, parent: !!parent, stops: nStops };
+  deps.log?.(`[mirror-refresh] board ${date}: ${nStops} stop(s)${pruned ? `, ${pruned} production no longer holds removed` : ''}${parent ? '' : ' (no parent meta in production)'}`);
+  return { date, parent: !!parent, stops: nStops, ...(pruned === undefined ? {} : { pruned }) };
 }
 
 /** Copy one day's load roster document (name, number, id, status, driver, trips per load). */
@@ -336,7 +372,7 @@ export interface RefreshProgress {
   counts: {
     static: StaticCounts | null;
     history: Record<string, { stops: number; routes: number; drivers: number; roster: boolean; ledger: boolean; remined: boolean; skipped?: boolean }>;
-    board: Record<string, { stops: number; parent: boolean; roster: boolean }>;
+    board: Record<string, { stops: number; parent: boolean; roster: boolean; pruned?: number }>;
   };
   history_dates_in_prod: string[];   // the dates the window resolved to, so a resume plans the same set
   started_at: string;
@@ -453,9 +489,9 @@ export async function runRefresh(
       if (over()) { p.stopped_at = date; p.finished = false; await persist(); return trimLog(p, maxLog); }
       const copy = await copyBoardDay(deps, plan.tenant, date, { nowIso: nowIso() });
       const roster = await copyRosterDay(deps, plan.tenant, date);
-      p.counts.board[date] = { stops: copy.stops, parent: copy.parent, roster };
+      p.counts.board[date] = { stops: copy.stops, parent: copy.parent, roster, ...(copy.pruned === undefined ? {} : { pruned: copy.pruned }) };
       p.done.board.push(date);
-      say(`board ${date}: ${copy.stops} stops${roster ? ', roster' : ''}`);
+      say(`board ${date}: ${copy.stops} stops${copy.pruned ? `, ${copy.pruned} removed` : ''}${roster ? ', roster' : ''}`);
       await persist();
     }
   }
