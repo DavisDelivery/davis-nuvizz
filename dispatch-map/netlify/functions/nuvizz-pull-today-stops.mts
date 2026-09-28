@@ -33,6 +33,7 @@ import { LEAN_STOP_FIELDS } from './lib/board-fields.mts';
 import { dropCancelledEnabled, dropCancelledStops } from '../../src/lib/stop-cancelled.js';
 import { breakerMode, reportedDailyCeiling, circuitStillBinding } from './lib/nuvizz-request.mts';
 import { requireUser } from './lib/require-user.mts';
+import { readPlanningMode, planningView } from './lib/uat-planning-mode.mts';
 
 const TENANT = 'davis';
 
@@ -144,6 +145,10 @@ export default async (req: Request): Promise<Response> => {
   // load; a serial Firestore hop for one tiny document would be giving part of that back.
   // `.catch` is attached at creation, so a failure can never surface as an unhandled rejection.
   const refusalPromise = isFirestoreEnabled() ? readScanRefusal().catch(() => null) : Promise.resolve(null);
+  // UAT PLANNING MODE (lib/uat-planning-mode.mts), read alongside for the same reason. Off a
+  // mirror this resolves "off" without touching Firestore, so production's board costs nothing
+  // more; it never rejects (a failed read answers "off" and says so).
+  const planningPromise = readPlanningMode();
 
   try {
     let stops: any[];
@@ -221,6 +226,13 @@ export default async (req: Request): Promise<Response> => {
     // The rule and the switch (BOARD_DROP_CANCELLED=off) live in lib/stop-cancelled.js.
     const { stops: liveStops, dropped: cancelledOff } = dropCancelledStops(stops, dropCancelledEnabled(process.env));
     stops = liveStops;
+
+    // ── UAT PLANNING MODE: THE SAME BOARD, AS IF NOBODY HAD PLANNED IT YET ─────────────────
+    // After carry-over and the cancelled drop, before every count, so the tally, the map, the
+    // Build Panel and the Routes rail all read the one view. Stored rows are not touched — see
+    // lib/uat-planning-mode.mts for why this is a view and not a rewrite.
+    const planning = await planningPromise;
+    if (planning.on) stops = stops.map(planningView);
 
     const unplannedCount = stops.filter((s) => s.isUnplanned).length;
 
@@ -366,6 +378,10 @@ export default async (req: Request): Promise<Response> => {
       // "just vanished".
       carryover: Object.keys(carryover).length ? carryover : null,
       carryDays,
+      // Which board this is. true only on the UAT site with planning mode switched on; the mode
+      // bar reads it so the screen can never show one mode while the server served the other.
+      planningMode: planning.on,
+      ...(planning.error ? { planningModeError: planning.error } : {}),
       lean: !full,   // true = lean projection served (see LEAN_STOP_FIELDS); false = ?full=1 / MAP_FEED_FULL
       ops,
       stops,

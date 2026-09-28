@@ -24,7 +24,9 @@
 // D may be TOMORROW — every miner filters strictly `date < D`, so drafting
 // forward is the exact call pattern the nightly already makes.
 
-import { readStops } from './firestore.mts';
+// The day's board as a planning surface reads it: on the UAT site in planning mode every row reads
+// unplanned (lib/uat-planning-mode.mts); everywhere else this is readStops, unchanged.
+import { readStopsForPlanning } from './uat-planning-mode.mts';
 import { DEPOT } from './history-derive.mts';
 import { ENGINE_VERSION, loadEngineConfig, type EngineConfig } from './routing-engine-config.mts';
 import { type ZonePrecisions } from './zones.mts';
@@ -439,7 +441,7 @@ export function buildDriverDraft(tenant: string, date: string, opts: BuildDraftO
 }
 
 // I/O wrapper the endpoint calls: live board read + as-of inputs + name
-// resolution, then the core above. ZERO NuVizz calls — readStops and
+// resolution, then the core above. ZERO NuVizz calls — readStopsForPlanning and
 // loadPlanInputs are Firestore-only.
 export async function runDraft(
   tenant: string, date: string, driverNames: string[],
@@ -448,7 +450,7 @@ export async function runDraft(
     return { ok: false, status: 400, error: 'name 1-4 drivers' };
   }
   const cfg = await loadEngineConfig(tenant);
-  const { meta, stops } = await readStops(tenant, date);
+  const { meta, stops } = await readStopsForPlanning(tenant, date);
   if (!stops.length) {
     return { ok: false, status: 404, error: `no board data for ${date} — the scheduled scan has not written that day yet` };
   }

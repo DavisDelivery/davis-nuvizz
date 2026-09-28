@@ -28,6 +28,7 @@ import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, markLoadRosterEmpt
 import { liveSyncEnabled } from './lib/uat-live-sync.mts';
 import { getProdDocStamped } from './lib/prod-mirror-read.mts';
 import { ROSTER_COLLECTION } from './lib/uat-mirror-refresh.mts';
+import { readPlanningMode, planningRosterBody } from './lib/uat-planning-mode.mts';
 import { acceptRosterWrite, explainRosterRow } from './lib/roster-write.mts';
 import { shellLookbackDates, standardShellNames, shouldOfferShells, pickShellSources, closedDayReason } from './lib/roster-shells.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -84,12 +85,18 @@ export function _resetShellMemo(): void { standardMemo.clear(); }
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
-  const J = (b: any, st = 200) => new Response(JSON.stringify(b), { status: st, headers: cors });
+  // UAT PLANNING MODE (lib/uat-planning-mode.mts): every answer that carries the day's loads is
+  // served with every load empty. Every success path below answers through J, so this is the one
+  // place it can be applied and the one place it can be forgotten; errors and ?explain=1 (no
+  // loads list) pass through untouched. Off a mirror it is never on.
+  let planningOn = false;
+  const J = (b: any, st = 200) => new Response(JSON.stringify(planningOn ? planningRosterBody(b) : b), { status: st, headers: cors });
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   // Gate at viewer: ?live=1 skips the cache and pulls the roster STRAIGHT FROM NUVIZZ — a
   // metered call per hit on an open GET. Inert until AUTH_REQUIRED=true.
   const gate = await requireUser(req, { role: 'viewer' });
   if (!gate.ok) return gate.response;
+  planningOn = (await readPlanningMode()).on;
 
   const url = new URL(req.url);
   const date = url.searchParams.get('date') || '';
