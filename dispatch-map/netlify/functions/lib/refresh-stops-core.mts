@@ -22,9 +22,10 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields, readActivePoolMeta, readFrozenLedger, writeFrozenLedger, recordPlanVerdicts } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields, readActivePoolMeta, readFrozenLedger, writeFrozenLedger, recordPlanVerdicts, recordListLoadNbr } from './firestore.mts';
 import type { FrozenLedgerEntry, PlanVerdictRow } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanPull, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays, LIST_MAX_RESULT, BOARD_WRITE_GRACE_MIN } from './nuvizz-list.mts';
+import type { ListLoadNbrSeen } from './nuvizz-list.mts';
 import { buildActivePool } from './active-pool.mts';
 import { strayFinishedRows, openPastRows, planRefile, planOpenStrays, nextCopyDays, rotate } from './refile-core.mts';
 import type { FrozenCopy, StrayRow, Heal } from './refile-core.mts';
@@ -1320,6 +1321,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   if (LIST_DISCOVERY) {
     await startRun();
     let listError: string | null = null;
+    // What the stop list said about load numbers this run — onto the run row, compact (v1.81.6).
+    let listLoadNbr: { active: string; completed: string } | null = null;
     try {
       const scannedAt = new Date().toISOString();
       // THE STAMP GOES AFTER THE PULL, NOT BEFORE IT. This ran here, ahead of every NuVizz
@@ -1401,6 +1404,15 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const pull = TWO_SCAN ? await twoScanPull(boardDateOverrides) : null;
       const buckets = pull ? pull.buckets : null;
       if (pull) console.log(`[scan] two-scan pull: ${pull.activeCount} active + ${pull.completedCount} completed row(s) across ±${activeArrivalReachDays()}d${pull.truncated ? ' — TRUNCATED at the row cap' : ''}`);
+      // THE LOAD NUMBER COLUMN (Chad, 2026-09-28: "the load number is now on every scan"). Which
+      // column carried it and how many routed orders had one, recorded for nothing so the next
+      // question about it is a read (nuvizz-scan-config?explain=1 → listLoadNbr), not a call.
+      if (pull) {
+        const say = (x: ListLoadNbrSeen) => `${x.withNumber}/${x.routed} routed via ${x.column ?? 'NO Load Number column'}`;
+        listLoadNbr = { active: say(pull.loadNbr.active), completed: say(pull.loadNbr.completed) };
+        console.log(`[scan] load numbers on the list — active ${listLoadNbr.active}; completed ${listLoadNbr.completed}`);
+        await recordListLoadNbr({ at: scannedAt, ...pull.loadNbr });
+      }
 
       // ── CS NOTIFY, FIRST THING, ACROSS THE WHOLE PULL (Chad, 8/10) ───────────────
       // "DSV came in on Friday. The moment the scan picked it up on Friday, it should
@@ -2273,7 +2285,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       listError = String(e?.message || e).slice(0, 300);
     }
     await refreshOps();
-    await finishRun({ path: 'full', outcome: listError ? 'error' : 'ok', ...(listError ? { error: listError } : {}), dates: results });
+    await finishRun({ path: 'full', outcome: listError ? 'error' : 'ok', ...(listError ? { error: listError } : {}), ...(listLoadNbr ? { listLoadNbr } : {}), dates: results });
     // The log reports what this path DID, not what the hour windows would have allowed: the
     // list path now writes the whole horizon every acting fire, so printing the (unused) feed
     // flags here would describe a gate this path no longer consults.

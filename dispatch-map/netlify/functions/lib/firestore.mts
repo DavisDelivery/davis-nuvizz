@@ -1901,6 +1901,26 @@ export async function readScanRefusal(): Promise<ScanRefusalRow | null> {
   };
 }
 
+// ── What the stop list said about LOAD NUMBERS, last scan (v1.81.6) ─────────
+//
+// Chad added a Load Number column to the stop saved search on 2026-09-28. Which key NuVizz gives
+// that column on this entity is not in the code, so every list scan records what it found — the
+// column it read (or, when none matched, every column it was offered) and how many routed orders
+// carried a number — in one small document, overwritten each scan. Zero NuVizz calls; read back by
+// nuvizz-scan-config?explain=1 as `listLoadNbr`.
+const LIST_LOAD_NBR_PATH = `${OPS_COLLECTION}/list_load_nbr`;
+
+/** Best-effort: a record must never be able to break the scan it describes. */
+export async function recordListLoadNbr(rec: Record<string, any>): Promise<void> {
+  if (!isFirestoreEnabled() || !rec) return;
+  try { await setDoc(LIST_LOAD_NBR_PATH, { ...rec, updated_at: new Date().toISOString() } as any); } catch { /* best-effort */ }
+}
+
+export async function readListLoadNbr(): Promise<Record<string, any> | null> {
+  if (!isFirestoreEnabled()) return null;
+  return (await getDoc(LIST_LOAD_NBR_PATH).catch(() => null)) || null;
+}
+
 // ── Phase 6: terminal-stop skip cache ────────────────────────────────────────
 // A stop at status 90/91 is DELIVERED and immutable, so once the unplanned descent
 // has confirmed a stop number terminal there is no reason to spend a /stop/info call

@@ -60,6 +60,31 @@ export function buildBody(period: string, statusCsv: string, page: number, pageS
 // attempts ever found). Module-level so it logs once per warm instance, not per row.
 let __warnedNoShipmentKey = false;
 let __warnedNoDisplaySeq = false;
+let __warnedNoLoadNbr = false;
+
+/**
+ * PURE: the stop list's LOAD NUMBER column, or null when the saved search has none.
+ *
+ * Chad added a Load Number column to saved search 77128 on 2026-09-28 ("the load number is now
+ * on every scan"). Until then a stop row named its load by route NAME only, and route names
+ * repeat every day — Friday's MARCUS (DAVIS000204535) and Monday's MARCUS (DAVIS000204645) read
+ * the same. The number does not repeat.
+ *
+ * Found by PATTERN over the dotted key AND the human label, the same way the Display-Seq and
+ * Stop-Id columns are, and with the roster's own rule for the number (normalizeLoads): a label
+ * or key saying load + nbr/number/no/#, or the loads grid's `rteNbr`. The key NuVizz gives the
+ * column on this entity is not in the code; whatever it is, a label reading "Load Number"
+ * resolves it. "Load Name" never matches, so the route name cannot be mistaken for it.
+ */
+export function listLoadNbrColumn(j: any): { key: string; label: string } | null {
+  const colDefs: Record<string, any> = (j && j.filterData && j.filterData[0]) || {};
+  const cols = Object.keys(colDefs);
+  const hay = (k: string) => `${k} ${String(colDefs[k]?.columnName ?? '')}`.toLowerCase();
+  const key =
+    cols.find((k) => /load.?(nbr|number|num\b)|(^|[\s.])load.?no(\.|\s|$)|load\s*#/.test(hay(k)) && !/(seq|dttm|date|time)/.test(hay(k))) ||
+    cols.find((k) => /(^|\.)rte.?nbr\b/.test(hay(k))) || null;
+  return key ? { key, label: String(colDefs[key]?.columnName ?? '') } : null;
+}
 
 // First argument that is a real (non-blank, non-hash) human name; '' if none.
 function firstNonHashName(...vals: any[]): string {
@@ -133,6 +158,12 @@ export function normalize(j: any): any[] {
     __warnedNoDisplaySeq = true;
     console.warn(`[nuvizz-list] no ShipTo-Display-Seq column found — in-load delivery order falls back to a geographic guess. cols=${JSON.stringify(cols).slice(0, 800)}`);
   }
+  const loadNbrCol = listLoadNbrColumn(j);
+  const loadNbrKey = loadNbrCol ? loadNbrCol.key : null;
+  if (!loadNbrKey && cols.length && !__warnedNoLoadNbr) {
+    __warnedNoLoadNbr = true;
+    console.warn(`[nuvizz-list] no Load Number column found — orders carry their route NAME only. cols=${JSON.stringify(cols.map((k) => `${k}=${String(colDefs[k]?.columnName ?? '')}`)).slice(0, 1200)}`);
+  }
   return ((j && j.values) || []).map((row: any[]) => ({
     stopNbr: String(g(row, 'vizzonInfo.shipmentInfo.stopNbr') ?? ''),
     shipmentNbr: shipmentKey ? String(g(row, shipmentKey) ?? '') : '',
@@ -144,6 +175,7 @@ export function normalize(j: any): any[] {
     city: g(row, 'vizzonInfo.destination.address.city') ?? '',
     zip: g(row, 'vizzonInfo.destination.address.zipCode') ?? '',
     routeName: g(row, 'route.name') ?? '',
+    nvLoadNbr: loadNbrKey ? String(g(row, loadNbrKey) ?? '').trim() : '',   // Load Number (DAVIS000…), see listLoadNbrColumn
     routeSeq: displaySeqKey ? numOrNull(g(row, displaySeqKey)) : null,   // ShipTo Display Seq = delivery order
     nvStopId: stopIdKey ? String(g(row, stopIdKey) ?? '').trim() : '',   // internal stop id (RWB planning id)
     // The driver column is unreliable: in some saved searches route.driver.driverId carries the
@@ -232,8 +264,9 @@ export function parseReqDate(s: any): string | null {
   return `${y}-${String(+m[1]).padStart(2, '0')}-${String(+m[2]).padStart(2, '0')}`;
 }
 
-// Intermediate row → board-shaped stop (coords filled later). routeName doubles as
-// the load id since the list carries the load NAME, not the numeric loadNbr.
+// Intermediate row → board-shaped stop (coords filled later). `loadNbr` on a board row holds the
+// route NAME (the whole app reads it that way); the real load NUMBER rides beside it as
+// `nuvizzLoadNbr` when the saved search carries the Load Number column (listLoadNbrColumn).
 export function toBoardStop(r: any): any {
   const hasRoute = !!String(r.routeName || '').trim();
   const { status, planned } = statusFromCode(r.statusCode, hasRoute);
@@ -263,6 +296,10 @@ export function toBoardStop(r: any): any {
     primaryPro: r.stopNbr || null,
     loadNbr: hasRoute ? r.routeName : null,
     routeName: r.routeName || null,
+    // The NuVizz LOAD NUMBER of the load this order is on ("DAVIS000204645") — the one name that
+    // does not repeat from day to day. Only a row ON a load carries one, and only a value shaped
+    // like a load number (looksLikeLoadNbr): a mislabelled column can leave it null, never wrong.
+    nuvizzLoadNbr: hasRoute && looksLikeLoadNbr(r.nvLoadNbr) ? String(r.nvLoadNbr).trim() : null,
     routeSeq: typeof r.routeSeq === 'number' ? r.routeSeq : null,   // delivery order within the load (ShipTo Display Seq)
     // The saved search carries no stop-type column, and this used to hard-code 'DO' — so every
     // PICKUP entered the board as a delivery until its one-time /stop/info enrichment happened
@@ -648,7 +685,7 @@ function buildSavedBody(def: { customListDefId: number; filterList: any[] }, pag
  */
 export async function fetchSavedSearchPull(
   def: { customListDefId: number; filterList: any[] }, pageSize: number = LIST_MAX_RESULT,
-): Promise<{ rows: any[]; truncated: boolean }> {
+): Promise<{ rows: any[]; truncated: boolean; loadNbr: ListLoadNbrSeen }> {
   const { companyCode } = getCreds();
   const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
   const reqr = getNuvizzRequester();
@@ -656,10 +693,32 @@ export async function fetchSavedSearchPull(
   const body = JSON.stringify(buildSavedBody(def, pageSize));
   const resp = await reqr.request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata', tenant: companyCode });
   if (!resp.ok) throw new Error(`saved-search ${def.customListDefId} filterdata ${resp.status}`);
-  const rows = normalize(await resp.json());
+  const j: any = await resp.json();
+  const rows = normalize(j);
   const truncated = rows.length >= pageSize;
   if (truncated) console.error(`[nuvizz-list] saved search ${def.customListDefId} returned ${rows.length} rows — AT the ${pageSize} cap, so the list is probably TRUNCATED. Absence from this pull is not evidence; the scan will stamp its pool thin.`);
-  return { rows, truncated };
+  return { rows, truncated, loadNbr: listLoadNbrSeen(j, rows) };
+}
+
+/** What one stop-list pull said about load numbers — see recordListLoadNbr (firestore.mts). */
+export interface ListLoadNbrSeen {
+  /** the column the number was read from, "key (label)"; null when the saved search has none */
+  column: string | null;
+  /** rows on a load (a route name), and how many of them carried a load-number-shaped value */
+  routed: number;
+  withNumber: number;
+  /** only when no column matched: every column offered, "key=label", so the miss can be fixed */
+  columns?: string[];
+}
+/** PURE: the pull's load-number reading, from the raw response and the rows normalize made of it. */
+export function listLoadNbrSeen(j: any, rows: any[]): ListLoadNbrSeen {
+  const col = listLoadNbrColumn(j);
+  const onLoad = (rows || []).filter((r) => String(r?.routeName ?? '').trim());
+  const routed = onLoad.length;
+  const withNumber = onLoad.filter((r) => looksLikeLoadNbr(r?.nvLoadNbr)).length;
+  if (col) return { column: col.label ? `${col.key} (${col.label})` : col.key, routed, withNumber };
+  const colDefs: Record<string, any> = (j && j.filterData && j.filterData[0]) || {};
+  return { column: null, routed, withNumber, columns: Object.keys(colDefs).slice(0, 80).map((k) => `${k}=${String(colDefs[k]?.columnName ?? '')}`) };
 }
 export async function fetchSavedSearchRows(
   def: { customListDefId: number; filterList: any[] }, pageSize: number = LIST_MAX_RESULT,
@@ -746,6 +805,8 @@ export interface TwoScanPull {
   truncated: boolean;
   activeCount: number;
   completedCount: number;
+  /** what each saved search said about load numbers (the Load Number column, v1.81.6) */
+  loadNbr: { active: ListLoadNbrSeen; completed: ListLoadNbrSeen };
 }
 /** Both saved searches — TWO requests, whatever the arrival window is set to — plus whether
  *  either answer was cut off at the row cap. */
@@ -758,6 +819,7 @@ export async function twoScanPull(overrides?: Record<string, string> | null): Pr
     buckets: mergeTwoScan(active.rows, completed.rows, overrides),
     truncated: active.truncated || completed.truncated,
     activeCount: active.rows.length, completedCount: completed.rows.length,
+    loadNbr: { active: active.loadNbr, completed: completed.loadNbr },
   };
 }
 export async function twoScanBuckets(overrides?: Record<string, string> | null): Promise<Map<string, any[]>> {
@@ -793,6 +855,9 @@ export function etDateForTargetUTC(targetDateUTC: string, todayUTC: string, etTo
 export const LIVE_LIST_FIELDS = [
   'status', 'normalizedStatus', 'isPlanned', 'isUnplanned',
   'loadNbr', 'routeName', 'driverName', 'driverUserName', 'driverId',
+  // The load NUMBER is as live as the route name beside it: an order moved to another load, or
+  // taken off one, must not keep the old number from a stored copy.
+  'nuvizzLoadNbr',
   'scheduledDate', 'requestedDate', 'boardDate', 'listUpdatedDTTM', 'source',
   // Shipment number + its derived attempt flag are LIVE: the "ATT" marker appears DURING the
   // day, so it must refresh every scan from the list (never frozen by an earlier enrichment).
@@ -972,6 +1037,12 @@ export function applyBoardWriteGrace(fresh: any, prior: any, nowMs: number, grac
   // this order from has seen the world after our Save; the stamp is stale and the list wins now,
   // not in fifty-seven minutes. See unplanStampOvertaken.
   if (unplanStampOvertaken(prior, fresh)) return false;
+  // The load NUMBER goes with the route it was read with. The Save's write-through names the
+  // route and not its number, so the list's number survives only when the list already names the
+  // same route the Save did; otherwise this row's number is unknown until the list catches up.
+  const sameRoute = prior.isPlanned === true && fresh.isPlanned === true
+    && String(prior.routeName ?? '') === String(fresh.routeName ?? '');
+  fresh.nuvizzLoadNbr = sameRoute ? (fresh.nuvizzLoadNbr ?? null) : null;
   for (const k of ['status', 'normalizedStatus', 'isPlanned', 'isUnplanned', 'loadNbr', 'routeName', 'routeSeq', 'driverName', 'driverUserName']) {
     fresh[k] = prior[k] ?? null;
   }
@@ -995,7 +1066,7 @@ export function applyBoardWriteGrace(fresh: any, prior: any, nowMs: number, grac
 // Flips beyond `max` are HELD unverified — a mass flip looks like a feed hiccup, and holding one
 // tick is cheaper than wiping live routes. max<=0 disables (legacy list-wins). Checks mutate the
 // fresh rows in place, exactly like applyBoardWriteGrace.
-export const PLAN_FIELDS = ['status', 'normalizedStatus', 'isPlanned', 'isUnplanned', 'loadNbr', 'routeName', 'routeSeq', 'driverName', 'driverUserName'] as const;
+export const PLAN_FIELDS = ['status', 'normalizedStatus', 'isPlanned', 'isUnplanned', 'loadNbr', 'routeName', 'nuvizzLoadNbr', 'routeSeq', 'driverName', 'driverUserName'] as const;
 // Verdict for one demotion-verify /stop/info read: true = record still assigned (keep the
 // plan), false = confirmed off-route/terminal (the demotion stands), null = unknown (hold one
 // cycle). PURE — unit-tested; refresh-stops wires lookupStopByPro into it.
@@ -1041,7 +1112,7 @@ export function absentPlanDemoteCandidate(p: any): any {
   return {
     ...p,
     status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false, isUnplanned: true,
-    loadNbr: null, routeName: null, routeSeq: null, driverName: null, driverUserName: null,
+    loadNbr: null, routeName: null, nuvizzLoadNbr: null, routeSeq: null, driverName: null, driverUserName: null,
     absentFromPull: true,   // diagnostic only — never read as truth, the verify decides
   };
 }

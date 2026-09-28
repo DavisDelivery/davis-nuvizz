@@ -129,19 +129,32 @@ Project-level guidance for Claude Code in this repository.
 
       nuvizz-loads-roster?date=YYYY-MM-DD&cacheOnly=1     loads[].loadNbr, loadId, name, driver, status, trips
 
-- **The stop list is the one without it.** The stop saved search (77128, `lib/nuvizz-list.mts`)
-  names a stop's route by NAME only. Verified with one call on 2026-09-27: its 25 columns have
-  no load number, no load id and no load date. Route names repeat every day. There is a
-  MARCUS on Friday (`DAVIS000204535`) and a MARCUS on Monday (`DAVIS000204645`), and a
-  row that says "MARCUS" does not say which.
+- **The stop list carries it too, since 2026-09-28.** Chad added a Load Number column to the
+  stop saved search (77128): **"Yes the load number is now on every scan so set it up whatever
+  needs it to use it."** Every order on a load now carries that load's NUMBER as
+  `nuvizzLoadNbr`, beside the route name (`loadNbr` still holds the NAME — the whole app reads
+  it that way). `lib/nuvizz-list.mts`: `listLoadNbrColumn` finds the column by its label,
+  `toBoardStop` keeps only a load-number-shaped value on a routed row. Before that date the
+  list named a route by NAME only (25 columns on 2026-09-27, no load number) — and route names
+  repeat every day: Friday's MARCUS (`DAVIS000204535`) and Monday's MARCUS (`DAVIS000204645`)
+  read the same. What the last scan found reads for **zero NuVizz calls**:
+
+      nuvizz-scan-config?explain=1     listLoadNbr: the column it read, and routed / withNumber per saved search
+
+  A number stays with the route it was read with. A Save's write-through names a route and not
+  its number, so a row the write grace holds on a new route has `nuvizzLoadNbr: null` until the
+  list catches up — never the old load's number. (v1.81.6 CAPTURES the number and nothing else;
+  filing an order on its load's day is its own change — see *SMALL CHUNKS*.)
 - **So the join is always this, and it is already built:**
   1. **roster** → which loads exist on which day, by load number (free, cached);
-  2. **one `/load/info` read per load, by that number** → which orders that load holds
+  2. **the order's own `nuvizzLoadNbr`** → which of those loads it is on (free, every scan);
+  3. **one `/load/info` read per load, by that number** → which orders that load holds
      (`lookupLoadStopNbrs` / `lookupLoadPlan` in `lib/nuvizz-scan.mts`). The scan already
      spends this read, memoised, in the name-collision anchor and the demotion verify. Its
      trail shows in `nuvizz-stop-explain` for free: *"The 2026-09-28 roster … resolves MARCUS
      to DAVIS000204645 (Draft), so the verify can read that load's own membership."*
-  3. The roster's `trips` against the rows we hold under that name on that day is the free
+     — still the read for when the list lags a Save or disagrees with the load.
+  4. The roster's `trips` against the rows we hold under that name on that day is the free
      trigger — for TODAY's load, whose roster is re-pulled hourly. A LATER day's roster is
      captured once a day (`rosterFreezeApplies`), so its count is the morning's: it can say which
      load to read FIRST, never that a load cannot hold an order planned onto it since (an
