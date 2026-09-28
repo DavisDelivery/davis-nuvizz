@@ -24,6 +24,7 @@
 // what makes the remaining marks worth looking at.
 
 import { parseClockMin, dayReceivingWindow, fmtMin } from './board-flags.js';
+import { hoursProvenance } from './hours-provenance.js';
 
 // ── the dials ────────────────────────────────────────────────────────────────
 // Every one of these is a judgement about Davis's day, not a fact about the data, so they
@@ -186,6 +187,33 @@ export function hoursTypedByDispatcher(note) {
   return note?.manual_overrides?.receiving_hours === true;
 }
 
+// ── WHERE THE CHIP'S HOURS CAME FROM, IN THE CHIP'S OWN WORDS ─────────────────
+//
+// The Sep 26 audit found the auto-hours chip v1.74.2 put on the Compare row saying "read from
+// the order text" for hours that came from the address line or from no recorded source. Chad,
+// 2026-09-28, chose the fix: "each chip says where its hours really came from."
+//
+// THE CHIP NEVER READS AN ORDER. Its window is always the customer's STORED receiving_hours
+// (dayWindowMinutes, above). What differs from stop to stop is who wrote them, and the stop
+// card — one tap away on the same row — already says so, through hoursProvenance. So the
+// chip asks that same function rather than keeping a second opinion that could drift:
+//   the manual_overrides latch      → 'set by a dispatcher'
+//   the scanner, orderInstructions  → 'read from the order text'
+//   the scanner, addressLine2       → 'read from the address line'   (Davis's own address line)
+//   a scanner trail naming neither  → 'auto-detected'   (never name a source nobody recorded)
+//   no trail at all                 → 'source not recorded' (a legacy doc, or hand-entered
+//                                     before the latch existed — the code cannot tell which)
+export function chipHoursSource(note) {
+  if (hoursTypedByDispatcher(note)) return 'set by a dispatcher';
+  const p = hoursProvenance(note);
+  if (p?.kind === 'auto') {
+    if (p.matchedSource === 'orderInstructions') return 'read from the order text';
+    if (p.matchedSource === 'addressLine2') return 'read from the address line';
+    return 'auto-detected';
+  }
+  return 'source not recorded';
+}
+
 // ── THE ROW-SIZED MARK ───────────────────────────────────────────────────────
 //
 // Chad, looking at a Compare card: "i think there is enough space there to fit our clock
@@ -218,11 +246,13 @@ export function timeMarkChip(note, dayKey, opts = {}) {
   // no hours beside it: "why are titan electrics hours not displayed in the compare panel", then
   // "yes i want the proposed fix". Its 7:00a–3:30p was read from Uline's order text, so the
   // typed-only rule below left the row saying LATE without the window it was late against. With
-  // the option on, a window read from an order gets its chip like a typed one, and every chip
-  // whose hours were NOT typed carries `auto: true` so the row can say where the time came from.
-  // Off (or absent) is exactly the behaviour before it.
+  // the option on, a window read from an order gets its chip like a typed one, every chip
+  // whose hours were NOT typed carries `auto: true` for the row's "· auto", and EVERY chip's
+  // title ends with where its hours really came from (chipHoursSource, above — typed ones say
+  // "set by a dispatcher"). Off (or absent) is exactly the behaviour before it, titles included.
   const typed = hoursTypedByDispatcher(note);
   const autoMark = opts.autoHours === true && !typed ? { auto: true } : {};
+  const source = opts.autoHours === true ? chipHoursSource(note) : null;
   // HOURS A DISPATCHER TYPED ARE ALWAYS WORTH A ROW, however ordinary they look.
   //
   // Chad, 2026-09-22, with AMERICAS VALUE CHANNEL (11:00a-4:00p) wearing a chip on NOR 2 and
@@ -251,7 +281,8 @@ export function timeMarkChip(note, dayKey, opts = {}) {
     if ((!typed && opts.autoHours !== true) || (o == null && c == null)) return null;
     const both = o != null && c != null;
     const text = both ? `${fmtMin(o)}–${fmtMin(c)}` : (c != null ? `closes ${fmtMin(c)}` : `opens ${fmtMin(o)}`);
-    return { kind: HOURS_ON_FILE_KEY, text, openMin: o, closeMin: c, title: `Receiving ${text} — ${typed ? 'set by a dispatcher' : 'read from the order text'}`, ...autoMark };
+    // Switch off, only a typed window reaches this line, and it says so exactly as it always has.
+    return { kind: HOURS_ON_FILE_KEY, text, openMin: o, closeMin: c, title: `Receiving ${text} — ${source ?? 'set by a dispatcher'}`, ...autoMark };
   }
   // WHICH EDGE THE MARK IS ABOUT DECIDES WHICH CLOCK THE ROW PRINTS. classifyTimeMark's
   // precedence guarantees the edge it chose is the one that exists — a shuts-early or
@@ -279,11 +310,12 @@ export function timeMarkChip(note, dayKey, opts = {}) {
   const window = o != null && c != null ? `${fmtMin(o)}–${fmtMin(c)}`
     : o != null ? `opens ${fmtMin(o)}`
       : `closes ${fmtMin(c)}`;
-  return { kind, text, openMin: o, closeMin: c, title: `Receiving ${window}${autoMark.auto ? ' — read from the order text' : ''}`, ...autoMark };
+  return { kind, text, openMin: o, closeMin: c, title: `Receiving ${window}${source ? ` — ${source}` : ''}`, ...autoMark };
 }
 
 /** VITE_COMPARE_AUTO_HOURS — house shape: default on, an off-word turns it off, anything
- *  malformed leaves it on. Off puts the Compare row back to typed-only. Build-time. */
+ *  malformed leaves it on. Off puts the Compare row back to typed-only, and back to the words
+ *  and icon labels it had before v1.74.2 (App.jsx reads the same flag for those). Build-time. */
 export function compareAutoHoursEnabled(env) {
   const v = String(env?.VITE_COMPARE_AUTO_HOURS ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
