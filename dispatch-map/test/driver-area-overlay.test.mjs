@@ -127,7 +127,7 @@ test('ON AND LOADING says it is reading — an empty map is never left to mean "
 
 test('READY names the count and the dates in words — never an ISO date', () => {
   const s = driverAreasStatus({ on: true, status: 'ready', layer: LAYER });
-  assert.equal(s.lines[0], '51 drivers · Aug 31 – Sep 25, 2026 — usual areas, not today\'s routes. Zoom in to see more names.');
+  assert.equal(s.lines[0], '51 drivers · Aug 31 – Sep 25, 2026 — usual areas, not today\'s routes. Zoom in to see more names; point at a name (or tap it) to fill in his area.');
   assert.ok(!s.lines.join(' ').match(/\d{4}-\d{2}-\d{2}/), 'no 2026-09-25 anywhere');
 });
 
@@ -135,7 +135,7 @@ test('the dates are the days the rings are BUILT FROM — today has no history u
   // The window runs to today, but the nightly capture files ET-yesterday, so the last day with
   // deliveries read is Friday the 25th on a Monday the 28th.
   const layer = { ...LAYER, window: { from: '2026-09-01', to: '2026-09-28' }, dataWindow: { from: '2026-09-01', to: '2026-09-25' } };
-  assert.equal(driverAreasStatus({ on: true, status: 'ready', layer }).lines[0], '51 drivers · Sep 1 – Sep 25, 2026 — usual areas, not today\'s routes. Zoom in to see more names.');
+  assert.equal(driverAreasStatus({ on: true, status: 'ready', layer }).lines[0], '51 drivers · Sep 1 – Sep 25, 2026 — usual areas, not today\'s routes. Zoom in to see more names; point at a name (or tap it) to fill in his area.');
 });
 
 test('who has NO ring is named, with the reason — Chad\'s own caveat about Rasko, said on screen', () => {

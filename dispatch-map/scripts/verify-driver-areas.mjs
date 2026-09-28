@@ -273,8 +273,25 @@ const circles = (page) => page.evaluate(() => {
   return (window.__shapes || []).map((c) => ({
     kind: c.kind, points: Array.isArray(c.opts.paths) ? c.opts.paths.length : 0,
     onMap: !!c.map, onLatest: c.map === latest, clickable: c.opts.clickable, zIndex: c.opts.zIndex,
-    stroke: c.opts.strokeColor, weight: c.opts.strokeWeight, fill: c.opts.fillOpacity, listeners: c.listeners,
+    stroke: c.opts.strokeColor, weight: c.opts.strokeWeight, fill: c.opts.fillOpacity, fillColor: c.opts.fillColor, listeners: c.listeners,
   }));
+});
+// The shapes on the live map right now, in the order they were drawn — a page that attached the
+// rings twice (a rebuild) keeps the discarded set in __shapes, and those are not what is on screen.
+const liveShapes = async (page) => (await circles(page)).filter((c) => c.onLatest);
+// A point on the map with no name near it, that a tap or pointer would really reach.
+const emptySpot = (page) => page.evaluate(() => {
+  const div = (window.__maps || []).at(-1)?.div;
+  if (!div) return null;
+  const r = div.getBoundingClientRect();
+  const names = [...document.querySelectorAll('[data-driver-area-name]')].filter((e) => getComputedStyle(e).display !== 'none').map((e) => e.getBoundingClientRect());
+  for (let y = r.top + 20; y < r.bottom - 20; y += 23) for (let x = r.left + 20; x < r.right - 20; x += 23) {
+    const under = document.elementFromPoint(x, y);
+    if (!under || !div.contains(under) || under.closest('button,a,input,[role]')) continue;
+    if (names.some((b) => x > b.left - 25 && x < b.right + 25 && y > b.top - 25 && y < b.bottom + 25)) continue;
+    return { x, y };
+  }
+  return null;
 });
 const names = (page) => page.evaluate(() => {
   const box = document.querySelector('[data-driver-area-names]');
@@ -295,6 +312,28 @@ const names = (page) => page.evaluate(() => {
     zIndex: box.style.zIndex || '',
   };
 });
+// A name that is on screen and not under anything else of the app's — the pointer can reach it.
+// `prefer` picks that driver if his name is reachable. Returns { text, x, y } in page pixels.
+const reachableName = (page, prefer) => page.evaluate((want) => {
+  const div = (window.__maps || []).at(-1)?.div;
+  const els = [...document.querySelectorAll('[data-driver-area-name]')].filter((e) => getComputedStyle(e).display !== 'none');
+  const ok = els.map((el) => {
+    const r = el.getBoundingClientRect(); const x = (r.left + r.right) / 2, y = (r.top + r.bottom) / 2;
+    const under = document.elementFromPoint(x, y);
+    // The overlay's own rule for "something is drawn over the name here" — skip those names.
+    const box = el.closest('[data-driver-area-names]'), pane = box && box.parentNode;
+    const covered = under && ((pane && pane.contains(under) && !box.contains(under))
+      || under.closest('button, a, input, select, textarea, .gm-style-iw, .gm-style-iw-c, .gm-style-cc, .gm-svpc'));
+    return under && div && div.contains(under) && !covered ? { text: el.textContent, x, y, under: !!under.closest('[data-driver-area-names]') } : null;
+  }).filter(Boolean);
+  return ok.find((n) => n.text === want) || ok[0] || null;
+}, prefer || null);
+// The coloured ring shapes (not the halos) of one driver, by where the layer puts them in the draw.
+const ringShapesOf = (label) => {
+  const flat = LAYER.rings.flatMap((r) => r.circles.map(() => r.label));
+  return flat.map((l, k) => (l === label ? RING_COUNT + k : -1)).filter((k) => k >= 0);
+};
+const pointedOf = (page) => page.evaluate(() => document.querySelector('[data-driver-area-names]')?.getAttribute('data-driver-area-pointed') ?? null);
 const statusOf = (page) => page.evaluate(() => {
   const el = [...document.querySelectorAll('[data-driver-areas-status]')].find((e) => e.offsetParent !== null);
   return el ? { state: el.getAttribute('data-driver-areas-status'), text: el.textContent, cls: el.className } : null;
@@ -358,6 +397,47 @@ console.log('\nDriver areas — the Map tab, desktop (1440x950)');
       n.inFloatPane && n.firstInPane && !n.zIndex
         ? ok('they sit first in the float pane, under the truck plates and hover cards, with no z-index to sink them')
         : bad(`names box placement: ${JSON.stringify(n)}`);
+    }
+
+    // POINT AT A NAME: that driver's area fills in, in his colour — every ring of his, nobody
+    // else's — and the name still takes no click. Chad, 2026-09-28: "when you hover over there name
+    // there area gets a translucent background." Denis works two areas, so both should fill.
+    const target = await reachableName(page, 'Denis Salkic');
+    if (!target) bad('no name is reachable by the pointer, so hovering went unexercised');
+    else {
+      !target.under ? ok(`a click on "${target.text}" lands on the map under it, not on the name`) : bad('the name is what a click would hit');
+      await page.mouse.move(target.x, target.y); await page.waitForTimeout(200);
+      const key = LAYER.rings.find((r) => r.label === target.text)?.key;
+      const colour = LAYER.rings.find((r) => r.label === target.text)?.colour;
+      (await pointedOf(page)) === key ? ok(`pointing at "${target.text}" points at him`) : bad(`pointed at ${await pointedOf(page)}, expected ${key}`);
+      const cs = await liveShapes(page);
+      const his = ringShapesOf(target.text);
+      his.every((k) => cs[k].fill > 0 && cs[k].fill < 0.4 && cs[k].fillColor === colour)
+        ? ok(`every ring of his fills in his colour, see-through (${his.length} ring${his.length === 1 ? '' : 's'}, fill ${cs[his[0]].fill})`)
+        : bad(`his rings: ${JSON.stringify(his.map((k) => cs[k]))}`);
+      cs.every((c, k) => his.includes(k) || c.fill === 0)
+        ? ok('and every other ring, and every halo, stays hollow')
+        : bad('another ring was filled too');
+      await page.mouse.move(3, 3); await page.waitForTimeout(200);
+      const after = await liveShapes(page);
+      (await pointedOf(page)) === '' && after.every((c) => c.fill === 0)
+        ? ok('moving the pointer off puts it back — nothing filled')
+        : bad(`after moving off: pointed ${await pointedOf(page)}, fills ${after.map((c) => c.fill).join(',')}`);
+      // Pointed at, then the rings switched off and on: nothing may come back filled, and the old
+      // rings' pointer watch must be gone (a stale one would fill shapes no longer on the map).
+      await page.mouse.move(target.x, target.y); await page.waitForTimeout(200);
+      await sw.click(); await page.waitForTimeout(500); await sw.click(); await page.waitForTimeout(900);
+      await page.mouse.move(3, 3); await page.waitForTimeout(150);
+      const again = await liveShapes(page);
+      again.length === 2 * RING_COUNT && again.every((c) => c.fill === 0) && (await pointedOf(page)) === ''
+        ? ok('pointed at, switched off and on: the rings come back hollow')
+        : bad(`after off/on: ${again.length} live shapes, fills ${again.map((c) => c.fill).join(',')}`);
+      await page.mouse.move(target.x, target.y); await page.waitForTimeout(200);
+      const fresh = await liveShapes(page);
+      ringShapesOf(target.text).every((k) => fresh[k].fill > 0) && (await circles(page)).filter((c) => !c.onLatest || !c.onMap).every((c) => c.fill === 0)
+        ? ok('and pointing again fills the new rings — never the ones taken off')
+        : bad('pointing after off/on filled the wrong shapes');
+      await page.mouse.move(3, 3); await page.waitForTimeout(150);
     }
     const s1 = await statusOf(page);
     s1 && s1.state === 'ready' && s1.text.includes(`${LAYER.rings.length} drivers · Aug 31 – Sep 25, 2026`)
@@ -437,6 +517,29 @@ console.log('\nDriver areas — the Map tab, phone (390x844)');
     (await circles(page)).filter((c) => c.onMap).length === 2 * RING_COUNT ? ok('and draws every ring on the phone\'s map') : bad('the phone did not draw every ring');
     const s = await statusOf(page);
     s && s.state === 'ready' ? ok('the phone says what is drawn') : bad(`phone status: ${JSON.stringify(s)}`);
+  }
+  await ctx.close();
+}
+{
+  // Nothing hovers on a phone: a TAP on a name fills his area, and a tap anywhere else clears it.
+  const { ctx, page } = await openApp({ viewport: { width: 390, height: 844 }, preset: { 'dispatchMap.driverAreas': 'on' } });
+  await page.waitForTimeout(1200);
+  const target = await reachableName(page);
+  if (!target) bad('no name is tappable on the phone\'s map, so the tap went unexercised');
+  else {
+    await page.touchscreen.tap(target.x, target.y); await page.waitForTimeout(300);
+    const key = LAYER.rings.find((r) => r.label === target.text)?.key;
+    const cs = await liveShapes(page);
+    (await pointedOf(page)) === key && ringShapesOf(target.text).every((k) => cs[k].fill > 0)
+      ? ok(`a tap on "${target.text}" fills his area on the phone`)
+      : bad(`tap on ${target.text}: pointed ${await pointedOf(page)}`);
+    const spot = await emptySpot(page);
+    if (!spot) bad('no empty spot on the phone\'s map to tap');
+    else await page.touchscreen.tap(spot.x, spot.y);
+    await page.waitForTimeout(300);
+    (await pointedOf(page)) === '' && (await liveShapes(page)).every((c) => c.fill === 0)
+      ? ok('and a tap off the names clears it')
+      : bad(`after a tap elsewhere: pointed ${await pointedOf(page)}`);
   }
   await ctx.close();
 }
