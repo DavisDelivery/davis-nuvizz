@@ -14,10 +14,31 @@
 //
 // ENGINE_VERSION is stamped on every proposal doc so score history can be
 // segmented when the engine's brain changes. Bump it whenever the solver,
-// scoring, zone layer, or reference selection changes behavior.
+// scoring, zone layer, or reference selection changes behavior — and a changed
+// default knob, or a changed input the solver reads, counts (2.13.1 is four of
+// those that shipped without a bump).
 
 import { getDoc, setDoc } from './firestore.mts';
 
+// 2.13.1: NO NEW RULE — THE LABEL CATCHES UP. Four changes after 2.13.0 changed how
+// the assignment (plan) side scores without a bump, so plan days scored before and
+// after them all read "2.13.0" (audit rules-tests-07):
+//   #1022 (2026-09-26) the tractor per-trip payload cap default 44,000 → 30,000 lb —
+//         the number in the 2.11.0 rule below (weight_cap_tractor_lb);
+//   #1045 (2026-09-27) 'no_53ft', the spelling the "No 53ft" dropdown writes, blocks
+//         a tractor as 'no_53' always did (TRAILER_BLOCKER_KEYS);
+//   #787  (2026-08-27) a planned row at 0,0 or out of lat/lng range leaves the day's
+//         answer key and the engine's input (hasUsableCoords); a 0,0 row used to be
+//         planned as a stop 5,800 mi out;
+//   #799  (2026-09-02) the vehicle roster reads an employee's aliases[] as well as
+//         the NuVizz alias, so a driver NuVizz renamed keeps a truck class.
+// Patch, not minor: each changes a number, a key list or an input of a rule that
+// already existed (as 2.12.1 and 2.9.1 did); none adds a rule. None of the four
+// reaches the sequencing score: nothing on its path (routing-engine-core →
+// routing-engine-solver) reads the payload cap (weight_cap_* is read only in
+// routing-assignment-solver), the blocker keys or the coordinate guard, and the
+// roster's truck_class is recorded on a sequencing proposal but never ranks its
+// references (pickReferences).
 // 2.13.0: RANK-AWARE CANDIDATE COST ON (w_candidate_rank 0→2) — the experiment
 // the 2.9.1 revert prescribed, validated on the 06-29→07-20 benchmark by the
 // labeled dry-run harness: agreement 26.5→33.2% (known 30.2→37.8%), better on
@@ -35,7 +56,7 @@ import { getDoc, setDoc } from './firestore.mts';
 // the tractor figure was 44,000 until Chad, 2026-09-26: “10,000 pound limit on box trucks and 30,000 on tractors is the weight limits.”)
 // 2.10.0: execution-evidence gate — replays count only rows with a same-day delivery stamp
 // (DAWSONVILLE/CRUMPTON 07-28: next-day Estes freight sealed into the day inflated actuals).
-export const ENGINE_VERSION = '2.13.0';
+export const ENGINE_VERSION = '2.13.1';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
