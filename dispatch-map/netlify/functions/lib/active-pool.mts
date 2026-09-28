@@ -44,6 +44,9 @@ export const POOL_LIVE_FIELDS = [
   'loadNbr', 'routeName', 'routeSeq', 'driverName', 'driverUserName', 'driverId',
   'listUpdatedDTTM', 'shipmentNbr', 'isAttempt',
   'weight', 'cartons', 'volume', 'scheduledFrom', 'plannedEtaDTTM',
+  // Which load holds the order and on which day (lib/route-load-day.mts) — live, so the Routing
+  // window's overlay carries this scan's answer and never a stale one.
+  'loadDay', 'rosterLoadNbr', 'rosterLoadId', 'rosterLoadVia', 'heldOn',
 ] as const;
 export const POOL_STATIC_FIELDS = [
   'stopId', 'businessName', 'addr1', 'addr2', 'city', 'state', 'zip', 'stopType', 'proNbr',

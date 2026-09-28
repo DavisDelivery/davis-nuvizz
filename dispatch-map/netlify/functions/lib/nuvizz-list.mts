@@ -19,6 +19,7 @@ import { finishedGuardEnabled } from './finished-guard.mts';
 // firestore.mts can ask the same question without importing this one (which imports it).
 // Re-exported here so every existing caller keeps its import path unchanged.
 import { isHashLikeId, looksLikeLoadNbr } from './route-identity.mts';
+import { routeLoadDayEnabled, ROUTE_LOAD_FIELDS } from './route-load-day.mts';
 export { isHashLikeId, looksLikeLoadNbr };
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
@@ -232,8 +233,12 @@ export function parseReqDate(s: any): string | null {
   return `${y}-${String(+m[1]).padStart(2, '0')}-${String(+m[2]).padStart(2, '0')}`;
 }
 
-// Intermediate row → board-shaped stop (coords filled later). routeName doubles as
-// the load id since the list carries the load NAME, not the numeric loadNbr.
+// Intermediate row → board-shaped stop (coords filled later). The stop LIST (77128) names a stop's
+// route by NAME only, so `loadNbr` here is the route name ("MARCUS") — every screen groups by it.
+// The load NUMBER for the day ("DAVIS000204645") comes from the ROSTER (saved search 35833, per day,
+// lib/nuvizz-loads.mts), and the scan writes the one that holds each routed order onto the row as
+// `rosterLoadNbr` / `rosterLoadId` (lib/route-load-day.mts). See CLAUDE.md, "THE ROSTER SCAN HAS THE
+// LOAD NUMBERS" — the roster has them for every load on every day; that is settled, never a question.
 export function toBoardStop(r: any): any {
   const hasRoute = !!String(r.routeName || '').trim();
   const { status, planned } = statusFromCode(r.statusCode, hasRoute);
@@ -344,6 +349,10 @@ export function pastOverrideClampEnabled(env: any = process.env): boolean {
 // today's route (Mitchell's 007137332 / 007137372). Such stops are clamped forward to `today`
 // (ET). Finished stops keep their real day so history/analytics stay accurate; open stops with
 // no route are left where they are. Stops with no determinable day are dropped.
+// SINCE v1.82.0 the clamp is only the FALLBACK: the scan first reads which load holds a carried order
+// (the roster's load number + one /load/info, lib/route-load-day.mts) and files it on THAT load's day,
+// or shows it unplanned when it is still on a past day's load. The clamp applies only when that read
+// could not settle it.
 // PURE: the single board day (YYYY-MM-DD) a stop belongs on — Estimated Arrival, then
 // Requested Date, then scheduled — with the live-route clamp described above. Returns
 // null when no day can be determined. This is the ONE authority for "which day is this
@@ -368,6 +377,20 @@ export function boardDayFor(s: any, today: string = etDayString(), overrides?: R
   if (set && !finishedEarly && !pastOnRoute) return set;
   let d = s.boardDate || s.requestedDate || s.scheduledDate || null;
   const finished = finishedEarly;
+  // AN ORDER ON A LOAD IS FILED ON THAT LOAD'S DAY (v1.82.0, lib/route-load-day.mts). Chad: "It
+  // shouldn't move the day at all" — the clamp below invented "today" for every open routed order
+  // dated in the past, which put Friday's orders planned onto MONDAY's MARCUS on Saturday's board.
+  // The scan now reads which load actually holds such an order (the roster's load number, one
+  // /load/info) and stamps the answer before bucketing:
+  //   • loadDay  — it is ON a load from today on: file it on that load's day;
+  //   • heldOn   — it is still on its own past day's load and no load from today on holds it:
+  //                it is shown UNPLANNED, in today's pool, where the day's planning happens.
+  // Honoured only while the row still says what the stamp was written for (planned / unplanned),
+  // so a stale stamp can never move a row. NUVIZZ_ROUTE_LOAD_DAY=off ignores both.
+  if (!finished && routeLoadDayEnabled()) {
+    if (s.isPlanned === true && typeof s.loadDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.loadDay)) return s.loadDay;
+    if (s.isUnplanned === true && s.heldOn && typeof s.heldOn === 'object') return today;
+  }
   if (!finished && onRoute && (!d || d < today)) d = today; // live route work → today, not the past
   // A DATELESS open order is live work too — NuVizz's "-1" re-delivery duplicates arrive with
   // no Estimated Arrival and no Requested Date, and returning null here made bucketByDate drop
@@ -700,7 +723,9 @@ export async function fetchSavedSearchRaw(
 // list's Stop-Id column proves the rows are different records, the LIVE (non-terminal) one
 // keeps the number, and the survivor is flagged dupNbr so the card can say what's going on.
 // Same-id overwrites (the normal active→completed lifecycle) behave exactly as before.
-export function mergeTwoScan(activeRows: any[], completedRows: any[], overrides?: Record<string, string> | null): Map<string, any[]> {
+// The deduped board rows of the two pulls, NOT yet filed by day — so the scan can stamp which
+// load holds an order (lib/route-load-day.mts) before bucketByDate files it.
+export function dedupeTwoScan(activeRows: any[], completedRows: any[]): any[] {
   const byNbr = new Map<string, any>();
   const put = (s: any) => {
     if (!s.stopNbr) return;
@@ -734,7 +759,10 @@ export function mergeTwoScan(activeRows: any[], completedRows: any[], overrides?
   };
   for (const r of activeRows) put(toBoardStop(r));
   for (const r of completedRows) put(toBoardStop(r));
-  return bucketByDate([...byNbr.values()], etDayString(), overrides);
+  return [...byNbr.values()];
+}
+export function mergeTwoScan(activeRows: any[], completedRows: any[], overrides?: Record<string, string> | null): Map<string, any[]> {
+  return bucketByDate(dedupeTwoScan(activeRows, completedRows), etDayString(), overrides);
 }
 
 // Run both saved searches (in parallel) → per-date board buckets. `overrides` are the
@@ -749,13 +777,19 @@ export interface TwoScanPull {
 }
 /** Both saved searches — TWO requests, whatever the arrival window is set to — plus whether
  *  either answer was cut off at the row cap. */
-export async function twoScanPull(overrides?: Record<string, string> | null): Promise<TwoScanPull> {
+export async function twoScanPull(overrides?: Record<string, string> | null, opts?: {
+  /** runs on the deduped rows BEFORE they are filed by day (route-load-day stamps). A failure
+   *  here leaves the rows as they came: filing then falls back exactly to the old rule. */
+  prepare?: (rows: any[]) => Promise<void>;
+}): Promise<TwoScanPull> {
   const [active, completed] = await Promise.all([
     fetchSavedSearchPull(SAVED_SEARCHES.active),
     fetchSavedSearchPull(SAVED_SEARCHES.completed),
   ]);
+  const rows = dedupeTwoScan(active.rows, completed.rows);
+  if (opts?.prepare) { try { await opts.prepare(rows); } catch (e: any) { console.warn(`[scan] two-scan prepare failed — filing unchanged: ${e?.message}`); } }
   return {
-    buckets: mergeTwoScan(active.rows, completed.rows, overrides),
+    buckets: bucketByDate(rows, etDayString(), overrides),
     truncated: active.truncated || completed.truncated,
     activeCount: active.rows.length, completedCount: completed.rows.length,
   };
@@ -792,6 +826,9 @@ export function etDateForTargetUTC(targetDateUTC: string, todayUTC: string, etTo
 // timestamps, …) while the list keeps status/load/driver current.
 export const LIVE_LIST_FIELDS = [
   'status', 'normalizedStatus', 'isPlanned', 'isUnplanned',
+  // Which load holds the order, from the roster + one /load/info (lib/route-load-day.mts). LIVE:
+  // this scan's answer or nothing — a previous scan's stamp must never ride onto a fresh row.
+  ...ROUTE_LOAD_FIELDS,
   'loadNbr', 'routeName', 'driverName', 'driverUserName', 'driverId',
   'scheduledDate', 'requestedDate', 'boardDate', 'listUpdatedDTTM', 'source',
   // Shipment number + its derived attempt flag are LIVE: the "ATT" marker appears DURING the
@@ -1042,6 +1079,8 @@ export function absentPlanDemoteCandidate(p: any): any {
     ...p,
     status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false, isUnplanned: true,
     loadNbr: null, routeName: null, routeSeq: null, driverName: null, driverUserName: null,
+    // Which load held it (lib/route-load-day.mts) is part of the plan it no longer has.
+    loadDay: null, rosterLoadNbr: null, rosterLoadId: null, rosterLoadVia: null, heldOn: null,
     absentFromPull: true,   // diagnostic only — never read as truth, the verify decides
   };
 }

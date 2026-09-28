@@ -282,10 +282,13 @@ export function shouldServeCachedRoster(
   try { return etDayOf(at) === etDayOf(now); } catch { return false; }
 }
 
-// A board stop's load identity, when known (enriched stops carry raw.load.loadId; the
-// bare list rows do not). null when the stop has no load id yet.
+// A board stop's load identity, when known. FIRST the load the scan resolved for it this run
+// from the roster (rosterLoadId, lib/route-load-day.mts — the load that holds it on the day it is
+// filed on); then the one-time enrichment's raw.load.loadId, which is the load it was on WHEN IT
+// WAS FIRST READ and goes stale the moment the order is moved to another day's load; then a bare
+// loadId. null when the stop has no load id yet.
 export function stopLoadId(s: any): string | null {
-  const id = s?.raw?.load?.loadId ?? s?.loadId ?? null;
+  const id = s?.rosterLoadId ?? s?.raw?.load?.loadId ?? s?.loadId ?? null;
   return id ? String(id) : null;
 }
 
