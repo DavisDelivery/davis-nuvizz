@@ -50,6 +50,7 @@ import {
 } from './routing-assignment-solver.mts';
 import { solveRoute, haversineMiles, travelMinutesForMiles, type EngineStop } from './routing-engine-solver.mts';
 import { equipmentReqsFrom, TRAILER_BLOCKERS } from './routing-equipment.mts';
+import { buildRules as buildRulesSwitches } from './routing-build-rules.mts';
 import { equipmentOk } from './routing-constraints.mts';
 import { insertByWindow } from './routing-repair.mts';
 import {
@@ -421,6 +422,10 @@ export interface BuildCleanupOpts {
   // Step 3's two toggles, read only under the Build rules.
   tractorOnlyGreen?: boolean;
   windowMode?: 'strict' | 'advisory';
+  // The stops the Selected panel paints GREEN (the browser's stopTractorFriendly), read by
+  // "only green on a 53′" exactly as the Build button reads them — the same list, the same
+  // switch (ROUTING_BUILD_GREEN_MATCHES_PANEL, lib/routing-build-rules.mts). null → hand mark only.
+  panelGreenStopNbrs?: Iterable<string> | null;
   // ROUTING_TIME_RESTRICTIONS, the Build button's own clock switch. Absent → the env.
   timeRestrictions?: boolean;
   // The clock pass's time budget (CLEANUP_CLOCK_MS). Tests set 0 to prove the out-of-time
@@ -460,6 +465,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   // ── WHICH RULES — decided once, reported back, never assumed (see fillMyLoadsBuildRules) ──
   const buildRules = (opts.rules ?? (fillMyLoadsBuildRules() ? 'build' : 'engine')) === 'build';
   const tractorOnlyGreen = buildRules && opts.tractorOnlyGreen === true;
+  const panelGreen = buildRules && opts.panelGreenStopNbrs ? new Set([...opts.panelGreenStopNbrs].map(String)) : null;
   const windowMode: 'strict' | 'advisory' = opts.windowMode === 'strict' ? 'strict' : 'advisory';
   const timeOn = buildRules && (opts.timeRestrictions ?? timeRestrictionsEnabled());
   // The WHOLE customer note (noteByKey) is what the Build rules read — the eligibility mark
@@ -649,7 +655,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   type Elig = { reqs: string[]; ok: string[]; reasons: string[]; toggleOnly: boolean };
   const eligibility = (s: AssignStop): Elig => {
     const note = noteOf(s.matchKey);
-    const reqs = equipmentReqsFrom(note, { tractorOnlyGreen });
+    const reqs = equipmentReqsFrom(note, { tractorOnlyGreen, panelGreen: !!panelGreen?.has(s.id) });
     // The same stop with step 3's toggle off, to tell a truck the TOGGLE excludes from one its
     // own equipment excludes — the first is fixed by a green mark or a checkbox, the second
     // only by a different truck, and the dispatcher needs to know which he is looking at.
@@ -1450,7 +1456,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
   return {
     ok: true,
     rules: buildRules ? 'build' : 'engine',
-    ...(buildRules ? { rules_detail: { tractor_only_green: tractorOnlyGreen, window_mode: windowMode, time_restrictions: !!timeOn } } : {}),
+    ...(buildRules ? { rules_detail: { tractor_only_green: tractorOnlyGreen, window_mode: windowMode, time_restrictions: !!timeOn, green_matches_panel: !!panelGreen } } : {}),
     tenant, date, engine_version: ENGINE_VERSION, generated_at: nowIso,
     pool: {
       board_stops: (liveStops || []).length, unplanned: unplannedRows.length,
@@ -1476,7 +1482,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
 // ZERO NuVizz calls — readStopsForPlanning and loadPlanInputs are Firestore-only.
 export async function runCleanup(
   tenant: string, date: string, trucks: CleanupTruckInput[], excludeStopNbrs?: string[],
-  ruleOpts: { tractorOnlyGreen?: boolean; windowMode?: 'strict' | 'advisory' } = {},
+  ruleOpts: { tractorOnlyGreen?: boolean; windowMode?: 'strict' | 'advisory'; panelGreenStopNbrs?: string[] | null } = {},
 ): Promise<{ ok: true; plan: CleanupResult } | { ok: false; status: number; error: string }> {
   if (!Array.isArray(trucks) || !trucks.length) {
     return { ok: false, status: 400, error: 'pick at least one load to route onto' };
@@ -1522,6 +1528,9 @@ export async function runCleanup(
       rules: fillMyLoadsBuildRules() ? 'build' : 'engine',
       tractorOnlyGreen: ruleOpts.tractorOnlyGreen === true,
       windowMode: ruleOpts.windowMode === 'strict' ? 'strict' : 'advisory',
+      // The panel's green, only while ROUTING_BUILD_GREEN_MATCHES_PANEL is on — the switch
+      // that governs the Build button's reading of it, so both buttons move together.
+      panelGreenStopNbrs: buildRulesSwitches().greenMatchesPanel ? (ruleOpts.panelGreenStopNbrs ?? null) : null,
     }),
   };
 }

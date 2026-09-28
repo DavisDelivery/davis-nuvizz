@@ -32,6 +32,7 @@ export interface PipelineStopInput {
   lat: number;
   lng: number;
   pallets?: number | null;
+  cartons?: number | null;       // NuVizz totalCartons = the real skid count (freight-geometry)
   weight?: number | null;
   weightUOM?: string | null;
   stopDetails?: any[];
