@@ -18,14 +18,18 @@ import assert from 'node:assert/strict';
 import {
   routeLoadDayEnabled, routeLoadDayReadMax, isCarryCandidate, shownCounts, hasRoom, countAgrees, liveLoadsNamed, ownDayLoad, holds, readUsable,
   readsWanted, resolveRow, stampResolution, stampRosterNames, applyRouteLoadDay, membershipFor,
-  listStamp, pullStamp, etMinuteOf, coverStamp, memoValidFor,
-  ROUTE_LOAD_FIELDS, MEMO_REFRESH_CURRENT_MS, MEMO_MAX_CURRENT_MS, MEMO_MAX_PAST_MS, READ_SETTLE_MS,
+  listStamp, pullStamp, etMinuteOf, coverStamp, memoValidFor, inRepeatedHour, stickyFor, pinsFor, routeLoadHeldEnabled,
+  ROUTE_LOAD_FIELDS, MEMO_MAX_CURRENT_MS, MEMO_MAX_PAST_MS, READ_SETTLE_MS, STICKY_MAX_MS, UNUSABLE_BACKOFF_MS,
 } from '../netlify/functions/lib/route-load-day.mts';
 import { stampedLoadOf, heldLoadOf } from '../src/lib/route-load-stamp.js';
 import { boardDayFor, bucketByDate, dedupeTwoScan, mergeTwoScan, LIVE_LIST_FIELDS, mergeEnrich, absentPlanDemoteCandidate } from '../netlify/functions/lib/nuvizz-list.mts';
 import { stopLoadId, dropForeignLoadStops } from '../netlify/functions/lib/nuvizz-loads.mts';
 import { LEAN_STOP_FIELDS } from '../netlify/functions/lib/board-fields.mts';
 import { POOL_LIVE_FIELDS } from '../netlify/functions/lib/active-pool.mts';
+
+// "Shown unplanned" (NUVIZZ_ROUTE_LOAD_HELD) is OFF by default in production; most of this file
+// exercises it, so it is ON here — each test that pins the default turns it off itself.
+process.env.NUVIZZ_ROUTE_LOAD_HELD = 'on';
 
 const SAT = '2026-09-26';
 const FRI = '2026-09-25';
@@ -54,7 +58,11 @@ const MON_DARVIN = new Set(['007182149', '7182149', '007182001', '7182001']);
 const FRI_TERRANCE = new Set(['007182123', '7182123']);
 const FRI_MARCUS = new Set(['007182304', '7182304']);   // the parent, delivered Friday
 
-const ctx = (members, extra = {}) => ({ today: SAT, horizon: HORIZON, rosters: ROSTERS(), members, ...extra });
+// Every roster here was captured Saturday 04:00 EDT — after every order's last change (Friday).
+const ROSTER_AT_MS = Date.parse('2026-09-26T08:00:00Z');
+const ALWAYS_AT = { get: () => ROSTER_AT_MS };
+const HELD = { heldEnabled: true, rosterAt: () => ROSTER_AT_MS };
+const ctx = (members, extra = {}) => ({ today: SAT, horizon: HORIZON, rosters: ROSTERS(), members, heldEnabled: true, rosterAt: ALWAYS_AT, ...extra });
 // A stored read taken at `atMs`, covering every change NuVizz stamped before `cover`.
 const memoOf = (set, { atMs = NOW - 60_000, trips = null, cover = '2026-09-26T20:00' } = {}) => ({ at: new Date(atMs).toISOString(), trips, members: [...set], cover });
 
@@ -181,7 +189,7 @@ test('read order: a later load with room, then today\'s, then a later load whose
   const rosters = new Map([[FRI, [L('MARCUS', 'F', 'f', 5)]], [SAT, [L('MARCUS', 'S', 's', 2)]], [MON, [L('MARCUS', 'M', 'm', 1)]], [TUE, [L('MARCUS', 'T', 't', 9)]]]);
   const rows = [row('x', 'MARCUS'), row('m1', 'MARCUS', { own: MON })];
   const shown = shownCounts(rows, (r) => boardDayFor(r, SAT, null));
-  const w = readsWanted(rows, { today: SAT, horizon: HORIZON, rosters, members: new Map(), shown, phase: 'current' }).map((l) => l.loadNbr);
+  const w = readsWanted(rows, { today: SAT, horizon: HORIZON, rosters, members: new Map(), shown, heldEnabled: true, phase: 'current' }).map((l) => l.loadNbr);
   assert.deepEqual(w, ['T', 'S', 'M'], 'Tuesday has room (9 vs 0); Saturday disagrees (2 vs 1); Monday "looks full" (1 vs 1) and is read all the same');
 });
 
@@ -294,19 +302,42 @@ test('the load anchor keeps an order filed on Monday\'s load even when its one-t
 
 test('every other routed row is named from the roster of the day it is filed on — only when the roster agrees', () => {
   const mon = [row('a', 'MARCUS', { own: MON }), row('b', 'MARCUS', { own: MON })];
-  const n = stampRosterNames(mon, (r) => r.boardDate, ROSTERS());
+  const n = stampRosterNames(mon, (r) => r.boardDate, ROSTERS(), null, { rosterAt: ALWAYS_AT });
   assert.equal(n, 2);
   assert.equal(mon[0].rosterLoadNbr, 'DAVIS000204645');
   assert.equal(mon[0].rosterLoadVia, 'roster-name');
   assert.equal(mon[0].rosterLoadRoute, 'MARCUS');
   // More rows than the load counts → name-collision's case, not ours: nothing stamped.
   const tooMany = Array.from({ length: 15 }, (_, i) => row(`x${i}`, 'DARVIN', { own: MON }));
-  assert.equal(stampRosterNames(tooMany, (r) => r.boardDate, ROSTERS()), 0);
+  assert.equal(stampRosterNames(tooMany, (r) => r.boardDate, ROSTERS(), null, { rosterAt: ALWAYS_AT }), 0);
   // A contested name: nothing stamped.
   const c = new Map([[MON, [L('ESTES', 'A', 'a', 5), L('ESTES', 'B', 'b', 5)]]]);
-  assert.equal(stampRosterNames([row('e', 'ESTES', { own: MON })], (r) => r.boardDate, c), 0);
+  assert.equal(stampRosterNames([row('e', 'ESTES', { own: MON })], (r) => r.boardDate, c, null, { rosterAt: ALWAYS_AT }), 0);
   // A day with no roster: nothing stamped.
-  assert.equal(stampRosterNames([row('f', 'MARCUS', { own: '2026-10-05' })], (r) => r.boardDate, ROSTERS()), 0);
+  assert.equal(stampRosterNames([row('f', 'MARCUS', { own: '2026-10-05' })], (r) => r.boardDate, ROSTERS(), null, { rosterAt: ALWAYS_AT }), 0);
+  // No capture time for the day's roster: its count cannot be vouched for — nothing stamped.
+  assert.equal(stampRosterNames([row('g', 'MARCUS', { own: MON })], (r) => r.boardDate, ROSTERS()), 0);
+});
+
+test('REVIEW #2 (round 2): the count counts EVERY open routed row on the day, the ones not being named included', () => {
+  // Monday's MARCUS counts 10; the board files 11 MARCUS rows on Monday — 9 of its own and 2 carried
+  // orders the resolver could not place. At least one of the 11 is not on that load: name nobody.
+  const own = Array.from({ length: 9 }, (_, i) => row(`MON-${i}`, 'MARCUS', { own: MON }));
+  const carried = [row('C1', 'MARCUS', { own: MON }), row('C2', 'MARCUS', { own: MON })];
+  const rosters = new Map([[MON, [L('MARCUS', 'DAVIS000204645', 'm', 10)]]]);
+  assert.equal(stampRosterNames([...own, ...carried], (r) => r.boardDate, rosters, new Set(carried), { rosterAt: ALWAYS_AT }), 0);
+  assert.equal(own[0].rosterLoadNbr, undefined);
+});
+
+test('REVIEW #17 (round 2): an order changed after the roster was counted blocks the name — its load may be another day\'s', () => {
+  // Today's MARCUS was counted at 13:00; at 15:10 one of its orders was pushed onto tomorrow's MARCUS.
+  // The count cannot see an order that left after it was taken: nobody on the day is named.
+  const rows = [row('A', 'MARCUS', { own: MON }), row('B', 'MARCUS', { own: MON, upd: '2026-09-26T15:10:00' })];
+  const rosters = new Map([[MON, [L('MARCUS', 'DAVIS000204645', 'm', 2)]]]);
+  const at = { get: () => Date.parse('2026-09-26T17:00:00Z') };   // 13:00 EDT
+  assert.equal(stampRosterNames(rows, (r) => r.boardDate, rosters, null, { rosterAt: at }), 0);
+  const later = { get: () => Date.parse('2026-09-26T20:00:00Z') };   // re-counted at 16:00 EDT
+  assert.equal(stampRosterNames(rows, (r) => r.boardDate, rosters, null, { rosterAt: later }), 2);
 });
 
 test('the memo answers for an order only while NuVizz has not touched that order since the read', () => {
@@ -357,7 +388,7 @@ test('Saturday 9/26 replayed: MARCUS\'s two and DARVIN\'s one file on Monday; TE
   const rosters = ROSTERS();
   const out = await applyRouteLoadDay(rows, {
     today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null, readMembers: reader(calls),
-    memo: {}, readMax: 10, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null),
+    memo: {}, readMax: 10, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null), ...HELD,
   });
   const by = Object.fromEntries(rows.map((r) => [r.stopNbr, r]));
   assert.equal(by['007182304-1'].loadDay, MON);
@@ -411,7 +442,7 @@ test('the read budget is a hard cap, and an order the budget did not reach keeps
 test('the memo answers the next scan for nothing, and a spent budget keeps the answer rather than flipping', async () => {
   const memo = {};
   const rosters = ROSTERS();
-  const deps = (calls, readMax, nowMs) => ({ today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null, readMembers: reader(calls), memo, readMax, nowMs });
+  const deps = (calls, readMax, nowMs) => ({ today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null, readMembers: reader(calls), memo, readMax, nowMs, ...HELD });
   const first = []; const out1 = await applyRouteLoadDay(saturdayPull(), deps(first, 10, NOW));
   assert.deepEqual(memo, {}, 'the memo passed in is not written to');
   Object.assign(memo, out1.memoUpdates);   // what the scan's merge-write does
@@ -420,13 +451,13 @@ test('the memo answers the next scan for nothing, and a spent budget keeps the a
   assert.equal(out2.summary.load, 3);
   assert.equal(out2.summary.held, 1);
   assert.equal(out2.readThisRun.size, 0, 'nothing READ this run — nothing to share as a read');
-  // Seven hours on: past the refresh age, inside the max age, budget zero — the stored reads still
-  // answer for orders NuVizz has not touched, so nothing flips.
-  const third = []; const out3 = await applyRouteLoadDay(saturdayPull(), deps(third, 0, NOW + 7 * 60 * 60 * 1000));
+  // Seven hours on, with reads to spare: nothing is re-read while nothing has touched the orders —
+  // there is no time-based refresh any more (REVIEW #15: it spent the whole budget every scan).
+  const third = []; const out3 = await applyRouteLoadDay(saturdayPull(), deps(third, 4, NOW + 7 * 60 * 60 * 1000));
   assert.equal(third.length, 0);
   assert.equal(out3.summary.load, 3);
   assert.equal(out3.summary.held, 1);
-  assert.ok(out3.summary.staleMemo > 0);
+  assert.equal(out3.summary.memoHits, 4);
   // …and past the max age they answer for nothing: the old filing, never a guess.
   const fourth = []; const out4 = await applyRouteLoadDay(saturdayPull(), deps(fourth, 0, NOW + MEMO_MAX_PAST_MS + 60_000));
   assert.equal(out4.summary.load + out4.summary.held, 0);
@@ -456,7 +487,7 @@ test('REVIEW #1/#16 (the blocker): an order MOVED after the read is never answer
   const out = await applyRouteLoadDay(board, {
     today: TUE_, horizon: [TUE_, WED, THU], readRoster: async (d) => rosters.get(d) ?? null,
     readMembers: async (n) => { calls.push(n); return truth[n] ?? null; }, memo, readMax: 4, nowMs: now,
-    dayOf: (r) => boardDayFor(r, TUE_, null),
+    dayOf: (r) => boardDayFor(r, TUE_, null), heldEnabled: true, rosterAt: () => now,
   });
   const l1 = board.find((r) => r.stopNbr === 'L1');
   assert.equal(out.summary.held, 0, 'never "held" on the word of a read taken before the move');
@@ -466,7 +497,7 @@ test('REVIEW #1/#16 (the blocker): an order MOVED after the read is never answer
   assert.ok(calls.includes('WED_M'));
   // With no reads to spend, the same order is simply left as filed — still not "held".
   const board2 = board.map((r) => ({ ...r, loadDay: undefined, rosterLoadNbr: undefined, rosterLoadId: undefined, rosterLoadVia: undefined, rosterLoadRoute: undefined, heldOn: undefined, isPlanned: true, isUnplanned: false, loadNbr: 'MARCUS', routeName: 'MARCUS' }));
-  const out2 = await applyRouteLoadDay(board2, { today: TUE_, horizon: [TUE_, WED, THU], readRoster: async (d) => rosters.get(d) ?? null, readMembers: async () => null, memo, readMax: 0, nowMs: now });
+  const out2 = await applyRouteLoadDay(board2, { today: TUE_, horizon: [TUE_, WED, THU], readRoster: async (d) => rosters.get(d) ?? null, readMembers: async () => null, memo, readMax: 0, nowMs: now, heldEnabled: true, rosterAt: () => now });
   assert.equal(out2.summary.held, 0);
   assert.equal(out2.summary.unresolved, 1);
 });
@@ -485,6 +516,7 @@ test('REVIEW #6: a swap on today\'s load (count unchanged) is seen — the swapp
   const out = await applyRouteLoadDay(rows, {
     today: MON_, horizon: [MON_, TUE, '2026-09-30'], readRoster: async (d) => rosters.get(d) ?? null,
     readMembers: async () => null, memo, readMax: 0, nowMs: Date.parse('2026-09-28T12:15:00Z'), dayOf: (r) => boardDayFor(r, MON_, null),
+    heldEnabled: true, rosterAt: () => Date.parse('2026-09-28T12:00:00Z'),
   });
   const k = rows.find((r) => r.stopNbr === 'K');
   const x = rows.find((r) => r.stopNbr === 'X');
@@ -500,11 +532,12 @@ test('REVIEW #2: a carried order the resolver could not place is never named fro
   const rows = [row('A', 'MARCUS', { own: SAT }), row('B', 'MARCUS', { own: SAT }), row('C', 'MARCUS', { own: SAT }), row('WHITING', 'MARCUS')];
   const out = await applyRouteLoadDay(rows, {
     today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null, readMembers: async () => null,
-    memo: {}, readMax: 0, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null),
+    memo: {}, readMax: 0, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null), rosterAt: () => ROSTER_AT_MS,
   });
   const w = rows.find((r) => r.stopNbr === 'WHITING');
   assert.equal(out.summary.unresolved, 1);
   assert.equal(w.rosterLoadNbr, undefined, 'no Saturday load number on an order that may be on Monday\'s');
+  // …and the count still counts it: 3 own + WHITING = 4 against Saturday's 5, so Saturday's own are named.
   assert.equal(rows[0].rosterLoadNbr, 'DAVIS000204536', 'Saturday\'s own orders are still named');
   assert.equal(out.summary.rosterNamed, 3);
 });
@@ -516,7 +549,7 @@ test('REVIEW #3: no past-load read is spent while a load from today on failed to
   const out = await applyRouteLoadDay(rows, {
     today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null,
     readMembers: async (n) => { calls.push(n); return n === 'DAVIS3' ? null : new Set(['other']); },
-    memo: {}, readMax: 10, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null),
+    memo: {}, readMax: 10, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null), ...HELD,
   });
   assert.ok(!calls.includes('DAVIS1'), `Friday's load not read: ${calls.join(',')}`);
   assert.equal(out.summary.unresolved, 1);
@@ -524,17 +557,39 @@ test('REVIEW #3: no past-load read is spent while a load from today on failed to
 });
 
 test('REVIEW #11: a read that FAILS falls back to a stored read that still answers for the order, not to the old filing', async () => {
-  const rows = [row('007182304-1', 'MARCUS')];
+  // Two orders on Monday's MARCUS: POREX untouched since the stored read, WHITING touched after it
+  // (so the load is read again for WHITING). The read fails: POREX keeps its answer, WHITING waits.
+  const rows = [row('007182396', 'MARCUS'), row('007182304-1', 'MARCUS', { upd: '2026-09-26T20:10:00' })];
   const rosters = ROSTERS();
-  const memo = { DAVIS000204645: memoOf(MON_MARCUS, { atMs: NOW - 7 * 60 * 60 * 1000 }) };   // past refresh age → re-read wanted
+  const memo = { DAVIS000204645: memoOf(MON_MARCUS, { atMs: NOW - 3 * 60 * 60 * 1000, cover: '2026-09-26T17:30' }) };
   const calls = [];
   const out = await applyRouteLoadDay(rows, {
     today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null,
     readMembers: async (n) => { calls.push(n); return null; }, memo, readMax: 4, nowMs: NOW,
   });
-  assert.ok(calls.includes('DAVIS000204645'), 'the stale read was due a refresh, and the refresh was tried');
-  assert.equal(rows[0].loadDay, MON, 'the refresh failed; the stored read still answers');
-  assert.equal(out.summary.staleMemo, 1);
+  assert.ok(calls.includes('DAVIS000204645'), 'read again for the order touched since');
+  assert.equal(rows[0].loadDay, MON, 'the read failed; the stored read still answers for the untouched order');
+  assert.equal(rows[1].loadDay, undefined);
+  assert.match(out.summary.unresolvedSample.join(' | '), /read this run but the read failed or came back empty: DAVIS000204645/, 'REVIEW #12 (round 2): the ledger says the read FAILED, not that it was never made');
+  // The failure backs the load off, and keeps what the stored read knew.
+  assert.equal(out.memoUpdates.DAVIS000204645.unusableAt, new Date(NOW).toISOString());
+  assert.deepEqual(out.memoUpdates.DAVIS000204645.members, [...MON_MARCUS]);
+});
+
+test('REVIEW #1/#10 (round 2): a failed or empty read is not re-paid on every scan — it backs off an hour', async () => {
+  const rosters = ROSTERS();
+  rosters.set(TUE, [L('MARCUS', 'DAVIS000204700', 'tue', 5)]);          // Tuesday's MARCUS, emptied since its morning count
+  const memo = {};
+  const deps = (calls, nowMs) => ({ today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null,
+    readMembers: async (n) => { calls.push(n); return n === 'DAVIS000204645' ? new Set(['zzz']) : new Set(); }, memo, readMax: 4, nowMs });
+  const c1 = []; const o1 = await applyRouteLoadDay([row('007182304-1', 'MARCUS')], deps(c1, NOW));
+  assert.ok(c1.includes('DAVIS000204700'));
+  assert.equal(o1.summary.unusableReads, 1);
+  Object.assign(memo, o1.memoUpdates);
+  const c2 = []; await applyRouteLoadDay([row('007182304-1', 'MARCUS')], deps(c2, NOW + 15 * 60_000));
+  assert.ok(!c2.includes('DAVIS000204700'), `not re-read inside the back-off: ${c2.join(',')}`);
+  const c3 = []; await applyRouteLoadDay([row('007182304-1', 'MARCUS')], deps(c3, NOW + UNUSABLE_BACKOFF_MS + 60_000));
+  assert.ok(c3.includes('DAVIS000204700'), 'tried again after it');
 });
 
 test('REVIEW #12: an unreadable memo moves nothing and spends nothing — it is never an empty memo', async () => {
@@ -563,7 +618,7 @@ test('REVIEW #14: a morning of planning cannot starve the past-load read — one
   const out = await applyRouteLoadDay(rows, {
     today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null,
     readMembers: async (n) => { calls.push(n); return n === 'DAVIS000204484' ? FRI_TERRANCE : new Set(['zzz']); },
-    memo, readMax: 2, nowMs: NOW,
+    memo, readMax: 2, nowMs: NOW, ...HELD,
   });
   assert.equal(calls.length, 2);
   assert.equal(calls[1], 'DAVIS000204484', 'the second read went to the past load');
@@ -589,11 +644,19 @@ test('the shared readers honour a stamp only while the row still says what it sa
   assert.deepEqual(stampedLoadOf(r), { loadNbr: 'DAVIS000204645', loadId: 'id-mon-marcus', day: MON, via: 'membership', route: 'MARCUS' });
   assert.equal(stampedLoadOf({ ...r, routeName: 'JOE', loadNbr: 'JOE' }), null, 'saved onto JOE');
   assert.equal(stampedLoadOf({ ...r, isPlanned: false, isUnplanned: true, routeName: null, loadNbr: null }), null, 'un-planned by a Save');
+  // REVIEW #18 (round 2): a Save from Saturday's MARCUS onto Monday's MARCUS keeps the route NAME —
+  // the clock tells it: a Save after the stamp voids it.
+  const at = '2026-09-26T20:00:00.000Z';
+  assert.ok(stampedLoadOf({ ...r, rosterLoadAt: at, board_write_at: '2026-09-26T19:00:00.000Z' }), 'a Save before the stamp: still good');
+  assert.equal(stampedLoadOf({ ...r, rosterLoadAt: at, board_write_at: '2026-09-26T20:05:00.000Z' }), null, 'a Save after it: void');
   const h = row('007182123', 'TERRANCE');
   stampResolution(h, { kind: 'held', load: { day: FRI, loadNbr: 'DAVIS000204484', loadId: 'x', name: 'TERRANCE', status: null, driver: null, trips: 9 }, sources: ['read'] });
   assert.equal(heldLoadOf(h).loadNbr, 'DAVIS000204484');
   assert.equal(h.rosterLoadRoute, null);
   assert.equal(heldLoadOf({ ...h, isPlanned: true, isUnplanned: false, routeName: 'JOE' }), null, 'planned since: not "still on" anything');
+  // REVIEW #19 (round 2): planned onto a truck and struck off again before the next scan — un-planned
+  // once more, but it is not "still on Friday's" either: the Save since the stamp says so.
+  assert.equal(heldLoadOf({ ...h, rosterLoadAt: '2026-09-26T20:00:00.000Z', board_write_at: '2026-09-26T20:30:00.000Z' }), null);
 });
 
 test('a read that throws is a failed read, never a crash', async () => {
@@ -653,7 +716,7 @@ test('a later load whose frozen count "looks full" is READ before anything is ca
   const out = await applyRouteLoadDay(rows, {
     today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null,
     readMembers: async (n) => { calls.push(n); return n === 'DAVIS000204590' ? new Set(['m1']) : n === 'DAVIS000204484' ? FRI_TERRANCE : null; },
-    memo: {}, readMax: 10, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null),
+    memo: {}, readMax: 10, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null), ...HELD,
   });
   assert.deepEqual(calls, ['DAVIS000204590', 'DAVIS000204484']);
   assert.equal(out.summary.held, 1);
@@ -662,7 +725,7 @@ test('a later load whose frozen count "looks full" is READ before anything is ca
   const rows2 = [row('007182123', 'TERRANCE'), row('m1', 'TERRANCE', { own: MON })];
   const out2 = await applyRouteLoadDay(rows2, {
     today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null, readMembers: async () => null,
-    memo: { DAVIS000204484: memoOf(FRI_TERRANCE, { trips: 9 }) }, readMax: 0, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null),
+    memo: { DAVIS000204484: memoOf(FRI_TERRANCE, { trips: 9 }) }, readMax: 0, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null), ...HELD,
   });
   assert.equal(out2.summary.held, 0);
   assert.equal(rows2[0].isPlanned, true);
@@ -685,4 +748,196 @@ test('REVIEW #17: planned onto Monday\'s MARCUS AFTER the morning roster capture
   assert.equal(out.summary.load, 2);
   assert.equal(rows.find((r) => r.stopNbr === 'WHITING').loadDay, MON);
   assert.equal(out.summary.reads, 1, 'one read placed both');
+});
+
+// ── Round 3 (the second adversarial review, 2026-09-28) ─────────────────────────────────────
+
+test('NUVIZZ_ROUTE_LOAD_HELD is OFF unless explicitly ON — the reverse of the house shape, on purpose', () => {
+  assert.equal(routeLoadHeldEnabled({}), false);
+  for (const v of ['on', '1', 'true', 'yes', ' ON ']) assert.equal(routeLoadHeldEnabled({ NUVIZZ_ROUTE_LOAD_HELD: v }), true, v);
+  for (const v of ['off', '0', 'of', 'onn', '']) assert.equal(routeLoadHeldEnabled({ NUVIZZ_ROUTE_LOAD_HELD: v }), false, v);
+});
+
+test('held OFF (the default): the leftover keeps its old filing, no past load is read, and a held stamp moves nothing', async () => {
+  const rows = saturdayPull();
+  const calls = [];
+  const rosters = ROSTERS();
+  const out = await applyRouteLoadDay(rows, {
+    today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null, readMembers: reader(calls),
+    memo: {}, readMax: 10, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null), rosterAt: () => ROSTER_AT_MS,
+  });
+  const by = Object.fromEntries(rows.map((r) => [r.stopNbr, r]));
+  assert.equal(out.summary.load, 3, 'the headline fix is not behind this switch');
+  assert.equal(out.summary.held, 0);
+  assert.equal(by['007182123'].isPlanned, true, 'TERRANCE\'s leftover reads as it always did');
+  assert.ok(!calls.includes('DAVIS000204484'), 'and no call is spent on its past load');
+  assert.match(out.summary.unresolvedSample.join(' | '), /NUVIZZ_ROUTE_LOAD_HELD/);
+  const prev = process.env.NUVIZZ_ROUTE_LOAD_HELD;
+  delete process.env.NUVIZZ_ROUTE_LOAD_HELD;
+  try {
+    const held = row('10', null); held.heldOn = { loadNbr: 'X', route: 'TERRANCE', day: FRI };
+    assert.equal(boardDayFor(held, SAT, null), FRI, 'boardDayFor ignores a held stamp while the switch is off');
+  } finally { process.env.NUVIZZ_ROUTE_LOAD_HELD = prev; }
+});
+
+test('REVIEW #0 (round 2): two NuVizz records under one number are never decided by number — no "held", no load', () => {
+  const r = row('007182555', 'TERRANCE', { extra: { dupNbr: true } });
+  const res = resolveRow(r, ctx(new Map([['DAVIS000204590', new Set()], ['DAVIS000204484', new Set(['007182555'])]])));
+  assert.equal(res.kind, 'unresolved');
+  assert.match(res.reason, /two NuVizz records share this stop number/);
+});
+
+test('"held" is refused while a horizon roster predates the order\'s last change — a load made since would not be on it', () => {
+  const r = row('007182123', 'TERRANCE', { upd: '2026-09-26T09:30:00' });   // touched Saturday 09:30 EDT
+  const members = new Map([['DAVIS000204590', new Set()], ['DAVIS000204484', FRI_TERRANCE]]);
+  const res = resolveRow(r, ctx(members));                                   // rosters captured 04:00 EDT
+  assert.equal(res.kind, 'unresolved');
+  assert.match(res.reason, /captured before this order last changed/);
+  assert.equal(resolveRow(r, ctx(members, { rosterAt: { get: () => Date.parse('2026-09-26T14:00:00Z') } })).kind, 'held');
+});
+
+test('REVIEW #6 (round 2): a stored read never answers for an order a Save has touched since', () => {
+  const e = memoOf(MON_MARCUS, { atMs: NOW - 60 * 60_000 });
+  const r = row('007182304-1', 'MARCUS');
+  assert.equal(memoValidFor(e, r, MEMO_MAX_CURRENT_MS, NOW), true);
+  assert.equal(memoValidFor(e, r, MEMO_MAX_CURRENT_MS, NOW, new Date(NOW - 90 * 60_000).toISOString()), true, 'Saved before the read');
+  assert.equal(memoValidFor(e, r, MEMO_MAX_CURRENT_MS, NOW, new Date(NOW - 10 * 60_000).toISOString()), false, 'Saved after it: read again');
+});
+
+test('REVIEW #4 (round 2): no cover is given inside the repeated fall-back hour', () => {
+  const firstPass = Date.parse('2026-11-01T05:40:00Z');    // 01:40 EDT
+  const secondPass = Date.parse('2026-11-01T06:20:00Z');   // 01:20 EST, forty minutes later
+  assert.equal(etMinuteOf(firstPass), '2026-11-01T01:40');
+  assert.equal(etMinuteOf(secondPass), '2026-11-01T01:20');
+  assert.equal(inRepeatedHour(firstPass), true);
+  assert.equal(inRepeatedHour(secondPass), true);
+  assert.equal(coverStamp(null, firstPass), null);
+  assert.equal(inRepeatedHour(Date.parse('2026-11-01T08:00:00Z')), false);
+  assert.equal(coverStamp(null, Date.parse('2026-11-01T08:00:00Z')), '2026-11-01T02:55', 'three hours on, EST: covers again');
+});
+
+// A pool row (what the last scan wrote) for an order it filed on `day` by `loadNbr`.
+const poolRow = (r, { day = MON, loadNbr = 'DAVIS000204645', at = new Date(NOW - 2 * 60 * 60_000).toISOString() } = {}) => ({
+  ...r, day, loadDay: day, rosterLoadNbr: loadNbr, rosterLoadId: 'id', rosterLoadVia: 'membership', rosterLoadRoute: routeNameOf(r), rosterLoadAt: at,
+});
+const routeNameOf = (r) => r.routeName || r.loadNbr;
+
+test('REVIEW #8/#16 (round 2): a verdict nothing has touched is KEPT without a read — no flip back to today when a run has no read to spare', async () => {
+  const fresh = row('007182304-1', 'MARCUS');
+  const prior = { day: MON, row: poolRow(fresh), savedAt: null };
+  const rosters = ROSTERS();
+  const calls = [];
+  const out = await applyRouteLoadDay([fresh], {
+    today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null, readMembers: async (n) => { calls.push(n); return null; },
+    memo: {}, readMax: 4, nowMs: NOW, priorOf: (n) => (n === '007182304-1' ? prior : null),
+  });
+  assert.deepEqual(calls, [], 'no read: the evidence has not changed');
+  assert.equal(fresh.loadDay, MON);
+  assert.equal(fresh.rosterLoadNbr, 'DAVIS000204645');
+  assert.equal(fresh.rosterLoadAt, prior.row.rosterLoadAt, 'a kept verdict keeps the time it was reached');
+  assert.equal(out.summary.kept, 1);
+  // …even with the memo unreadable.
+  const f2 = row('007182304-1', 'MARCUS');
+  const out2 = await applyRouteLoadDay([f2], { today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null, readMembers: async () => null, memo: null, readMax: 4, nowMs: NOW, priorOf: () => prior });
+  assert.equal(f2.loadDay, MON);
+  assert.equal(out2.summary.memoUnreadable, true);
+});
+
+test('a kept verdict is dropped the moment anything it rested on moved', () => {
+  const base = row('007182304-1', 'MARCUS');
+  const prior = { day: MON, row: poolRow(base), savedAt: null };
+  const c = ctx(new Map(), { nowMs: NOW });
+  assert.equal(stickyFor(base, prior, c).kind, 'load');
+  assert.equal(stickyFor(row('007182304-1', 'MARCUS', { upd: '2026-09-26T10:00:00' }), prior, c), null, 'NuVizz touched the order');
+  assert.equal(stickyFor(row('007182304-1', 'JOE'), prior, c), null, 'the list names another route');
+  assert.equal(stickyFor(base, { ...prior, savedAt: new Date(NOW - 30 * 60_000).toISOString() }, c), null, 'a Save since the verdict');
+  assert.equal(stickyFor(base, { ...prior, savedAt: undefined }, c), null, 'a Save that could not be ruled out');
+  assert.equal(stickyFor(base, { ...prior, row: poolRow(base, { at: new Date(NOW - STICKY_MAX_MS - 1).toISOString() }) }, c), null, 'too old');
+  const gone = ROSTERS(); gone.set(MON, [L('MARCUS', 'DAVIS000204645', 'x', 13, 'Cancelled')]);
+  assert.equal(stickyFor(base, prior, ctx(new Map(), { nowMs: NOW, rosters: gone })), null, 'its load is no longer live');
+  assert.equal(stickyFor(row('007182304-1', 'MARCUS', { extra: { dupNbr: true } }), prior, c), null);
+});
+
+test('REVIEW #16 (round 2): Friday evening\'s verdict still stands at the Sunday 20:00 routing scan (the weekend blackout)', () => {
+  const fresh = row('007182304-1', 'MARCUS');
+  const friEve = new Date(Date.parse('2026-09-25T23:00:00Z')).toISOString();   // Fri 19:00 EDT
+  const sunEve = Date.parse('2026-09-28T00:00:00Z');                          // Sun 20:00 EDT
+  const prior = { day: MON, row: poolRow(fresh, { at: friEve }), savedAt: null };
+  const res = stickyFor(fresh, prior, ctx(new Map(), { today: '2026-09-27', horizon: ['2026-09-27', MON, TUE], nowMs: sunEve }));
+  assert.equal(res && res.kind, 'load');
+});
+
+test('a re-read that finds an order on another load while "Stop Updated" did NOT move is counted — the premise the memo rests on, measured', async () => {
+  const fresh = row('007182304-1', 'MARCUS');
+  const prior = { day: MON, row: poolRow(fresh, { at: new Date(NOW - STICKY_MAX_MS - 60_000).toISOString() }), savedAt: null };
+  const rosters = ROSTERS();
+  const out = await applyRouteLoadDay([fresh], {
+    today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null,
+    readMembers: async (n) => (n === 'DAVIS000204700' ? new Set(['007182304-1']) : new Set(['zzz'])), memo: {}, readMax: 4, nowMs: NOW,
+    priorOf: () => prior,
+  });
+  assert.equal(fresh.rosterLoadNbr, 'DAVIS000204700');
+  assert.equal(out.summary.movedWithoutStamp, 1);
+  assert.match(out.summary.sample.join(' | '), /MOVED DAVIS000204645→DAVIS000204700/);
+});
+
+test('REVIEW #5/#13 (round 2): the list un-plans an order the last scan filed on Monday by its load → this run\'s row is PINNED to Monday', () => {
+  const fresh = row('007182304-1', null);                              // the list: code 10, no route
+  const prior = { day: MON, row: poolRow(row('007182304-1', 'MARCUS')), savedAt: null };
+  const p = pinsFor([fresh], { today: SAT, horizon: HORIZON, nowMs: NOW, graceMs: 60 * 60_000, priorOf: () => prior });
+  assert.deepEqual([...p.pins], [['007182304-1', MON]], 'the verify decides it there — one board, never Monday\'s card AND today\'s pool');
+  assert.equal(p.verify, 1);
+  // Filed by the pin: the dispatcher-date map is the one bucketing reads.
+  assert.deepEqual([...bucketByDate([fresh], SAT, Object.fromEntries(p.pins)).keys()], [MON]);
+  // Still planned on it (the list agrees) → no pin: it files by its stamp or the resolver as usual.
+  assert.equal(pinsFor([row('007182304-1', 'MARCUS')], { today: SAT, horizon: HORIZON, nowMs: NOW, graceMs: 3600e3, priorOf: () => prior }).pins.size, 0);
+});
+
+test('REVIEW #7 (round 2): a Save on a later board inside the write grace pins the row there — the grace decides, not a lagging list', () => {
+  const fresh = row('007182304-1', 'MARCUS');                          // list still says MARCUS
+  const prior = { day: MON, row: { ...row('007182304-1', 'JOE'), day: MON }, savedAt: new Date(NOW - 5 * 60_000).toISOString() };
+  const p = pinsFor([fresh], { today: SAT, horizon: HORIZON, nowMs: NOW, graceMs: 60 * 60_000, priorOf: () => prior });
+  assert.deepEqual([...p.pins], [['007182304-1', MON]]);
+  assert.equal(p.grace, 1);
+  const old = { ...prior, savedAt: new Date(NOW - 61 * 60_000).toISOString() };
+  assert.equal(pinsFor([fresh], { today: SAT, horizon: HORIZON, nowMs: NOW, graceMs: 60 * 60_000, priorOf: () => old }).pins.size, 0, 'grace over');
+});
+
+test('never pinned: finished work, a dispatcher-set date, a prior on today or off the horizon', () => {
+  const prior = { day: MON, row: poolRow(row('1', 'MARCUS')), savedAt: new Date(NOW).toISOString() };
+  const go = (r, extra = {}) => pinsFor([r], { today: SAT, horizon: HORIZON, nowMs: NOW, graceMs: 3600e3, priorOf: () => prior, ...extra }).pins.size;
+  assert.equal(go(row('1', 'MARCUS', { norm: 'DELIVERED', status: '90' })), 0);
+  assert.equal(go(row('1', null), { hasActiveOverride: () => true }), 0);
+  assert.equal(pinsFor([row('1', null)], { today: SAT, horizon: HORIZON, nowMs: NOW, graceMs: 3600e3, priorOf: () => ({ ...prior, day: SAT }) }).pins.size, 0);
+  assert.equal(pinsFor([row('1', null)], { today: SAT, horizon: HORIZON, nowMs: NOW, graceMs: 3600e3, priorOf: () => ({ ...prior, day: '2026-10-05' }) }).pins.size, 0);
+});
+
+test('a pinned row is counted on the board it is pinned to and named by nobody', async () => {
+  const pinned = row('P', null);
+  const monOwn = [row('m1', 'MARCUS', { own: MON }), row('m2', 'MARCUS', { own: MON })];
+  const rosters = ROSTERS();
+  const out = await applyRouteLoadDay([pinned, ...monOwn], {
+    today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null, readMembers: async () => null,
+    memo: {}, readMax: 0, nowMs: NOW, dayOf: (r) => boardDayFor(r, SAT, null), rosterAt: () => ROSTER_AT_MS, graceMs: 3600e3,
+    priorOf: (n) => (n === 'P' ? { day: MON, row: poolRow(row('P', 'MARCUS')), savedAt: null } : null),
+  });
+  assert.deepEqual([...out.pins], [['P', MON]]);
+  assert.equal(pinned.rosterLoadNbr, undefined);
+  assert.equal(monOwn[0].rosterLoadNbr, 'DAVIS000204645');
+  assert.equal(out.summary.pinnedVerify, 1);
+});
+
+test('REVIEW #3 (round 2): the read kept back for a past load is handed back when no past load is within reach', async () => {
+  // TERRANCE's leftover is waiting on its past load, but Monday's TERRANCE is unknown, so phase 2 can
+  // read nothing; JOE and RAY each want a Monday read. With 2 reads, BOTH go to phase 1.
+  const rosters = ROSTERS();
+  rosters.set(MON, [...rosters.get(MON), L('JOE', 'J', 'j', 9), L('RAY', 'R', 'r', 9)]);
+  const rows = [row('j1', 'JOE'), row('r1', 'RAY'), row('007182123', 'TERRANCE')];
+  const calls = [];
+  const out = await applyRouteLoadDay(rows, {
+    today: SAT, horizon: HORIZON, readRoster: async (d) => rosters.get(d) ?? null,
+    readMembers: async (n) => { calls.push(n); return new Set(['zzz']); }, memo: {}, readMax: 2, nowMs: NOW, ...HELD,
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(out.summary.phase2Reads, 0);
 });

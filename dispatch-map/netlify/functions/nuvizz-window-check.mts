@@ -65,7 +65,8 @@ export default async (req: Request): Promise<Response> => {
   const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
   try {
     const live = await pullLiveWindow({ range, period }, codes, ac.signal);
-    const diff = diffWindow(shown, live.rows, { all: live.allRows });
+    const heldRows = Array.isArray(body.heldRows) ? body.heldRows.slice(0, MAX_SHOWN_ROWS) : [];
+    const diff = diffWindow(shown, live.rows, { all: live.allRows, heldRows });
     return jsonResponse({
       ok: true,
       at: new Date().toISOString(),

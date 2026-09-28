@@ -261,3 +261,12 @@ test('planOpenStrays — a PART-READ history heals the copies it read but never 
   assert.equal(partial.file.length, 0);
   assert.equal(partial.pending, 1);
 });
+
+test('a PLAN heal clears the load-day stamps the live row no longer carries (REVIEW #9, round 2)', async () => {
+  const { ROUTE_LOAD_FIELDS } = await import('../netlify/functions/lib/route-load-day.mts');
+  const live = openRow('007182123');   // came off Friday's TERRANCE: un-planned, no stamps
+  const f = healFields(live, { today: TODAY, at: AT, reason: 'plan' });
+  for (const k of ROUTE_LOAD_FIELDS) assert.equal(f[k], null, k);
+  const fin = healFields(delivered('X'), { today: TODAY, at: AT, reason: 'finished' });
+  for (const k of ROUTE_LOAD_FIELDS) assert.equal(k in fin, false, `${k} never rides a finished heal`);
+});

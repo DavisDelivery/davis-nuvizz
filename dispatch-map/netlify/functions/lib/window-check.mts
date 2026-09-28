@@ -93,9 +93,10 @@ export interface WindowDiff {
   missing: any[];
   /** on both, but planned-ness, load or day differ */
   changed: any[];
-  /** shown un-planned ON PURPOSE: NuVizz lists it planned on the very route whose PAST day's load
-   *  still holds it (route-load-day). Not a difference — the reason for one; never counted in
-   *  `matches`. */
+  /** shown un-planned ON PURPOSE (route-load-day `heldOn`) while NuVizz's list has it planned on
+   *  that route. The list names a route, never a load, so it cannot confirm the load that holds it
+   *  is the PAST day's one and not a later one of the same name: these are listed apart, with the
+   *  reason, and `matches` is never true while any are present. */
   held: any[];
 }
 
@@ -109,7 +110,7 @@ const pick = (r: any) => ({
  * PURE: shown vs live, by stop number. `changed` compares only what a dispatcher acts on —
  * whether it is planned, which load, which day — never enrichment detail.
  */
-export function diffWindow(shown: ShownRow[], live: any[], opts: { all?: any[] | null; today?: string } = {}): WindowDiff {
+export function diffWindow(shown: ShownRow[], live: any[], opts: { all?: any[] | null; today?: string; heldRows?: Array<{ stopNbr: any; route?: any }> | null } = {}): WindowDiff {
   // THE BOARD'S OWN DAY for NuVizz's row. NuVizz keeps a rolled-over stop's arrival on the day
   // it first arrived; the board files open route-assigned work on TODAY (boardDayFor's live-route
   // clamp) and the window serves that day. Our day matching the day the board itself would file
@@ -157,11 +158,19 @@ export function diffWindow(shown: ShownRow[], live: any[], opts: { all?: any[] |
       changed.push({ stopNbr: k, businessName: s.businessName ?? l.businessName ?? null, ours: { ...ours, status: s.status ?? null }, nuvizz: { ...theirs, status: l.status ?? null, weight: num(l.weight) } });
     }
   }
-  for (const [k, l] of liveBy) if (!shownBy.has(k)) missing.push(pick(l));
+  // A held row the grid's own status filter hides (it is un-planned; the grid shows Planned) is not
+  // "missing from our screen" — it is the same held order, listed as held.
+  const heldElsewhere = new Map<string, string>();
+  for (const h of opts.heldRows || []) { const k = norm(h?.stopNbr); if (k && norm(h?.route)) heldElsewhere.set(k, norm(h.route)); }
+  for (const [k, l] of liveBy) {
+    if (shownBy.has(k)) continue;
+    if (heldElsewhere.has(k) && heldAgrees({ held: heldElsewhere.get(k) }, l)) { held.push({ ...pick(l), heldOn: heldElsewhere.get(k) }); continue; }
+    missing.push(pick(l));
+  }
   const byNbr = (a: any, b: any) => String(a.stopNbr).localeCompare(String(b.stopNbr));
   stale.sort(byNbr); missing.sort(byNbr); changed.sort(byNbr); held.sort(byNbr);
   return {
-    matches: !stale.length && !missing.length && !changed.length,
+    matches: !stale.length && !missing.length && !changed.length && !held.length,
     shown: totalsOf([...shownBy.values()]),
     nuvizz: totalsOf([...liveBy.values(), ...clampedIn]),
     stale, missing, changed, held,

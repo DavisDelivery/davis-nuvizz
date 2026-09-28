@@ -7,7 +7,8 @@
 - Since v1.82.0 the scan writes the load that holds each routed order onto the row — `rosterLoadNbr`,
   `rosterLoadId`, `loadDay` — and files it on that load's day; an order still on a past day's load is
   shown unplanned with `heldOn`. Read them through `src/lib/route-load-stamp.js` (`stampedLoadOf` /
-  `heldLoadOf`) — never the raw fields. `NUVIZZ_ROUTE_LOAD_DAY=off` puts the old filing back. See CLAUDE.md.
+  `heldLoadOf`) — never the raw fields. `NUVIZZ_ROUTE_LOAD_DAY=off` puts the old filing back; "shown
+  unplanned" (`heldOn`) ships OFF behind `NUVIZZ_ROUTE_LOAD_HELD=on`. See CLAUDE.md.
 - A board row's `loadNbr` field is the ROUTE NAME on list-sourced rows (the history keys below that
   say `{loadNbr}` mean that field). The real load number is `rosterLoadNbr`, or the roster itself.
 

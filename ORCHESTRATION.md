@@ -76,7 +76,8 @@ the data is perishable.
   the scan writes the load that holds each routed order onto the row (`rosterLoadNbr`,
   `rosterLoadId`, `loadDay`; `heldOn` for an order still on a past day's load, shown unplanned) —
   read them through `src/lib/route-load-stamp.js` (`stampedLoadOf` / `heldLoadOf`), which drops a
-  stamp a Save has overtaken since the scan. No brief, agent or orchestrator may treat "does the roster have load ids" as an open question.
+  stamp a Save has overtaken since the scan. "Shown unplanned while still on a past day's load"
+  (`heldOn`) ships OFF behind `NUVIZZ_ROUTE_LOAD_HELD` — see CLAUDE.md. No brief, agent or orchestrator may treat "does the roster have load ids" as an open question.
 - Netlify PAT is provided fresh each session and never stored. GitHub PAT is
   verified before use (may rotate).
 

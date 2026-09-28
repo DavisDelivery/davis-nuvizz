@@ -11,13 +11,26 @@
 // So a stamp is honoured only while the row still says what it said when it was stamped:
 //   • a load stamp → the row is PLANNED and on the SAME route name the stamp was written for
 //     (`rosterLoadRoute`);
-//   • a held stamp → the row is UN-PLANNED.
+//   • a held stamp → the row is UN-PLANNED;
+//   • and no Save has touched the row SINCE the stamp (`board_write_at` later than `rosterLoadAt`):
+//     a Save from Saturday's MARCUS onto Monday's MARCUS keeps the route name and changes the load,
+//     and a Save that plans an order and then strikes it off leaves it un-planned again — neither
+//     can be told from the plan fields, both from the clock.
 // Anything else reads as "no stamp", and each reader falls back to what it showed before stamps
 // existed. The Map feed, the Stop lookup card, stop-explain, debug capture, the Claude shadow and
 // the scan's own filing all ask through these two functions, so they can never disagree.
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const str = (v) => (v == null ? '' : String(v).trim());
+const msOf = (v) => { const t = Date.parse(str(v)); return Number.isFinite(t) ? t : null; };
+
+/** A Save stamped on the row after the scan's verdict (or on a stamp that carries no time). */
+function savedSince(row) {
+  const saved = msOf(row.board_write_at);
+  if (saved == null) return false;
+  const at = msOf(row.rosterLoadAt);
+  return at == null || saved > at;
+}
 
 /**
  * The roster load the scan resolved for a PLANNED row: { loadNbr, loadId, day, via, route } —
@@ -32,6 +45,7 @@ export function stampedLoadOf(row) {
   const stampedRoute = str(row.rosterLoadRoute);
   const route = str(row.routeName) || str(row.loadNbr);
   if (!stampedRoute || !route || stampedRoute.toLowerCase() !== route.toLowerCase()) return null;
+  if (savedSince(row)) return null;
   const day = str(row.loadDay);
   return {
     loadNbr,
@@ -50,6 +64,7 @@ export function heldLoadOf(row) {
   if (!row || row.isUnplanned !== true || row.isPlanned === true) return null;
   const h = row.heldOn;
   if (!h || typeof h !== 'object') return null;
+  if (savedSince(row)) return null;
   const loadNbr = str(h.loadNbr);
   if (!loadNbr) return null;
   const day = str(h.day);

@@ -54,7 +54,7 @@ test('CLAUDE.md says it is never asked, names the free read, and names the field
   const t = read('CLAUDE.md');
   assert.match(t, /SETTLED — NEVER ASK IT AGAIN/);
   assert.match(t, /nuvizz-loads-roster\?date=…&cacheOnly=1/);
-  for (const f of ['rosterLoadNbr', 'rosterLoadId', 'loadDay', 'heldOn', 'NUVIZZ_ROUTE_LOAD_DAY']) assert.ok(t.includes(f), `CLAUDE.md names ${f}`);
+  for (const f of ['rosterLoadNbr', 'rosterLoadId', 'loadDay', 'heldOn', 'NUVIZZ_ROUTE_LOAD_DAY', 'NUVIZZ_ROUTE_LOAD_HELD', 'route-load-stamp.js']) assert.ok(t.includes(f), `CLAUDE.md names ${f}`);
   assert.match(t, /The one thing that is never an ask: whether the roster has load numbers/, 'the carve-out sits in ASK FOR THE CALL');
 });
 

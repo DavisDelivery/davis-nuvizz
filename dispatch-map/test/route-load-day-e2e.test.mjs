@@ -22,6 +22,9 @@ process.env.NUVIZZ_DAVIS_USER = 'u'; process.env.NUVIZZ_DAVIS_PASS = 'p';
 process.env.NUVIZZ_SCANS_ENABLED = '1'; process.env.NUVIZZ_TWO_SCAN = 'on'; process.env.NUVIZZ_ENRICH = 'off';
 delete process.env.AUTH_REQUIRED;
 delete process.env.NUVIZZ_ROUTE_LOAD_DAY;
+delete process.env.NUVIZZ_ROUTE_LOAD_HELD;
+// "Shown unplanned" (NUVIZZ_ROUTE_LOAD_HELD) is OFF by default; the tests about it turn it on.
+const HELD = { NUVIZZ_ROUTE_LOAD_HELD: 'on' };
 
 const { etDayString } = await import('../netlify/functions/lib/firestore.mts');
 const { runRefreshStops, scanDatesFrom } = await import('../netlify/functions/lib/refresh-stops-core.mts');
@@ -38,8 +41,10 @@ const COLS = ['vizzonInfo.shipmentInfo.stopNbr', 'vizzonInfo.shipmentInfo.shipme
   'vizzonInfo.destination.address.city', 'vizzonInfo.destination.address.zipCode',
   'route.name', 'vizzonInfo.shipmentInfo.proNbr', 'vizzonInfo.shipmentInfo.weight',
   'vizzonInfo.destination.earliestSchTime', 'vizzonInfo.createdTime', 'vizzonInfo.stopUpdatedDttm'];
-const row = ({ nbr, code = '20', route = '', name = 'CUST', weight = 100, arrival }) =>
-  [nbr, nbr, code, { 10: 'Un-Planned', 20: 'Planned' }[code] || code, name, '1 Main St', 'PALMETTO', '30268', route, '', String(weight), arrival, arrival, arrival];
+// NuVizz's "Stop Updated" (the last column) is when the order last changed — in the past, before
+// this scan: yesterday morning unless a test moves it.
+const row = ({ nbr, code = '20', route = '', name = 'CUST', weight = 100, arrival, updated = usFmt(yesterday, '06:00 AM') }) =>
+  [nbr, nbr, code, { 10: 'Un-Planned', 20: 'Planned' }[code] || code, name, '1 Main St', 'PALMETTO', '30268', route, '', String(weight), arrival, arrival, updated];
 const search = (rows) => ({ filterData: [Object.fromEntries(COLS.map((c) => [c, {}]))], values: rows });
 const ROSTER_COLS = ['loadId', 'name', 'loadNbr', 'status', 'trips', 'schEndTime'];
 const grid = (loads) => ({ filterData: [Object.fromEntries(ROSTER_COLS.map((c) => [c, {}]))], values: loads });
@@ -87,6 +92,11 @@ const LOADS = {
   [NEXT_TERRANCE]: loadInfoOf(NEXT_TERRANCE, 'TERRANCE', []),
 };
 
+/** Every board day the store holds a copy of this stop on. */
+const boardsHolding = (store, nbr) => [...store.keys()]
+  .map((k) => /^nuvizz_stop_index\/davis__(\d{4}-\d{2}-\d{2})\/stops\/(.+)$/.exec(k))
+  .filter((m) => m && m[2] === nbr).map((m) => m[1]).sort();
+
 async function scenario({ seed = {}, env = {}, rows = pullRows }, inspect) {
   const calls = [];
   const saved = {};
@@ -118,7 +128,7 @@ async function scenario({ seed = {}, env = {}, rows = pullRows }, inspect) {
 }
 
 test('an order dated yesterday and planned on the next business day\'s MARCUS is filed on THAT day\'s board, with that load\'s number — not today\'s', async () => {
-  await scenario({}, async ({ store, body, loadReads }) => {
+  await scenario({ env: HELD }, async ({ store, body, loadReads }) => {
     assert.equal(store.get(stopPath(today, WHITING)), undefined, 'WHITING TURNER is NOT on today\'s board');
     assert.equal(store.get(stopPath(today, POREX)), undefined, 'POREX is NOT on today\'s board');
     const w = store.get(stopPath(nextDay, WHITING));
@@ -145,7 +155,7 @@ test('an order dated yesterday and planned on the next business day\'s MARCUS is
 });
 
 test('an order still on YESTERDAY\'s TERRANCE, on no load from today on, is on today\'s board UNPLANNED and says which load holds it', async () => {
-  await scenario({}, async ({ store }) => {
+  await scenario({ env: HELD }, async ({ store }) => {
     const h = store.get(stopPath(today, HEADCOVERS));
     assert.ok(h, 'in today\'s pool, where the day\'s planning happens');
     assert.equal(h.isUnplanned, true);
@@ -161,8 +171,8 @@ test('an order still on YESTERDAY\'s TERRANCE, on no load from today on, is on t
 
 test('the next scan pays nothing: the memo answers, the filing holds, and the held order is NOT sent to the demotion verify', async () => {
   let carried = {};
-  await scenario({}, async ({ store }) => { carried = Object.fromEntries(store); });
-  await scenario({ seed: carried }, async ({ store, loadReads, stopReads }) => {
+  await scenario({ env: HELD }, async ({ store }) => { carried = Object.fromEntries(store); });
+  await scenario({ seed: carried, env: HELD }, async ({ store, loadReads, stopReads }) => {
     assert.deepEqual(loadReads, [], 'every load answered from the memo');
     assert.equal(stopReads, 0, 'no /stop/info: the held order is not a "disputed plan" for the verify to put back');
     assert.ok(store.get(stopPath(nextDay, WHITING)));
@@ -177,7 +187,7 @@ test('a board that still holds the OLD filing (planned on today\'s MARCUS) is cl
     [stopPath(today, WHITING)]: { stopNbr: WHITING, routeName: 'MARCUS', loadNbr: 'MARCUS', isPlanned: true, isUnplanned: false, normalizedStatus: 'SCHEDULED', status: '20', boardDate: yesterday, scheduledDate: today },
     [stopPath(today, HEADCOVERS)]: { stopNbr: HEADCOVERS, routeName: 'TERRANCE', loadNbr: 'TERRANCE', isPlanned: true, isUnplanned: false, normalizedStatus: 'SCHEDULED', status: '20', boardDate: yesterday, scheduledDate: today },
   };
-  await scenario({ seed: prior }, async ({ store, stopReads }) => {
+  await scenario({ seed: prior, env: HELD }, async ({ store, stopReads }) => {
     assert.equal(store.get(stopPath(today, WHITING)), undefined, 'gone from today');
     assert.ok(store.get(stopPath(nextDay, WHITING)), 'on its load\'s day');
     assert.equal(store.get(stopPath(today, HEADCOVERS)).isUnplanned, true, 'shown unplanned, not re-planned by the verify');
@@ -229,12 +239,14 @@ test('REVIEW #5: the list alone calling an order on the next day\'s MARCUS un-pl
     assert.equal(w.loadNbr, 'MARCUS');
     assert.equal(w.loadDay, nextDay, 'the load it is kept on is part of the plan kept');
     assert.ok(loadReads.includes(NEXT_MARCUS), 'the verify read the load (or the load-day pass did, and shared it)');
-    assert.equal(store.get(stopPath(today, WHITING))?.isPlanned ?? false, false, 'and never a second planned copy on today');
+    // ONE board per order (round 2's blocker): never Monday's card AND an un-planned copy in today's pool.
+    assert.deepEqual(boardsHolding(store, WHITING), [nextDay]);
     again = Object.fromEntries(store);
   });
   // …and the scan after that, the list still lagging, keeps it there too (the kept copy carries its load).
   await scenario({ seed: again, rows: lagged }, async ({ store }) => {
     assert.equal(store.get(stopPath(nextDay, WHITING))?.isPlanned, true);
+    assert.deepEqual(boardsHolding(store, WHITING), [nextDay]);
   });
 });
 
@@ -249,5 +261,53 @@ test('REVIEW #18: a confirmed Save onto JOE five minutes ago outranks the list �
     assert.equal(w.rosterLoadNbr ?? null, null, 'no MARCUS load number beside Route JOE');
     assert.equal(w.rosterLoadRoute ?? null, null);
     assert.equal(w.loadDay ?? null, null);
+  });
+});
+
+test('THE DEFAULT (NUVIZZ_ROUTE_LOAD_HELD unset): the headline fix is on; the leftover keeps its old filing and its past load is never read', async () => {
+  await scenario({}, async ({ store, body, loadReads }) => {
+    assert.ok(store.get(stopPath(nextDay, WHITING)), 'WHITING TURNER is on its load\'s day');
+    assert.equal(store.get(stopPath(today, WHITING)), undefined);
+    const h = store.get(stopPath(today, HEADCOVERS));
+    assert.equal(h.isPlanned, true, 'EP HEADCOVERS reads as it always did');
+    assert.equal(h.heldOn ?? null, null);
+    assert.ok(!loadReads.includes(YDAY_TERRANCE), 'no call spent on a past load');
+    const run = (body.dates || []).find((d) => d.date === today);
+    assert.equal(run.routeLoadDay.held, 0);
+    assert.equal(run.routeLoadDay.heldEnabled, false);
+  });
+});
+
+test('REVIEW #7 (round 2): a Save onto JOE on the next day\'s board survives the next scan while the list still says MARCUS', async () => {
+  let carried = {};
+  await scenario({}, async ({ store }) => { carried = Object.fromEntries(store); });
+  // The dispatcher Saves WHITING from the next day's MARCUS onto JOE, five minutes ago; NuVizz took it
+  // off MARCUS, the list has not caught up.
+  const k = stopPath(nextDay, WHITING);
+  carried[k] = { ...carried[k], routeName: 'JOE', loadNbr: 'JOE', routeSeq: 1, board_write_at: new Date(Date.now() - 5 * 60_000).toISOString(), board_write_planned: true };
+  const saved = LOADS[NEXT_MARCUS];
+  LOADS[NEXT_MARCUS] = loadInfoOf(NEXT_MARCUS, 'MARCUS', ['007182472', '007182494', POREX]);
+  try {
+    await scenario({ seed: carried }, async ({ store, body }) => {
+      const w = store.get(stopPath(nextDay, WHITING));
+      assert.equal(w?.routeName, 'JOE', 'the Save holds, on the board it was made on');
+      assert.deepEqual(boardsHolding(store, WHITING), [nextDay], 'and nothing re-filed it onto today with the old route');
+      const run = (body.dates || []).find((d) => d.date === today);
+      assert.equal(run.routeLoadDay.pinnedGrace, 1);
+    });
+  } finally { LOADS[NEXT_MARCUS] = saved; }
+});
+
+test('REVIEW #8/#16 (round 2): with no read to spare, the next scan KEEPS the order on its load\'s day — it does not flip back to today', async () => {
+  let carried = {};
+  await scenario({}, async ({ store }) => { carried = Object.fromEntries(store); });
+  // Wipe the memo: only the last scan's verdict (the pool) can keep it — and no reads are allowed.
+  delete carried['nuvizz_ops/route_load_day__davis'];
+  await scenario({ seed: carried, env: { NUVIZZ_ROUTE_LOAD_DAY_READS: '0' } }, async ({ store, loadReads, body }) => {
+    assert.deepEqual(loadReads, []);
+    assert.deepEqual(boardsHolding(store, WHITING), [nextDay]);
+    assert.equal(store.get(stopPath(nextDay, WHITING)).rosterLoadNbr, NEXT_MARCUS);
+    const run = (body.dates || []).find((d) => d.date === today);
+    assert.equal(run.routeLoadDay.kept, 2, 'WHITING and POREX, kept without a read');
   });
 });

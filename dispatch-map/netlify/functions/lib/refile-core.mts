@@ -37,6 +37,7 @@
 // PURE: the caller reads the copies (bounded, memoised, rotated) and applies the patches.
 
 import { isTerminalStatus } from './nuvizz-list.mts';
+import { ROUTE_LOAD_FIELDS } from './route-load-day.mts';
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const norm = (x: any) => String(x ?? '').trim();
@@ -153,6 +154,10 @@ export function healFields(row: any, opts: { today: string; at: string; reason: 
     if (v === undefined) continue;
     out[k] = v === '' ? null : v;
   }
+  // The load-day stamps (lib/route-load-day.mts) tell the truth about the live row too: one it no
+  // longer carries is cleared, or a healed copy keeps saying "still on Friday's TERRANCE" after the
+  // order came off it.
+  if (opts.reason !== 'finished') for (const k of ROUTE_LOAD_FIELDS) out[k] = row?.[k] ?? null;
   out.frozen_heal_at = opts.at;
   out.frozen_heal_reason = opts.reason;
   if (opts.reason === 'finished') out.closedOnBoard = opts.today;

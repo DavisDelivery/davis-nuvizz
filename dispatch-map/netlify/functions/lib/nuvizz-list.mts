@@ -19,7 +19,7 @@ import { finishedGuardEnabled } from './finished-guard.mts';
 // firestore.mts can ask the same question without importing this one (which imports it).
 // Re-exported here so every existing caller keeps its import path unchanged.
 import { isHashLikeId, looksLikeLoadNbr } from './route-identity.mts';
-import { routeLoadDayEnabled, ROUTE_LOAD_FIELDS } from './route-load-day.mts';
+import { routeLoadDayEnabled, routeLoadHeldEnabled, ROUTE_LOAD_FIELDS } from './route-load-day.mts';
 import { stampedLoadOf, heldLoadOf } from '../../../src/lib/route-load-stamp.js';
 export { isHashLikeId, looksLikeLoadNbr };
 
@@ -373,7 +373,7 @@ export function boardDayFor(s: any, today: string = etDayString(), overrides?: R
   // An order the scan found still sitting on a past day's load (route-load-day `heldOn`) is on a
   // route in NuVizz even though the row now reads un-planned — the same "live work" a past
   // deferral must not park on its past day.
-  const heldStamp = !finishedEarly && routeLoadDayEnabled() && !!heldLoadOf(s);
+  const heldStamp = !finishedEarly && routeLoadDayEnabled() && routeLoadHeldEnabled() && !!heldLoadOf(s);
   // A deferral whose day has PASSED does not outrank the live-route clamp below. The scan
   // reads the override map unpruned (it is only pruned on its next write), so yesterday's
   // "not until the 11th" used to park a stop the driver is carrying today on the 11th's
@@ -785,18 +785,24 @@ export interface TwoScanPull {
 /** Both saved searches — TWO requests, whatever the arrival window is set to — plus whether
  *  either answer was cut off at the row cap. */
 export async function twoScanPull(overrides?: Record<string, string> | null, opts?: {
-  /** runs on the deduped rows BEFORE they are filed by day (route-load-day stamps). A failure
-   *  here leaves the rows as they came: filing then falls back exactly to the old rule. */
-  prepare?: (rows: any[]) => Promise<void>;
+  /** runs on the deduped rows BEFORE they are filed by day (route-load-day stamps). It may return
+   *  `pins` — stop → the LATER board this run must file it on (where its Save's grace or its
+   *  demotion verify decides it), applied to the bucketing only. A failure here leaves the rows as
+   *  they came: filing then falls back exactly to the old rule. */
+  prepare?: (rows: any[]) => Promise<void | { pins?: Map<string, string> | null }>;
 }): Promise<TwoScanPull> {
   const [active, completed] = await Promise.all([
     fetchSavedSearchPull(SAVED_SEARCHES.active),
     fetchSavedSearchPull(SAVED_SEARCHES.completed),
   ]);
   const rows = dedupeTwoScan(active.rows, completed.rows);
-  if (opts?.prepare) { try { await opts.prepare(rows); } catch (e: any) { console.warn(`[scan] two-scan prepare failed — filing unchanged: ${e?.message}`); } }
+  let pins: Map<string, string> | null = null;
+  if (opts?.prepare) { try { pins = (await opts.prepare(rows))?.pins || null; } catch (e: any) { console.warn(`[scan] two-scan prepare failed — filing unchanged: ${e?.message}`); } }
+  // Pins file a row on the board its plan or Save lives on — for THIS bucketing only; the
+  // dispatcher-set dates keep their own meaning everywhere else they are read.
+  const filing = pins && pins.size ? { ...(overrides || {}), ...Object.fromEntries(pins) } : overrides;
   return {
-    buckets: bucketByDate(rows, etDayString(), overrides),
+    buckets: bucketByDate(rows, etDayString(), filing),
     truncated: active.truncated || completed.truncated,
     activeCount: active.rows.length, completedCount: completed.rows.length,
   };

@@ -108,12 +108,14 @@ test('a shown row NuVizz now files OUTSIDE the window (MARIA SIMS re-dated to 09
 // load UN-PLANNED on purpose (`heldOn`), and files an order on the day of the load that holds it
 // (`loadDay`). Check vs NuVizz must read both as the reason, not as a difference — or the one
 // reconciliation button flags exactly the orders the scan filed deliberately.
-test('a HELD order is not a route change: it is listed as held, counted unplanned on our side, and matches stays true', () => {
+test('a HELD order is not a route change: it is listed as held, counted unplanned on our side — and never a "match"', () => {
   const shown = [{ stopNbr: '007182123', status: '20', routeName: null, day: '2026-09-26', held: 'TERRANCE', weight: 100 }];
   const live = [{ stopNbr: '007182123', status: '20', routeName: 'TERRANCE', day: '2026-09-25', weight: 100 }];
   const d = diffWindow(shown, live, { today: '2026-09-26' });
   assert.deepEqual(d.changed, []);
-  assert.equal(d.matches, true);
+  // REVIEW #11 (round 2): NuVizz's list names the ROUTE, never the load — an order held on Friday's
+  // TERRANCE and one since planned onto Monday's TERRANCE read the same. It cannot be confirmed.
+  assert.equal(d.matches, false);
   assert.deepEqual(d.held.map((h) => [h.stopNbr, h.heldOn]), [['007182123', 'TERRANCE']]);
   assert.equal(d.shown.unplanned, 1, 'our side counts it the way the screen shows it');
   assert.equal(d.nuvizz.planned, 1, 'NuVizz\'s side as NuVizz lists it');
@@ -136,4 +138,13 @@ test('an order filed on its LOAD\'s day (Monday) while NuVizz still dates it Fri
   // Without the stamp the same row is still a day change — the rule is the load, not a blanket pass.
   const bare = diffWindow([{ ...shown[0], loadDay: null }], [], { all, today: '2026-09-26' });
   assert.equal(bare.changed.length, 1);
+});
+
+test('REVIEW #9 (round 2): a held order the grid\'s Planned filter hides is reported as held, not as "not shown here"', () => {
+  const live = [{ stopNbr: 'H', status: '20', routeName: 'TERRANCE', day: '2026-09-25' }];
+  const d = diffWindow([], live, { today: '2026-09-26', heldRows: [{ stopNbr: 'H', route: 'TERRANCE' }] });
+  assert.deepEqual(d.missing, []);
+  assert.deepEqual(d.held.map((h) => h.stopNbr), ['H']);
+  const other = diffWindow([], live, { today: '2026-09-26', heldRows: [{ stopNbr: 'H', route: 'JOE' }] });
+  assert.deepEqual(other.missing.map((m) => m.stopNbr), ['H'], 'held on another route: NuVizz disagrees — a real difference');
 });

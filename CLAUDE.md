@@ -122,16 +122,22 @@ Project-level guidance for Claude Code in this repository.
   `heldLoadOf(row)`, which honour a stamp only while the row still says what it said (a Save onto
   another route since the scan voids it) — and never derive a load from a route name. The Stop
   lookup card, stop-explain, Debug capture, the Claude shadow and the scan's own filing already do.
-- **Chad's day rule, which the scan applies:** an order ON a load is filed on THAT load's day; an
-  order still on a PAST day's load and not delivered is shown UNPLANNED in the pool (`heldOn` names
-  the load that still holds it — NuVizz refuses to add it to another load until it comes off that
-  one); anything the reads cannot settle keeps its old filing — nothing moves on a guess.
+- **Chad's day rule, which the scan applies:** an order ON a load is filed on THAT load's day;
+  anything the reads cannot settle keeps its old filing — nothing moves on a guess. An order still
+  on a PAST day's load and not delivered is shown UNPLANNED in the pool (`heldOn` names the load
+  that still holds it) **only while `NUVIZZ_ROUTE_LOAD_HELD=on` — it ships OFF**. That verdict shows
+  planned freight as unplanned when it is wrong (a second truck), and it rests on one NuVizz
+  behaviour the code cannot confirm: that an order's "Stop Updated" moves whenever it changes load.
+  The run summary's `movedWithoutStamp` counts every time a re-read catches it not moving; say so
+  when asked, never guess it either way.
   "Shown unplanned" needs a known answer from EVERY live load under that name from today on plus
   the past load — a later day's roster count is the morning's capture and never rules a load out.
   `NUVIZZ_ROUTE_LOAD_DAY=off` puts the old filing back; `NUVIZZ_ROUTE_LOAD_DAY_READS` (default 4 per
-  run — up to 8 NuVizz calls with a retry) caps the `/load/info` reads. A stored read answers for an
-  order only while NuVizz's "Stop Updated" on that order is older than the read, so nothing is
-  re-read while nothing changes.
+  run — up to 8 NuVizz calls with a retry) caps the `/load/info` reads. A stored read, or the last
+  scan's verdict, answers for an order only while NuVizz's "Stop Updated" on it and any Save on it
+  are older than the read, so nothing is re-read while nothing changes. An order whose plan or Save
+  lives on a later day's board is filed there (one board per order; the verify and the write grace
+  decide it there).
 - **Guarded in CI**: `test/roster-load-numbers-guard.test.mjs` fails if this rule leaves CLAUDE.md,
   ORCHESTRATION.md, HANDOFF.md, the scan-schedule brief or the load-scan README, if the roster stops
   returning `loadNbr`, if the stamps leave the Map feed, or if a banned sentence below appears in the code.
