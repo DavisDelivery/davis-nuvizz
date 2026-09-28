@@ -512,7 +512,8 @@ test('THE HIGH-TRAFFIC DISPATCHER CONTROLS ARE DISABLED, NOT HIDDEN, WITH THE RE
     ['scan (map phone + the shared StopsStatusCard button)', /disabled=\{scanning \|\| scanCooldown \|\| !!scanDenied\}/g, 2],
     ['scan (Diagnostics: the API-calls panel and the schedule panel)', /disabled=\{scanning \|\| !!scanDenied\} title=\{scanDenied \|\| undefined\}/g, 2],
     // The routing engine — a 12s solve that can only answer 403 is the worst one to walk into.
-    ['engine draft', /disabled=\{draftBusy \|\| !draftNames\.trim\(\) \|\| !engineGate\.allowed\}/g, 1],
+    // v1.87.0: the drivers are picked off a list (draftPicked), not typed — the gate is unchanged.
+    ['engine draft', /disabled=\{draftBusy \|\| !draftPicked\.length \|\| !engineGate\.allowed\}/g, 1],
     ['engine cleanup', /disabled=\{cleanupBusy \|\| !planTargets\.length \|\| !engineGate\.allowed\}/g, 1],
     // The NuVizz writes.
     ['workbench Save (the whole board → NuVizz)', /disabled=\{busy \|\| !!saveGate\.reason\}/g, 1],

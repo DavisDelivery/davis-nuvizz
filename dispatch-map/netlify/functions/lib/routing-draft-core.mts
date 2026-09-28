@@ -27,6 +27,8 @@
 // The day's board as a planning surface reads it: on the UAT site in planning mode every row reads
 // unplanned (lib/uat-planning-mode.mts); everywhere else this is readStops, unchanged.
 import { readStopsForPlanning } from './uat-planning-mode.mts';
+import { runQuery, listDocs, readLoadRoster } from './firestore.mts';
+import { DRIVER_DAYS_COLLECTION } from './routing-driver-days.mts';
 import { DEPOT } from './history-derive.mts';
 import { ENGINE_VERSION, loadEngineConfig, type EngineConfig } from './routing-engine-config.mts';
 import { type ZonePrecisions } from './zones.mts';
@@ -62,9 +64,7 @@ export function liveMatchKey(s: any): string | null {
 // include office staff; all-history keys would include drivers who left.
 export const ROSTER_WINDOW_DAYS = 30;
 export function recentRosterKeys(driverDaysBefore: any[], asOfDate: string, windowDays = ROSTER_WINDOW_DAYS): Set<string> {
-  const cutoff = new Date(asOfDate + 'T12:00:00Z');
-  cutoff.setUTCDate(cutoff.getUTCDate() - windowDays);
-  const from = cutoff.toISOString().slice(0, 10);
+  const from = rosterWindowFrom(asOfDate, windowDays);
   const out = new Set<string>();
   for (const d of driverDaysBefore || []) {
     const dt = String(d?.date || '');
@@ -133,31 +133,132 @@ export function resolveDraftDriver(
     return { ok: false, error: `${driver_key} is a supervisor — the engine never drafts routes for supervisors` };
   }
 
+  return { ok: true, driver: describeDraftDriver(name, driver_key, m.emp, driverDaysBefore, asOfDate, recent) };
+}
+
+// WHO A DRIVER IS TO THE ENGINE — name, NuVizz user, truck class, days on record, and what it is
+// unsure of. ONE description for every way a driver is chosen (a typed name, a key picked off the
+// step-4 list, the list itself), so the list can never show a class or a name the draft would not
+// use. `driverDaysBefore` in date order, as loadPlanInputs reads it: the last of a driver's rows
+// is the most recent day.
+function describeDraftDriver(
+  input: string, driver_key: string, emp: any | null, driverDaysBefore: any[], asOfDate: string, recent: Set<string>,
+): ResolvedDraftDriver {
   const warnings: string[] = [];
   const mine = (driverDaysBefore || []).filter((d) => d?.driver_key === driver_key && String(d.date) < asOfDate);
-  if (m.emp && !m.emp?.externalIds?.nuvizz) {
+  if (emp && !emp?.externalIds?.nuvizz) {
     warnings.push(`${driver_key}: employee record has no NuVizz alias — history may be filed under a different key`);
   }
   if (!mine.length) warnings.push(`${driver_key}: no observed route history — the engine is guessing from class-level data`);
   else if (!recent.has(driver_key)) warnings.push(`${driver_key}: no routes in the last ${ROSTER_WINDOW_DAYS} days — territory data may be stale`);
 
-  const empClass = employeeClassMap(m.emp ? [m.emp] : []);
+  const empClass = employeeClassMap(emp ? [emp] : []);
   const rawClass = mine.length ? mine[mine.length - 1]?.truck_class ?? null : null;
   const truck_class = empClass.get(driver_key) || CLASS_OVERRIDE.get(driver_key)
     || (rawClass === 'tractor' ? 'tractor' : 'box_truck');
-  const userName = m.emp?.externalIds?.nuvizz
-    ? String(m.emp.externalIds.nuvizz).trim()
+  const userName = emp?.externalIds?.nuvizz
+    ? String(emp.externalIds.nuvizz).trim()
     : (mine.length ? mine[mine.length - 1]?.driver_user_name ?? null : driver_key.replace(/_/g, ' '));
 
   return {
-    ok: true,
-    driver: {
-      input: name, driver_key,
-      driver_user_name: userName,
-      driver_name: m.emp?.fullName || (mine.length ? mine[mine.length - 1]?.driver_name ?? null : null),
-      truck_class, observed_days: mine.length, warnings,
-    },
+    input, driver_key,
+    driver_user_name: userName,
+    driver_name: emp?.fullName || (mine.length ? mine[mine.length - 1]?.driver_name ?? null : null),
+    truck_class, observed_days: mine.length, warnings,
   };
+}
+
+// The employee record a driver_key belongs to — driverKeyFor's convention, the same one the
+// typed-name path uses: the NuVizz userName folded, fullName only as the fallback.
+function employeeForKey(employees: any[], driver_key: string): any | null {
+  return (employees || []).find((e) => fold(e?.externalIds?.nuvizz || e?.fullName) === driver_key) || null;
+}
+
+// A DRIVER PICKED OFF THE LIST IS THAT DRIVER — no name matching at all. Chad, on step 4's By
+// driver: "This should be a list that i select from not a type in situation other than type in
+// to find the name or route to select." The list sends the exact driver_key it showed, so
+// nothing between the tap and the draft can turn "Victor" into the other Victor or read
+// "Allen, John" as two people. The key must be on the list's own cast (the drivers who ran a
+// route in the ROSTER_WINDOW_DAYS before the date, never a supervisor); anything else is refused
+// by name, never re-matched.
+export function resolveDraftDriverKey(
+  key: string, employees: any[], driverDaysBefore: any[], asOfDate: string,
+): { ok: true; driver: ResolvedDraftDriver } | { ok: false; error: string } {
+  const driver_key = String(key ?? '').trim();
+  if (!driver_key) return { ok: false, error: 'empty driver' };
+  if (SUPERVISOR_KEYS.has(driver_key)) {
+    return { ok: false, error: `${driver_key} is a supervisor — the engine never drafts routes for supervisors` };
+  }
+  const recent = recentRosterKeys(driverDaysBefore, asOfDate);
+  if (!recent.has(driver_key)) {
+    return { ok: false, error: `${driver_key} has not run a route in the ${ROSTER_WINDOW_DAYS} days before ${asOfDate} — pick a driver from the list` };
+  }
+  return { ok: true, driver: describeDraftDriver(driver_key, driver_key, employeeForKey(employees, driver_key), driverDaysBefore, asOfDate, recent) };
+}
+
+export interface DraftableDriver {
+  key: string;               // the exact driver_key the draft is sent
+  name: string;              // what the list shows first
+  userName: string | null;   // the NuVizz user, when known
+  truckClass: string;        // 'tractor' | 'box_truck' — the class the draft will use
+  days: number;              // days with a route in the window
+  lastDate: string | null;   // the most recent of them
+  routes: string[];          // the route names they ran most, most often first (at most 3)
+}
+
+// THE STEP-4 LIST — the drivers who ran a route in the ROSTER_WINDOW_DAYS before the date: the
+// roster the engine computes every stop's candidates against (recentRosterKeys — never a
+// supervisor, never another tenant), each described by describeDraftDriver so the list and the
+// draft agree. NARROWER THAN THE OLD TYPED BOX, and on purpose: typed, a driver whose last route
+// was older than the window was still drafted (buildDriverDraft adds a named driver to their own
+// cast) with a "territory data may be stale" warning. The list leaves them off, because the same
+// rule would list every driver who has left; ROSTER_WINDOW_DAYS is the one number to move. `routeNameFor`
+// turns a trip's load_key into the route name the dispatcher knows it by ("SUW 2"), or null when
+// nothing recorded one; a driver's routes are the names they ran most, because that is what a
+// dispatcher searching "suw" is asking — who runs Suwanee. A→Z by name, so a row never moves
+// under the cursor as the box narrows. Pure: the caller does every read.
+export function draftableDrivers(
+  driverDaysWindow: any[], employees: any[], asOfDate: string,
+  routeNameFor: (date: string, loadKey: string) => string | null,
+): DraftableDriver[] {
+  const rows = [...(driverDaysWindow || [])].sort((a, b) => String(a?.date || '').localeCompare(String(b?.date || '')));
+  const recent = recentRosterKeys(rows, asOfDate);
+  const out: DraftableDriver[] = [];
+  for (const key of recent) {
+    const d = describeDraftDriver(key, key, employeeForKey(employees, key), rows, asOfDate, recent);
+    const mine = rows.filter((r) => r?.driver_key === key && String(r.date) < asOfDate);
+    const seen = new Map<string, { n: number; last: string }>();
+    for (const day of mine) {
+      for (const t of Array.isArray(day?.trips) ? day.trips : []) {
+        const name = String(routeNameFor(String(day.date), String(t?.load_key ?? '')) ?? '').trim();
+        if (!name) continue;
+        const s = seen.get(name) || { n: 0, last: '' };
+        s.n++;
+        if (String(day.date) > s.last) s.last = String(day.date);
+        seen.set(name, s);
+      }
+    }
+    const routes = [...seen.entries()]
+      .sort((a, b) => b[1].n - a[1].n || b[1].last.localeCompare(a[1].last) || a[0].localeCompare(b[0]))
+      .slice(0, 3).map(([n]) => n);
+    const dates = [...new Set(mine.map((r) => String(r.date)))].sort();
+    out.push({
+      key, name: String(d.driver_name || '').trim() || key, userName: d.driver_user_name,
+      truckClass: d.truck_class, days: dates.length, lastDate: dates.length ? dates[dates.length - 1] : null, routes,
+    });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
+}
+
+// A trip's route name: a load_key with no load number carries it (routeName__driverUser —
+// loadKeyForStop); a load number is looked up in that day's load roster, exactly, or not at all.
+export function routeNameFromRoster(loadKey: string, rosterLoads: any[] | null | undefined): string | null {
+  const k = String(loadKey ?? '').trim();
+  if (!k) return null;
+  const cut = k.indexOf('__');
+  if (cut > 0) return k.slice(0, cut);
+  const hit = (rosterLoads || []).find((l) => String(l?.loadNbr ?? '').trim() === k);
+  return hit ? (String(hit?.name ?? '').trim() || null) : null;
 }
 
 // Live board row → AssignStop, via the ONE shared mapping (routing-plan-core's
@@ -442,12 +543,15 @@ export function buildDriverDraft(tenant: string, date: string, opts: BuildDraftO
 
 // I/O wrapper the endpoint calls: live board read + as-of inputs + name
 // resolution, then the core above. ZERO NuVizz calls — readStopsForPlanning and
-// loadPlanInputs are Firestore-only.
+// loadPlanInputs are Firestore-only. `opts.keys` — drivers picked off the step-4 list, by
+// their exact driver_key (resolveDraftDriverKey); when given, `driverNames` is not read.
 export async function runDraft(
-  tenant: string, date: string, driverNames: string[],
+  tenant: string, date: string, driverNames: string[], opts: { keys?: string[] | null } = {},
 ): Promise<{ ok: true; draft: DraftResult } | { ok: false; status: number; error: string; details?: string[] }> {
-  if (!Array.isArray(driverNames) || driverNames.length < 1 || driverNames.length > 4) {
-    return { ok: false, status: 400, error: 'name 1-4 drivers' };
+  const byKey = Array.isArray(opts.keys) && opts.keys.length > 0;
+  const asked = byKey ? opts.keys! : driverNames;
+  if (!Array.isArray(asked) || asked.length < 1 || asked.length > 4) {
+    return { ok: false, status: 400, error: byKey ? 'pick 1-4 drivers' : 'name 1-4 drivers' };
   }
   const cfg = await loadEngineConfig(tenant);
   const { meta, stops } = await readStopsForPlanning(tenant, date);
@@ -461,8 +565,10 @@ export async function runDraft(
 
   const resolved: ResolvedDraftDriver[] = [];
   const errors: string[] = [];
-  for (const name of driverNames) {
-    const r = resolveDraftDriver(name, inputs.employees || [], inputs.driverDaysBefore, date);
+  for (const asked1 of asked) {
+    const r = byKey
+      ? resolveDraftDriverKey(asked1, inputs.employees || [], inputs.driverDaysBefore, date)
+      : resolveDraftDriver(asked1, inputs.employees || [], inputs.driverDaysBefore, date);
     if (r.ok) resolved.push(r.driver);
     else errors.push(r.error);
   }
@@ -471,4 +577,36 @@ export async function runDraft(
   if (dupe.length) return { ok: false, status: 400, error: `duplicate driver: ${[...new Set(dupe)].join(', ')}` };
 
   return { ok: true, draft: buildDriverDraft(tenant, date, { cfg, inputs, liveStops: stamped, meta, resolved }) };
+}
+
+// The first day of the roster window — recentRosterKeys' own arithmetic, so the rows read and
+// the rows counted are the same rows.
+export function rosterWindowFrom(asOfDate: string, windowDays = ROSTER_WINDOW_DAYS): string {
+  const cutoff = new Date(asOfDate + 'T12:00:00Z');
+  cutoff.setUTCDate(cutoff.getUTCDate() - windowDays);
+  return cutoff.toISOString().slice(0, 10);
+}
+
+// I/O wrapper for the step-4 list. ZERO NuVizz calls: one windowed query on the driver days
+// (only the window, never the whole history the draft itself reads), the employees roster, and
+// the cached load roster of each day in the window for the route names — all Firestore. A day
+// whose roster was never cached just contributes no route names; the driver is still listed.
+export async function listDraftableDrivers(tenant: string, date: string): Promise<{ from: string; drivers: DraftableDriver[] }> {
+  const from = rosterWindowFrom(date);
+  const [ddRows, employees] = await Promise.all([
+    runQuery({
+      from: [{ collectionId: DRIVER_DAYS_COLLECTION }],
+      where: { compositeFilter: { op: 'AND', filters: [
+        { fieldFilter: { field: { fieldPath: 'date' }, op: 'GREATER_THAN_OR_EQUAL', value: { stringValue: from } } },
+        { fieldFilter: { field: { fieldPath: 'date' }, op: 'LESS_THAN', value: { stringValue: date } } },
+      ] } },
+    }),
+    listDocs('employees').catch(() => [] as any[]),
+  ]);
+  const days = (ddRows as any[]).filter((r) => r?.tenant === tenant);
+  const dates = [...new Set(days.map((r) => String(r.date)))];
+  const rosters = await Promise.all(dates.map((d) => readLoadRoster(tenant, d).catch(() => null)));
+  const loadsByDate = new Map(dates.map((d, i) => [d, rosters[i]?.loads ?? []] as const));
+  const drivers = draftableDrivers(days, employees as any[], date, (d, loadKey) => routeNameFromRoster(loadKey, loadsByDate.get(d)));
+  return { from, drivers };
 }
