@@ -254,8 +254,23 @@ service cloud.firestore {
     // `match /driver_auth/{doc} { allow: if false }` beside an open `{document=**}` would
     // be dead code, because the wildcard still allows. While the wildcard is OPEN the
     // exclusion has to live in the wildcard's own condition.
-    function serverOnlyCollection(document) {
-      return document[0] in [
+    //
+    // KEYED ON THE TOP-LEVEL COLLECTION NAME, NOT ON A PATH INDEX (2026-09-28). The first
+    // version read `document[0]` off a `{document=**}` wildcard. That is bound for a single-
+    // document GET, and it is NOT bound when the browser reads a whole COLLECTION — a list,
+    // which is what every onSnapshot(collection(…)) in the app is. The Firestore emulator,
+    // running these exact lines, answers a collection read with:
+    //     PERMISSION_DENIED  "Variable  is not bound in path template. for 'list' @ L20"
+    // and a rule that errors denies. So the file as written refused every collection the board
+    // reads: truck profiles, customer notes, presence, the remembered Box/Tractor. Nobody had
+    // found it because nothing had ever deployed this file — until it was published to the
+    // uat-mirror database, where the Build Panel's Box/Tractor went grey and the red bar stayed
+    // up. `{collection}` below is a single segment, always bound, for a get, a list and a query
+    // alike. Proven in the emulator on a named database: 17 of 17 — every browser read and write
+    // shape allowed (get, collection list, subcollection list, query, set, delete), and the
+    // server-only list and claude_shadow_* writes still refused.
+    function serverOnlyCollection(collection) {
+      return collection in [
         'driver_auth',
         'app_users',
         'nuvizz_secrets',
@@ -282,16 +297,16 @@ service cloud.firestore {
     // forge a comparison Chad reads as evidence about the router. Same shape and same reason
     // as step one above: it has to live in the catch-all's own condition while the
     // catch-all is open, because Firestore OR's every matching rule.
-    function shadowCollection(document) {
-      return document[0].matches('claude_shadow_.+');
+    function shadowCollection(collection) {
+      return collection.matches('claude_shadow_.+');
     }
 
     // ── THE LIVE BLOCK — open for everything else, matching the console ──
     // Do not tighten this on its own. The cutover is one atomic swap: this block
     // out, the block below in, once the browser is actually signing in.
-    match /{document=**} {
-      allow read: if !serverOnlyCollection(document);
-      allow write: if !serverOnlyCollection(document) && !shadowCollection(document);
+    match /{collection}/{rest=**} {
+      allow read: if !serverOnlyCollection(collection);
+      allow write: if !serverOnlyCollection(collection) && !shadowCollection(collection);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
