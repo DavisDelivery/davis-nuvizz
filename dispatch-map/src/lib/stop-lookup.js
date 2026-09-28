@@ -455,6 +455,25 @@ export function promptedCallsOnScreen(onScreen, answer) {
   return n(onScreen) + n(answer);
 }
 
+/**
+ * PURE: is this answer ALREADY the full history of order `pro`?
+ *
+ * Chad, 2026-09-28, on an order opened from its own full history: "when you click open orders
+ * full history nothing happens." The panel's "Open this order's full history" re-runs the lookup
+ * for its PRO — and when the screen is that PRO's history, it re-runs the page it sits on: the
+ * panel closes and the same page comes back. So the screen asks this first and offers the button
+ * only where it goes somewhere. Leading zeros do not count (007181840 is 7181840).
+ */
+export function historyShowsOrder(answer, pro) {
+  if (answer?.mode !== 'stop' || !answer?.dossier?.found) return false;
+  const bare = (v) => s(v).replace(/^0+/, '');
+  const want = bare(pro);
+  if (!want) return false;
+  const id = answer.dossier.identity || {};
+  return [id.pro, id.stopNbr, answer.dossier.query, ...(Array.isArray(answer.candidates) ? answer.candidates : [])]
+    .some((v) => bare(v) === want);
+}
+
 /** PURE: the ledger row for the source this answer came from — the calls it cost, on request.
  *  `calls` is what the requester counted (a retried busy answer costs more than one); absent,
  *  it is one. */

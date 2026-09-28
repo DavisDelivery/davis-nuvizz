@@ -66,7 +66,7 @@ import { rollbackTargets, rollbackRequestBody } from './lib/rollback-targets.js'
 // ONE rule decides whether a typed box is a PRO or a customer name, and the screen and the
 // endpoint (netlify/functions/stop-lookup.mts) both read it from here — so the box can never
 // be classified one way by the client and the other way by the server.
-import { classifyQuery, notesSummary, promptedCallsOnScreen } from './lib/stop-lookup.js';
+import { classifyQuery, notesSummary, promptedCallsOnScreen, historyShowsOrder } from './lib/stop-lookup.js';
 import { DEVICE_SWITCHES, switchReport, encodeValue, describeValue } from './lib/device-switches.js';
 // The trainee's driver-area rings on the Map tab — the printed sheet's page one, drawn live.
 import { DRIVER_AREAS_URL, driverAreasStatus, makeDriverAreaOverlayClass } from './lib/driver-area-overlay.js';
@@ -190,7 +190,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.82.0';
+const APP_VERSION = '1.82.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -244,6 +244,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.82.1', '\u201cOPEN THIS ORDER\u2019S FULL HISTORY\u201d GOES SOMEWHERE NOW. Chad, on an attempted order\u2019s panel in Stop lookup: \u201cwhen you click open orders full history nothing happens.\u201d Reproduced in a real browser before it was fixed. The button re-runs the lookup for the order\u2019s PRO \u2014 and when the panel was opened from that order\u2019s OWN full history (the list of every day it was on file), it re-ran the page it sat on: the panel closed and the same page came back. Now, on the order\u2019s own history, the panel says so instead (\u201cThis is the order\u2019s full history \u2014 every day it was on file is in the list above\u201d), and the button is offered only where it goes somewhere. AND WHERE IT DID GO SOMEWHERE it could still look like nothing: from a customer\u2019s or an address\u2019s list, the new page came up scrolled wherever the old list had been, so a desktop showed the middle of the order\u2019s history. The jump now lands on the new page\u2019s start on every width (the phone already scrolled to a new answer, but only downward). Zero NuVizz calls; the lookup itself is unchanged.'],
   ['1.82.0', 'DRIVER AREAS: COLOURS YOU CAN TELL APART, A NAME THAT LIGHTS UP ITS AREA, AND OVALS SET BY LOOKING AT THE REAL HISTORY. Chad, 2026-09-28: \u201cMake drivers name match color of their circle and when you hover over there name there area gets a translucent background. and give circles a varied color pallette\u201d \u2014 and on the ovals: \u201cSome may be circles others may be ovals you just look at the data.\u201d COLOURS: the ten muted print colours (navy, slate, a second blue, two browns) read as one dark tangle on the live map, so a name\u2019s colour could not be matched to its line. Twelve now, one per colour family \u2014 red, blue, green, orange, purple, teal, pink, gold, sky, brown, violet, olive \u2014 all readable as a name on the map; the name is drawn in its ring\u2019s colour as before, and now it shows. NEIGHBOURS GET DIFFERENT ONES: colours were handed out by rank, so rings on top of each other could share one; now each driver, busiest first, takes the colour least like the rings he overlaps (on the four weeks to Sep 28, same-colour pairs among rings overlapping by more than half went from 12 to 4). The printed sheet uses the same colours. POINT AT A NAME and that driver\u2019s whole area \u2014 both rings, for a man who works two \u2014 fills in his colour, see-through, with a heavier line; pointing away puts it back. On a phone a tap on the name does it. The names still take no clicks: the pointer is followed on the map and matched to where the names are drawn, so a click on a name still reaches the pin under it. The switch\u2019s line says so. OVALS, BY LOOKING AT THE DATA: all 52 real rings with enough stops were drawn over their own stops and looked at. The first version shaped an oval from how the stops spread and left three plain road runs round (Victor Fernandez, Rasheed Davis, Marcus Young). The oval is now the smallest one holding the same 70% of his stops (every direction in 5\u00b0 steps, up to 4 to 1 long), drawn when it covers at most 62% of the circle\u2019s ground (half, under 100 stops). 24 of the 52 are ovals, every one a run along a road or between towns; those just under the line are round or scattered patches, or a town with a trail off one side. PUT IT BACK: revert this commit.'],
   ['1.81.6', 'EVERY ORDER NOW CARRIES ITS LOAD NUMBER, NOT JUST ITS ROUTE NAME. Chad, 2026-09-28: “Yes the load number is now on every scan so set it up whatever needs it to use it.” He added a Load Number column to the stop saved search (77128). Until today a stop row named its load by route NAME only, and route names repeat every day — WHITING TURNER 007182304-1 and POREX read “MARCUS” whether that meant Friday’s MARCUS (DAVIS000204535) or Monday’s (DAVIS000204645), which is how they landed on the wrong card. This change READS the number and nothing else (small chunks): every routed order now carries it as nuvizzLoadNbr beside the route name, the column is found by its label whatever key NuVizz gives it, and only a value shaped like a load number is kept. It is a LIVE field, so a stored copy can never hand back an old load’s number; the open-order pool and the frozen-day heal carry it with the route; and a row the Save grace holds on a new route has no number until the list catches up, never the old load’s. Stop-explain now says “PLANNED on MARCUS (DAVIS000204645)”. INSPECTABLE FOR NOTHING: each scan records which column it read the number from and how many routed orders had one (or, if no column matched, every column it was offered) — nuvizz-scan-config?explain=1 → listLoadNbr. No screen changes and no filing change: putting an order on its load’s day is the next change, on its own. Zero extra NuVizz calls. 11 new tests, 7,005 green.'],
   ['1.81.5', 'THE ROSTER HAS THE LOAD NUMBERS — SETTLED, AND NOW ENFORCED. Chad, 2026-09-28: “make sure no part of app or agent or orchestrator ever has to ask about the roster scan not producing load ids we get hung up on that too often and blocks progress.” The rule now sits in every document an agent or orchestrator reads first — CLAUDE.md, ORCHESTRATION.md, HANDOFF.md, the scan brief, the load-scan README and the review worklist — as settled, never an ask, with the free read that answers any real question (nuvizz-loads-roster?date=…&cacheOnly=1). A CI test fails if the rule leaves any of them, if the roster stops returning a load number per load, or if a sentence like “we don’t know which load” comes back into the code or docs (one old comment in the Claude shadow said it and is corrected). CLAUDE.md also gains Chad’s “smaller chunks” rule, and a correction: a later day’s roster count is the morning’s capture, so it can order which load to read but never rule one out. No app behaviour changes — the board, the scan and every screen are exactly as they were. Filing an order on the day of the load that holds it follows as its own change.'],
@@ -37803,10 +37804,17 @@ function OrderDetailBody({ data, onOpenHistory, wide }) {
               ? (Number(data.nuvizzCalls) > 1 ? `Straight from NuVizz — ${Number(data.nuvizzCalls)} calls, asked for just now.` : 'Straight from NuVizz — one call, asked for just now.')
               : "From today's live board — still moving until tonight's capture seals it."}
         </div>
-        <button onClick={onOpenHistory}
-          className="w-full rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50">
-          Open this order&rsquo;s full history &rarr;
-        </button>
+        {/* Only where it goes somewhere. Opened from this order's OWN full history, the button
+            re-ran the page it sits on — Chad: "when you click open orders full history nothing
+            happens" — so there it says where you already are (historyShowsOrder). */}
+        {onOpenHistory ? (
+          <button onClick={onOpenHistory}
+            className="w-full rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50">
+            Open this order&rsquo;s full history &rarr;
+          </button>
+        ) : (
+          <div className="text-[11px] text-slate-600">This is the order&rsquo;s full history &mdash; every day it was on file is in the list above.</div>
+        )}
       </div>
     </div>
   );
@@ -39499,13 +39507,21 @@ function StopLookupScreen() {
   const isMobileRef = useRef(isMobile);
   isMobileRef.current = isMobile;
   const [answerTick, setAnswerTick] = useState(0);
+  // Set by "Open this order's full history". That jump replaces a long list the rep had scrolled
+  // down, so the new answer has to be brought into view on EVERY width — left where it was, the
+  // desktop showed the middle of the new page and read as nothing having happened.
+  const jumpRef = useRef(false);
   useEffect(() => {
-    if (!answerTick || !isMobileRef.current) return;
+    const jump = jumpRef.current;
+    jumpRef.current = false;
+    if (!answerTick || !(jump || isMobileRef.current)) return;
     const box = scrollerRef.current;
     const panel = panelRef.current;
     if (!box || !panel) return;
     const top = panel.getBoundingClientRect().bottom - box.getBoundingClientRect().top + box.scrollTop - 8;
-    if (top > box.scrollTop) box.scrollTo({ top, behavior: 'smooth' });
+    // A search only ever scrolls DOWN to its answer (the phone); the jump goes to the new answer's
+    // start from wherever the old list was — which is usually UP.
+    if (jump ? Math.abs(top - box.scrollTop) > 4 : top > box.scrollTop) box.scrollTo({ top, behavior: 'smooth' });
   }, [answerTick]);
   // The typed place is remembered too, for the same reason the order box is.
   const [place, setPlace] = useState(() => {
@@ -39637,6 +39653,7 @@ function StopLookupScreen() {
    *  so it is a button somebody presses rather than what a row click does to them. */
   const pick = useCallback((pro) => {
     closeOrder();
+    jumpRef.current = true;
     setQ(String(pro)); setNameKey(null); setYearOn(false); run(pro);
   }, [run, closeOrder]);
 
@@ -39651,11 +39668,12 @@ function StopLookupScreen() {
   const renderOrderPanel = useCallback((stopNbr, date, opts = {}) => {
     if (!detail) return null;
     if (detail.stopNbr !== String(stopNbr ?? '').trim() || detail.date !== String(date ?? '').trim()) return null;
+    const pro = detailData?.stop?.pro || detail.stopNbr;
     return (
       <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={opts.stacked ?? isMobile}
-        onClose={closeOrder} onOpenHistory={() => pick(detailData?.stop?.pro || detail.stopNbr)} />
+        onClose={closeOrder} onOpenHistory={historyShowsOrder(data, pro) ? null : () => pick(pro)} />
     );
-  }, [detail, detailLoading, detailErr, detailData, isMobile, closeOrder, pick]);
+  }, [detail, detailLoading, detailErr, detailData, isMobile, closeOrder, pick, data]);
 
   /**
    * ASK NUVIZZ — the one thing on this screen that spends a call, and only a person can do it.
