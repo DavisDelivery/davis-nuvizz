@@ -843,6 +843,50 @@ export function gridRowTone({ selected = false, tractorOk = false, carryover = f
   return GRID_ROW_TONE.plain;
 }
 
+// THE COMPARE CARD'S STOP ROW (v1.81.4). Chad, 2026-09-27, with BRIAN open in Compare: "I want
+// the compare panel to have a faint green or red highlight if they are tractor friendly or
+// not." The Selected window has said this about a stop since v0.46.5 (green) and v1.37.1 (red),
+// the bottom grid since v1.3.0 — but once a stop was ON a card, the question the card exists to
+// answer ("what truck does this load need?") went back to opening every stop to find out.
+//
+// SAME TWO FACTS, SAME RULE as the Selected window: App.jsx feeds this from stopTractorFriendly
+// and stopTractorBlocked, the helpers that window reads, so a stop cannot be green in the
+// selection and plain on the card it was sent to. Red is the STATED no (a Box-only mark or a
+// confirmed "No tractor trailer"); a stop nobody has checked stays uncoloured, for the reason
+// v1.37.1 gives — a red on "no data" is a red a dispatcher learns to read past.
+//
+// FAINTER THAN THE SELECTED WINDOW, measured rather than chosen: he asked for faint, and at the
+// Selected window's 100 a red row swallows the card's own red preflight badge ("30M LATE" is
+// rose-100 on red-100 — the chip vanishes into the row). At 50 the badge still reads as a chip.
+//
+// THE DROP LINE DOES NOT EAT THE FACT. While a stop is dragged over a row, that row has always
+// shown a blue line on top (where the stop will land) and a faint blue fill. The line stays on
+// every row. The fill only goes on a row with no freight colour: two background classes on one
+// element resolve by stylesheet order, not by intent, and a drag passing over must not make a
+// no-tractor stop read as an ordinary one — v0.98.3's rule for the pointer, applied to the drag.
+//
+// No hover tone: the card's rows have never had one, and adding it is not what was asked.
+export const COMPARE_ROW_TONE = {
+  plain: '',
+  tractor: 'bg-green-50',
+  blocked: 'bg-red-50',
+  dropLine: 'border-t-2 border-t-blue-500',
+  dropFill: 'bg-blue-50/60',
+};
+
+/**
+ * The background classes for one stop row on a Compare card. Blocked is tested first for the
+ * reason selectionRowTone gives: the two rules are exclusive by construction, and if a caller
+ * ever passed both, the row that says a trailer cannot come here is the safe one to show.
+ */
+export function compareRowTone({ tractorOk = false, blocked = false, dragOver = false } = {}) {
+  const fill = blocked ? COMPARE_ROW_TONE.blocked
+    : tractorOk ? COMPARE_ROW_TONE.tractor
+      : dragOver ? COMPARE_ROW_TONE.dropFill
+        : COMPARE_ROW_TONE.plain;
+  return [dragOver ? COMPARE_ROW_TONE.dropLine : '', fill].filter(Boolean).join(' ');
+}
+
 // ── WHAT A CLICK ON A ROUTING MAP PIN DOES ───────────────────────────────────
 //
 // Chad, 2026-09-11, about the change he asked for the day before: "i asked that when i click
