@@ -896,6 +896,7 @@ function AboutCard({ m, mode }) {
         <li>Your NuVizz password is stored encrypted on the server and is never shown again — not to you, not to an admin.</li>
         <li>If NuVizz stops accepting it (you changed it in NuVizz, say), the app stops using it straight away instead of trying again, so NuVizz does not lock your account. Re-enter it here.</li>
         <li>The overnight scans and other automatic reads are nobody's action, so they keep using the shared login.</li>
+        <li>Once signing in is required on this site, this screen is for admins only. From then on an admin changes your password or NuVizz login for you, and you sign out from the menu.</li>
         <li>{modeSentence(mode)}</li>
       </ul>
     </Card>

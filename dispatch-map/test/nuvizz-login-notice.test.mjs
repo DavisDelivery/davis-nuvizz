@@ -9,12 +9,12 @@ test('refused NOW, under preferred: says so, and that changes go out under the s
   const n = loginNoticeFrom({ ok: false, loginRefused: 'NuVizz said: Invalid username or password', identity: { mode: 'preferred', as: 'personal' } });
   assert.equal(n.kind, 'refused-now');
   assert.match(n.text, /NuVizz refused your saved NuVizz login \(NuVizz said: Invalid/);
-  assert.match(n.text, /shared login until you re-enter it/);
+  assert.match(n.text, /shared login until it is re-entered/);
 });
 
 test('refused NOW, under required: says changes are refused', () => {
   const n = loginNoticeFrom({ loginRefused: 'x', identity: { mode: 'required', as: 'personal' } });
-  assert.match(n.text, /refused until you re-enter it/);
+  assert.match(n.text, /refused until it is re-entered/);
 });
 
 test('a later write that quietly went out as the shared login because of an earlier refusal: raised', () => {
@@ -26,7 +26,7 @@ test('a later write that quietly went out as the shared login because of an earl
 });
 
 test('a refusal under required carries the server\'s own sentence', () => {
-  const n = loginNoticeFrom({ ok: false, error: 'No NuVizz login is saved for Jane Doe — add yours under Account & logins.', identity: { mode: 'required', as: 'refused', why: 'not-saved' } });
+  const n = loginNoticeFrom({ ok: false, error: 'No NuVizz login is saved for Jane Doe — one has to be added under Account & logins.', identity: { mode: 'required', as: 'refused', why: 'not-saved' } });
   assert.equal(n.kind, 'refused');
   assert.match(n.text, /No NuVizz login is saved for Jane Doe/);
 });

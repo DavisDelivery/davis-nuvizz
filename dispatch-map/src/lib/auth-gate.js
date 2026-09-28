@@ -167,6 +167,30 @@ export function roleGateReason(user, need = 'dispatcher', { gated = true } = {})
 }
 
 /**
+ * PURE. Is the Account & logins screen (tab id 'users') offered to this person?
+ *
+ * Chad, 2026-09-28: "so i can get all the users set up on the backend before we turn this on so
+ * its seemless then the access to the usesrs tab will only be in my admin setup after we go live".
+ *
+ * `gated` is the same flag roleGateReason takes: LOGIN_MODE === 'server', i.e. this build puts the
+ * sign-in screen in front of the board (VITE_LOGIN_ENABLED). That flip is "go live".
+ *
+ *   BEFORE (gated false, the site today): EVERYONE. This screen is the only way in — where the first
+ *   admin is created with the setup code, where Chad sets the accounts up, and where a dispatcher can
+ *   sign in ahead of the switch so the switch changes nothing for them. Hiding it here would leave no
+ *   door at all.
+ *   AFTER (gated true): ADMINS ONLY. Everyone else signs out from the More menu, and an admin keeps
+ *   their account and NuVizz login up to date.
+ *
+ * A courtesy, not a lock: auth-users.mts refuses anyone but a signed-in admin (strict, role admin)
+ * whatever this says, before and after.
+ */
+export function accountsTabVisible(user, { gated = true } = {}) {
+  if (!gated) return true;
+  return !!user && roleOf(user) === 'admin';
+}
+
+/**
  * PURE. Turn a Firebase auth error code into something a dispatcher can act on.
  *
  * Firebase's raw messages are developer-facing ("Firebase: Error (auth/wrong-password)")

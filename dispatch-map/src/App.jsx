@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Building2, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound } from 'lucide-react';
+  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound, LogOut } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc, arrayUnion, arrayRemove, deleteField,
@@ -52,7 +52,7 @@ import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/dista
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
-import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
+import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
 // resolveGateMode). The flag is still read so that setting it turns the REAL login on
 // rather than silently doing nothing.
@@ -190,7 +190,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.82.1';
+const APP_VERSION = '1.82.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -244,6 +244,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.82.2', 'ACCOUNT & LOGINS BECOMES ADMIN-ONLY THE MOMENT SIGN-IN GOES LIVE. Chad: “so i can get all the users set up on the backend before we turn this on so its seemless then the access to the usesrs tab will only be in my admin setup after we go live.” Until VITE_LOGIN_ENABLED is switched on nothing changes: the screen stays under More for everyone, because it is where the first admin is created, where the accounts and their NuVizz logins get set up, and where a dispatcher can sign in ahead of the switch so the switch changes nothing for them. From the switch on, only admins see it, in the desktop More menu and the phone menu alike, and everyone gets a Sign out at the bottom of the menu — the only one used to be inside that screen, so a shared office PC could not have changed hands at shift change. When NuVizz refuses a dispatcher’s saved NuVizz login, the bar now asks them to get Chad or another admin to update it instead of offering a button into a screen they cannot open, and the sentences about it say the login has to be re-entered under Account & logins rather than “re-enter yours”.'],
   ['1.82.1', '\u201cOPEN THIS ORDER\u2019S FULL HISTORY\u201d GOES SOMEWHERE NOW. Chad, on an attempted order\u2019s panel in Stop lookup: \u201cwhen you click open orders full history nothing happens.\u201d Reproduced in a real browser before it was fixed. The button re-runs the lookup for the order\u2019s PRO \u2014 and when the panel was opened from that order\u2019s OWN full history (the list of every day it was on file), it re-ran the page it sat on: the panel closed and the same page came back. Now, on the order\u2019s own history, the panel says so instead (\u201cThis is the order\u2019s full history \u2014 every day it was on file is in the list above\u201d), and the button is offered only where it goes somewhere. AND WHERE IT DID GO SOMEWHERE it could still look like nothing: from a customer\u2019s or an address\u2019s list, the new page came up scrolled wherever the old list had been, so a desktop showed the middle of the order\u2019s history. The jump now lands on the new page\u2019s start on every width (the phone already scrolled to a new answer, but only downward). Zero NuVizz calls; the lookup itself is unchanged.'],
   ['1.82.0', 'DRIVER AREAS: COLOURS YOU CAN TELL APART, A NAME THAT LIGHTS UP ITS AREA, AND OVALS SET BY LOOKING AT THE REAL HISTORY. Chad, 2026-09-28: \u201cMake drivers name match color of their circle and when you hover over there name there area gets a translucent background. and give circles a varied color pallette\u201d \u2014 and on the ovals: \u201cSome may be circles others may be ovals you just look at the data.\u201d COLOURS: the ten muted print colours (navy, slate, a second blue, two browns) read as one dark tangle on the live map, so a name\u2019s colour could not be matched to its line. Twelve now, one per colour family \u2014 red, blue, green, orange, purple, teal, pink, gold, sky, brown, violet, olive \u2014 all readable as a name on the map; the name is drawn in its ring\u2019s colour as before, and now it shows. NEIGHBOURS GET DIFFERENT ONES: colours were handed out by rank, so rings on top of each other could share one; now each driver, busiest first, takes the colour least like the rings he overlaps (on the four weeks to Sep 28, same-colour pairs among rings overlapping by more than half went from 12 to 4). The printed sheet uses the same colours. POINT AT A NAME and that driver\u2019s whole area \u2014 both rings, for a man who works two \u2014 fills in his colour, see-through, with a heavier line; pointing away puts it back. On a phone a tap on the name does it. The names still take no clicks: the pointer is followed on the map and matched to where the names are drawn, so a click on a name still reaches the pin under it. The switch\u2019s line says so. OVALS, BY LOOKING AT THE DATA: all 52 real rings with enough stops were drawn over their own stops and looked at. The first version shaped an oval from how the stops spread and left three plain road runs round (Victor Fernandez, Rasheed Davis, Marcus Young). The oval is now the smallest one holding the same 70% of his stops (every direction in 5\u00b0 steps, up to 4 to 1 long), drawn when it covers at most 62% of the circle\u2019s ground (half, under 100 stops). 24 of the 52 are ovals, every one a run along a road or between towns; those just under the line are round or scattered patches, or a town with a trail off one side. PUT IT BACK: revert this commit.'],
   ['1.81.6', 'EVERY ORDER NOW CARRIES ITS LOAD NUMBER, NOT JUST ITS ROUTE NAME. Chad, 2026-09-28: “Yes the load number is now on every scan so set it up whatever needs it to use it.” He added a Load Number column to the stop saved search (77128). Until today a stop row named its load by route NAME only, and route names repeat every day — WHITING TURNER 007182304-1 and POREX read “MARCUS” whether that meant Friday’s MARCUS (DAVIS000204535) or Monday’s (DAVIS000204645), which is how they landed on the wrong card. This change READS the number and nothing else (small chunks): every routed order now carries it as nuvizzLoadNbr beside the route name, the column is found by its label whatever key NuVizz gives it, and only a value shaped like a load number is kept. It is a LIVE field, so a stored copy can never hand back an old load’s number; the open-order pool and the frozen-day heal carry it with the route; and a row the Save grace holds on a new route has no number until the list catches up, never the old load’s. Stop-explain now says “PLANNED on MARCUS (DAVIS000204645)”. INSPECTABLE FOR NOTHING: each scan records which column it read the number from and how many routed orders had one (or, if no column matched, every column it was offered) — nuvizz-scan-config?explain=1 → listLoadNbr. No screen changes and no filing change: putting an order on its load’s day is the next change, on its own. Zero extra NuVizz calls. 11 new tests, 7,005 green.'],
@@ -11280,7 +11281,7 @@ function makeDriverLabelOverlayClass(google) {
 // on the morning something is already wrong. The bar that is actually at the top carries it,
 // and Shell is the one that knows which that is (see headerAtTop) — this component never
 // guesses. Defaults true so any caller that does not pass it behaves exactly as before.
-function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null, manifestBadge = 0, addrBadge = 0, atTop = true }) {
+function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null, manifestBadge = 0, addrBadge = 0, atTop = true, showAccounts = true, signOutName = null }) {
   // Starts open so the tabs under it stay one tap away; remembered per device.
   const [moreOpen, setMoreOpen] = useState(() => {
     try { return window.localStorage.getItem('dd_more_open') !== '0'; } catch { return true; }
@@ -11391,6 +11392,21 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
               <MessageSquare size={12} /> Messages
               {smsUnread > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{smsUnread > 99 ? '99+' : smsUnread}</span>}
             </button>
+            {/* SIGN OUT, once sign-in is live (v1.82.2). It used to exist only inside Account &
+                logins, which is admins-only after go-live — without this row a dispatcher on a shared
+                PC or phone could not hand it to the next shift, and the next person's changes would
+                reach NuVizz under the first person's login. HERE, in the group that is always open,
+                not last: at the bottom of the long menu the floating Messages button sits on top of
+                it (measured on 2026-09-28 at 390x844 and 360x640, and true before this row existed), and it must never fold away with More. */}
+            {signOutName && (
+              <button
+                className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+                onClick={() => onSelectMenu('signout')}
+                role="menuitem"
+              >
+                <LogOut size={12} /> Sign out <span className="text-slate-400 truncate max-w-[140px]">({signOutName})</span>
+              </button>
+            )}
             {/* MORE — the same overflow container the desktop nav has. Chad asked for
                 the dropdown so extra screens have somewhere to live; on a phone the
                 whole nav is already one menu, so nesting a second dropdown inside it
@@ -11488,14 +11504,17 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                     tools for looking into the app rather than screens for running the
                     day, and they were sitting between the dispatcher and the Map. */}
                 {/* Account & logins (v1.75.0) — the same place as on the desktop menu, beside
-                    Diagnostics. Both navigations or neither: dispatch runs on a phone. */}
-                <button
-                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
-                  onClick={() => onSelectMenu('users')}
-                  role="menuitem"
-                >
-                  <KeyRound size={12} /> Account &amp; logins
-                </button>
+                    Diagnostics. Both navigations or neither: dispatch runs on a phone. Admins only
+                    once sign-in is live (v1.82.2, accountsTabVisible in lib/auth-gate.js). */}
+                {showAccounts && (
+                  <button
+                    className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                    onClick={() => onSelectMenu('users')}
+                    role="menuitem"
+                  >
+                    <KeyRound size={12} /> Account &amp; logins
+                  </button>
+                )}
                 <button
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('diagnostics')}
@@ -30649,6 +30668,23 @@ function Shell() {
   // write's answer at the one client write door (lib/nuvizzWrite.js → lib/nuvizz-login-notice.js).
   const [loginNotice, setLoginNotice] = useState(null);
   useEffect(() => onLoginNotice(setLoginNotice), []);
+  // WHO SEES ACCOUNT & LOGINS (v1.82.2). Everyone until sign-in goes live — it is where the
+  // accounts get set up and where people sign in ahead of the switch; admins only after it
+  // (Chad: "the access to the users tab will only be in my admin setup after we go live").
+  // The rule is accountsTabVisible() in lib/auth-gate.js, pure and tested; auth-users.mts
+  // refuses anyone but a signed-in admin either way. Once live, everyone signs out from the
+  // menu — the only Sign out used to be inside the screen this hides.
+  const signedInUser = useSignedInUser();
+  const accountsOpen = accountsTabVisible(signedInUser, { gated: LOGIN_MODE === 'server' });
+  const signOutName = LOGIN_MODE === 'server' && signedInUser
+    ? String(signedInUser.displayName || signedInUser.username || 'this account')
+    : null;
+  const signOutHere = () => {
+    if (!window.confirm(`Sign ${signOutName || 'this account'} out on this device? The next person signs in with their own account.`)) return;
+    // signOut() never throws today (auth-client.js); the catch keeps the LOCAL sign-out a
+    // guarantee if that ever changes, because a sign-out that silently didn't is the failure.
+    endSession().catch(() => clearSession());
+  };
   // THE NOTCH INSET BELONGS TO WHATEVER IS ACTUALLY AT THE TOP, AND TO EXACTLY ONE THING.
   // On a home-screen iPhone every bar that adds env(safe-area-inset-top) adds ~47px, so two
   // of them stack two notches of dead space above a board that is already telling a
@@ -30769,8 +30805,13 @@ function Shell() {
   // Close chip menu on any tab change or click outside the bar.
   useEffect(() => { setChipMenuOpen(false); }, [tab]);
 
+  // Account & logins stops being offered the moment it may not be (a role changed, or the
+  // session was replaced): a screen that stays open after its door is gone is a door left open.
+  useEffect(() => { if (tab === 'users' && !accountsOpen) setTab('map'); }, [tab, accountsOpen]);
+
   const onSelectMenu = (next) => {
     setChipMenuOpen(false);
+    if (next === 'signout') { signOutHere(); return; }
     if (next === 'debug') { setDebugOpen(true); return; }
     if (next === 'rollback') { setRollbackOpen(true); return; }
     if (next === 'messages') { openMessages(); return; }
@@ -30856,7 +30897,7 @@ function Shell() {
           that person, so it lives with the bars above and not inside any one screen. */}
       <NuvizzLoginBar notice={loginNotice} isMobile={isMobile}
         atTop={!updateAvailable && !denials.length && !roleRefusal && !LEGACY_FLAG_ONLY}
-        onOpen={() => { setLoginNotice(null); openTab('users'); }} onDismiss={() => setLoginNotice(null)} />
+        onOpen={accountsOpen ? () => { setLoginNotice(null); openTab('users'); } : null} onDismiss={() => setLoginNotice(null)} />
       {isMobile ? (
         <MobileAppBar
           version={APP_VERSION}
@@ -30868,6 +30909,8 @@ function Shell() {
           manifestBadge={moreBadge}
           addrBadge={addrBadge}
           atTop={headerAtTop}
+          showAccounts={accountsOpen}
+          signOutName={signOutName}
         />
       ) : (
         <header className="shrink-0 relative z-30 flex items-center justify-between px-4 py-2 border-b bg-white" style={headerAtTop ? { paddingTop: 'env(safe-area-inset-top)' } : undefined}>
@@ -30917,7 +30960,7 @@ function Shell() {
                 a screen you are NOT on, which is the entire point of the manifest check. */}
             <MoreMenu
               activeId={debugOpen ? 'debug' : tab}
-              onPick={(id) => (id === 'debug' ? setDebugOpen(true) : setTab(id))}
+              onPick={(id) => (id === 'debug' ? setDebugOpen(true) : id === 'signout' ? signOutHere() : setTab(id))}
               badge={moreBadge + addrBadge}
               items={[
                 { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
@@ -30936,7 +30979,8 @@ function Shell() {
                 // Account & logins (v1.75.0): sign in, your own NuVizz login and, for admins, everyone's.
                 // Beside Diagnostics because both are about the app rather than the day. The phone menu
                 // carries it too, in the same place — a screen in one navigation only does not exist on a phone.
-                { id: 'users', label: 'Account & logins', hint: 'Your sign-in and NuVizz login — admins manage people here', icon: <KeyRound size={14} /> },
+                // Admins only once sign-in is live (v1.82.2): accountsOpen, above.
+                ...(accountsOpen ? [{ id: 'users', label: 'Account & logins', hint: 'Your sign-in and NuVizz login — admins manage people here', icon: <KeyRound size={14} /> }] : []),
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
                 { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
                 // UAT ONLY, keyed on the HOSTNAME — the one fact about a deploy nobody can
@@ -30944,6 +30988,10 @@ function Shell() {
                 // shows it. The endpoint refuses independently on FIRESTORE_DATABASE, so this
                 // is the courtesy check and not the safety one.
                 ...(BENCH_ON ? [{ id: 'uatbench', label: 'UAT test bench', hint: "Seed production's orders into UAT", icon: <Beaker size={14} /> }] : []),
+                // Sign out, once sign-in is live (v1.82.2) — last, where a sign-out lives. The only one
+                // used to be inside Account & logins, which is admins-only from then on; the phone menu
+                // carries the same row.
+                ...(signOutName ? [{ id: 'signout', label: 'Sign out', hint: `Signed in as ${signOutName}`, icon: <LogOut size={14} /> }] : []),
               ]}
             />
             {/* THE MAP'S BOARD-STATUS CARD IS NOT MOUNTED HERE ANY MORE. It went back to the
@@ -30979,7 +31027,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'users' ? <AccountScreen isMobile={isMobile} loginMode={LOGIN_MODE} /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'users' ? (accountsOpen ? <AccountScreen isMobile={isMobile} loginMode={LOGIN_MODE} /> : null) : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
@@ -34618,7 +34666,7 @@ function classifyPushResult(j) {
   // with `identity.as === 'refused'` and a sentence naming the fix. Read first, and quoted: it is
   // not the write switch and not the breaker (audit 2026-09-27). Still fatal — every row after
   // it would be refused the same way.
-  if (j?.identity?.as === 'refused') return { fatal: true, kind: 'identity', text: err || 'This write needs your own NuVizz login — add it under Account & logins.' };
+  if (j?.identity?.as === 'refused') return { fatal: true, kind: 'identity', text: err || 'This write needs your own NuVizz login — one has to be added under Account & logins.' };
   if (http === 403 && /^requires\s+\w+$/i.test(err)) return { fatal: true, kind: 'role', text: 'This account may not push to NuVizz.' };
   if (http === 403) return { fatal: true, kind: 'switch', text: 'Live writes are switched off on the server (NUVIZZ_WRITE_ENABLED). Nothing was sent — the board corrections are saved.' };
   if (http === 503) return { fatal: true, kind: 'breaker', text: 'The NuVizz call breaker is open — no further writes will go out today.' };

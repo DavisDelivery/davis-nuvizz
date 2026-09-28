@@ -31,8 +31,8 @@ export function loginNoticeFrom(j) {
     return {
       kind: 'refused-now',
       text: `NuVizz refused your saved NuVizz login (${String(j.loginRefused)}). ${strict
-        ? 'Your changes are refused until you re-enter it.'
-        : 'Your changes will go out under the shared login until you re-enter it.'}`,
+        ? 'Your changes are refused until it is re-entered.'
+        : 'Your changes will go out under the shared login until it is re-entered.'}`,
     };
   }
   if (id?.as === 'refused') {
