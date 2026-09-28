@@ -58,6 +58,8 @@ import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from '
 // rather than silently doing nothing.
 import { authEnabled } from './lib/auth.js';
 import LoginScreen from './components/LoginScreen.jsx';
+import DraftDriverList from './components/DraftDriverList.jsx';
+import { togglePick, keepListedPicks, DRAFT_MAX_DRIVERS } from './lib/draft-driver-list.js';
 import { ChangePasswordScreen, ResetPasswordScreen } from './components/PasswordScreens.jsx';
 // ONE place a session token gets onto a request (see lib/api.js). Every call to our own
 // functions goes through apiFetch; nothing else may build an Authorization header.
@@ -191,7 +193,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.86.0';
+const APP_VERSION = '1.87.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -245,7 +247,8 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.86.0', 'THE BUILD BUTTON STOPS A TRUCK AT WHAT IT CAN CARRY, AND ONLY GREEN ON A 53\u2032 MEANS THE GREEN THE PANEL PAINTS. Chad, after a Build onto CHE (a 53\u2032) and SCOTT (a 26\u2032 box) put 24 stops and 30 skids on the box and one stop on the trailer, with the Selected panel reading \u201cleaves 11 a tractor can run\u201d: \u201ca 14 skid box truck stops with 14 skids and if not enough green stops to fit on a tractor then it stops there too or at 30 skids either one. then lists everything that didn\u2019t fit.\u201d READ OFF THE CODE, THREE THINGS STOOD IN THE WAY, and the real Build pipeline reproduces his screen from them \u2014 on a 26-stop board of his shape it put 1 stop on CHE and 25 stops, 33 real skids, on SCOTT, having counted 0: (1) SKIDS WERE NOT COUNTED \u2014 the Build was sent pallets, weight and line items but never cartons, the field NuVizz carries the skid count in, so a stop\u2019s skids came only from lines itemised in pallets and a box filled on weight alone; (2) \u201cGREEN\u201d WAS NARROWER THAN THE PANEL\u2019S \u2014 with \u201cOnly green on a 53\u2032\u201d ticked the Build held every stop without a HAND-PAINTED green to a box, while the panel paints green for the painted mark, the \u201cTractor trailer friendly\u201d badge and a tractor having delivered there; (3) WHAT A LOAD ALREADY CARRIES WAS NOT COUNTED \u2014 a load that already holds stops was handed its whole truck again. NOW, on the same board: CHE takes the 11 stops the panel paints green (16 skids), SCOTT stops at exactly 14 skids, and the 6 stops that fit nowhere are listed with the reason (\u201cover skid capacity\u201d). A tractor stops at its own profile\u2019s skids too \u2014 the shipped tractor profile says 28; if yours holds 30 that is one field in Profiles. The browser sends the panel\u2019s own answer (stopTractorFriendly, the rule the Selected rows, \u201cDrop N non-tractor\u201d and the bottom grid already share) and what each picked load carries; the server counts both with its own freight rule. The panel\u2019s green only answers what the tick asks \u2014 a red Box-only mark, a hand-ticked No tractor trailer or No 53ft, and a Uline advisory still keep a 53\u2032 away exactly as before. Fill my loads reads the same green under the same tick, so the two buttons still agree on the same stop. A load that already carried freight reports its true load against its whole truck in the result (not \u201c9 / 9\u201d). PUT IT BACK, one rule at a time, each a Netlify switch read only in lib/routing-build-rules.mts: ROUTING_BUILD_COUNT_SKIDS=off, ROUTING_BUILD_GREEN_MATCHES_PANEL=off (both buttons), ROUTING_BUILD_COUNTS_EXISTING=off; every build\u2019s result says which ran (result.buildRules). WHAT IT TOUCHES: the Build Panel \u2014 the Build button\u2019s request and the server build path, and Fill my loads\u2019 request; the Compare cards, staging, Save and the map are untouched. 13 new tests run the real Build handler on an in-memory Firestore with every other network call refused, including Chad\u2019s board as it was and as it is now; ten deliberate breaks of the rules each turn a test red. A stop already on a load that is selected again is counted once, as a stop being re-planned.'],
+  ['1.87.0', 'STEP 4\u2019S BY DRIVER IS A LIST YOU PICK FROM \u2014 TYPING ONLY NARROWS IT. Chad, on the box that read \u201cVictor, Scott\u201d: \u201cThis should be a list that i select from not a type in situation other than type in to find the name or route to select.\u201d NOW: step 4 \u00b7 Engine \u00b7 By driver lists every driver who ran a route in the 30 days before the day being built \u2014 the roster the engine computes every stop\u2019s candidates against, never the boss \u2014 A\u2192Z, each row saying the truck the draft will plan them on (Tractor / Box truck, the same rule the draft uses, pinned by test) and the routes they run most (\u201cRuns SUW 2 \u00b7 CHE\u201d, read exactly off each day\u2019s cached load roster, never guessed). Tap up to four; they show as chips you can tap off. The box above the list finds a driver by name, NuVizz code or route \u2014 \u201csuw\u201d finds whoever runs Suwanee \u2014 and only narrows the list; nothing typed is ever sent. The Draft button sends the picked drivers\u2019 exact keys, so the two typed-name faults the QA review found cannot happen from this screen: a code like VICTOR landing on the OTHER Victor (the one with an employee card), and \u201cAllen, John\u201d read as two people. SAID PLAINLY: the list is narrower than the old box in one case \u2014 a driver whose last route was more than 30 days ago. Typed, the box still drafted them with a \u201cterritory data may be stale\u201d warning; the list leaves them off, because the same rule would list every driver who has left. The 30 is ROSTER_WINDOW_DAYS, one number. TWO VIEWS: on a phone every row and chip is a 44px thumb target and the box is 16px so iOS does not zoom; on a desktop the rows are compact. The list opens in flow and scrolls itself, like the route card\u2019s driver search. WHAT IT READS: one windowed query of the driver days, the employees roster and the cached load rosters \u2014 Firestore only, zero NuVizz calls. Typed names are still accepted by the endpoint for anything else that sends them. PUT IT BACK: one commit \u2014 its revert puts the text box back. 14 new tests, including the real endpoint on an in-memory Firestore; 14 deliberate breaks of the rules each turn a test red. A role the engine refuses is not sent for the list at all \u2014 they see the reason under the button, as before.'],
+  ['1.86.0', 'THE BUILD BUTTON STOPS A TRUCK AT WHAT IT CAN CARRY, AND ONLY GREEN ON A 53\u2032 MEANS THE GREEN THE PANEL PAINTS. Chad, after a Build onto CHE (a 53\u2032) and SCOTT (a 26\u2032 box) put 24 stops and 30 skids on the box and one stop on the trailer, with the Selected panel reading \u201cleaves 11 a tractor can run\u201d: \u201ca 14 skid box truck stops with 14 skids and if not enough green stops to fit on a tractor then it stops there too or at 30 skids either one. then lists everything that didn\u2019t fit.\u201d READ OFF THE CODE, THREE THINGS STOOD IN THE WAY, and the real Build pipeline reproduces the screen from them \u2014 on a 26-stop board of the same shape it put 1 stop on CHE and 25 stops, 33 real skids, on SCOTT, having counted 0: (1) SKIDS WERE NOT COUNTED \u2014 the Build was sent pallets, weight and line items but never cartons, the field NuVizz carries the skid count in, so a stop\u2019s skids came only from lines itemised in pallets and a box filled on weight alone; (2) \u201cGREEN\u201d WAS NARROWER THAN THE PANEL\u2019S \u2014 with \u201cOnly green on a 53\u2032\u201d ticked the Build held every stop without a HAND-PAINTED green to a box, while the panel paints green for the painted mark, the \u201cTractor trailer friendly\u201d badge and a tractor having delivered there; (3) WHAT A LOAD ALREADY CARRIES WAS NOT COUNTED \u2014 a load that already holds stops was handed its whole truck again. NOW, on the same board: CHE takes the 11 stops the panel paints green (16 skids), SCOTT stops at exactly 14 skids, and the 6 stops that fit nowhere are listed with the reason (\u201cover skid capacity\u201d). A tractor stops at its own profile\u2019s skids too \u2014 the shipped tractor profile says 28; if yours holds 30 that is one field in Profiles. The browser sends the panel\u2019s own answer (stopTractorFriendly, the rule the Selected rows, \u201cDrop N non-tractor\u201d and the bottom grid already share) and what each picked load carries; the server counts both with its own freight rule. The panel\u2019s green only answers what the tick asks \u2014 a red Box-only mark, a hand-ticked No tractor trailer or No 53ft, and a Uline advisory still keep a 53\u2032 away exactly as before. Fill my loads reads the same green under the same tick, so the two buttons still agree on the same stop. A load that already carried freight reports its true load against its whole truck in the result (not \u201c9 / 9\u201d). PUT IT BACK, one rule at a time, each a Netlify switch read only in lib/routing-build-rules.mts: ROUTING_BUILD_COUNT_SKIDS=off, ROUTING_BUILD_GREEN_MATCHES_PANEL=off (both buttons), ROUTING_BUILD_COUNTS_EXISTING=off; every build\u2019s result says which ran (result.buildRules). WHAT IT TOUCHES: the Build Panel \u2014 the Build button\u2019s request and the server build path, and Fill my loads\u2019 request; the Compare cards, staging, Save and the map are untouched. 13 new tests run the real Build handler on an in-memory Firestore with every other network call refused, including Chad\u2019s board as it was and as it is now; ten deliberate breaks of the rules each turn a test red. A stop already on a load that is selected again is counted once, as a stop being re-planned.'],
   ['1.85.1', 'A “CAN’T MAKE” STOP NOW SHOWS ITS HOURS, ON THEIR OWN LINE. Chad, 2026-09-28, with MCKESSON (“CAN’T MAKE 11:00A”) and GENESIS BIOSCIENCES (“CAN’T MAKE 12:00P”) on SUW and no hours anywhere on either row: “2 stops can’t meet receiving hours however the hours are not listed on the card why?” — then “make it 2 rows on the card one with the hours and 2 with can’t make 12 or whatever.” The card used to drop a stop’s hours whenever the verdict named the same close, which hid when the dock OPENS and where the hours came from. A can’t-make row now reads two lines under the name: the whole window on file first (MCKESSON 7:00a–11:00a; GENESIS 8:00a–12:00p · auto, because those were read from the order text), then the CAN’T MAKE verdict. Only the half on file is ever stated — a dock with no opening time reads “closes 11:00a”, never an invented window. Every other row is unchanged, on the phone and the desktop. VITE_COMPARE_UNREACHABLE_HOURS=off puts back the verdict alone (build-time, so a redeploy). Zero NuVizz calls. 4 new tests; the pinned suppression test rewritten to the new rule with Chad’s words on it.'],
   ['1.85.0', 'UAT HAS A PLANNING MODE: ONE SWITCH, AND EVERY DAY\u2019S ORDERS READ UNPLANNED AND EVERY LOAD EMPTY \u2014 PRODUCTION IS NOT TOUCHED. Chad, 2026-09-28: \u201ci want you to make everything from today\u2019s deliveries back to unplanned so i can test of some of the planning changes we have made \u2026 should change nothing in productions database\u201d, and then the shape: \u201cmaybe we have a planning mode in the uat where it makes the days orders all unplanned so you have a live version essentially of uat and then have a planning mode where everything on any given day is in unplanned.\u201d THE BAR AT THE TOP OF EVERY UAT SCREEN SAYS WHICH BOARD YOU ARE LOOKING AT \u2014 \u201cUAT \u00b7 LIVE\u201d (production\u2019s copy) or \u201cUAT \u00b7 PLANNING MODE\u201d \u2014 and its button flips it for everyone on UAT, then reloads so nothing on screen is left from the other mode. Phone and desktop each have their own layout; production never shows the bar. IN PLANNING MODE, whatever day you open: every order reads unplanned \u2014 off its load, no driver, no sequence, no planned ETA, nothing delivered or out for delivery \u2014 and every load on that day\u2019s roster reads as an empty truck with its driver and load number still on it, so \u201c2 \u00b7 Plan onto\u201d offers them all as empty. The address, freight, time windows and restrictions all stay: the planner needs them. Cancelled orders stay off the board as always. The same view reaches the draft and end-of-night solvers, so a server-side plan sees the same all-unplanned day the screen does. WHY A VIEW AND NOT A REWRITE: the first plan was to rewrite today\u2019s stored rows as unplanned \u2014 but production rescans its stops all day and the live sync copies every row it changes onto UAT within ten minutes, so the rewrite would have quietly undone itself mid-test. Nothing stored changes here, on either database: the sync keeps running underneath, and \u201cBack to live\u201d is instant and current, with nothing to put back. NOT CHANGED: stop lookup, a driver\u2019s week and history keep showing the order as it really is; the Claude shadow tab has its own \u201cevery stop\u201d scope and is untouched. PUT IT BACK: \u201cBack to live\u201d on the bar; UAT_PLANNING_MODE=off on the UAT site removes the feature outright. Zero NuVizz calls. CHECKED IN A REAL BROWSER on a UAT-named host at 390, 360 and 1440 wide: the bar sits in the flow above the header, its button is not covered, no sideways scroll. 16 new tests, 5 mutations killed; 7,105 green.'],
   ['1.84.0', 'UAT NOW PICKS UP PRODUCTION\u2019S CHANGES ON ITS OWN, EVERY 10 MINUTES \u2014 AND NOTHING FLOWS BACK. Chad, 2026-09-26: \u201cmy loads are missing this is not a match to production like its supposed to be any update i make to production should automatically be here as well but any change to uat should not automatically go to production without explicit approval.\u201d MEASURED, NOT GUESSED, with the two free read-backs (no NuVizz calls): production held 90 loads for Monday 09-28, 51 with a driver, captured 8:30 PM ET Saturday; the UAT site held production\u2019s FRIDAY 12:15 PM copy of that day \u2014 0 loads \u2014 because UAT copied production ONCE A DAY, at 06:45 UTC, and its last copy was Saturday 2:45 AM ET. Monday\u2019s loads were made after it. THE FIX IS A LIVE SYNC (uat-mirror-sync-background, every 10 minutes, UAT only). Each tick copies onto UAT exactly the documents PRODUCTION has changed since the last tick \u2014 judged by Firestore\u2019s own update stamp, not by a field some writer might forget \u2014 for a fixed list: the load rosters and the board for today plus three days, the open-order pool and carry-over documents the board folds in, board-date overrides, the NuVizz driver list, customer notes (the map\u2019s flags, restriction marks, hours and moved pins), the truck/engine settings, and Shiplify (copied whole, once per import). ONE WAY, BY CONSTRUCTION: the only door to production is the read-only reader that has no writer in it, and the job refuses to start unless the site is the mirror. A CHANGE MADE ON UAT STAYS ON UAT UNTIL PRODUCTION CHANGES THAT SAME DOCUMENT \u2014 then production wins. That is what keeps UAT usable for testing: a test edit is not wiped every 10 minutes, only when somebody edits the same customer in production (and the 06:45 refresh still re-copies the settings every morning, as it always has). STOPS PRODUCTION REMOVED LEAVE UAT WITHIN 10 MINUTES, not at the next morning\u2019s refresh \u2014 by the nightly\u2019s own rule (v1.81.3 boardRowsToPrune), so the UAT bench\u2019s own test orders are never touched. AND UAT\u2019S LOADS TAB NO LONGER ASKS NUVIZZ ON ITS OWN. Found on the same evening: with a stale empty copy, the roster read went live \u2014 and on UAT live means the UAT NuVizz tenant, which answered 88 loads with no drivers and was written over production\u2019s copy of 09-26 at 8:43 PM. On UAT the Loads tab now serves production\u2019s copy with its real age, and its Refresh re-copies production\u2019s roster for that day; zero NuVizz calls either way. Production\u2019s Loads behave exactly as before (the change is gated on the mirror). SEE IT: uat-mirror-refresh?sync=1 on the UAT site is the last tick, unit by unit; ?sync=explain is what the next tick would copy, writing nothing. COST: Firestore reads only \u2014 about 2,000 a tick for the notes and settings plus one per board stop in the window, every 10 minutes; writes only for what changed. PUT IT BACK: UAT_LIVE_SYNC=off on the UAT site stops the tick and returns the Loads tab to its old path, together. STILL CHAD\u2019S TO DO ON THE UAT SITE, NOT FIXABLE FROM CODE: the red \u201cdatabase refused the read\u201d bar is the uat-mirror database\u2019s own Firestore rules (set in the Firebase console, separately from production\u2019s) \u2014 until they allow the browser, UAT cannot show hours, flags, restriction marks, tractor paint or Shiplify pins whatever is copied; and MOTIVE_API_KEY is not set on the UAT site. 25 new tests; 7,089 green.'],
@@ -27096,7 +27099,34 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     try { return localStorage.getItem('routing.engineMode') === 'cleanup' ? 'cleanup' : 'driver'; } catch { return 'driver'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.engineMode', engineMode); } catch { /* private mode */ } }, [engineMode]);
-  const [draftNames, setDraftNames] = useState('');
+  // BY DRIVER IS A LIST YOU PICK FROM (Chad: "a list that i select from not a type in situation
+  // other than type in to find the name or route to select"). The list is the server's own cast
+  // for the day (routing-draft GET — every row a driver the draft accepts), loaded when the By
+  // driver tab is showing, and the picks are exact driver keys. Firestore only, zero NuVizz calls.
+  const [draftPicked, setDraftPicked] = useState([]);
+  const [draftDrivers, setDraftDrivers] = useState({ date: null, list: null, windowDays: 30, loading: false, error: null });
+  const draftListRunRef = useRef(0);
+  const loadDraftDrivers = useCallback(async (date) => {
+    const run = ++draftListRunRef.current;   // the newest date asked owns the list
+    setDraftDrivers({ date, list: null, windowDays: 30, loading: true, error: null });
+    try {
+      const res = await apiFetch(`/.netlify/functions/routing-draft?date=${encodeURIComponent(date)}`, { cache: 'no-store' });
+      const data = await res.json().catch(() => null);
+      if (run !== draftListRunRef.current) return;
+      if (!res.ok || !data?.ok || !Array.isArray(data.drivers)) {
+        setDraftDrivers({ date, list: null, windowDays: 30, loading: false, error: data?.error || `driver list failed (${res.status})` });
+        return;
+      }
+      setDraftDrivers({ date, list: data.drivers, windowDays: Number(data.windowDays) || 30, loading: false, error: null });
+      // A driver who is not on this day's list is dropped from the picks, never sent for a
+      // day the engine cannot draft them.
+      setDraftPicked((p) => keepListedPicks(p, data.drivers));
+    } catch (e) {
+      if (run !== draftListRunRef.current) return;
+      setDraftDrivers({ date, list: null, windowDays: 30, loading: false, error: e?.message || 'network error' });
+    }
+  }, []);
+  const toggleDraftDriver = useCallback((key) => { setDraftPicked((p) => togglePick(p, key)); setDraftError(null); }, []);
   const [draftBusy, setDraftBusy] = useState(false);
   const [draftError, setDraftError] = useState(null);
   const [draftResult, setDraftResult] = useState(null);
@@ -27227,6 +27257,13 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   // worst version of this to walk into: the button spins, the panel says "Drafting…", and the
   // refusal arrives long enough later that it reads as a broken engine rather than a role.
   const engineGate = useRoleGate('dispatcher');
+  // The By-driver list loads once per date while its tab is showing — and not at all for a role
+  // the engine refuses: that viewer sees the gate's reason under the button, not a 403 as a
+  // "could not load" error. A failed load stays failed until "Try again", never a retry loop.
+  useEffect(() => {
+    if (engineMode !== 'driver' || !selectedDate || !engineGate.allowed || draftDrivers.date === selectedDate) return;
+    loadDraftDrivers(selectedDate);
+  }, [engineMode, selectedDate, engineGate.allowed, draftDrivers.date, loadDraftDrivers]);
 
   const runEngineCleanup = useCallback(async () => {
     if (!engineGate.allowed) { setCleanupError(engineGate.reason); return; }
@@ -27296,14 +27333,16 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
 
   const runEngineDraft = useCallback(async () => {
     if (!engineGate.allowed) { setDraftError(engineGate.reason); return; }
-    const names = draftNames.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
-    if (!names.length || names.length > 4) { setDraftError('Name 1–4 drivers, comma-separated.'); return; }
+    // The picked rows' exact keys — nothing typed is ever sent (the box above the list only
+    // narrows it), so no name has to be matched on the server.
+    const keys = draftPicked.filter(Boolean);
+    if (!keys.length || keys.length > DRAFT_MAX_DRIVERS) { setDraftError(`Pick 1–${DRAFT_MAX_DRIVERS} drivers from the list.`); return; }
     const runId = ++engineRunRef.current;   // see runEngineCleanup — last run owns the screen
     setDraftBusy(true); setDraftError(null);
     try {
       const res = await apiFetch('/.netlify/functions/routing-draft', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: selectedDate, drivers: names }),
+        body: JSON.stringify({ date: selectedDate, driver_keys: keys }),
       });
       const data = await res.json().catch(() => null);
       if (runId !== engineRunRef.current) return;
@@ -27320,7 +27359,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     } finally {
       if (runId === engineRunRef.current) setDraftBusy(false);
     }
-  }, [draftNames, selectedDate, stageEngineDraft, engineGate.allowed, engineGate.reason]);
+  }, [draftPicked, selectedDate, stageEngineDraft, engineGate.allowed, engineGate.reason]);
 
   // Shared gear-settings config — rendered in two places: the left Setup-panel header and the
   // bottom data-grid header. The bottom gear is what stays reachable when the Setup panel is hidden,
@@ -27724,18 +27763,23 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         {engineMode === 'driver' ? (
         <>
         <div className="text-[11px] text-slate-500">
-          Name drivers and the <b>learned engine</b> drafts their routes for <b>{formatDateLong(selectedDate)}</b> from
+          Pick drivers and the <b>learned engine</b> drafts their routes for <b>{formatDateLong(selectedDate)}</b> from
           the unplanned pool — only stops their own history says are theirs; everything else stays unplanned and is
           listed with the reason. Drafts open as pending route cards: move stops, pick the driver on each card, then
           Save sends to NuVizz exactly as always.
         </div>
-        <input value={draftNames} onChange={(e) => setDraftNames(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && draftNames.trim() && !draftBusy) runEngineDraft(); }}
-          placeholder="Victor, Scott" className="w-full border rounded p-1.5 text-[12px]" />
-        <button onClick={runEngineDraft} disabled={draftBusy || !draftNames.trim() || !engineGate.allowed}
+        <DraftDriverList
+          drivers={draftDrivers.date === selectedDate ? draftDrivers.list : null}
+          loading={draftDrivers.loading}
+          error={draftDrivers.date === selectedDate ? draftDrivers.error : null}
+          onRetry={() => loadDraftDrivers(selectedDate)}
+          picked={draftPicked} onToggle={toggleDraftDriver}
+          disabled={draftBusy} isMobile={isMobile}
+          windowDays={draftDrivers.windowDays} dateLabel={formatDateLong(selectedDate)} />
+        <button onClick={runEngineDraft} disabled={draftBusy || !draftPicked.length || !engineGate.allowed}
           title={engineGate.reason || undefined}
           className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
-          {draftBusy ? 'Drafting…' : 'Draft routes with engine'}
+          {draftBusy ? 'Drafting…' : draftPicked.length ? `Draft routes for ${draftPicked.length} driver${draftPicked.length === 1 ? '' : 's'}` : 'Pick drivers to draft'}
         </button>
         {engineGate.reason && <div className="text-[11px] text-slate-500">{engineGate.reason}</div>}
         {draftError && <div className="text-[11px] text-red-600 whitespace-pre-wrap">{draftError}</div>}

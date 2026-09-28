@@ -1,14 +1,21 @@
 // routing-draft.mts
 //
 // DRIVER-SCOPED ENGINE DRAFT endpoint (Assist, first slice). POST a date and
-// 1-4 driver names; the learned engine drafts those drivers' routes from the
+// 1-4 drivers; the learned engine drafts those drivers' routes from the
 // live board's UNPLANNED pool and returns the proposal. It writes NOTHING and
 // makes ZERO NuVizz calls — reads are the Firestore board cache + the same
 // as-of learning collections the nightly shadow uses. Pushing a draft to
 // NuVizz stays where it always was: the Compare workbench's Save, an explicit
 // dispatcher action on the existing metered write path.
 //
+//   GET  ?date=YYYY-MM-DD
+//     → 200 { ok, date, from, windowDays, drivers: [{ key, name, userName, truckClass, days,
+//             lastDate, routes }] } — the drivers with a route in the 30 days before the date, A→Z:
+//             step 4's By-driver list (routing-draft-core draftableDrivers). Firestore only.
+//   POST { date: 'YYYY-MM-DD', driver_keys: ['VICTOR_M', 'SCOTT'] }
+//     — drivers picked off that list, by their exact key; no name matching
 //   POST { date: 'YYYY-MM-DD', drivers: ['Victor', 'Scott'] }
+//     — typed names, resolved as before (kept for any caller that still sends them)
 //     → 200 DraftResult (see routing-draft-core.mts)
 //     → 400 name/resolution errors (ambiguous names list their matches)
 //     → 404 no board data for that date yet
@@ -19,7 +26,7 @@
 
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
-import { runDraft } from './lib/routing-draft-core.mts';
+import { runDraft, listDraftableDrivers, ROSTER_WINDOW_DAYS } from './lib/routing-draft-core.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -29,25 +36,41 @@ export default async (req: Request): Promise<Response> => {
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
-  if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ ok: false, error: 'POST { date, drivers: [names] }' }), { status: 405, headers });
+  if (req.method !== 'POST' && req.method !== 'GET') {
+    return new Response(JSON.stringify({ ok: false, error: 'GET ?date= for the driver list; POST { date, driver_keys: [keys] }' }), { status: 405, headers });
   }
   // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
   const gate = await requireUser(req, { role: 'dispatcher' });
   if (!gate.ok) return gate.response;
+
+  if (req.method === 'GET') {
+    const date = String(new URL(req.url).searchParams.get('date') || '');
+    if (!DATE_RE.test(date)) {
+      return new Response(JSON.stringify({ ok: false, error: 'bad or missing date (YYYY-MM-DD)' }), { status: 400, headers });
+    }
+    try {
+      const { from, drivers } = await listDraftableDrivers(TENANT, date);
+      return new Response(JSON.stringify({ ok: true, date, from, windowDays: ROSTER_WINDOW_DAYS, drivers }), { status: 200, headers });
+    } catch (e: any) {
+      console.error('[routing-draft] list failed:', e?.message || e);
+      return new Response(JSON.stringify({ ok: false, error: e?.message || 'driver list failed' }), { status: 500, headers });
+    }
+  }
+
   let body: any = null;
   try { body = await req.json(); } catch { /* handled below */ }
   const date = String(body?.date || '');
+  const keys = Array.isArray(body?.driver_keys) ? body.driver_keys.slice(0, 10).map((d: any) => String(d)) : null;
   const drivers = Array.isArray(body?.drivers) ? body.drivers.map((d: any) => String(d)) : null;
   if (!DATE_RE.test(date)) {
     return new Response(JSON.stringify({ ok: false, error: 'bad or missing date (YYYY-MM-DD)' }), { status: 400, headers });
   }
-  if (!drivers || !drivers.length) {
-    return new Response(JSON.stringify({ ok: false, error: 'drivers: name 1-4 drivers' }), { status: 400, headers });
+  if (!keys?.length && !drivers?.length) {
+    return new Response(JSON.stringify({ ok: false, error: 'driver_keys: pick 1-4 drivers' }), { status: 400, headers });
   }
 
   try {
-    const res = await runDraft(TENANT, date, drivers);
+    const res = await runDraft(TENANT, date, drivers || [], { keys });
     if (!res.ok) {
       return new Response(JSON.stringify({ ok: false, error: res.error, details: res.details || [] }), { status: res.status, headers });
     }
