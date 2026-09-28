@@ -43,16 +43,29 @@ test('the row prints the TIME, never the icon alone', () => {
 });
 
 test('the mark is the MAP\'s mark — one rule, not a second one', () => {
-  assert.ok(src.includes("import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS, compareAutoHoursEnabled } from './lib/time-marks.js';"),
+  // v1.85.1 added the can't-make hours line's helper and switch to the same import.
+  assert.ok(src.includes("import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS, compareAutoHoursEnabled, unreachableHoursMark, compareUnreachableHoursEnabled } from './lib/time-marks.js';"),
     'the chip must come from time-marks.js; a locally-derived clock is a second rule that can drift.');
 });
 
-test('a hopeless verdict does not get its own close read back to it', () => {
-  // "can't make 11:00a" beside "closes 11:00a" is one fact printed twice, and on a phone it
-  // wraps the marks line — on exactly the rows whose message matters most.
+// REWRITTEN 2026-09-28 on Chad's call, recorded rather than quietly absorbed. This used to pin
+// that a hopeless row DROPS its clock when the verdict names the same close ("the same clock
+// twice is noise"). Chad, with MCKESSON and GENESIS reading "CAN'T MAKE" and no hours anywhere:
+// "the hours are not listed on the card why?" — then "make it 2 rows on the card one with the
+// hours and 2 with can't make 12 or whatever". The hours now keep their own line, as the WHOLE
+// window (lib/time-marks.js unreachableHoursMark, executed in time-marks-unreachable-hours.test.mjs),
+// and VITE_COMPARE_UNREACHABLE_HOURS=off puts back exactly the old suppression.
+test('a hopeless verdict gets the hours on their own line above it; switch off → the old suppression', () => {
   assert.ok(
-    /const tm = \(tmRaw && pf\?\.late && pf\.hopeless && pf\.closeMin === tmRaw\.closeMin\) \? null : tmRaw;/.test(src),
-    'the clock must be suppressed only when the badge already names the SAME minute; '
-    + '"30m late" beside "closes 2:00p" is complementary and must survive.',
+    /const hoursLine = \(COMPARE_UNREACHABLE_HOURS_ON && tmRaw && pf\?\.late && pf\.hopeless\) \? unreachableHoursMark\(tmRaw\) : null;/.test(src),
+    'a can\'t-make row with hours on file must get its hours line — from the UNSUPPRESSED mark.',
   );
+  assert.ok(
+    /const tm = hoursLine \? null : \(tmRaw && pf\?\.late && pf\.hopeless && pf\.closeMin === tmRaw\.closeMin\) \? null : tmRaw;/.test(src),
+    'with the hours on their own line the marks line carries the verdict alone; with the switch off, the clock is '
+    + 'still suppressed only when the badge names the SAME minute — "30m late" beside "closes 2:00p" must survive.',
+  );
+  const hours = src.indexOf('<TimeMarkChip mark={hoursLine} isMobile={isMobile} />');
+  const badge = src.indexOf('<PreflightStopBadge v={pf} isMobile={isMobile} />');
+  assert.ok(hours > 0 && badge > hours, 'two lines, in Chad\'s order: the hours first, then "can\'t make".');
 });
