@@ -105,3 +105,41 @@ test('the builder leaves a stop off when THIS order says the customer is closed 
   assert.ok(!onTruck(p, 'B1'));
   assert.ok(onTruck(p, 'U1'));
 });
+
+// ── the notes editor: the one lever left, and it has to work ─────────────────
+import { editorClosedDay, toggleClosedPatch, unusedStoredClosedDays, dropClosedPrints } from '../src/lib/closed-days.js';
+import { readFileSync } from 'node:fs';
+
+test('the editor shows a stored scanner Monday UNticked, and says it is not used', () => {
+  assert.equal(editorClosedDay(STORED, 'mon', ON), false, 'a ticked box nothing honours is a trap');
+  assert.deepEqual(unusedStoredClosedDays(STORED, ON), ['mon']);
+  assert.equal(editorClosedDay(STORED, 'mon', OFF), true, 'switch off: the old editor');
+  assert.deepEqual(unusedStoredClosedDays(STORED, OFF), []);
+});
+
+test('ticking that Monday makes it the DISPATCHER\'s — the scanner fingerprint goes, and it counts', () => {
+  const patch = toggleClosedPatch(STORED, 'mon', ON);
+  assert.deepEqual(patch.closed_days, ['mon']);
+  assert.equal(patch.manual_overrides.closed_days, true);
+  assert.deepEqual(patch.auto_matches.closed_days, [], 'the June print is dropped');
+  const after = { ...STORED, ...patch };
+  assert.equal(closedDayTier(after, 'mon', { orderInstructions: TODAY }, ON), 'typed', 'a tick a person made is honoured');
+  // …and un-ticking it takes it out.
+  assert.deepEqual(toggleClosedPatch(after, 'mon', ON).closed_days, []);
+});
+
+test('the editor keeps other flags\' fingerprints and other days\' untouched', () => {
+  const n = { closed_days: ['mon', 'fri'], auto_matches: { closed_days: [{ pattern: 'closed_mon' }, { pattern: 'closed_fri' }], no_tractor_trailer: [{ pattern: 'x' }] } };
+  const d = dropClosedPrints(n, ['mon']);
+  assert.deepEqual(d.auto_matches.closed_days, [{ pattern: 'closed_fri' }]);
+  assert.deepEqual(d.auto_matches.no_tractor_trailer, [{ pattern: 'x' }]);
+  assert.deepEqual(dropClosedPrints({ closed_days: ['tue'] }, ['tue']), {}, 'nothing to drop → no auto_matches write');
+});
+
+test('the shared notes editor is wired to these rules (App.jsx StopNotesEditor)', () => {
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.ok(src.includes('const toggleClosed = (day) => setD(toggleClosedPatch(D, day));'));
+  assert.ok(src.includes('const isClosed = (day) => editorClosedDay(D, day);'));
+  assert.ok(src.includes('Object.assign(patch, dropClosedPrints(D, weekdays))'), 'copy-Monday-to-weekdays makes its days the dispatcher\'s too');
+  assert.ok(src.includes('unusedStoredClosedDays(D)'), 'the editor says which stored days are not used');
+});

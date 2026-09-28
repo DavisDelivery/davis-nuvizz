@@ -85,3 +85,52 @@ export function typedClosedDay(note, dayKey) {
   const scannerSetThisDay = prints.some((p) => String(p?.pattern ?? '') === `closed_${dayKey}`);
   return note.manual_overrides?.closed_days === true && !scannerSetThisDay;
 }
+
+// ── THE NOTES EDITOR ─────────────────────────────────────────────────────────
+//
+// The one lever left for a customer that really is shut on a weekday is a dispatcher typing it
+// (App.jsx StopNotesEditor, shared by the Map and Stop lookup). Two traps would have broken it:
+//   • a day the scanner stored from an old order is still in `closed_days`, so the editor showed it
+//     ticked — "closed Monday" on the form while the board routes the stop;
+//   • ticking that day again was a toggle OFF (it was already in the list), and even re-ticked, the
+//     scanner's fingerprint (auto_matches.closed_days) would keep reading it as the scanner's, never
+//     the dispatcher's — a closed day a person ticked, silently ignored.
+// So the editor shows a day ticked only when it is IN EFFECT, and ticking a day makes it the
+// dispatcher's by dropping the scanner's fingerprint for it. Switch off → exactly the old editor.
+
+/** PURE. Is `day` ticked in the editor — i.e. does it count? */
+export function editorClosedDay(note, day, env = undefined) {
+  if (!closedDaysFromOrderEnabled(env)) return Array.isArray(note?.closed_days) && note.closed_days.includes(day);
+  return typedClosedDay(note, day);
+}
+
+/** PURE. `{ auto_matches }` with the scanner's fingerprints for `days` removed, or {} if none. */
+export function dropClosedPrints(note, days) {
+  const prints = note?.auto_matches?.closed_days;
+  if (!Array.isArray(prints) || !prints.length) return {};
+  const drop = new Set((days || []).map((d) => `closed_${d}`));
+  const kept = prints.filter((p) => !drop.has(String(p?.pattern ?? '')));
+  if (kept.length === prints.length) return {};
+  return { auto_matches: { ...(note.auto_matches || {}), closed_days: kept } };
+}
+
+/** PURE. The patch one tick on a weekday button writes. */
+export function toggleClosedPatch(note, day, env = undefined) {
+  const current = Array.isArray(note?.closed_days) ? note.closed_days : [];
+  const manual_overrides = { ...(note?.manual_overrides || {}), closed_days: true };
+  if (!closedDaysFromOrderEnabled(env)) {
+    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
+    return { closed_days: next, manual_overrides };
+  }
+  const next = editorClosedDay(note, day, env)
+    ? current.filter((d) => d !== day)
+    : (current.includes(day) ? [...current] : [...current, day]);
+  return { closed_days: next, manual_overrides, ...dropClosedPrints(note, [day]) };
+}
+
+/** PURE. Days still stored on the customer that no longer count — the scanner's, from old orders. */
+export function unusedStoredClosedDays(note, env = undefined) {
+  if (!closedDaysFromOrderEnabled(env)) return [];
+  const days = Array.isArray(note?.closed_days) ? note.closed_days : [];
+  return days.filter((d) => !typedClosedDay(note, d));
+}

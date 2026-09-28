@@ -154,6 +154,7 @@ import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // wide the panel being placed actually is.
 const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
+import { editorClosedDay, toggleClosedPatch, dropClosedPrints, unusedStoredClosedDays, closedDaysFromOrderEnabled } from './lib/closed-days.js';
 import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled } from './lib/route-preflight.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
@@ -10088,12 +10089,10 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [], stop 
       manual_overrides: { ...(D.manual_overrides || {}), receiving_hours: true },
     });
   };
-  const toggleClosed = (day) => {
-    const current = Array.isArray(D.closed_days) ? D.closed_days : [];
-    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
-    setD({ closed_days: next, manual_overrides: { ...(D.manual_overrides || {}), closed_days: true } });
-  };
-  const isClosed = (day) => Array.isArray(D.closed_days) && D.closed_days.includes(day);
+  // Closed days come from each ORDER now, plus what a dispatcher types here (lib/closed-days.js):
+  // a day shows ticked only when it counts, and ticking one makes it the dispatcher's.
+  const toggleClosed = (day) => setD(toggleClosedPatch(D, day));
+  const isClosed = (day) => editorClosedDay(D, day);
   const copyMondayToWeekdays = () => {
     const monClosed = isClosed('mon');
     const monHours = D.receiving_hours?.mon;
@@ -10113,6 +10112,8 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [], stop 
         patch.receiving_hours[d] = typeof monHours === 'string' ? monHours : { open: monHours.open || '', close: monHours.close || '' };
       }
     }
+    // Days the dispatcher just set are theirs — drop the scanner's old fingerprints for them.
+    if (closedDaysFromOrderEnabled()) Object.assign(patch, dropClosedPrints(D, weekdays));
     setD(patch);
     setCopyToast(true);
     setTimeout(() => setCopyToast(false), 1500);
@@ -10265,6 +10266,11 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [], stop 
             );
           })}
         </div>
+        {unusedStoredClosedDays(D).length > 0 && (
+          <div className="text-[10px] text-slate-500 mb-2">
+            Not used: closed {unusedStoredClosedDays(D).map((x) => x.toUpperCase()).join(', ')} — read from an old order. Each order's own instructions decide now; tick a day to keep it closed.
+          </div>
+        )}
         <div className="flex items-center gap-2 mb-2">
           <button type="button" onClick={copyMondayToWeekdays}
             disabled={!isClosed('mon') && !(D.receiving_hours?.mon && (typeof D.receiving_hours.mon === 'string' ? D.receiving_hours.mon : (D.receiving_hours.mon.open || D.receiving_hours.mon.close)))}
