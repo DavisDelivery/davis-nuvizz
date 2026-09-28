@@ -66,6 +66,14 @@ test('a hopeless verdict gets the hours on their own line above it; switch off �
     + 'still suppressed only when the badge names the SAME minute — "30m late" beside "closes 2:00p" must survive.',
   );
   const hours = src.indexOf('<TimeMarkChip mark={hoursLine} isMobile={isMobile} />');
-  const badge = src.indexOf('<PreflightStopBadge v={pf} isMobile={isMobile} />');
+  const badge = src.indexOf('<PreflightStopBadge v={pf} isMobile={isMobile}');
   assert.ok(hours > 0 && badge > hours, 'two lines, in Chad\'s order: the hours first, then "can\'t make".');
+});
+
+// Chad, 2026-09-28: "I'd rather have the amount of time the system's going to think it's going to be
+// late than the can't make it tag." The badge words are executed in preflight-badge-words.test.mjs;
+// this pins that the row asks for them only when its hours line is showing.
+test('a row showing its hours line asks its badge for HOW LATE, behind its own switch', () => {
+  assert.ok(src.includes('<PreflightStopBadge v={pf} isMobile={isMobile} lateOverCantMake={COMPARE_UNREACHABLE_LATE_ON && !!hoursLine} />'));
+  assert.ok(src.includes('const text = preflightBadgeWords(v, { lateOverCantMake });'), 'one rule for the badge words — lib/route-preflight.js');
 });
