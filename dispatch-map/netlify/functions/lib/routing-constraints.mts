@@ -8,7 +8,8 @@
 //   no_tractor_trailer / box_truck_only / straight_truck_only / uline_straight_truck
 //                          → truck must NOT be a tractor (capabilities.tractor === false)
 //   26ft_max               → truck lengthClassFt <= 26
-//   no_53                  → truck lengthClassFt !== 53 (i.e. < 53)
+//   no_53 / no_53ft        → truck lengthClassFt !== 53 (i.e. < 53). no_53ft is what the
+//                            app's "No 53ft" dropdown writes; no_53 is the older spelling.
 //   no_overhead_clearance  → truck must NOT be a tractor AND not flagged
 //                            overheadClearance:false (a trailer / tall box can't
 //                            clear a low dock)
@@ -43,6 +44,7 @@ export function equipmentReqOk(req: EquipmentReq, truck: SolverTruck): { ok: boo
     case '26ft_max':
       return cap.lengthClassFt <= 26 ? { ok: true } : { ok: false, reason: REASON.needs26 };
     case 'no_53':
+    case 'no_53ft':
       return cap.lengthClassFt !== 53 ? { ok: true } : { ok: false, reason: REASON.needsNo53 };
     case 'liftgate_required':
       return cap.liftgate ? { ok: true } : { ok: false, reason: REASON.needsLiftgate };

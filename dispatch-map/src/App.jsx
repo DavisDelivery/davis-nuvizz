@@ -30,9 +30,12 @@ import { normalizeMatchKey, placeKeyOfStop } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
-import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
+import { snapshotSharedWindows, snapshotStopTimeliness, snapshotOnTime } from './lib/driver-snapshot-timeliness.js';
+import { scrubStop } from './lib/debug-capture-scrub.js';
+import { routeLoadLine, podPhotoFetchOffer, podPhotoPullOutcome, podSectionVisible, isPodImageExt, foldFreshStop, stopRecordIdentity, trackStopRecord } from './lib/stop-card-sections.js';
 import { mergeStopHistory } from './lib/stop-history.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
+import { noteContentKey, commitNoteDraft, contactSaveLine } from './lib/note-save.js';
 import { readViewportSize } from './lib/viewport.js';
 import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
@@ -71,7 +74,7 @@ import { reportDenied, deniedSurfaces, subscribeDenied } from './lib/permission-
 import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut as endSession, currentResetLink, scrubResetLink, fetchMe } from './lib/auth-client.js';
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
 import { formatCompletionPct } from './lib/completion-pct.js';
-import { isTvPath, tvRailRows, tvVerdict, tvFeedState, TV_RAIL_LIMIT } from './lib/tv-mode.js';
+import { isTvPath, tvRailRows, tvVerdict, tvFeedState, tvRollDate, TV_RAIL_LIMIT } from './lib/tv-mode.js';
 import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent, tvImageFailure, boundsOf, snapBounds } from './lib/tv-static-map.js';
 import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
@@ -79,7 +82,8 @@ import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, set
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
 import { buildLabelsHtml } from './lib/label-html.js';
-import { filterLabelRows } from './lib/label-shippers.js';
+import { singleOrderOpId, singleOrderCreatedMsg } from './lib/single-order-op.js';
+import { filterLabelRows, labelRowsForPick } from './lib/label-shippers.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
 import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS, compareAutoHoursEnabled } from './lib/time-marks.js';
@@ -131,7 +135,7 @@ import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
 import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
-import { boardStatusPanel } from './lib/board-status-card.js';
+import { boardStatusPanel, scanHaltedMessage } from './lib/board-status-card.js';
 import { buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner, rosterDriverOf } from './lib/route-status.js';
 import { wbOwnDayRosterEnabled, routeOwnDay, ownDayIdentity } from './lib/wb-own-day.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
@@ -186,7 +190,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.81.2';
+const APP_VERSION = '1.81.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -240,6 +244,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.81.3', 'AUDIT FIXES, PART 4: THE BOARD, THE SCREENS, UAT AND CLAUDE SHADOW. 55 fixes from the Sep 27 audit and the Sep 3 checklist, each with a test named after what went wrong and re-checked by a second reviewer; every layout and map check CI runs passed before push. NOTES AND HOURS: the stop panel (Map, Routing and the phone drawer) picks up a note another dispatcher or the scanner changed while it was open, so Save no longer writes old values back; a notes Save waits for the write and keeps the typing on screen if it is refused; the Customer # box no longer says Saved when it was refused; the scanner no longer stamps its mark on hours a person typed, so the next scan cannot overwrite them; CLOSES AT order text no longer replaces typed hours on the time-restricted report; a lunch closure is no longer stored as the only receiving hour; CLOSED FRIDAYS @ 12PM is a Friday noon close, not a closed Friday; NO TT STRAIGHT TRUCK ONLY flags straight-truck again. THE MAP AND THE WALL: Fullscreen TV view opens the wall instead of throwing; a wall left up overnight rolls to the new day within 30 seconds of midnight ET and shows the board date; Live map off-then-on redraws; a late read for the old board date can no longer replace the new date’s board; a second Scan press keeps its own spinner, and someone else’s refused press no longer says your scan did not run; the status pill shows the daily-limit and kill-switch halts; a bottom-grid profile picked on another device applies here; POD photos show the wrong-twin refusal instead of “no photos”; the Activity timeline drops the first order’s events when the card switches to its twin; the driver snapshot no longer calls stops late against the load-wide window; a debug capture no longer ships customer names inside matchKey. FLAGS AND THE BUILD: TRAILER_ALERT_ANY_RESTRICTION=off now reaches the browser flag panel too; a driverless route keeps its No driver card when a pickup is sequenced ahead; No 53ft keeps a stop off 53ft trailers in Build, Fill my loads, the engine draft and the backtest; a strict Build takes every closed and window-missing stop off, not half of them; the repair pass puts a recovered stop back on its own truck (ROUTING_REPAIR_ORIGIN_FIRST=off); the running-heavy reading counts unstamped board orders; the driver-area sheet counts stops left out for no driver. ORDERS AND ACCOUNT: Single New Order no longer skips the next order after a lost answer; Undo import is gone once a live Bulk push starts; Print labels no longer shows the previous day’s orders while loading; Bulk add’s receipt opens with the new batch ticked; the Uline 3D view no longer sticks on Loading; a failed reset email says so; a rollback reason is passed to the shell exactly as typed. UAT: the mirror removes stops production cancelled or moved (UAT_MIRROR_BOARD_PRUNE=off); bench Clear keeps orders it could not read back; re-seeding from another day removes the old day’s row; seeded rows show the window actually sent; the bench shows cancelled orders by status, inverted windows as no window, and only the day in its date box. CLAUDE SHADOW: two Plan presses for one day queue one paid run; a 429 waits for the next tick instead of burning every round; a paid round whose record failed to save is still counted against the caps; a Router settings read failure refuses the run instead of running on defaults; a backtest can no longer drop a box-only stop while a box truck has room and call it a saving (SHADOW_BT_ROOM_CHECK=off); settings Save sends only changed fields; the Plan confirm states the real $ ceiling; a refreshed roster pick goes to Claude with its row’s driver and class; the opening map view includes every stop on small days. New switches default ON; only off/0/false/no turns one off. The Route Workbench is not touched.'],
   ['1.81.2', 'AUDIT FIXES, PART 3: THE SERVER SIDE — SETTINGS, ALERTS, SCANS AND THE NUVIZZ ACCOUNTING. 37 fixes from the Sep 27 audit and the Sep 3 checklist, each with a test named after what went wrong and re-checked by a second reviewer. A SAVE NEVER REWRITES SETTINGS FROM A FAILED READ: the Customer emails settings (which could switch the mailer off), the scan schedule (kill switch, ceiling override and every rule), the Engine tab knobs, and a Uline report filed while the night’s manifest could not be read — each is now refused with a plain error instead of written from defaults. ALERTS: on a bad night every red stop is texted, 24 per sweep and the rest next pass, instead of the overflow never going out (FLAG_SMS_CAP_SKIPS_TEXTED=off puts it back); a box truck with stackers at two docks gets one text, not two (FLAG_SMS_BOX_CLAIM_BY_ROUTE=off); 6–7am in winter the evening sweep leaves today’s flag history to the day sweep so an “Emailed CS” mark is not lost (EVENING_HISTORY_YIELDS_TO_DAY=off); a Firestore hiccup on a stacker claim no longer stops the sweep from recording the CS email; customer service is on the evening stacker email once, not twice; a named ALERT_CC entry stays on the miss-window email; customer service is no longer emailed about stops judged only against the assumed 5pm close; staff mobile numbers need sign-in even on a deploy with Firestore off; the 6:30 report’s refusal is saved on the day’s record. SCANS AND THE BOARD: a thin or truncated list no longer drops a past-due open carry-over off today’s board; an order on a truck is not filed a second time as an unplanned copy; a scan NuVizz stopped answering partway through (ceiling, timeout, dropped connection) reads incomplete, so the board keeps its unplanned orders and the night does not seal a partial day; a routed open stop whose dispatcher “not until” date has passed shows on today’s board on its route (NUVIZZ_PAST_OVERRIDE_CLAMP=off); a moved order’s pin stays on the new address even when the first re-read after the move failed (NUVIZZ_REGISTRY_ADDRESS_GUARD=off); Check vs NuVizz stops calling rolled-over stops day changes and spends no call when the grid shows no open work; the load-list diagnostic keeps each period apart. NUVIZZ ACCOUNTING: a Save NuVizz applied is no longer reported failed because the call counter could not be written; a cold instance that cannot read your saved ceiling no longer releases the breaker against the 2,000 default, in either app; a personal login that re-tested OK goes out on the next Save instead of being held. DRIVERS AND TEXTS: “Text driver” matches active employees only, so a terminated one is never texted (DRIVER_PHONE_ACTIVE_ONLY=off); a long bulk text stops cleanly at 20s and names who was not reached; BOARD_DROP_CANCELLED=off now reaches the driver lookup too; an impossible date is a 400, not a crash. ALSO: the freight-class report uses the real skid count; a blank manifest cell stays blank instead of reading 0; a one-day tractor rebuild adds to each location instead of overwriting its lifetime counts; a mistyped departure refit can no longer wipe the learned departure table; a Google road-distance build no longer treats an undrivable pair as a free 0-mile leg (ROUTE_MATRIX_ESTIMATE_UNROUTABLE=off; the frozen Route Workbench re-sequence is unchanged); a stalled history-capture write is retried instead of aborting the night; NUVIZZ_SATURDAY_HEAL_ET=0 really turns the Saturday heal off; a refused backfill stays on the Diagnostics record. Every new switch defaults ON and only off/0/false/no turns it off. The Route Workbench is not touched.'],
   ['1.81.1', 'AUDIT FIXES, PART 2: THE DOCK SCANNER (load-scan v0.51.1). 14 fixes from the Sep 27 audit and the Sep 3 checklist, each with a test named after what went wrong and re-checked by a second reviewer. ON THE DOCK: the last skid of an order scanned top barcode first, with its PRO also reading, now shows ALREADY SCANNED like every other skid — it used to throw a false full-screen NOT COUNTED and offer “Add OVER the count”, the tap behind the 4/2 over-count; a voided skid re-scanned onto a stop that is already full is refused instead of pushing it to 3/2; a stop numbered like 007157687-1 matches the PRO on its label, so the right skid reads GREEN instead of RED “not on this load”; a loader with no signal who taps Different truck gets the saved pick list back instead of an empty 0/0 truck; reopening a half-loaded truck keeps the route order it was loaded against, so a mid-load resequence still warns. TWO PHONES, ONE PIECE: when a second loader or the driver scans a piece another phone already booked, the first phone’s damage flag and take-back now stay put — each phone stamps when it changes a flag and the office keeps the newest real change. LOADSCAN_FLAG_MERGE=off puts back last-writer-wins (default on; anything malformed leaves it on; its raw value shows as flag_merge_env on /health). THE OFFICE: the Assign tab lists the trucks for the shift day its taps save to; after 8pm the Activity view opens on tonight’s shift; dates beside a time read the Eastern day instead of tomorrow’s after 8pm; pickup pieces no longer make a clean-closed truck read closed short; two loaders on one truck no longer both read short on the work report; one stop whose pieces disagree no longer wipes the whole shift’s work report; the last active dispatcher can no longer be saved inactive; a name that is another active driver’s display name can no longer be attached as an alias. The dispatch board itself is untouched beyond this row.'],
   ['1.81.0', 'DRIVER AREAS: AN OVAL WHERE THE WORK RUNS ALONG A ROAD. Chad, 2026-09-27: \u201cif for some drivers an oval would be a better shape than a circle, use that instead.\u201d A ring claims that most of a driver\u2019s work \u2014 the 70% of his stops the circle is drawn round \u2014 sits inside it, and work strung out along a road (the towns up I-985, out GA-316) got a circle as wide as the road is long, most of it ground he never touches. Each ring is now also fitted as an oval \u2014 its direction and stretch from how his stops spread, its size by the same 70% rule, never narrower than the 2.5km a circle is never smaller than \u2014 and the oval is drawn INSTEAD of the circle only when it is plainly better: the same share of his stops on at most 70% of the circle\u2019s ground, at least half as long again as it is wide, and from at least 60 stops at 12 places. A round town keeps its circle. ONLY THE OUTLINE CHANGES: who gets a ring, where it is centred and the 30km rule are decided on the circle exactly as before. BOTH PLACES DRAW THE SAME OVAL. On the Map\u2019s Driver areas switch it is paint only like the circles (no click, no fill, under the route lines) and its name is laid out along the oval; the printed sheet draws it on page one and on the driver\u2019s card, where a driver with one oval gets its length and width (\u201cabout 19 miles long and 5 wide\u201d) and a driver with several rings keeps the one number that bounds them all. A sheet with no oval prints byte for byte as before. SET FROM GEOMETRY, NOT YET CHECKED ON DAVIS\u2019S OWN HISTORY: on made-up work a round town came out an oval at most 2 times in 80 and a string of three or four towns along a road 77 times in 80 or more, but which real drivers get ovals has not been looked at. The numbers are OVAL_RULE in driver-territory.js. PUT IT BACK: revert this commit.'],
@@ -2187,8 +2192,19 @@ function useStops(date, carryDays = 0) {
   // touches it. This is the reference number for "how many stops should be in the list":
   // the board can only ever show this many or fewer.
   const [scanUnplannedCount, setScanUnplannedCount] = useState(null);
+  // The selection on screen RIGHT NOW. A read answers for the date it asked about; when the
+  // dispatcher has since picked another day, that answer is dropped instead of painting
+  // yesterday's board under today's date picker.
+  const selectionRef = useRef('');
+  selectionRef.current = `${date}|${carryDays}`;
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
+    const asked = `${date}|${carryDays}`;
+    // A caller still holding an OLDER refresh (a save's re-read that awaited its server call
+    // while the dispatcher changed day) asks about a board nobody is looking at. Its answer
+    // would be dropped below — and starting it would raise a spinner that only the dropped
+    // answer could lower (silent polls never lower it), so the new day read "Loading stops…".
+    if (asked !== selectionRef.current) return;
     if (!silent) setLoading(true);
     setError(null);
     try {
@@ -2198,6 +2214,7 @@ function useStops(date, carryDays = 0) {
       if (!MOCK_MODE && carryDays > 0) params += (params ? '&' : '?') + `carryDays=${carryDays}`;
       const url = '/.netlify/functions/nuvizz-pull-today-stops' + params;
       const data = await fetchJsonWithRetry(url);
+      if (asked !== selectionRef.current) return;
       if (!data.ok) throw new Error(data.error || 'NuVizz function returned ok:false');
       // Attach the match key now so every consumer downstream can hit it.
       const decorated = (data.stops || []).map((s) => ({
@@ -2218,9 +2235,9 @@ function useStops(date, carryDays = 0) {
       setScanUnplannedCount(typeof data.unplannedCount === 'number' ? data.unplannedCount : null);
       setLastRefreshed(new Date());
     } catch (e) {
-      if (!silent) setError(e.message); // a failed silent poll shouldn't surface an error banner
+      if (!silent && asked === selectionRef.current) setError(e.message); // a failed silent poll shouldn't surface an error banner
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && asked === selectionRef.current) setLoading(false);
     }
   }, [date, carryDays]);
 
@@ -4770,11 +4787,18 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
   // so nuvizz-manual-scan-background gates it at dispatcher. Said BEFORE the press, on the
   // button, rather than after it in a bar — see useRoleGate.
   const gate = useRoleGate('dispatcher');
+  // ONLY THE NEWEST PRESS SPEAKS. Past SCAN_SPINNER_SEC the button is freed while this press
+  // keeps polling, so a second press can start before the first one's window ends. The first
+  // must then go quiet — its ending used to stop the second's spinner, put the button on
+  // cooldown under it and write its own sentence over the second's.
+  const pressRef = useRef(0);
   const manualScan = useCallback(async () => {
     if (scanning || scanCooldown) return;
     // Belt as well as braces: the button is disabled, but a stale render or a keyboard
     // activation must not fire a request whose only possible answer is a refusal.
     if (!gate.allowed) { setScanErr(gate.reason); setTimeout(() => setScanErr(null), 6000); return; }
+    const press = ++pressRef.current;
+    const superseded = () => pressRef.current !== press;
     setScanning(true); setScanErr(null);
     try {
       // Fire the ASYNC background scanner (15-min budget) in list-discovery mode (manual=1, NO
@@ -4853,6 +4877,7 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
           // out would either blame this press for an old refusal or miss its own.
           else if (scanRefusalIsThisPress(d?.lastScanRefusal)) refusal = d.lastScanRefusal;
         } catch { /* keep polling — a dropped poll is not an answer */ }
+        if (superseded()) return;
         verdict = scanPressVerdict({ updated, refusal, run, waitedSec: waited() });
         if (verdict.done) break;
         // Past the slowest scan we have measured, stop holding the spinner: the honest
@@ -4865,6 +4890,7 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
       }
       if (!verdict) verdict = scanPressVerdict({ updated, refusal, run: null, waitedSec: waited() });
       await refresh({ silent: true });
+      if (superseded()) return;
       // DELIBERATELY NOT AN EARLY BREAK on seeing a refusal. Two dispatchers share this
       // board: if a viewer is refused at 06:00:10 and a dispatcher presses at 06:00:40, the
       // second press SUCCEEDS and its poll would still see that fresh refusal. Only reporting
@@ -4884,10 +4910,11 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
       setScanCooldown(true);
       setTimeout(() => setScanCooldown(false), 60000);
     } catch (e) {
+      if (superseded()) return;
       setScanErr(e?.message || 'Scan failed');
       setTimeout(() => setScanErr(null), 5000);
     } finally {
-      setScanning(false);
+      if (!superseded()) setScanning(false);
     }
   }, [scanning, scanCooldown, refresh, selectedDate, lastScannedAt, gate.allowed, gate.reason]);
   // `scanDenied` is the sentence for the button's title= and the reason to disable it; null
@@ -5434,7 +5461,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
 // the card. Routing keeps its chip on the map in its own column (v1.13.0) and passes nothing.
 // A slot rather than a flag because the two screens hand it different props, and the moment
 // this component starts deciding which to build it owns both screens' flag state.
-function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, ops, scanErr, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null, barMode = false, flagsChip = null }) {
+function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, ops, scanErr, scanState = null, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null, barMode = false, flagsChip = null }) {
   // `drawnCount` (Routing) = pins actually on the map right now. The card used to publish the
   // whole day board while the map drew a filtered subset, so the number on the chip matched
   // neither the pins beneath it nor the bottom grid — Chad, counting dots: "there are more dots
@@ -5442,7 +5469,9 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
   // header now reads "15 of 833 stops" so the chip describes the map you are looking at.
   const filtering = typeof drawnCount === 'number' && drawnCount !== stopCount;
   // What is visible, decided once for both placements — see lib/board-status-card.js.
-  const panel = boardStatusPanel({ collapsed, scanErr });
+  // `scanState` (halted scanner) is passed by the dispatch Map; the phone Map prints its own.
+  const halted = scanHaltedMessage(scanState);
+  const panel = boardStatusPanel({ collapsed, scanErr, halted });
   // Bar mode only: dismiss the dropdown on an outside click or Escape (see the wrapper below).
   // The map PILL needs none of this — it stacks its detail in flow and covers nothing.
   const barRef = useRef(null);
@@ -5560,7 +5589,8 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
         {panel.open && (
           <div className="absolute right-full mr-1 top-full mt-1 w-60 rounded-lg border border-slate-200 bg-white shadow-xl px-2.5 py-2 leading-tight z-40" data-testid="routing-bar-status-drop">
             {panel.showDetails && details}
-            {panel.showError && <div className={`text-[11px] text-red-600${panel.showDetails ? ' mt-1' : ''}`}>{scanErr}</div>}
+            {panel.showHalted && <div className={`text-[11px] font-semibold text-red-700${panel.showDetails ? ' mt-1' : ''}`}>{halted}</div>}
+            {panel.showError && <div className={`text-[11px] text-red-600${panel.showDetails || panel.showHalted ? ' mt-1' : ''}`}>{scanErr}</div>}
           </div>
         )}
       </div>
@@ -5580,7 +5610,9 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
       {panel.showDetails && <div className="mt-0.5 leading-tight">{details}</div>}
       {/* OUTSIDE the collapse. The refresh button lives in the always-visible header, so a scan
           error rendered inside the collapsed body is feedback nobody sees — on a phone the icon
-          spins for a minute, goes quiet, and the button reads as broken. */}
+          spins for a minute, goes quiet, and the button reads as broken. The halted-scanner
+          banner sits here for the same reason: the board under it has stopped updating. */}
+      {panel.showHalted && <div className="mt-0.5 text-[11px] font-semibold text-red-700">{halted}</div>}
       {panel.showError && <div className="mt-0.5 text-[11px] text-red-600">{scanErr}</div>}
     </div>
   );
@@ -7706,12 +7738,17 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
           right on the operational point as well as the cosmetic one — this is a control you
           press once a day, when you walk in and put the board on the office TV, and a
           once-a-day control that sits permanently on the map is paying rent on the one
-          surface where every pixel is freight. */}
+          surface where every pixel is freight.
+          The press does ONE thing. It used to call `setBarOpen(false)` first, left over from
+          the app-bar dropdown; that name no longer exists, so every press threw before the
+          wall opened. Folding this card on the way out is not a substitute either: entering
+          the wall unmounts this MapScreen in the same render, so the fold is discarded and
+          the wall reads the card's state from localStorage (checked in a browser). */}
       {onEnterTv && (
         <div className="mt-1.5 pt-1.5 border-t border-slate-200">
           <button
             type="button"
-            onClick={() => { setBarOpen(false); onEnterTv(); }}
+            onClick={() => onEnterTv()}
             className="w-full inline-flex items-center justify-center gap-1.5 rounded border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
             title="Full-screen wall display — map, board status and the open flags, sized to read across a room"
           >
@@ -8398,8 +8435,11 @@ function PodDocsSection({ stop, onRefreshed }) {
     try {
       const r = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
       const d = await r.json();
-      if (d.ok && d.stop) { setTried(true); onRefreshed?.(d.stop); }
-      else setErr(d.reason || 'not found');
+      // The fold funnel refuses the OTHER order sharing this number — show that refusal
+      // rather than "none on file" for an order the pull never looked at.
+      const out = podPhotoPullOutcome(d, onRefreshed);
+      if (out.tried) setTried(true);
+      if (out.err) setErr(out.err);
     } catch (e) { setErr(e.message); }
     finally { setLoading(false); }
   };
@@ -9043,6 +9083,15 @@ function StopNotesList({ comments }) {
 function StopActivityTimeline({ stopNbr, stopId, onRefreshed }) {
   const [open, setOpen] = useState(false);
   const [st, setSt] = useState({ loading: false, events: null, error: null });
+  // A different ORDER under the same number (the Estes twin, a recurring PRO) does not
+  // remount this section — its key is the number — so forget the previous order's events
+  // and fold shut; re-opening asks NuVizz about the order now on the card.
+  const [record, setRecord] = useState(() => stopRecordIdentity({ stopNbr, stopId }));
+  const rec = trackStopRecord(record, stopRecordIdentity({ stopNbr, stopId }));
+  if (rec.record !== record) {
+    setRecord(rec.record);
+    if (rec.changed) { setOpen(false); setSt({ loading: false, events: null, error: null }); }
+  }
   useEffect(() => {
     if (!open || st.events || st.loading) return;
     let cancelled = false;
@@ -9390,10 +9439,15 @@ function liveStopFoldGuard(cardStopId, incoming) {
 // "2 orders share this number" badge is lit via dupNbrSuspect, and the refusal message is
 // returned for call sites that can show it. Merges return null.
 function useLiveStop(stop) {
-  const stopKey = stop?.stopNbr || stop?.pro;
   const [fresh, setFresh] = useState(null);
-  const [prevKey, setPrevKey] = useState(stopKey);
-  if (stopKey !== prevKey) { setPrevKey(stopKey); setFresh(null); }
+  // Keyed by RECORD (number + id-shaped stopId), not number alone: two orders sharing a
+  // number are different cards, and the first one's refresh must not paint over the second.
+  const [record, setRecord] = useState(() => stopRecordIdentity(stop));
+  const rec = trackStopRecord(record, stopRecordIdentity(stop));
+  if (rec.record !== record) {
+    setRecord(rec.record);
+    if (rec.changed) setFresh(null);
+  }
   const live = fresh ? { ...stop, ...fresh } : stop;
   // The identity the card is showing RIGHT NOW, on a ref — onRefreshed is a stable
   // callback, and a stale closure here would compare against the id the card opened
@@ -9461,18 +9515,21 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
     setBusy(true); setPush(null);
     try {
       // Firestore FIRST, and unconditionally: it is the durable half, and a vendor write that
-      // fails must never cost the dispatcher the number they just typed.
-      await onSaveContacts({ name, phone });
-      setEditing(false);
+      // fails must never cost the dispatcher the number they just typed. It closes the editor
+      // only if it LANDED (A1-S3-4): a refusal keeps the editor — and the red saveError printed
+      // inside it — on screen, instead of the line below calling an unsaved number "Saved".
+      const savedHere = await commitNoteDraft(onSaveContacts, { name, phone });
+      if (savedHere) setEditing(false);
       if (!toNuvizz || !pro || !(name.trim() || phone.trim())) return;
       setPush({ kind: 'busy', text: 'Writing it onto the order in NuVizz…' });
       // stopId pins the write to THIS record: two NuVizz orders can share one number
       // (Estes-0828068215), and the server refuses rather than write the other twin.
       const r = await setStopContact(pro, { name: name.trim(), phone: phone.trim() }, { stopId: stop?.stopId || undefined });
       const out = r?.result || r || {};
-      if (r?.ok && out.unchanged) setPush({ kind: 'ok', text: 'Saved — the order already carried this contact in NuVizz.' });
-      else if (r?.ok) {
-        setPush({ kind: 'ok', text: 'Saved, and written onto the order in NuVizz.' });
+      // Every sentence comes from contactSaveLine — amber, not red, when NuVizz refused a number
+      // that IS on file for the customer, and never "Saved" for one that is not.
+      setPush(contactSaveLine(savedHere, r));
+      if (r?.ok && !out.unchanged) {
         // Pull the order back so the "Order lists …" line stops quoting the number we just
         // replaced. Same wrong-twin rule as the write: never repaint this card with a record
         // that isn't the one it is showing.
@@ -9480,9 +9537,7 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
           const d = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
           if (d?.ok && d.stop && (!stop?.stopId || !d.stop.stopId || String(d.stop.stopId) === String(stop.stopId))) onRefreshed?.(d.stop);
         } catch { /* the contact landed; the refresh is a nicety */ }
-      // amber, not red, and the saved half is stated FIRST — the number IS on file for this
-      // customer either way, and a dispatcher reading a red error assumes they lost it.
-      } else setPush({ kind: 'warn', text: `Saved here, but NuVizz did not take it: ${r?.error || out.error || 'the write failed.'}` });
+      }
     } finally { setBusy(false); }
   };
   const working = busy || saving;
@@ -10562,6 +10617,14 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
   // resetting the draft mid-edit and silently wiping in-progress changes — the
   // root cause of "I set the hours but they didn't save".
   const dirtyRef = useRef(false);
+  // The stop on screen NOW — a save that lands after the dispatcher opened another stop must
+  // not close that stop's editor (the Save bar waits for the write, A1-S4-1).
+  const shownStopRef = useRef(stop?.stopNbr);
+  shownStopRef.current = stop?.stopNbr;
+  // Counts the dispatcher's edits (setD). The editor stays live while a Save is in flight, so
+  // anything typed after the press was NOT in that write — closing the editor when it lands
+  // would drop those keystrokes without a word. The Save bar closes only if none happened.
+  const editsRef = useRef(0);
   // Re-init only when a DIFFERENT stop opens.
   useEffect(() => {
     setDraft(note || emptyNote(stop));
@@ -10577,6 +10640,16 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
     setEditing(!note);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note?.id]);
+  // ...and when the SAME note changes (A1-S3-3). Its id is the match key, so another
+  // dispatcher's save or the scanner never moves it — and Save writes the whole draft back, so
+  // a draft that missed the update wrote the old fields over the new ones. Leaves `editing`
+  // alone: a background write must not close an editor the dispatcher just opened.
+  const noteKey = noteContentKey(note);
+  useEffect(() => {
+    if (dirtyRef.current) return;
+    setDraft(note || emptyNote(stop));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteKey]);
 
   // The live overlay: a Refresh / timeline open updates the status badge below, so a board
   // stop still tagged Scheduled flips to Delivered once its real status comes back.
@@ -10605,7 +10678,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
   // setD merges a PARTIAL patch and marks the draft dirty (guards background
   // writes from clobbering in-progress edits). All field helpers live in the
   // shared <StopNotesEditor>.
-  const setD = (patch) => { dirtyRef.current = true; setDraft({ ...D, ...patch }); };
+  const setD = (patch) => { dirtyRef.current = true; editsRef.current += 1; setDraft({ ...D, ...patch }); };
   // Adding a customer number from the card writes through the SAME path as the notes
   // editor's Save — one route into customer_notes — and folds the change into the open
   // draft so a later Save can't quietly revert the number that was just added. NOT marked
@@ -10614,7 +10687,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
   const saveContacts = onSave ? async (patch) => {
     const next = { ...D, contacts: mergeSavedContact(D.contacts, patch) };
     setDraft(next);
-    await onSave(next);
+    return onSave(next); // whether it landed — the Customer # block reports it (A1-S3-4)
   } : null;
 
   return (
@@ -10680,9 +10753,10 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
             {/* DESKTOP save bar. Disabled rather than hidden for a role that may not write
                 customer_notes: the hours on screen are still worth reading, and a Save that
                 looks pressable and writes nothing is how a customer's receiving window gets
-                "saved" into thin air. */}
+                "saved" into thin air. Closes the editor only once the write LANDED (A1-S4-1):
+                a refused or failed save stays open, typed values intact, saveError beside it. */}
             <button
-              onClick={() => { dirtyRef.current = false; onSave(D); setEditing(false); }}
+              onClick={async () => { const at = stop?.stopNbr; const seq = editsRef.current; if (await commitNoteDraft(onSave, D) && shownStopRef.current === at && editsRef.current === seq) { dirtyRef.current = false; setEditing(false); } }}
               disabled={saving || !!saveDenied}
               title={saveDenied || undefined}
               className="px-3 py-1.5 text-xs text-white font-semibold rounded inline-flex items-center gap-1 disabled:opacity-50"
@@ -10714,18 +10788,6 @@ function fmtDurationHm(secs) {
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
   return `${h}h ${m}m`;
-}
-
-function classifyTimeliness(scheduledIso, actualIso) {
-  if (!scheduledIso || !actualIso) return null;
-  const sched = new Date(scheduledIso).getTime();
-  const act = new Date(actualIso).getTime();
-  if (Number.isNaN(sched) || Number.isNaN(act)) return null;
-  const deltaMin = Math.round((act - sched) / 60000);
-  let kind = 'ontime';
-  if (deltaMin > 15) kind = 'late';
-  else if (deltaMin < -15) kind = 'early';
-  return { deltaMin, kind };
 }
 
 function StopStatusIcon({ status }) {
@@ -10816,15 +10878,10 @@ function DriverSnapshotBody({ driver, snapshot, loading, error, onPanToStop }) {
     return { minutes: mins, clock: formatEtaClockTime(mins) };
   }, [driver?.lat, driver?.lng, nextStop?.lat, nextStop?.lng]);
 
-  const onTimePct = useMemo(() => {
-    const completed = stops.filter((s) => s.status === 'completed');
-    if (!completed.length) return null;
-    const onTime = completed.filter((s) => {
-      const t = classifyTimeliness(s.scheduledTime, s.actualArrival || s.actualCompletion);
-      return t?.kind === 'ontime' || t?.kind === 'early';
-    }).length;
-    return { onTime, total: completed.length, pct: Math.round((onTime / completed.length) * 100) };
-  }, [stops]);
+  // A load's shared "Estimated Arrival" window is not an appointment (same rule as the route
+  // card), so a stop carrying only that window is neither marked late nor counted in the rate.
+  const sharedWindows = useMemo(() => snapshotSharedWindows(stops), [stops]);
+  const onTimePct = useMemo(() => snapshotOnTime(stops, sharedWindows), [stops, sharedWindows]);
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto text-sm" data-sheet-scroll>
@@ -10876,7 +10933,7 @@ function DriverSnapshotBody({ driver, snapshot, loading, error, onPanToStop }) {
               ) : (
                 <ul className="space-y-0.5">
                   {stops.map((s, i) => {
-                    const timeliness = classifyTimeliness(s.scheduledTime, s.actualArrival || s.actualCompletion);
+                    const timeliness = snapshotStopTimeliness(s, sharedWindows);
                     const late = timeliness?.kind === 'late';
                     const isClickable = s.lat != null && s.lng != null && onPanToStop;
                     // tap-target-y because this tap row is an <li>, not a <button>: the phone
@@ -12339,6 +12396,11 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
   // See StopSidebar: guards an open edit from being wiped by a background note
   // write (the root cause of an empty saved note / lost receiving hours).
   const dirtyRef = useRef(false);
+  // See StopSidebar: a save landing after another stop opened must not close its editor.
+  const shownStopRef = useRef(stop?.stopNbr);
+  shownStopRef.current = stop?.stopNbr;
+  // See StopSidebar: edits typed while a Save is in flight keep the editor open.
+  const editsRef = useRef(0);
 
   // Reset draft when a different stop opens.
   useEffect(() => {
@@ -12348,24 +12410,27 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
     dirtyRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stop?.stopNbr]);
-  // Adopt a note that loads/updates after open — unless mid-edit.
+  // Adopt a note that loads/updates after open — unless mid-edit. Keyed on the note's CONTENT,
+  // not its id (A1-S4-5): the id is the match key, so a same-customer update never moved it and
+  // Save wrote the stale draft back over it. See StopSidebar.
+  const noteKey = noteContentKey(note);
   useEffect(() => {
     if (dirtyRef.current) return;
     setDraft(note || emptyNote(stop));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [note?.id]);
+  }, [noteKey]);
 
   // Live overlay so the status badge below updates on Refresh / timeline open (a board
   // stop tagged Scheduled flips to Delivered once its real status 90 comes back).
   const [live, onRefreshed] = useLiveStop(stop);
   if (!stop) return null;
   const D = draft;
-  const setD = (patch) => { dirtyRef.current = true; setDraft({ ...D, ...patch }); };
+  const setD = (patch) => { dirtyRef.current = true; editsRef.current += 1; setDraft({ ...D, ...patch }); };
   // Same one-write-path rule as StopSidebar — see the comment there.
   const saveContacts = onSave ? async (patch) => {
     const next = { ...D, contacts: mergeSavedContact(D.contacts, patch) };
     setDraft(next);
-    await onSave(next);
+    return onSave(next); // whether it landed — see StopSidebar (A1-S3-4)
   } : null;
 
   const hasUnsaved = editing && JSON.stringify(draft) !== JSON.stringify(note || emptyNote(stop));
@@ -12432,9 +12497,10 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
               Cancel
             </button>
             {/* PHONE save bar — its own component and its own markup per CLAUDE.md, so it
-                needs its own gate. Same rule as the desktop sidebar above. */}
+                needs its own gate. Same rule as the desktop sidebar above — including closing
+                only once the write LANDED (A1-S4-1). */}
             <button
-              onClick={() => { dirtyRef.current = false; onSave(D); setEditing(false); }}
+              onClick={async () => { const at = stop?.stopNbr; const seq = editsRef.current; if (await commitNoteDraft(onSave, D) && shownStopRef.current === at && editsRef.current === seq) { dirtyRef.current = false; setEditing(false); } }}
               disabled={saving || !!saveDenied}
               title={saveDenied || undefined}
               className="px-4 py-2 text-sm text-white font-semibold rounded inline-flex items-center gap-1.5 disabled:opacity-50"
@@ -12756,40 +12822,8 @@ function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose,
 // "Debug this view" bundles what the dispatcher is looking at so a coding agent
 // can see the data behind a bad behavior. We ship coordinates + state, not a
 // screenshot (the Google map is WebGL and iOS Safari has no getDisplayMedia).
-// Customer names/addresses/contacts and the raw NuVizz payload are scrubbed.
-function scrubStop(s, seq, note) {
-  if (!s) return null;
-  return {
-    seq: seq == null ? undefined : seq,
-    stopNbr: s.stopNbr,
-    pro: s.pro,
-    loadNbr: s.loadNbr,
-    status: s.status,
-    normalizedStatus: s.normalizedStatus,
-    isPlanned: s.isPlanned,
-    isUnplanned: s.isUnplanned,
-    isTerminal: s.isTerminal,
-    carryover: s.carryover,
-    driverName: s.driverName,
-    driverUserName: s.driverUserName,
-    routeSeq: s.routeSeq,
-    loadStopSeq: s.loadStopSeq,
-    plannedEtaDTTM: s.plannedEtaDTTM,
-    arrivalDTTM: s.arrivalDTTM,
-    deliveredDTTM: s.deliveredDTTM,
-    cartons: s.cartons,
-    pallets: s.pallets,
-    volume: s.volume,
-    weight: s.weight,
-    lat: s.lat,
-    lng: s.lng,
-    matchKey: s.matchKey,
-    hasNote: !!note,
-    flag: note?.priority_flag ?? null,
-    // dropped (PII / huge): businessName, addr1, addr2, city, state, zip,
-    // contact, origin, stopDetails, allComments, raw
-  };
-}
+// Customer names/addresses/contacts and the raw NuVizz payload are scrubbed — see
+// lib/debug-capture-scrub.js (scrubStop), which also replaces the matchKey with a digest.
 
 // Reconstruct a Google Static Maps URL from the live viewport + visible pins, so
 // a reviewer can see the same view without WebGL. Uses a __MAPS_KEY__ placeholder
@@ -13770,7 +13804,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const tvBootedAt = useRef(Date.now()).current;
   useEffect(() => {
     if (!tvMode) return undefined;
-    const t = setInterval(() => setTvClock(Date.now()), 30000);
+    // THE SAME TICK MOVES THE BOARD TO TODAY when midnight ET passes — see tvRollDate. A wall
+    // left up overnight otherwise shows yesterday's finished board as a live one.
+    const t = setInterval(() => {
+      setTvClock(Date.now());
+      setSelectedDate((d) => tvRollDate(d, todayInET()) ?? d);
+    }, 30000);
     return () => clearInterval(t);
   }, [tvMode]);
   // DID THE MAP ACTUALLY DRAW? A WHITE RECTANGLE IS NOT AN ERROR STATE, and that is the
@@ -13971,6 +14010,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     const listener = google.maps.event.addListenerOnce(mapRef.current, 'tilesloaded', () => setTvMapDrew(true));
     return () => { try { listener.remove(); } catch { /* the map is already gone */ } };
   }, [tvMode, google, mapReady]);
+  // Leaving the live map forgets that it drew: the next time it is ticked it is a new map on
+  // a new pane, and "it drew last time" says nothing about whether this one did.
+  useEffect(() => { if (tvStatic) setTvMapDrew(false); }, [tvStatic]);
   // ESCAPE IS THE WAY OUT, and it is the documented one. The on-screen exit is deliberately
   // faint (see the button) because Chad does not want furniture on the map; a key that
   // always works means the faint control never has to become a loud one.
@@ -14413,7 +14455,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       notes_meta: { loaded_count: notes.size },
       warnings: [
         'static_map_url embeds the Maps key as __MAPS_KEY__ — swap it in locally to view; no real secret is included.',
-        'Customer names/addresses/contacts and the raw NuVizz payload are scrubbed from stops; only the join matchKey + coords remain.',
+        'Customer names/addresses/contacts and the raw NuVizz payload are scrubbed from stops; only coords and matchKeyDigest (a digest of the location key — equal digests mean the same location) remain.',
       ],
       user_note: note || '',
     };
@@ -14659,7 +14701,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     setMapReady((n) => n + 1);
     // mapIdKey, not hideLabels: this flips only when the map genuinely has to be rebuilt,
     // so a build with no VITE_GOOGLE_MAP_ID still inits exactly once.
-  }, [google, mapIdKey(mapIdForView, mapFilters.hideLabels)]); // eslint-disable-line
+    // tvStatic: the wall's live-map pane unmounts while it shows the picture, so re-ticking
+    // "Live map" mounts a NEW div that needs a new map. Always false off the wall.
+  }, [google, mapIdKey(mapIdForView, mapFilters.hideLabels), tvStatic]); // eslint-disable-line
 
   // The bottom data grid is an ABSOLUTE OVERLAY inside the map container, so Google's canvas
   // extends UNDERNEATH it — a flat 60px fitBounds pad framed a route's southern stops behind
@@ -15216,6 +15260,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         updated_by: NOTES_UPDATED_BY,
       };
       await setDoc(doc(db, 'customer_notes', key), payload, { merge: true });
+      // The ONLY path that says "saved" (A1-S4-1): the Save bar closes the editor on this and
+      // nothing else, so a refusal above or a throw below stays on screen with its reason.
+      return true;
     } catch (e) {
       setSaveError(e.message);
     } finally {
@@ -15315,6 +15362,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           <div className={`px-5 py-2.5 rounded-xl text-3xl font-bold shrink-0 ${verdictTone}`}>{verdict.text}</div>
           <div className="ml-auto text-right shrink-0">
             <div className="text-4xl font-semibold tabular-nums leading-none">{clock}</div>
+            {/* WHICH DAY THIS BOARD IS. Without it, yesterday's finished board and today's
+                read the same from across the room. */}
+            <div className="text-lg text-slate-300 mt-1.5">{formatDateLong(selectedDate)}</div>
             {/* THE FRESHNESS LINE GOES RED WHEN IT IS OLD, and it is the only thing on this
                 screen that can tell the room the board has stopped moving. A wall display
                 whose feed died at 6am is otherwise a perfect morning, all day. */}
@@ -15994,12 +16044,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             onAutoFixAddress={autoFixAddress}
             onOpenRoute={(loadNbr) => { setSelectedStop(null); setRouteMapView(false); setSelectedRoute(loadNbr); frameRoute(loadNbr); }}
             onSave={async (draft) => {
-              await handleSave(draft);
-              // handleSave clears saveError on success; close the drawer if
-              // there was no error this cycle. (saveError is checked on the
-              // next render, so we read the post-save state via a setTimeout
-              // tick — but simplest: leave the drawer open on save so the
-              // user can confirm the green state, and rely on the X to dismiss.)
+              // Pass the answer back: the drawer's Save bar closes the editor only on `true`
+              // (A1-S4-1). The drawer itself stays open after a save so the user can confirm
+              // the saved state, and the X dismisses it.
+              return handleSave(draft);
             }}
             saving={saving}
             saveError={saveError}
@@ -16316,6 +16364,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 visibleUnplannedCount={visibleUnplannedCount}
                 ops={ops}
                 scanErr={scanErr}
+                scanState={scanState}
                 scanning={scanning}
                 scanCooldown={scanCooldown}
                 scanDenied={scanDenied}
@@ -17148,7 +17197,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       .catch(() => { if (!cancelled) { setRoster([]); setRosterMeta({ ok: false }); } });
     return () => { cancelled = true; };
   }, [view, boardDate]);
-  const rosterState = useMemo(() => rosterFreshness(rosterMeta), [rosterMeta]);
+  // THE AGE MOVES WITH THE CLOCK. rosterFreshness measures against now, so memoising it on the
+  // envelope alone froze "cached 1m ago" and the "(before today)" flag at fetch time — still
+  // saying so at 3 PM, and never going stale overnight. A minute tick while the line is shown.
+  // The roster is fetched whenever the Loads view is selected, open or not, so the line can
+  // come into view hours after its last computation: tick once on showing it, not only after
+  // the first minute.
+  const [rosterTick, setRosterTick] = useState(0);
+  useEffect(() => {
+    if (view !== 'loads' || !open) return undefined;
+    setRosterTick((n) => n + 1);
+    const t = setInterval(() => setRosterTick((n) => n + 1), 60000);
+    return () => clearInterval(t);
+  }, [view, open]);
+  const rosterState = useMemo(() => rosterFreshness(rosterMeta), [rosterMeta, rosterTick]); // eslint-disable-line react-hooks/exhaustive-deps
   // One definition, two placements. Writing the markup twice is how the phone and the desktop
   // drift apart, and this app has shipped that twice; writing it once and PLACING it twice is
   // what "two views" actually asks for.
@@ -17341,6 +17403,31 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     if (openAfter) setOpen(true);
   };
   const activeProfile = profileList.find((p) => p.name === activeProfileName) || null;
+  // THE PROFILE ARRIVING — from Firestore on a cold start, or because it was selected or
+  // updated on another device. Same question either way, so it is asked with the same
+  // function the mount used: does the profile beat what this device remembers? If it does,
+  // apply it — but only while the bar still reads exactly as it did at mount, so a
+  // dispatcher who started filtering in that first second keeps what they set. Once, ever:
+  // re-running it would yank the bar back mid-plan.
+  //
+  // DECLARED ABOVE THE PERSIST EFFECT ON PURPOSE. React runs a commit's effects in declaration
+  // order, and the snapshot that brings a new selection or save time changes the deps of both.
+  // With the persist effect first, it re-stamped this device's memory with the NEW profile and
+  // time before this read it back, so the profile never beat it: the chip said Chad while the
+  // grid stayed on the whole board, on this load and every one after (audit 2026-09-27).
+  const lateProfileApplied = useRef(false);
+  useEffect(() => {
+    if (lateProfileApplied.current || !activeProfile) return;
+    const r = restoreBar({
+      memory: safeReadJSON(LS_BOTTOM_BAR, null),
+      activeName: activeProfileName,
+      profiles: profileList,
+      width: readViewportSize().w || null,
+    });
+    if (r.from !== 'profile') return;   // this device's own bar still wins — leave it alone
+    lateProfileApplied.current = true;
+    if (sameBar(barSnapshot(), boot)) applyBarSettings(activeProfile.s, { openAfter: false, automatic: true });
+  }, [profileList, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
   // REMEMBER THE BAR — the write that was missing. Without it the settings existed only in
   // this component's useState, and there are THREE mounts of it (Map, Routing phone, Routing
   // desktop), so every screen hop and every reload started from an empty filter while the
@@ -17365,25 +17452,6 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     pendingProfile.current = false;
     safeWriteJSON(LS_BOTTOM_BAR, { ...barSnapshot(), profile: activeProfileName || null, profileAt: activeProfile?.updatedAt ?? null });
   }, [view, statusSel, nvWindow, nvFrom, nvTo, unmappedOnly, stopSort, loadSort, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
-  // THE PROFILE ARRIVING — from Firestore on a cold start, or because it was selected or
-  // updated on another device. Same question either way, so it is asked with the same
-  // function the mount used: does the profile beat what this device remembers? If it does,
-  // apply it — but only while the bar still reads exactly as it did at mount, so a
-  // dispatcher who started filtering in that first second keeps what they set. Once, ever:
-  // re-running it would yank the bar back mid-plan.
-  const lateProfileApplied = useRef(false);
-  useEffect(() => {
-    if (lateProfileApplied.current || !activeProfile) return;
-    const r = restoreBar({
-      memory: safeReadJSON(LS_BOTTOM_BAR, null),
-      activeName: activeProfileName,
-      profiles: profileList,
-      width: readViewportSize().w || null,
-    });
-    if (r.from !== 'profile') return;   // this device's own bar still wins — leave it alone
-    lateProfileApplied.current = true;
-    if (sameBar(barSnapshot(), boot)) applyBarSettings(activeProfile.s, { openAfter: false, automatic: true });
-  }, [profileList, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
   // Does the bar still match the profile named on the chip? An unsaved tweak is normal and
   // stays put — but the chip must not claim a preset that is not what you are looking at.
   // That mismatch, silent, IS the bug this release fixes; a dot is what makes it visible.
@@ -26008,6 +26076,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         updated_by: NOTES_UPDATED_BY,
       }, { merge: true });
       refreshStops({ silent: true });
+      return true; // the only "saved" answer — see handleSave (A1-S4-1)
     } catch (e) { setSaveNoteError(e.message); } finally { setSavingNote(false); }
   }, [notes, panelStop, refreshStops, notesGate.reason]);
   const cancelMoveLocation = useCallback(() => { setMovingStop(null); setMovedTo(null); }, []);
@@ -32400,7 +32469,7 @@ function LabelsScreen() {
     try { localStorage.setItem(LABELS_SHIPPER, key); } catch { /* a remembered shipper is a convenience */ }
   }, []);
 
-  const rows = useMemo(() => (data?.shipper?.key === shipper ? data.rows || [] : []), [data, shipper]);
+  const rows = useMemo(() => labelRowsForPick(data, date, shipper), [data, date, shipper]);
   const shown = useMemo(() => filterLabelRows(rows, filter), [rows, filter]);
   const chosen = useMemo(() => rows.filter((r) => selected.has(r.stopNbr)), [rows, selected]);
   const pagesOf = (list) => list.reduce((n, r) => n + (r.pages || 0), 0);
@@ -32798,8 +32867,10 @@ function NewOrderSingleScreen() {
 
   // The clientOpId is minted ONCE per ORDER (not per click): a retry after a lost response
   // replays the same id, so the server's idempotency ledger returns the prior success instead
-  // of creating a DUPLICATE order. Regenerated only after a confirmed success.
-  const opIdRef = useRef(newClientOpId());
+  // of creating a DUPLICATE order. Regenerated after a confirmed success — and whenever the
+  // request differs from the one last sent under it (lib/single-order-op.js), so the next order
+  // typed after a lost answer is not replayed as the old one.
+  const opIdRef = useRef({ id: newClientOpId(), sent: null });
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -32823,12 +32894,13 @@ function NewOrderSingleScreen() {
         origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() },
         serviceDate, timeZone: 'America/New_York',
       };
+      opIdRef.current = singleOrderOpId(opIdRef.current, { row: payloadRow, settings }, newClientOpId);
       let res;
-      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: opIdRef.current, createdBy: 'dispatcher' }); }
+      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: opIdRef.current.id, createdBy: 'dispatcher' }); }
       catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
       if (res.ok && res.result?.ok) {
         const nbr = res.result.entityNbr || payloadRow.stopNbr || '(number assigned by NuVizz)';
-        opIdRef.current = newClientOpId();   // next order = new idempotency key
+        opIdRef.current = { id: newClientOpId(), sent: null };   // next order = new idempotency key
         // The label (and the ticket New Order prints) carry the number NuVizz returned, or the
         // Order # typed when NuVizz echoes none — the number the order is filed under. No
         // number at all = no label, and the banner says so instead of printing a blank.
@@ -32840,7 +32912,7 @@ function NewOrderSingleScreen() {
           // REPLACED that order's details. Say so loudly; keep the form so it's reviewable.
           setResult({ ok: true, updated: true, msg: `⚠ Order ${nbr} ALREADY EXISTED — NuVizz UPDATED it (its address/details were replaced with what you entered). Verify in the portal if that wasn't intended.`, ...labelBits });
         } else {
-          setResult({ ok: true, msg: `✓ Order created — ${nbr}. It's now UNPLANNED; plan it onto a load in Routing.`, ...labelBits });
+          setResult({ ok: true, msg: singleOrderCreatedMsg(nbr, { idempotent: res.idempotent === true }), ...labelBits });
           setRow(EMPTY_ORDER_ROW);   // ready for the next order; keep origin + date
         }
         setListRefresh((k) => k + 1);
@@ -33098,7 +33170,10 @@ function BulkOrderScreen() {
   const [pushedLabelRefresh, setPushedLabelRefresh] = useState(0);
   const pushedLabels = useOrderLabels(bulkView === 'pushed' ? pushedDate : null, pushedLabelRefresh);
   const [pushedSel, setPushedSel] = useState(() => new Set());   // selected row keys (NuVizz #)
-  useEffect(() => { setPushedSel(new Set()); }, [pushedDate]);
+  // Ticks belong to ONE day's list, so every move of the date clears them — where the date is
+  // moved, not in an effect on pushedDate: that effect also wiped the batch createAll ticks in the
+  // same render it moves the receipt to today, so the receipt opened with nothing ticked.
+  const pickPushedDate = (d) => { setPushedDate(d); setPushedSel(new Set()); };
   const pushedReqRef = useRef(null);   // latest requested date — stale responses must not render under a newer label
   const fetchPushedLog = useCallback(async (date) => {
     if (!date) return;
@@ -33391,6 +33466,7 @@ function BulkOrderScreen() {
   };
   const applyImport = () => { if (importer) commitImport(importer.dataRows, importer.mapping, importer.sig); };
   const undoAutoImport = () => {
+    if (busy) return;   // frozen mid-push like addRow/removeRow/clearRows: createAll removes rows by click-time index
     setAutoImportUndo((u) => {
       if (!u) return null;
       setRows(u.prevRows && u.prevRows.length ? u.prevRows : [bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]);
@@ -33408,6 +33484,9 @@ function BulkOrderScreen() {
     if (!live) { setResults({ beta: true, created: 0, updated: 0, failed: 0, rows: [], msg: `○ Beta — would create ${targets.length} order(s) (nothing sent). Flip to ● LIVE to create them in NuVizz.` }); return; }
     persistOrigin();
     const settings = { origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() }, serviceDate, timeZone: 'America/New_York' };
+    // A LIVE push spends the import's Undo: after it, reopening the mapper on the same parse is one
+    // Import away from sending the orders just created a second time.
+    setAutoImportUndo(null);
     setBusy(true); setResults(null); setProgress({ done: 0, total: targets.length });
     const out = [];
     const pushedLogRecords = [];   // durable cloud push-history — feeds the "Pushed to NuVizz" tab
@@ -33475,7 +33554,7 @@ function BulkOrderScreen() {
         });
       } catch { /* history is best-effort */ }
       const today = etTodayStr();
-      if (pushedDate !== today) setPushedDate(today); else fetchPushedLog(today);
+      if (pushedDate !== today) pickPushedDate(today); else fetchPushedLog(today);
       if (!out.some((o) => !o.ok)) {
         // A clean run lands on the receipt with the batch it just created already ticked, so
         // Print labels is one tap.
@@ -33547,6 +33626,7 @@ function BulkOrderScreen() {
       loads: [{ loadNbr: nbr, routeName: routeName.trim() || undefined, createNew: true, orderedStopNbrs: payloadRows.map((r) => r.stopNbr), newStops: payloadRows }],
       settings, origin: settings.origin, useImport: true,
     };
+    setAutoImportUndo(null);   // a LIVE push spends the import's Undo (see createAll)
     setBusy(true); setResults(null); setVerifyMsg(`Sending ONE import for load ${nbr} (${payloadRows.length} stops)…`);
     let res;
     try { res = await callWrite('commitBoard', body, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-bulk' }); }
@@ -33675,7 +33755,7 @@ function BulkOrderScreen() {
         });
       } catch { /* history is best-effort */ }
       const today = etTodayStr();
-      if (pushedDate !== today) setPushedDate(today); else fetchPushedLog(today);
+      if (pushedDate !== today) pickPushedDate(today); else fetchPushedLog(today);
     }
     const labelSave = labelOrders.length ? await saveOrderLabels(labelOrders) : { ok: true };
     if (labelOrders.length) setPushedLabelRefresh((k) => k + 1);
@@ -33963,11 +34043,11 @@ function BulkOrderScreen() {
                     type="date"
                     value={pushedDate}
                     max={etTodayStr()}
-                    onChange={(e) => setPushedDate(e.target.value || etTodayStr())}
+                    onChange={(e) => pickPushedDate(e.target.value || etTodayStr())}
                     className="border border-slate-300 rounded px-2 py-1 text-[12px]"
                   />
                   {pushedDate !== etTodayStr() && (
-                    <button onClick={() => setPushedDate(etTodayStr())} className="text-[11px] text-blue-700 hover:underline">Today</button>
+                    <button onClick={() => pickPushedDate(etTodayStr())} className="text-[11px] text-blue-700 hover:underline">Today</button>
                   )}
                   <button onClick={() => fetchPushedLog(pushedDate)} title="Refresh" className="text-slate-400 hover:text-slate-700"><RefreshCw size={13} className={pushedLog.loading ? 'animate-spin' : ''} /></button>
                   <span className="ml-auto tabular-nums font-medium">
@@ -34232,8 +34312,8 @@ function BulkOrderScreen() {
               <div className="flex items-center flex-wrap gap-2">
                 <div className="text-[13px] font-semibold text-slate-700 inline-flex items-center gap-1.5"><FileCheck size={14} /> Pushed to NuVizz</div>
                 <span className="text-slate-300">·</span>
-                <input type="date" value={pushedDate} max={etTodayStr()} onChange={(e) => setPushedDate(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-[12px] bg-white focus:outline-none focus:ring-1 focus:ring-blue-300" />
-                {!isToday && <button onClick={() => setPushedDate(etTodayStr())} className="text-[11px] text-blue-600 hover:underline">Today</button>}
+                <input type="date" value={pushedDate} max={etTodayStr()} onChange={(e) => pickPushedDate(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-[12px] bg-white focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                {!isToday && <button onClick={() => pickPushedDate(etTodayStr())} className="text-[11px] text-blue-600 hover:underline">Today</button>}
                 <button onClick={() => fetchPushedLog(pushedDate)} title="Refresh" className="text-slate-400 hover:text-slate-700"><RefreshCw size={13} className={pushedLog.loading ? 'animate-spin' : ''} /></button>
                 <span className="text-[12px] text-slate-500">{pushedLog.loading ? 'loading…' : `${recs.length} pushed`}{isToday ? ' today' : ''}</span>
                 {pushedLog.error && <span className="text-[11px] text-amber-700">History unavailable: {pushedLog.error}</span>}
@@ -34887,10 +34967,16 @@ function UlineThreeD({ google, mapsErr, pin, active = true }) {
       const heightPx = holder.current?.clientHeight || 600;
       const cam = cameraFor2dView({ center: { lat: pin.lat, lng: pin.lng }, zoom: 19, heading: 0, heightPx });
       if (!cam) return;   // a made-up camera is worse than none: the dispatcher would believe it
-      if (!elRef.current) {
-        if (building.current) return;
+      // A build already in flight is AWAITED, not abandoned: when the row changed while maps3d was
+      // still loading, the run that started the build is dead by the time it lands, and returning
+      // here left nobody to aim the camera at this row or uncover the pane (audit app-A3-7).
+      if (!elRef.current && building.current) {
+        try { await building.current; } catch (e) { if (!dead) setErr(String(e?.message || 'Google refused the 3D view')); return; }
+      } else if (!elRef.current) {
         if (!webglUsable()) { setErr(MAP3D_NO_WEBGL); return; }
-        building.current = true;
+        let doneBuilding;
+        building.current = new Promise((resolve, reject) => { doneBuilding = { resolve, reject }; });
+        building.current.catch(() => {});   // each waiting run reports the refusal itself
         try {
           const lib = await google.maps.importLibrary('maps3d');
           libRef.current = lib;
@@ -34916,9 +35002,10 @@ function UlineThreeD({ google, mapsErr, pin, active = true }) {
             } catch { /* imagery without a pin still answers most of the question */ }
           }
         } catch (e) {
+          doneBuilding.reject(e);
           if (!dead) setErr(String(e?.message || 'Google refused the 3D view'));
           return;
-        } finally { building.current = false; }
+        } finally { doneBuilding.resolve(); building.current = false; }
       }
       if (dead || !elRef.current) return;
       const mode = libRef.current?.AltitudeMode?.RELATIVE_TO_GROUND ?? 'RELATIVE_TO_GROUND';

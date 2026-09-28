@@ -28,12 +28,10 @@
 // Both spellings are kept rather than one renamed: `no_53` is live in stored notes and in the
 // routing engine's own types, and dropping it would silently un-restrict whatever carries it.
 //
-// THE ROUTING ENGINE HAS THE SAME SPLIT AND IT IS NOT FIXED HERE. equipmentReqOk in
-// netlify/functions/lib/routing-constraints.mts matches `case 'no_53'` and falls through to
-// `default: { ok: true }` — "unknown restriction → don't block" — so an auto-build can still
-// put a 53' trailer on a stop marked No 53ft. That is a change to which truck gets which
-// stop, so it belongs in its own diff with its own tests rather than riding along inside an
-// icon change.
+// THE ROUTING ENGINE HAD THE SAME SPLIT and it was fixed in its own diff (A4-S23-2): the
+// engine's requirement list (routing-equipment.mts), equipmentReqOk, the assignment solver's
+// TRAILER_BLOCKER_KEYS and the shadow's copy all read both spellings now
+// (test/routing-no53ft-blocks-trailer.test.mjs).
 export const TRAILER_BLOCKER_KEYS = new Set([
   'no_tractor_trailer', 'box_truck_only', 'straight_truck_only', 'uline_straight_truck',
   'no_53', 'no_53ft', '26ft_max', 'no_overhead_clearance',
@@ -199,7 +197,9 @@ export function isTrailerBlockerKey(key, resolve) {
 // count of those across the 763 docks: ZERO, so nothing changes under him today.
 //
 // TRAILER_ALERT_ANY_RESTRICTION=off restores the dispatcher-owned rule below, on every side at
-// once — the flag panel, the map's R7 card and the 9pm text all read this one function.
+// once — the flag panel, the map's R7 card and the 9pm text all read this one function. The
+// browser only sees it because vite.config.js passes the un-prefixed name into the bundle at
+// build time; without that it reached the server alone.
 export function trailerAlertAnyRestriction(env) {
   let raw = env;
   if (!raw) {

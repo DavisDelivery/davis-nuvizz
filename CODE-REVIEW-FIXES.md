@@ -326,19 +326,24 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
       *Done v1.81.2:* On a busy day, when the amber flag list collapses into one summary line, customer service no longer gets emailed about stops that were only judged against the assumed 5pm close. Before the fix, 26 such stops sent 26 emails even though 3 sent none.
       *Fix:* Add `hoursTier: r.hoursTier` to the collapsedRows projection in board-flags.js (and any other field a consumer filters on), and make the guard here fail closed: treat a missing hoursTier as not-alertable for amber rows, or assert the field is present in colla…  
       <sub>High · data-contract · A3-S16-2 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/routing-constraints.mts:44`** — 'No 53ft' as the app writes it (no_53ft) never blocks a 53' trailer  
+- [x] **`dispatch-map/netlify/functions/lib/routing-constraints.mts:44`** — 'No 53ft' as the app writes it (no_53ft) never blocks a 53' trailer  
+      *Done v1.81.3:* A stop a dispatcher ticked "No 53ft" is now kept off 53' trailers by the Build button, Fill my loads, the engine draft and the shadow backtest, and is listed with the reason "cannot use a 53ft trailer". A green Tractor-OK mark still overrides it.
       *Fix:* Add `case 'no_53ft':` alongside `case 'no_53':` in equipmentReqOk, add `'no_53ft'` to the `EquipmentReq` union, to KNOWN_REQS/TRAILER_BLOCKERS in routing-build-background.mts, and to TRAILER_BLOCKER_KEYS in routing-assignment-solver.mts (or normalise `no_53ft…  
       <sub>High · data-contract · A4-S23-2 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/lib/customer-notes-writer.ts:290`** — Audit-trail write poisons hours provenance; scanner overwrites hand-typed hours on next scan  
+- [x] **`dispatch-map/src/lib/customer-notes-writer.ts:290`** — Audit-trail write poisons hours provenance; scanner overwrites hand-typed hours on next scan  
+      *Done v1.81.3:* The auto-scanner no longer stamps its 'I wrote these' mark on receiving hours someone entered by hand. The next scan can no longer overwrite those hours from one order's text, and the stop card stops calling them 'Auto-detected — verify'.
       *Fix:* Only write `auto_sources.receiving_hours` when the scanner actually wrote (or already owns) the hours field — e.g. guard the block at 291 with `if (hoursWouldChange || scannerOwnsHours)` — or record the disclosure under a separate key (e.g. `auto_seen.receivi…  
       <sub>High · logic · A2-S12-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/lib/signal-scanner.ts:338`** — Day-qualified path stores a lunch CLOSURE as the receiving window (no refusing-context guard)  
+- [x] **`dispatch-map/src/lib/signal-scanner.ts:338`** — Day-qualified path stores a lunch CLOSURE as the receiving window (no refusing-context guard)  
+      *Done v1.81.3:* A lunch closure written against a day span ('MON-FRI 12-1 FOR LUNCH', 'LUNCH MON-FRI 12-1', 'MON-FRI 12PM-1PM CLOSED FOR LUNCH') is no longer stored as the customer's only receiving hour, and a lunch line under real hours ('RH 8-5 CLOSED FOR LUNCH MON-FRI 12-1') no longer overwrites them.
       *Fix:* Apply the same refusing-context check to day-qualified segments: skip a daySegRe match whose preceding 28 chars end in CLOSED/NO DELIVER…/LUNCH or whose following text starts with FOR LUNCH, and apply the 90/180-minute width floor to day-qualified ranges too.  
       <sub>High · logic · A3-S13-3 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/lib/signal-scanner.ts:483`** — 'CLOSED FRIDAYS @ 12PM' is marked a CLOSED DAY — tail check accepts AT but not @  
+- [x] **`dispatch-map/src/lib/signal-scanner.ts:483`** — 'CLOSED FRIDAYS @ 12PM' is marked a CLOSED DAY — tail check accepts AT but not @  
+      *Done v1.81.3:* 'CLOSED FRIDAYS @ 12PM' now reads as a Friday noon close only. It no longer also marks Friday as a closed day, so a deliverable Friday morning isn't skipped.
       *Fix:* Widen the tail test to the same vocabulary the hours regexes use: /^\s+(?:AT|@|AFTER)\s*(?:NOON|[0-9])/i.  
       <sub>High · logic · A3-S13-4 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/lib/time-restrictions.js:312`** — 'CLOSES AT' order text silently overwrites dispatcher-TYPED receiving hours  
+- [x] **`dispatch-map/src/lib/time-restrictions.js:312`** — 'CLOSES AT' order text silently overwrites dispatcher-TYPED receiving hours  
+      *Done v1.81.3:* The time-restricted PRO report keeps receiving hours a dispatcher typed. An order saying 'CLOSES AT 2 PM' no longer replaces them or relabels them as 'This order'.
       *Fix:* Apply the explicitClose override only when the hours came from the scanner branch (e.g. `if (explicitClose != null && hoursProvenance !== 'dispatcher' && hoursProvenance !== 'saved')`), or gate it on `hoursTier !== 'typed'`; add a test pairing a typed note wi…  
       <sub>High · logic · A3-S14-1 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/src/lib/trailer-block.js:103`** — Any edit to the restriction list promotes the Uline advisory to a 'dispatcher hardcoded' block  
@@ -435,10 +440,12 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`dispatch-map/netlify/functions/nuvizz-write.mts:231`** — A throw mid-batch discards applied NuVizz writes, skips the ledger, answers 400/503  
       *Fix:* In each executor, wrap every per-load write step (and the post-save assign/dispatch loop) in try/catch that records the throw as a failed step ({op, ok:false, error}) and continues to the result/write-through; in the handler, always write the op ledger row on…  
       <sub>High · error-handling · X-nuvizzwrite-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:24506`** — Single New Order reuses one clientOpId across different orders after a lost response  
+- [x] **`dispatch-map/src/App.jsx:24506`** — Single New Order reuses one clientOpId across different orders after a lost response  
+      *Done v1.81.3:* Single New Order no longer silently skips the next order after a lost answer. A different order now goes out under its own key and is actually created. Resending the same order is still not created twice, and the form now says it was already created by the earlier try instead of announcing a fresh create.
       *Fix:* Regenerate opIdRef.current whenever the delivery fields change after a failed submit (or key the op id on a hash of payloadRow), and treat res.idempotent === true as 'already created earlier' in the message rather than a fresh create.  
       <sub>High · async-race · A2-S9-10 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:25054`** — Undo-auto-import stays live during and after a LIVE bulk push — re-import pushes created orders again  
+- [x] **`dispatch-map/src/App.jsx:25054`** — Undo-auto-import stays live during and after a LIVE bulk push — re-import pushes created orders again  
+      *Done v1.81.3:* Once a live Bulk add push starts (Create all or Create as load), the import's 'Wrong columns? Undo & map manually' is removed, so the orders just created cannot be reopened in the mapper and pushed again. Undo also does nothing while a push is running.
       *Fix:* In createAll and createAsLoad (and pushChecked for symmetry) call setAutoImportUndo(null) and setImportInfo('') when the push starts; also early-return from undoAutoImport when `busy` is true, matching addRow/removeRow/clearRows.  
       <sub>High · react-state · A2-S9-1 · reproduced by running the code</sub>
 - [ ] **`netlify/functions/nuvizz.cjs:889`** — tenant=glorybound reaches the fleet endpoints and triggers a 601-probe DAVIS scan under a 'glorybound' key  
@@ -579,13 +586,16 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
       *Done v1.81.2:* A bulk "Text N drivers" can now run for up to 26 seconds instead of 10. After 20 seconds it stops starting new texts and lists by name everyone it did not reach ("not sent — ran out of time; send again to this recipient"). The dispatcher can see exactly who got the text, and those texts still count toward the daily cap. Before, the platform killed the request with an HTML 502 and the cap count was lost.
       *Fix:* Add `[functions."send-sms"] timeout = 26` to dispatch-map/netlify.toml and bound the per-request batch to what fits (or fan the sends out with bounded concurrency and record the cap increment per successful send rather than once at the end).  
       <sub>High · error-handling · A5-S29-11</sub>
-- [ ] **`dispatch-map/src/App.jsx:6463`** — POD photo pull ignores the wrong-twin refusal and reports 'No delivery photos on file'  
+- [x] **`dispatch-map/src/App.jsx:6463`** — POD photo pull ignores the wrong-twin refusal and reports 'No delivery photos on file'  
+      *Done v1.81.3:* When a dispatcher taps View delivery photos and NuVizz answers with the other order that shares this number, the card now shows that refusal instead of wrongly saying 'No delivery photos on file for this order.'
       *Fix:* `const refusal = onRefreshed?.(d.stop); if (refusal) { setErr(refusal); return; } setTried(true);`  
       <sub>High · error-handling · A1-S3-7 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:7525`** — Customer # block says 'Saved' when the Firestore save was refused or threw  
+- [x] **`dispatch-map/src/App.jsx:7525`** — Customer # block says 'Saved' when the Firestore save was refused or threw  
+      *Done v1.81.3:* The Customer # box on a stop no longer says 'Saved' when the customer's number was refused. The box stays open with the reason in red, and the NuVizz line now starts 'Not saved here'. The NuVizz write itself is unchanged.
       *Fix:* Make the note-save handlers signal failure (rethrow or return `{ok:false, error}`) and have `submit` stop and show it; hide/disable the Add/Edit controls when `saveDenied` is set, and render `saveError` outside the editing branch.  
       <sub>High · error-handling · A1-S3-4</sub>
-- [ ] **`dispatch-map/src/App.jsx:10142`** — Phone Save hides the save bar before the write resolves; a failed note save is invisible  
+- [x] **`dispatch-map/src/App.jsx:10142`** — Phone Save hides the save bar before the write resolves; a failed note save is invisible  
+      *Done v1.81.3:* Pressing Save on a customer's notes, on phone or desktop, now waits for the save to go through. If it is refused or fails, the editor stays open with the dispatcher's typing still in it and the reason shown next to Save, instead of closing as if it had saved.
       *Fix:* Make the click handler await the save and only leave edit mode on success: `onClick={async () => { const ok = await onSave(D); if (ok !== false) { dirtyRef.current = false; setEditing(false); } }}` with `handleSave` returning false (and calling `reportDenied(…  
       <sub>High · error-handling · A1-S4-1</sub>
 - [ ] **`dispatch-map/src/App.jsx:16286`** — Stub-row ✕ passes (route.key, stopNbr) to a one-arg callback: removes nothing, false toast  
@@ -684,10 +694,12 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
       *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed by 1bef823 (#912, v1.21.0), whose commit message names this exact defect. toSolverStops now lets the resolved clock win: `const tr = s.timeRestriction; if (tr) { … win = { startSec: midnight + (tr.openMin ?? 0) * 60, … }; strict = win.endSec > win.startS
       *Fix:* In hhmmToEpochSec/isPlaceholderTime match the clock off the stamp the way the client already does (`/(?:^|[T ])(\d{1,2}):(\d{2})/`), and — since time-restrictions.js documents that NuVizz stamps STRICT on 800/862 stops with an 08:00–20:00 all-day placeholder …  
       <sub>High · data-contract · A4-S24-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/netlify/functions/lib/routing-repair.mts:87`** — Repair enforces deck length the constraints module turned off, then re-inserts spilled stops onto the wrong t…  
+- [x] **`dispatch-map/netlify/functions/lib/routing-repair.mts:87`** — Repair enforces deck length the constraints module turned off, then re-inserts spilled stops onto the wrong t…  
+      *Done v1.81.3:* When the Build's repair pass takes a stop off a truck and later recovers it, the stop now goes back on its own truck if it fits there. It no longer goes to whichever picked truck is listed first, which could send a truck across town for one stop.
       *Fix:* Make worstViolator use capacityFits(emptyLoad(), …)/the same CAPACITY_GATES+capLimited rules as canInsert so the two phases agree (drop the deck check while the gate is off); in Phase B prefer re-inserting into the stop's original truck before scanning others.  
       <sub>High · logic · A4-S24-2 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:8677`** — Driver snapshot on-time % and 'N min late ⚠' judged against the load-wide shared window  
+- [x] **`dispatch-map/src/App.jsx:8677`** — Driver snapshot on-time % and 'N min late ⚠' judged against the load-wide shared window  
+      *Done v1.81.3:* The driver snapshot (desktop sidebar and phone drawer) no longer marks stops 'N min late' or lowers the on-time rate by comparing them to the shared Estimated Arrival window the load puts on every stop. The on-time rate now counts only completed stops that had a real appointment, and shows a dash when no stop had one.
       *Fix:* Apply the same guard the route card uses: compute `loadDefaultWindow(stops)` over the snapshot stops and treat a stop whose `scheduledTime` equals that shared window as having no appointment (`classifyTimeliness` → null), so it is excluded from the on-time de…  
       <sub>High · data-contract · A1-S4-6 · reproduced by running the code</sub>
 - [x] **`dispatch-map/src/App.jsx:20495`** — Truck profile blur writes Number('')=0 to Firestore, which the solver reads as NO cap  
@@ -730,14 +742,16 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
       *Done v1.81.2:* A tractor-location rebuild run for one day (?date=) or a date range (?from&to) now adds those days to each location using the same sticky rules as the nightly pass. Before, it overwrote the location's lifetime delivery count, first-served date and driver list with just that window, which also un-painted lime on earlier boards when 'lime as of board date' was on. The all-days rebuild still recomputes from scratch, and the run summary now reports which mode ran.
       *Fix:* Either refuse the date/window filter for this job (it is only safe as a full rebuild — drop the ?date/?from&to modes and the comment advertising them), or when a filter is present merge into the existing doc with the same sticky rules updateTractorFlagsForDay…  
       <sub>High · logic · A5-S29-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:1725`** — useStops: a slow response for the previous date overwrites the newly selected date's board  
+- [x] **`dispatch-map/src/App.jsx:1725`** — useStops: a slow response for the previous date overwrites the newly selected date's board  
+      *Done v1.81.3:* If a dispatcher changes the board date and a slow read for the old date arrives late, that read is now thrown away instead of replacing the new date's board. A late error or spinner change from the old date is ignored too.
       *Fix:* Add a monotonically increasing request id (useRef) or an AbortController per refresh; capture it at the start of refresh() and skip every setX() when it no longer matches the latest — the same `cancelled` pattern the sibling hooks already use.  
       <sub>High · async-race · A1-S1-1 · reproduced by running the code</sub>
 - [x] **`dispatch-map/src/App.jsx:3473`** — Pickup 'PU' pin tag is never drawn — circleMarkerSvg ignores tag='PU'  
       *Done before v1.77.1 (found already fixed by the 2026-09-27 recheck, never ticked):* Fixed in 78e5d21 (#851, v0.97.7, 'Pickups say so, on every marker they can draw'). circleMarkerSvg now reads `} else if (tag === 'AM' || tag === 'PM' || tag === 'PU') { centerIsPickupTag = tag === 'PU'; ... center = `<text ...>${tag}</text>`;`, and a corner ba
       *Fix:* In circleMarkerSvg (line 2979) accept `tag === 'PU'` alongside AM/PM (as unplannedDotSvg already does), or route pickups through unplannedDotSvg with the tag when unplanned; add a test that decodes stopMarkerIcon's URL for a PU stop and asserts the 'PU' text …  
       <sub>High · logic · A1-S2-1 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/lib/board-flags.js:1310`** — R6 no-driver card lost when a pickup at the same customer precedes the delivery  
+- [x] **`dispatch-map/src/lib/board-flags.js:1310`** — R6 no-driver card lost when a pickup at the same customer precedes the delivery  
+      *Done v1.81.3:* A driverless route keeps its red 'No driver' card when a return pickup at the same customer is sequenced ahead of the delivery; before, the pickup quietly knocked the card off the flag panel.
       *Fix:* Filter pickups out of `group` before the cSeen collapse (mirror R5's `deliveries = group.filter((s) => !isPickupStop(s))`), or include stopType in the visit key.  
       <sub>High · logic · A2-S12-11 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/netlify/functions/eta-flag-alert-background.mts:41`** — Day sweep cron is 06:00-18:40 ET in winter and collides with the evening sweep at 06:00 EST  
@@ -883,13 +897,16 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
       *Done v1.80.2:* A dispatcher who changes their password stays signed in on the new token instead of being signed straight back out, and the session they changed it from is revoked as promised. The fix is the same require-user change as X-authgates-1; this commit adds the end-to-end test.
       *Fix:* In require-user.mts, on a tokenVersion mismatch re-read the store bypassing the cache before refusing (cheap, only on the mismatch path), or export an `invalidateUserCache(username)` and call it from bumpTokenVersion/patchUser; the endpoints themselves need n…  
       <sub>High · async-race · A5-S25-10 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:7103`** — StopActivityTimeline shows the previous order's events after switching stops  
+- [x] **`dispatch-map/src/App.jsx:7103`** — StopActivityTimeline shows the previous order's events after switching stops  
+      *Done v1.81.3:* When the open stop card switches to a different order that has the same stop number (an Estes twin or a recurring PRO), the Activity timeline closes and drops the first order's events, and the card stops showing the first order's refreshed details. It only does this when both orders carry a NuVizz stopId.
       *Fix:* Reset `st` (and `open` if desired) when `stopNbr`/`stopId` change — e.g. `useEffect(() => setSt({ loading:false, events:null, error:null }), [stopNbr, stopId])` — or key StopDataSections/StopSidebar by stop id in the three parents.  
       <sub>High · react-state · X-react-3 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:8437`** — Sidebar draft never re-adopts an updated note (same id), so Save writes stale fields back  
+- [x] **`dispatch-map/src/App.jsx:8437`** — Sidebar draft never re-adopts an updated note (same id), so Save writes stale fields back  
+      *Done v1.81.3:* The desktop stop panel (Map and Routing) now picks up changes that another dispatcher, the auto-scanner or a pin correction makes to the same customer's note while the panel is open. Pressing Save no longer writes the old receiving hours or notes back over the newer ones.
       *Fix:* Depend on the note's content, not its id: key the adoption effect on `note` (or a stable last_updated/serialized signature) and keep the `dirtyRef` guard; also re-seed the draft from the current `note` when Edit is pressed.  
       <sub>High · react-state · A1-S3-3</sub>
-- [ ] **`dispatch-map/src/App.jsx:10058`** — Draft adoption keyed on note?.id ignores same-doc updates; stale draft overwrites them on Save  
+- [x] **`dispatch-map/src/App.jsx:10058`** — Draft adoption keyed on note?.id ignores same-doc updates; stale draft overwrites them on Save  
+      *Done v1.81.3:* The phone stop drawer now picks up changes that another dispatcher or the scanner makes to the same customer's note while it is open. Pressing Save no longer writes the old values back over the newer ones.
       *Fix:* Depend on the note's content, not its id: `}, [note])` (or a cheap version stamp like `note?.last_updated?.seconds`), keeping the `dirtyRef` guard so in-progress edits are still protected. Apply the same change to the desktop effect at 8438–8443.  
       <sub>High · react-state · A1-S4-5 · reproduced by running the code</sub>
 - [x] **`load-scan/src/App.jsx:960`** — Loaded-sequence stamp is deleted on every ScanScreen mount (freeze guard resets)  
@@ -1061,10 +1078,12 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W13.1 — critical and high (10 items)
 
-- [ ] **`dispatch-map/src/App.jsx:10487`** — Debug capture promises no customer names/addresses but ships them via matchKey  
+- [x] **`dispatch-map/src/App.jsx:10487`** — Debug capture promises no customer names/addresses but ships them via matchKey  
+      *Done v1.81.3:* A 'Debug this view' capture filed as a GitHub issue no longer includes the customer's name and street address inside matchKey. It now carries a location digest, where two stops at the same place get the same value, so the sheet's promise of 'no customer names or addresses' is true.
       *Fix:* In scrubStop replace `matchKey: s.matchKey` with a one-way digest (e.g. first 12 hex of SHA-256 of the key, or a per-bundle sequential alias) so the join survives but the name/address does not; update the warnings[] text and the sheet copy to match what is ac…  
       <sub>High · security · A1-S4-10 · reproduced by running the code</sub>
-- [ ] **`dispatch-map/src/App.jsx:12706`** — Desktop status pill never shows halted-scanner banner; scanErr hidden when collapsed  
+- [x] **`dispatch-map/src/App.jsx:12706`** — Desktop status pill never shows halted-scanner banner; scanErr hidden when collapsed  
+      *Done v1.81.3:* The desktop Map's status pill now shows 'Daily scan limit reached — updates resume after midnight UTC' or 'Scanning paused (kill switch) — board may be stale' when the scanner halts, even while the pill is collapsed, the same way the phone Map already did.
       *Fix:* Mirror the mobile markup: move the `{scanErr && ...}` div out of the `!statusCollapsed` block and add the same `{scanState?.halted && (...)}` banner after it in the desktop pill.  
       <sub>High · logic · A1-S5-1</sub>
 - [x] **`dispatch-map/src/App.jsx:20010`** — Right-rail Loads click opens an EMPTY Compare card for a built load  
@@ -1363,6 +1382,7 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 | Date | Who | What |
 |---|---|---|
 | 2026-09-03 | Claude (code review) | Created from the full review of `bb379fc`: 338 confirmed findings sorted into 14 workstreams. |
+| 2026-09-27 | Claude (audit fixes, v1.81.3) | Ticked 19: A4-S23-2, A2-S12-1, A3-S13-3, A3-S13-4, A3-S14-1, A2-S9-10, A2-S9-1, A1-S3-7, A1-S3-4, A1-S4-1, A4-S24-2, A1-S4-6, A1-S1-1, A2-S12-11, X-react-3, A1-S3-3, A1-S4-5, A1-S4-10, A1-S5-1. |
 | 2026-09-27 | Claude (audit fixes, v1.81.2) | Ticked 18: A5-S26-12, X-firestore-3, X-errors-3, X-firestore-2, X-errors-2, A3-S16-2, A3-S16-1, A3-S18-1, X-nuvizzwrite-2, A4-S19-1, A3-S15-11, A5-S29-11, A5-S27-4, A4-S22-1, A5-S29-1, A3-S17-1, A3-S18-5, A5-S28-4. |
 | 2026-09-27 | Claude (audit fixes, v1.81.1) | Ticked 10: A6-S31-3, A6-S33-3, A6-S33-1, A6-S32-2, A5-S30-3, A5-S30-7, A5-S30-2, A5-S30-1, A6-S31-5, A6-S32-10. |
 | 2026-09-27 | Claude (audit fixes, v1.80.2) | Ticked 16: X-authgates-3, X-authgates-1, A5-S27-1, A6-S31-8, A5-S25-9, A5-S28-1, A4-S20-1, X-authgates-4, A4-S24-1, A2-S8-9, A1-S2-1, A5-S25-10, A6-S32-5, A2-S7-1, A3-S13-9, A2-S8-1. |

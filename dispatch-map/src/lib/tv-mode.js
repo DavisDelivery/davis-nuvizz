@@ -191,3 +191,22 @@ export function tvFeedStale(lastRefreshed, nowMs, budgetMs) {
   const budget = Number.isFinite(Number(budgetMs)) && Number(budgetMs) > 0 ? Number(budgetMs) : 10 * 60 * 1000;
   return now - at > budget;
 }
+
+/**
+ * PURE. WHICH BOARD DAY THE WALL SHOULD MOVE TO, if any.
+ *
+ * The wall has no date control: it shows whatever day it was opened on. Left up overnight it
+ * kept polling yesterday — successfully, so the freshness line read "updated just now" over a
+ * finished board with no trucks on it, and nothing on screen said which day that was. The wall
+ * is meant to show TODAY's board, which is exactly what a fresh load of /tv picks; this makes a
+ * TV that never reloads land on the same day.
+ *
+ * @param shown  the YYYY-MM-DD the wall is showing
+ * @param today  todayInET()
+ * @returns today when the wall is on another day; null when it is already on today, or when
+ *          `today` is malformed (a bad clock must never move the wall off a real board)
+ */
+export function tvRollDate(shown, today) {
+  if (typeof today !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(today)) return null;
+  return shown === today ? null : today;
+}

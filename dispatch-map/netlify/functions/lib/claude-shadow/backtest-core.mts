@@ -53,7 +53,7 @@ export const LEARN_DAY_MASK = ['date', 'learnVersion', 'roster', 'stampGate', 'c
 // module's graph; test/claude-shadow-backtest.test.mjs fails the day the two differ.
 export const TRAILER_BLOCKER_KEYS = new Set([
   'no_tractor_trailer', 'box_truck_only', 'straight_truck_only',
-  'uline_straight_truck', 'no_53', '26ft_max', 'no_overhead_clearance',
+  'uline_straight_truck', 'no_53', 'no_53ft', '26ft_max', 'no_overhead_clearance',
 ]);
 // The default truck profiles' skid counts (truck-profiles.mts DEFAULT_TRUCK_PROFILES: box_26 14,
 // tractor_53 28), the last fallback when neither a learned cap nor yours exists. Pinned by test.
@@ -734,8 +734,10 @@ export function roomFor(
   return null;
 }
 
-/** Check one proposed assignment against every HARD rule and measure it. */
-export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequencer): EvalResult {
+/** Check one proposed assignment against every HARD rule and measure it. `btRoomCheck` (default on;
+ *  SHADOW_BT_ROOM_CHECK=off at the worker) holds a BACKTEST's leavable no-tractor stop to the room rule its
+ *  briefing states: it may be left off only when no box truck has room for it. */
+export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequencer, opts: { btRoomCheck?: boolean } = {}): EvalResult {
   const loadIds = new Set(p.loads.map((l) => l.id));
   const byId = new Map(p.stops.map((s) => [s.id, s]));
   const hard: string[] = [];
@@ -781,24 +783,30 @@ export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequ
   if (missing.length) hard.push(`${missing.length} stop(s) on no load and not listed unplanned: ${missing.slice(0, MAX_LISTED).join(', ')}${missing.length > MAX_LISTED ? ', …' : ''}`);
 
   const m = measurePlan(p, assign, cfg, seq, unplanned.length);
-  // PLAN MODE: a stop left unplanned while a load has room for it is refused (roomFor, below).
-  if (planMode && unplanned.length) {
+  // PLAN MODE: a stop left unplanned while a load has room for it is refused (roomFor, below). A BACKTEST
+  // holds its one leavable kind — a no-tractor stop that rode a tractor — to the same rule, as BT_SYSTEM
+  // tells Claude: dropped beside a box truck with room, its miles would read as a saving.
+  const roomRule = planMode || opts.btRoomCheck !== false;
+  if (roomRule && unplanned.length) {
     const ctx = { seq, assign, budget: { left: ROOM_BUDGET } };
     for (const u of unplanned) {
       const s = byId.get(u.stop);
       if (!s) continue;
+      if (!planMode && !leavable.has(u.stop)) continue;   // already refused above: it must be on a load
       const fits = roomFor(p, m, s, cfg, ctx);
       if (fits) hard.push(`stop ${u.stop} is left unplanned but ${fits.load} has room for it (${fits.why})`);
     }
   }
+  // One message per DAY, keyed as measurePlan keys it: every "(no driver)" load is its own day, so
+  // grouping by the display name told Claude unnamed trucks shared one day and hid the other overruns.
   const overSaid = new Set<string>();
   for (const l of m.loads) {
     if (l.over) hard.push(`${l.id} is over its cap: ${l.spots} of ${l.cap} skid spots`);
     if (l.blocked) hard.push(`${l.id} is a tractor carrying ${l.blocked} no-tractor stop(s)`);
     if (l.overWeight) hard.push(`${l.id} carries ${l.weight} lb — over its ${l.maxLbs} lb limit`);
-    if (l.overTime && !overSaid.has(l.driver)) {
-      overSaid.add(l.driver);
-      const theirs = m.loads.filter((x) => x.driver === l.driver).map((x) => x.id);
+    if (l.overTime && !overSaid.has(driverKey(l))) {
+      overSaid.add(driverKey(l));
+      const theirs = m.loads.filter((x) => driverKey(x) === driverKey(l)).map((x) => x.id);
       hard.push(`${l.driver} would work ${l.driverMin} min on ${theirs.join(' + ')} (drive + ${p.serviceMin ?? DEFAULT_SERVICE_MIN} min a stop on site) — past their ${l.maxMin}-minute day`);
     }
   }
@@ -826,13 +834,13 @@ export function evaluateAssignment(p: BtProblem, input: any, cfg: any, seq: Sequ
 }
 
 /** The plan-loop Problem for one backtest day. */
-export function btLoopProblem(p: BtProblem, cfg: any): Problem {
+export function btLoopProblem(p: BtProblem, cfg: any, opts: { btRoomCheck?: boolean } = {}): Problem {
   const seq = makeSequencer(p, cfg);
   return {
     system: p.mode === 'plan' ? PLAN_SYSTEM : BT_SYSTEM,
     briefing: btBriefing(p),
     tools: BT_TOOLS,
-    evaluate: (input: any) => evaluateAssignment(p, input, cfg, seq),
+    evaluate: (input: any) => evaluateAssignment(p, input, cfg, seq, opts),
   };
 }
 

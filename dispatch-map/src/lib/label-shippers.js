@@ -137,6 +137,17 @@ export function shipperLabelRows(stops, key, { saved = new Map(), notes = new Ma
 }
 
 /**
+ * PURE: the rows the Print labels screen may list for the day AND shipper it is showing — the
+ * answer's own `date` and `shipper.key` must both match, else none. The last answer stays on
+ * screen while the next read is out; checked by shipper alone, tapping Tomorrow on Estes kept
+ * TODAY's Estes orders listed, and printable, under tomorrow's heading until the read returned.
+ */
+export function labelRowsForPick(data, date, shipper) {
+  if (!data || data.date !== date || data.shipper?.key !== shipper) return [];
+  return Array.isArray(data.rows) ? data.rows : [];
+}
+
+/**
  * PURE: the rows a filter box keeps — order number, reference, consignee, street or city, any
  * case, spaces ignored. A dock worker reading "0538243875" off a pallet finds ESTES-0538243875.
  */

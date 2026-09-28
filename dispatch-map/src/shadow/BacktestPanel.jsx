@@ -19,7 +19,8 @@ import { Route, Play, X, Settings2, ChevronDown, ChevronRight, ChevronLeft, Tren
 import { apiFetch } from '../lib/api.js';
 import BacktestMap, { useBacktestDay } from './BacktestMap.jsx';
 import { RoutesTable, RouteCards, RoutePanel, routeSummary } from './RouteCompare.jsx';
-import { routeRows, sortRoutes, routeCompare, focusPicks, toggleTruck, pickTrucks, MAX_SELECTED } from './backtest-map-core.js';
+import { routeRows, sortRoutes, routeCompare, focusPicks, partnersShownIn, toggleTruck, pickTrucks, MAX_SELECTED } from './backtest-map-core.js';
+import { routerChange } from './router-settings-core.js';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 const BACKTESTS_URL = '/.netlify/functions/claude-shadow?view=backtests';
@@ -195,24 +196,22 @@ function RouterSettings({ v, onSave }) {
   const s = v.settings;
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(null);
+  const [opened, setOpened] = useState(null);
   const [note, setNote] = useState(null);
   // Filled from the saved settings when the form OPENS — not on every poll, which hands back a new
   // settings object every 20 s while a job runs and would wipe what is being typed.
   const openForm = () => {
     // A weight limit the settings do not pin opens BLANK (the default shows as the placeholder), so
     // a form opened and saved untouched leaves the default in charge instead of pinning today's number.
-    setForm({ capRule: s.capRule, costPerMile: s.costPerMile ?? '', costPerDriveHour: s.costPerDriveHour ?? '', effort: s.effort, maxRounds: String(s.maxRounds), maxUsd: String(s.maxUsd), lbsBox: v.pinned?.lbsBox ? String(s.lbsBox) : '', lbsTractor: v.pinned?.lbsTractor ? String(s.lbsTractor) : '' });
+    const f = { capRule: s.capRule, costPerMile: s.costPerMile ?? '', costPerDriveHour: s.costPerDriveHour ?? '', effort: s.effort, maxRounds: String(s.maxRounds), maxUsd: String(s.maxUsd), lbsBox: v.pinned?.lbsBox ? String(s.lbsBox) : '', lbsTractor: v.pinned?.lbsTractor ? String(s.lbsTractor) : '' };
+    setForm(f); setOpened(f);
     setOpen(true);
   };
   const save = async () => {
-    const change = {
-      capRule: form.capRule, effort: form.effort, maxRounds: form.maxRounds, maxUsd: form.maxUsd,
-      costPerMile: String(form.costPerMile).trim() === '' ? null : form.costPerMile,
-      costPerDriveHour: String(form.costPerDriveHour).trim() === '' ? null : form.costPerDriveHour,
-      // A weight limit left blank goes back to the default (the engine's truck profile).
-      lbsBox: String(form.lbsBox).trim() === '' ? null : form.lbsBox,
-      lbsTractor: String(form.lbsTractor).trim() === '' ? null : form.lbsTractor,
-    };
+    // ONLY THE FIELDS CHANGED since the form opened are sent (audit 2026-09-27): the rest may have been
+    // saved by someone else meanwhile, and sending them would silently put the old values back.
+    const change = routerChange(opened, form);
+    if (!Object.keys(change).length) { setNote('Nothing was changed, so nothing was saved.'); setOpen(false); return; }
     const r = await onSave(change);
     // A day is built from the settings it was QUEUED with (the job's snapshot wins over the settings
     // doc), so a day already in the queue keeps the old limits — say so where he can still re-queue it.
@@ -556,7 +555,7 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
     // Back to the row that opened it, so the dispatcher keeps their place in the list (review).
     requestAnimationFrame(() => { if (was) dayRef.current?.querySelector(`[data-route-open="${was}"]`)?.focus(); });
   }, [drawerFocus, setDrawer, setDrawerFocus, setDrawerSel]);
-  const drawerPartnersShown = !!dcmp && drawerSel.size > 1;
+  const drawerPartnersShown = partnersShownIn(dcmp, drawerSel);
   const showDrawerPartners = useCallback(() => {
     if (!dcmp) return;
     const f = focusPicks(dcmp);
@@ -566,7 +565,7 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
   const hideDrawerPartners = useCallback(() => { if (dcmp) { setDrawerSel(new Map([[dcmp.load.id, 0]])); setDrawerNote(null); } }, [dcmp, setDrawerSel]);
   const pickInDrawer = useCallback((ids) => setDrawerSel((s0) => { const x = pickTrucks(s0, ids); setDrawerNote(x.refused ? TOO_MANY : null); return x.next; }), [TOO_MANY, setDrawerSel]);
   const dAt = dcmp ? sorted.findIndex((x) => x.id === dcmp.load.id) : -1;
-  const partnersShown = !!cmp && sel.size > 1;
+  const partnersShown = partnersShownIn(cmp, sel);
   const showPartners = useCallback(() => {
     if (!cmp) return;
     const f = focusPicks(cmp);
@@ -695,7 +694,7 @@ export function useOpenDay() {
   return { openDay, setOpenDay, showMap, setShowMap, focus, setFocus, sel, setSel, q, setQ, sortBy, setSortBy, drawer, setDrawer, drawerFocus, setDrawerFocus, drawerSel, setDrawerSel };
 }
 
-export default function BacktestPanel({ phone, day }) {
+export default function BacktestPanel({ phone, day, onSettingsSaved }) {
   const b = useBacktests();
   const [picked, setPicked] = useState(() => new Set());
   const own = useOpenDay();
@@ -741,7 +740,8 @@ export default function BacktestPanel({ phone, day }) {
             <div className="text-xs font-semibold text-slate-700 mb-1 inline-flex items-center gap-1"><TrendingDown size={13} /> Across every day backtested — Claude against dispatch as driven</div>
             <Totals t={totals} phone={phone} spend={v.spend} />
           </div>
-          <RouterSettings v={v} onSave={b.saveSettings} />
+          {/* A save here also refreshes the planning area above, whose Plan button states the $ ceiling (audit 2026-09-27). */}
+          <RouterSettings v={v} onSave={async (change) => { const r = await b.saveSettings(change); if (r.ok) onSettingsSaved?.(); return r; }} />
           {openDay && <DayDetail key={`${openDay}|${days.find((d) => d.date === openDay)?.result?.at || ''}`} date={openDay} loadResult={b.loadResult} phone={phone} rates={rates} showMap={showMap} setShowMap={setShowMap} route={dayState} onClose={() => setOpenDay(null)} />}
           <div className="flex flex-wrap items-center gap-2">
             <button disabled={!picked.size || b.busy || !!v.refused} onClick={async () => { if (await b.queue([...picked], v.settings.maxUsd, v.ceiling)) setPicked(new Set()); }}

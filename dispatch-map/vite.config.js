@@ -12,6 +12,17 @@ const context = ctxRaw === 'production' ? 'prod'
   : ctxRaw === 'branch-deploy' ? 'branch'
   : (ctxRaw || 'dev');
 
+// SWITCHES THE BROWSER AND THE SERVER BOTH READ, UNDER ONE NAME. Vite only hands VITE_-prefixed
+// vars to the bundle, so TRAILER_ALERT_ANY_RESTRICTION=off (trailer-block.js) quieted the 9pm
+// text on the server while the flag panel's R7 card, computed in the browser, stayed on the
+// widened rule. Passed through at BUILD time, so flipping it takes a redeploy — as every Netlify
+// env change already does. Defined only when set, so the VITE_ spelling stays reachable.
+const sharedSwitches = Object.fromEntries(
+  ['TRAILER_ALERT_ANY_RESTRICTION']
+    .filter((k) => process.env[k] !== undefined)
+    .map((k) => [`import.meta.env.${k}`, JSON.stringify(process.env[k])]),
+);
+
 export default defineConfig({
   plugins: [
     react(),
@@ -27,5 +38,6 @@ export default defineConfig({
     __BUILD_COMMIT__: JSON.stringify(commit),
     __BUILD_TIME__: JSON.stringify(builtAt),
     __BUILD_CONTEXT__: JSON.stringify(context),
+    ...sharedSwitches,
   },
 });

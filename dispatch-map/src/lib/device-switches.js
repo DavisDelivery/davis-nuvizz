@@ -42,9 +42,9 @@ export const DEVICE_SWITCHES = [
   },
   {
     key: 'routing.compareLive', kind: 'toggle', on: 'on', off: 'off', dflt: true,
-    label: 'Compare cards follow the live board',
-    does: 'Compare cards keep reading the board as it changes.',
-    symptom: 'OFF and a card can show a stop the board has already moved.',
+    label: 'Save sends to NuVizz (● LIVE, not ○ Beta)',
+    does: 'Save on the Compare cards sends to NuVizz (● LIVE) instead of only previewing (○ Beta).',
+    symptom: 'OFF and every Save is a Beta preview — "Beta — nothing sent", and nothing reaches NuVizz.',
   },
   {
     key: 'routing.planMode', kind: 'choice', values: ['loads', 'trucks'], dflt: 'loads',

@@ -175,6 +175,26 @@ export function rolloutSteps({ loginMode, configured, authRequired, mode, users 
   ];
 }
 
+// ── resetting a password ─────────────────────────────────────────────────────
+
+/**
+ * What the admin is told after a reset: { temp } to show, { note } for a link that went out, or
+ * { error } — and null for a refused call, which the screen has already put on its error line.
+ *
+ * The reset email is sent AFTER the server has signed the person out everywhere and set a new
+ * password to be chosen (auth-users.mts, the reset branch). When the mail provider refuses the
+ * send, the answer is still ok — { ok: true, emailed: false, tempPassword: null } — and the
+ * screen used to say nothing at all, so the admin told the person to check an inbox that never
+ * got anything. `asked` is which button was pressed: 'temp' or 'email'.
+ */
+export function resetAnswer(r, { email, asked } = {}) {
+  if (!r?.ok) return null;
+  if (r.tempPassword) return { temp: r.tempPassword };
+  if (r.emailed) return { note: `Reset link emailed to ${email}.` };
+  if (asked === 'temp') return { error: 'The server did not send back a temporary password. Try again.' };
+  return { error: `The reset email to ${email || 'them'} did not go out, so no link was sent. They are already signed out everywhere — use New temporary password to give them one instead.` };
+}
+
 // ── creating a person ────────────────────────────────────────────────────────
 
 // The server's own rule (netlify/functions/lib/auth-core.mts USERNAME_RE), mirrored so the form

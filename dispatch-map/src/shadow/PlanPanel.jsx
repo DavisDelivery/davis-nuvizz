@@ -25,6 +25,7 @@ import BacktestMap from './BacktestMap.jsx';
 import StopPicker from './StopPicker.jsx';
 import { truckColor } from './backtest-map-core.js';
 import { pruneSel, selTotals } from './stop-pick-core.js';
+import { asPick, pickKey, rebasePicks, nextSectionPicks } from './plan-pick-core.js';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 const PLANS_URL = '/.netlify/functions/claude-shadow?view=plans';
@@ -74,7 +75,8 @@ function usePlans() {
       const j = await r.json().catch(() => null);
       if (!r.ok || !j?.ok) throw new Error(j?.error || `HTTP ${r.status}`);
       setView(j); setErr(null);
-    } catch (e) { setErr(String(e?.message || e)); }
+      return j;
+    } catch (e) { setErr(String(e?.message || e)); return null; }
   }, []);
   useEffect(() => { load(); }, [load]);
   const anyActive = !!view?.jobs?.some((j) => ACTIVE.has(j.status));
@@ -85,13 +87,20 @@ function usePlans() {
   }, [anyActive, load]);
 
   const queue = useCallback(async (params, preview) => {
-    const maxUsd = view?.settings?.maxUsd;
-    const daily = view?.ceiling;
-    const cap = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd)} at the model (no round starts that could pass it), usually less.${daily ? ` Plans and backtests together stop at ${usd(daily.usd)} per 24 hours.` : ''}` : '';
-    const short = preview?.capacity?.short?.spots > 0 ? ` The picked loads are ${one(preview.capacity.short.spots)} skid spots short, so some stops will be left off, each with a reason.` : '';
-    if (!window.confirm(`Plan ${fmtDay(params.date)} with Claude onto ${params.picks.length} load${params.picks.length === 1 ? '' : 's'}?${cap}${short} Nothing is sent to NuVizz.`)) return null;
-    setBusy(true); setMsg(null);
+    // THE CEILING STATED IS THE ONE IN FORCE (audit 2026-09-27): the job is held to the settings as they
+    // are when it is queued, and Router settings saved since this area last read them (on this screen or
+    // another) would not be in `view` — so they are read again before the confirm says what it may spend.
+    // Busy from the start, so a second press during that read cannot open a second confirm.
+    setBusy(true);
     try {
+      const now = await load();
+      if (!now) { setMsg('Not queued: the spend ceiling in force could not be read — press Refresh and try again.'); return null; }
+      const maxUsd = now.settings?.maxUsd;
+      const daily = now.ceiling;
+      const cap = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd)} at the model (no round starts that could pass it), usually less.${daily ? ` Plans and backtests together stop at ${usd(daily.usd)} per 24 hours.` : ''}` : '';
+      const short = preview?.capacity?.short?.spots > 0 ? ` The picked loads are ${one(preview.capacity.short.spots)} skid spots short, so some stops will be left off, each with a reason.` : '';
+      if (!window.confirm(`Plan ${fmtDay(params.date)} with Claude onto ${params.picks.length} load${params.picks.length === 1 ? '' : 's'}?${cap}${short} Nothing is sent to NuVizz.`)) return null;
+      setMsg(null);
       const { r, j } = await post({ action: 'plan', plan: params, confirm: true, expectBoardAt: preview?.boardAt ?? null });
       if (!j) setMsg(`HTTP ${r.status} — no readable answer; press Refresh to see whether it was queued.`);
       else if (!r.ok || !j.ok) setMsg(`Not queued: ${j.error || (j.errors || []).join('; ') || `HTTP ${r.status}`}`);
@@ -99,13 +108,13 @@ function usePlans() {
         const when = j.waiting === 'ceiling' ? ` It waits while the 24-hour ceiling is spent (${usd(daily?.spent24h)} of ${usd(daily?.usd)} used) and starts when it rolls on.`
           : typeof j.ahead === 'number' && j.ahead > 0 ? ` It starts after the ${j.ahead} job${j.ahead === 1 ? '' : 's'} ahead of it, a few minutes each.`
           : ' It starts within about three minutes and takes a few more.';
-        setMsg(`Queued${typeof j.stops === 'number' && typeof j.loads === 'number' ? `: ${j.stops} stops onto ${j.loads} loads` : ''}.${when}`);
+        setMsg(`Queued${typeof j.stops === 'number' && typeof j.loads === 'number' ? `: ${j.stops} stops onto ${j.loads} loads` : ''}${typeof j.maxUsd === 'number' ? `, held to at most ${usd(j.maxUsd)} at the model` : ''}.${when}`);
       }
       await load();
       return j?.ok ? j.jobId : null;
     } catch (e) { setMsg(`Whether it was queued is unknown: ${String(e?.message || e)} — press Refresh.`); return null; }
     finally { setBusy(false); }
-  }, [post, load, view]);
+  }, [post, load]);
 
   const cancel = useCallback(async (jobId) => {
     if (!window.confirm('Stop this plan? A round already at the model still finishes and is billed.')) return;
@@ -228,8 +237,6 @@ function SectionPick({ area, phone }) {
 
 // ── the loads ───────────────────────────────────────────────────────────────
 
-const pickKey = (p) => (p.kind === 'roster' ? `r:${p.loadNbr || p.route}` : p.kind === 'driver' ? `d:${p.driver}` : `t:${p.route}`);
-
 function LoadPicker({ opts, picks, setPicks, phone }) {
   const roster = opts?.roster?.loads || [];
   const drivers = opts?.drivers || [];
@@ -238,7 +245,6 @@ function LoadPicker({ opts, picks, setPicks, phone }) {
   const has = (k) => picks.has(k);
   const toggle = (p) => setPicks((cur) => { const n = new Map(cur); const k = pickKey(p); if (n.has(k)) n.delete(k); else n.set(k, p); return n; });
   const setCls = (k, cls) => setPicks((cur) => { const n = new Map(cur); const p = n.get(k); if (p) n.set(k, { ...p, cls }); return n; });
-  const asPick = (l) => ({ kind: 'roster', route: l.route, driver: l.driver, cls: l.driver ? null : (l.cls || 'box_truck'), loadNbr: l.loadNbr, cap: l.cap, capSource: l.source, onBoard: l.onBoard, shownCls: l.cls });
   const shown = roster.filter((l) => !q.trim() || `${l.route} ${l.driver || ''}`.toLowerCase().includes(q.trim().toLowerCase()));
   const pickAll = (withDriver) => setPicks((cur) => { const n = new Map(cur); for (const l of roster) if (!withDriver || l.driver) n.set(pickKey(asPick(l)), asPick(l)); return n; });
   const clearRoster = () => setPicks((cur) => new Map([...cur].filter(([k]) => !k.startsWith('r:'))));
@@ -675,9 +681,9 @@ export function usePlanArea() {
       if (!date && j.date) setDate(j.date);
       // Roster picks belong to their day: a new day keeps added drivers and trucks, not old roster loads —
       // and not a driver who has a load of their own on the new day's roster (one driver, one truck; review).
-      const here = new Set((j.roster?.loads || []).map((l) => `r:${l.loadNbr || l.route}`));
-      const onRoster = new Set((j.roster?.loads || []).map((l) => String(l.driver || '').trim().toUpperCase().replace(/\s+/g, ' ')).filter(Boolean));
-      setPicks((cur) => new Map([...cur].filter(([k, p]) => (k.startsWith('r:') ? here.has(k) : !(p.kind === 'driver' && onRoster.has(String(p.driver || '').trim().toUpperCase().replace(/\s+/g, ' ')))))));
+      // A roster load still on it is rebuilt from the row just read, so the plan carries the driver and
+      // class now on screen and the preview goes stale (audit 2026-09-27).
+      setPicks((cur) => rebasePicks(cur, j.roster?.loads || []));
     }).catch((e) => { if (live) setOptsErr(String(e?.message || e)); });
     return () => { live = false; };
   }, [date, pl.post, optsTick]);
@@ -722,7 +728,8 @@ export function usePlanArea() {
     if (res?.date) setDate(res.date);
     setLookback(Number.isInteger(p.lookbackDays) ? p.lookbackDays : 0);
     setScope(p.scope === 'open' ? 'open' : 'unplanned');
-    setPicks(new Map((p.picks || []).map((pk) => [pickKey(pk), { ...pk }])));
+    // Held to the roster on screen when it is that day's, as a Refresh holds them (review, audit 2026-09-27).
+    setPicks(nextSectionPicks(p.picks, opts, res?.date || date));
     setSectionMode(true);
     setSection(new Set());
     setAfter(res.jobId);
@@ -730,7 +737,7 @@ export function usePlanArea() {
     setPv(null);
     setOpenId(null);
     setPickerOpen(true);
-  }, []);
+  }, [opts, date]);
   return {
     pl, date, setDate: changeDate, lookback, setLookback, scope, setScope, picks, setPicks, opts, optsErr,
     pv, pvErr, previewing, fresh, preview, run, openId, setOpenId, result, refresh,

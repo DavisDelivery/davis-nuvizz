@@ -14,7 +14,7 @@ import { shadowSet, shadowPatch, shadowCreate } from './store.mts';
 import { claudeShadowEnabled, shadowModel } from './config.mts';
 import { btLoopProblem } from './backtest-core.mts';
 import {
-  listJobs, jobPath, routerSettingsFrom, routerRefusal, ceilingView, ROUTER_SETTINGS_PATH, JOB_KINDS,
+  listJobs, jobPath, routerSettingsFrom, routerRefusal, ceilingView, ROUTER_SETTINGS_PATH, JOB_KINDS, settingsUnreadRefusal, type RouterSettings,
 } from './backtest.mts';
 import { readPlanDay, validatePlanParams, planOptions, planPreview, planResult, planMap, planStops, nothingToPlace, type PlanDeps } from './plan.mts';
 import { planCapacity } from './plan-core.mts';
@@ -27,14 +27,55 @@ const ACTIVE = new Set(['queued', 'running']);
 export const MAX_STORED_PLAN_BYTES = 950_000;
 /** One create-only document per board day: the second of two quick Plan presses cannot slip past it. */
 export const PLAN_LOCKS = 'claude_shadow_plan_locks';
+/** A lock whose job is not on file yet belongs to a press still freezing its board (the endpoint lives
+ *  26 s); past this it belonged to a request that died, and the next press may take the day. */
+export const PLAN_LOCK_BIRTH_MS = 60_000;
+const MAX_LOCK_HOPS = 8;
 const utf8 = (x: string) => new TextEncoder().encode(x).length;
+
+/**
+ * Take the board day's plan lock for job `id`, or say why not. TAKING OVER IS CREATE-ONLY TOO (audit
+ * 2026-09-27): the lock names its holder, and replacing a finished holder H means creating the one
+ * document `…__after__{H}` — only one press can, so two presses that both read "H is done" cannot both
+ * queue. The day's own document is then pointed at the winner, so the next press starts from it; if
+ * that write is lost, the next press walks the after-chain to the same answer. A holder whose job is
+ * not on file yet (its press is still freezing the board) holds the day while the lock is young.
+ */
+async function takePlanLock(date: string, id: string, at: string, by: string | null, deps: PlanJobDeps): Promise<string | null> {
+  const base = `${PLAN_LOCKS}/davis__${date}`;
+  const mine = { jobId: id, at, by };
+  if (await deps.shadowCreate(base, mine)) return null;
+  let path = base;
+  for (let hop = 0; hop < MAX_LOCK_HOPS; hop++) {
+    const lock = await deps.getDoc(path);
+    const holder = typeof lock?.jobId === 'string' && /^pl__[\w\-]+$/.test(lock.jobId) ? lock.jobId : null;
+    if (!holder) return `the plan lock for ${date} names no plan (${path}) — press Plan again`;
+    const held = await deps.getDoc(jobPath(holder));
+    if (held && ACTIVE.has(held.status) && !held.cancelRequested) return `a plan of ${date} is already ${held.status} — let it finish or Stop it before queuing another`;
+    const born = Date.parse(String(lock.at || ''));
+    if (!held && Number.isFinite(born) && deps.now().getTime() - born < PLAN_LOCK_BIRTH_MS) {
+      // Said as what is known: the lock is taken and its job is not on file YET. That press may still land
+      // (then it shows in the list) or may have died (then the day frees itself a minute after it).
+      return `another Plan of ${date}${lock.by ? ` (${lock.by})` : ''} is being queued right now — if it goes through it shows in the list in a moment (Stop it there if it is not wanted); if nothing shows within a minute, press Plan again`;
+    }
+    const next = `${base}__after__${holder}`;
+    if (await deps.shadowCreate(next, mine)) {
+      await deps.shadowSet(base, mine).catch(() => {});
+      return null;
+    }
+    path = next;
+  }
+  return `the plan lock for ${date} is ${MAX_LOCK_HOPS} takeovers behind — press Plan again`;
+}
 
 /** Queue one plan. Refused whole (nothing written) when the request, the board or the size is wrong. */
 export async function enqueuePlan(raw: any, by: string | null, deps: PlanJobDeps = LIVE) {
   const v = validatePlanParams(raw);
   if (!v.ok) return { status: 400, body: { ok: false, errors: v.errors } };
   const params = v.params!;
-  const rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null));
+  let rs: RouterSettings;
+  try { rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH)); }
+  catch (e: any) { return { status: 502, body: { ok: false, error: settingsUnreadRefusal(e) } }; }
   const every = await listJobs(deps as any, JOB_KINDS);
   const busy = every.find((j: any) => j.kind === 'plan' && ACTIVE.has(j.status) && !j.cancelRequested && j.params?.date === params.date);
   if (busy) return { status: 409, body: { ok: false, error: `a plan of ${params.date} is already ${busy.status} — let it finish or Stop it before queuing another` } };
@@ -64,14 +105,11 @@ export async function enqueuePlan(raw: any, by: string | null, deps: PlanJobDeps
   const model = shadowModel(deps.env).model;
   const id = `pl__${params.date}__${at.replace(/[:.]/g, '-')}__${Math.random().toString(36).slice(2, 8)}`;
   // ONE PLAN OF A DAY AT A TIME, held by a create-only lock (the list check above is only a courtesy:
-  // two presses a second apart both passed it). A lock whose job has finished is taken over.
-  const lockPath = `${PLAN_LOCKS}/davis__${params.date}`;
-  if (!(await deps.shadowCreate(lockPath, { jobId: id, at, by }))) {
-    const lock = await deps.getDoc(lockPath).catch(() => null);
-    const held = lock?.jobId ? await deps.getDoc(jobPath(String(lock.jobId))).catch(() => null) : null;
-    if (held && ACTIVE.has(held.status) && !held.cancelRequested) return { status: 409, body: { ok: false, error: `a plan of ${params.date} is already ${held.status} — let it finish or Stop it before queuing another` } };
-    await deps.shadowSet(lockPath, { jobId: id, at, by });
-  }
+  // two presses a second apart both passed it). A lock whose job has finished is taken over — create-only.
+  let refused: string | null;
+  try { refused = await takePlanLock(params.date, id, at, by, deps); }
+  catch (e: any) { return { status: 502, body: { ok: false, error: `not queued — the plan lock for ${params.date} could not be read or taken (${String(e?.message || e).slice(0, 200)}); nothing was spent — press Plan again` } }; }
+  if (refused) return { status: 409, body: { ok: false, error: refused } };
   // THE BOARD FIRST, then the job: the worker only ever sees a plan job whose board is on file.
   await deps.shadowSet(`${jobPath(id)}/data/problem`, stored);
   // The job keeps the section's SIZE, not its list, so the jobs list (read every 20 s while one runs) does

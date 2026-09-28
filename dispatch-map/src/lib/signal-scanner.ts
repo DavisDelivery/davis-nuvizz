@@ -122,15 +122,34 @@ interface ScannableStop {
 // Scans every occurrence rather than the first: "NO STRAIGHT TRUCK. STRAIGHT TRUCK ONLY
 // AFTER 3PM" is contrived, but a rule that stops at the first hit would take the negated
 // one and drop a real instruction on the floor.
-// Up to two plain words may sit between the negation and the phrase — that is where SEND,
-// USE and DELIVER turn up ("DO NOT SEND STRAIGHT TRUCK") — matching the allowance the
-// no-double-stack rule in handling-flags.js already makes for the same reason.
+// Up to two words may sit between the negation and the phrase — that is where SEND, USE and
+// DELIVER turn up ("DO NOT SEND STRAIGHT TRUCK") — matching the allowance the no-double-stack
+// rule in handling-flags.js already makes for the same reason. WHICH words is NEGATION_BRIDGE
+// below, and it is a closed list on purpose.
 //
 // The inter-word gaps are [^\S\n] (whitespace but NOT a newline) rather than \s, because
 // these comments arrive as SEPARATE NuVizz records joined with '\n'. With plain \s, a stop
 // whose notes read "NO DOCK" then "STRAIGHT TRUCK ONLY" would have the first record's
 // negation reach across the join and cancel the second record's real instruction.
-const NEGATED_BEFORE = /\b(?:NO|NOT|NEVER|DO[^\S\n]*N(?:OT|'?T)|CAN[^\S\n]*N(?:OT|'?T)|WON'?T)[^\S\n]+(?:\w+[^\S\n]+){0,2}$/i;
+//
+// ONLY THOSE WORDS MAY BRIDGE THE GAP — a verb of sending, receiving or loading, the delivery
+// noun, and the function words around them (article, determiner, BE, preposition) — never any
+// word. "NO TT STRAIGHT TRUCK ONLY" and "NO SEMI STRAIGHT TRUCK" are TWO instructions written
+// without punctuation, and a NOUN between the NO and the phrase is what says so: the NO
+// belongs to TT, not to STRAIGHT TRUCK. With \w+ here the first instruction's NO cancelled
+// the second, and nothing else in the list catches it, so the stop lost the one flag that
+// keeps it off a 53ft trailer — the expensive direction to be wrong in.
+// The RECEIVING side is listed as deliberately as the sending side: "WILL NOT ACCEPT STRAIGHT
+// TRUCK", "CANNOT TAKE STRAIGHT TRUCK", "NO DELIVERY BY STRAIGHT TRUCK" are refusals written
+// by the dock rather than the shipper, and reading one as "straight truck only" is the #886
+// inversion again — the flag forces the 26ft box onto the one stop that said not to. None of
+// these words can be the first half of a two-instruction line the way TT, SEMI, DOCK or
+// LIFTGATE can, which is the only thing this list has to keep out.
+const NEGATION_BRIDGE = `(?:SEND|SENT|USE|DELIVER(?:ED|Y|IES)?|SHIP(?:PED)?|BRING|DISPATCH(?:ED)?|LOAD(?:ED)?|PUT|`
+  + `ACCEPT(?:ED)?|TAKE|RECEIVE(?:D)?|ALLOW(?:ED)?|BE|A|AN|THE|ANY|ON|IN|BY|VIA|WITH)`;
+const NEGATED_BEFORE = new RegExp(
+  `\\b(?:NO|NOT|NEVER|DO[^\\S\\n]*N(?:OT|'?T)|CAN[^\\S\\n]*N(?:OT|'?T)|WON'?T)[^\\S\\n]+(?:${NEGATION_BRIDGE}[^\\S\\n]+){0,2}$`, 'i',
+);
 
 function firstHit(text: string | null | undefined, patterns: RegExp[]): { text: string; pattern: string } | null {
   if (!text) return null;
@@ -450,6 +469,37 @@ function envelopeClose(normalized: string, afterIdx: number, firstClose: string)
 // still reads Monday to Friday as hours.
 const CLOSURE_BEFORE_DAY = /\b(?:CLOSE[SD]?|NOT\s+OPEN|NO\s+DELIVER\w*)\s+(?:ON\s+)?$/i;
 
+// A LUNCH IS A CLOSURE TOO, and the day tier has to refuse it the way the bare-pair tier
+// always has. "MON-FRI 12-1 FOR LUNCH" is the hour the dock is SHUT; stored as receiving
+// hours it becomes the only hour they take freight, Monday to Friday — every real delivery
+// flags, and the router aims the truck at the one hour nobody is on the dock.
+// A range is read as the lunch when a lunch word is attached to it AND it is lunch-shaped
+// (narrower than the bare tier's own width floors, lunchShaped below):
+//   LUNCH_BEFORE_DAY    — the break is named first: "LUNCH MON-FRI 12-1", "CLOSED FOR LUNCH
+//                         MON-FRI 12-1PM".
+//   FOR_LUNCH_AFTER     — "MON-FRI 12-1 FOR LUNCH": FOR ties the range to the lunch.
+//   LUNCH_AFTER_UNTIMED — "MON-FRI 12PM-1PM CLOSED FOR LUNCH": the break is named after the
+//                         range and has no times of its own, so the range IS its times.
+// The width is what keeps a real window next to the word a window: "MON-FRI 8-12 CLOSED FOR
+// LUNCH" is a morning, "NO LUNCH MON-FRI 8-5" is a working day, and "MON-FRI 8-12 LUNCH
+// 12-1" names its own lunch hour — all three stay hours.
+// BREAK DOWN IS A HANDLING INSTRUCTION, NOT A BREAK. "BREAK DOWN PALLETS" / "BREAK DOWN SKIDS"
+// arrive as their own comment record, so a short Friday window whose NEXT record was that line
+// ("FRI 8-10" ⏎ "BREAK DOWN SKIDS") read as a lunch and the Friday hours were dropped.
+const LUNCH_WORD = '(?:LUNCH|BREAK(?!\\s*DOWN\\b))';
+const LUNCH_BEFORE_DAY = new RegExp(`\\b${LUNCH_WORD}\\s*[:\\-]?\\s*(?:ON\\s+)?$`, 'i');
+// ...unless the word before it says the dock is NOT shut: "AFTER LUNCH FRI 1-3" names the
+// REOPENING (the same phrase continuation 2d reads as the afternoon half), and "NO LUNCH" /
+// "NO LUNCH BREAK" says there is no closure at all. Either way the range is receiving hours.
+const LUNCH_NEGATED_BEFORE_DAY = /\b(?:AFTER|NO)\s+(?:LUNCH\s+)?(?:LUNCH|BREAK)\s*[:\-]?\s*(?:ON\s+)?$/i;
+const FOR_LUNCH_AFTER = new RegExp(`^\\s*FOR\\s+${LUNCH_WORD}\\b`, 'i');
+const LUNCH_AFTER_UNTIMED = new RegExp(`^\\s*(?:CLOSED?\\s+)?(?:FOR\\s+)?${LUNCH_WORD}\\b(?!\\s*[:\\-]?\\s*${TIME_RANGE})`, 'i');
+function lunchShaped(rangeText: string, w: { open: string; close: string }): boolean {
+  const toMin = (t: string) => parseInt(t.slice(0, 2), 10) * 60 + parseInt(t.slice(3), 10);
+  const wroteMeridiem = /(A|P)M?\.?\s*(?:-|TO|—)|(A|P)M?\.?\s*$/i.test(rangeText) || /NOON/i.test(rangeText);
+  return toMin(w.close) - toMin(w.open) < (wroteMeridiem ? 90 : 180);
+}
+
 function scanHours(text: string | null | undefined, source: SignalSource): HoursScanResult | null {
   if (!text) return null;
   const normalized = stripCommentPrefixes(text);
@@ -468,17 +518,26 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
     // Thursday — so every real delivery flagged, and the router would try to cram the stop
     // into the one hour nobody is on the dock. The bare-pair tier has refused a closure
     // context since it was written; the day-qualified tier, which outranks it, never did.
-    if (CLOSURE_BEFORE_DAY.test(normalized.slice(Math.max(0, m.index - 24), m.index))) continue;
+    const beforeSpan = normalized.slice(Math.max(0, m.index - 24), m.index);
+    if (CLOSURE_BEFORE_DAY.test(beforeSpan)) continue;
     const days = expandDaySpan(m[1]);
     const parsed = parseTimeRange(m[2]);
     if (!days.length || !parsed) continue;
+    const afterRange = normalized.slice(m.index + m[0].length);
+    const namesLunch = (LUNCH_BEFORE_DAY.test(beforeSpan) && !LUNCH_NEGATED_BEFORE_DAY.test(beforeSpan))
+      || FOR_LUNCH_AFTER.test(afterRange) || LUNCH_AFTER_UNTIMED.test(afterRange);
+    if (namesLunch && lunchShaped(m[2], parsed)) continue;
     const env = envelopeClose(normalized, m.index + m[0].length, parsed.close);
     for (const d of days) byDay[d] = { open: parsed.open, close: env.close };
     matchedBits.push(m[0] + env.extraText);
     daySegRe.lastIndex += env.extraText.length; // the continuation is consumed, not re-scanned
   }
+  // CLOSED as well as CLOSE/CLOSES after the day: "FRIDAYS CLOSED @ 12PM" is the same Friday
+  // noon close as "CLOSED FRIDAYS @ 12PM", and the closed-day scanner hands both word orders to
+  // this tier (EARLY_CLOSE_TAIL). Reading only CLOSES here left that word order to the
+  // day-less CLOSE_ONLY wrapper, which stamped a noon close on all seven days.
   const dayCloseRes: RegExp[] = [
-    new RegExp(`\\b(${DAY_SPAN})\\s+CLOSES?\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'gi'),
+    new RegExp(`\\b(${DAY_SPAN})\\s+CLOSE[SD]?\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'gi'),
     new RegExp(`\\bCLOSE[SD]?\\s+(?:ON\\s+)?(${DAY_SPAN})\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'gi'),
   ];
   for (const re of dayCloseRes) {
@@ -616,7 +675,9 @@ const CLOSED_DAY_PATTERNS: { day: DayCode; patterns: RegExp[] }[] = [
 // "CLOSED FRI AT 12PM" is an EARLY CLOSE, not a closed day — the customer is open Friday
 // morning. The day-qualified hours scanner owns that form; marking the day closed here would
 // tell dispatch to skip a morning that is actually deliverable.
-const EARLY_CLOSE_TAIL = /^\s*AT\s+(?:NOON|[0-9])/i;
+// '@' is read exactly as AT, the same vocabulary the day-qualified close regexes in
+// scanHours use — otherwise "CLOSED FRIDAYS @ 12PM" was a Friday noon close AND a closed Friday.
+const EARLY_CLOSE_TAIL = /^\s*(?:AT|@)\s*(?:NOON|[0-9])/i;
 
 function scanClosedDays(rawText: string | null | undefined, source: SignalSource): ClosedDayScanResult[] {
   if (!rawText) return [];

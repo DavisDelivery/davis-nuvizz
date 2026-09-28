@@ -29,7 +29,7 @@ import { readSettings } from './settings.mts';
 import { ceilingsInForce, withOverrides } from './settings-core.mts';
 import { hardCapsEnabled, shadowModel } from './config.mts';
 import { loosePerSkidFrom } from './learn.mts';
-import type { LoopState } from './plan-loop.mts';
+import { noPlanReason, type LoopState } from './plan-loop.mts';
 
 export const PLANS_COLLECTION = 'claude_shadow_plans';
 export const planResultPath = (id: string) => `${PLANS_COLLECTION}/${id}`;
@@ -73,6 +73,9 @@ const EMPLOYEE_MASK = ['vehicleType', 'externalIds', 'fullName', 'firstName', 'l
 async function readBoard(params: { date: string; lookbackDays: number }, deps: PlanDeps) {
   const board = deps.board ?? LIVE_BOARD_READS;
   const date = params.date;
+  // A learned model not yet on file plans at the profile caps; one that could not be READ is not that
+  // (audit 2026-09-27) — readPlanDay refuses on it. The stop map reads the same board and does not need it.
+  let modelError: string | null = null;
   const [day, rosterDoc, settings, employees, engineDoc, model] = await Promise.all([
     board.readStops(PLAN_TENANT, date, { mask: LEAN_STOP_FIELDS }),
     deps.getDoc(`nuvizz_load_roster/${PLAN_TENANT}__${date}`).catch(() => null),
@@ -82,7 +85,7 @@ async function readBoard(params: { date: string; lookbackDays: number }, deps: P
     deps.listDocs('employees', { mask: EMPLOYEE_MASK })
       .catch((e: any) => { throw new Error(`the employees roster could not be read, so no truck class is known: ${String(e?.message || e)}`); }),
     deps.getDoc(engineConfigPath(PLAN_TENANT)).catch(() => null),
-    deps.getDoc(CAPACITY_PATH).catch(() => null),
+    deps.getDoc(CAPACITY_PATH).catch((e: any) => { modelError = String(e?.message || e); return null; }),
   ]);
   if (!day?.meta && !(day?.stops || []).length) throw new Error(`there is no board on file for ${date}: the scans have not written that day yet`);
   if (settings.error) throw new Error(`the capacity settings could not be read: ${settings.error}`);
@@ -106,7 +109,7 @@ async function readBoard(params: { date: string; lookbackDays: number }, deps: P
   const keys = [...new Set(open.map(rowMatchKey).filter((k: any) => typeof k === 'string' && /^[\w\- .&']{1,200}$/.test(k)))];
   const noteList = await inPool(keys, 8, async (k: string) => [k, await deps.getDoc(`customer_notes/${k}`).catch(() => null)] as const);
   const notes = new Map(noteList.filter(([, n]) => n) as [string, any][]);
-  return { day, rosterDoc, settings, employees, engineDoc, model, rows, carry, cancelled, notes, boardAt: day?.meta?.last_scanned_at ?? null };
+  return { day, rosterDoc, settings, employees, engineDoc, model, modelError, rows, carry, cancelled, notes, boardAt: day?.meta?.last_scanned_at ?? null };
 }
 
 /**
@@ -136,6 +139,7 @@ export async function readPlanDay(params: PlanParams, rs: { capRule: any; lbsBox
   const date = params.date;
   const [b, earlier] = await Promise.all([readBoard(params, deps), readEarlier(params.after, params, deps)]);
   const { rosterDoc, settings, employees, engineDoc, model, rows, carry, cancelled, notes } = b;
+  if (b.modelError) throw new Error(`the learned capacity model could not be read, so every driver would be planned at the truck-profile cap: ${b.modelError}`);
   // A ROSTER LOAD IS ITS LOAD NUMBER (review, v1.78.0): picks can come back from an earlier section, so
   // a load renamed in NuVizz since is planned under its name now — the board's rows carry that name.
   const byNbr = new Map((rosterLoadsOf(rosterDoc) || []).filter((l: any) => l?.loadNbr && typeof l?.name === 'string' && l.name.trim()).map((l: any) => [String(l.loadNbr), l]));
@@ -360,7 +364,7 @@ export async function finishPlan(id: string, job: any, problem: BtProblem, cfg: 
   if (await wasCancelled()) return { ok: true, job: id, cancelled: true, usd: state.usd };
   const plan = state.final ?? state.bestClean;
   if (!plan) {
-    await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at, updatedAt: at, error: `no plan without a hard-rule violation: ${state.endNote || state.ended}` });
+    await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at, updatedAt: at, error: noPlanReason(state) });
     return { ok: true, job: id, failed: state.ended };
   }
   const rates = { perMile: rs.costPerMile ?? null, perDriveHour: rs.costPerDriveHour ?? null };

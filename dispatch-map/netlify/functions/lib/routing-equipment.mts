@@ -15,9 +15,12 @@
 
 import type { EquipmentReq } from './routing-types.mts';
 
+// 'no_53ft' is what the dispatcher's "No 53ft" dropdown actually writes (App.jsx
+// EQUIPMENT_OPTIONS); 'no_53' is the older spelling. Both are the same rule — left off this
+// list, a ticked No 53ft was dropped as unknown and a 53' could be built onto the stop.
 export const KNOWN_REQS = new Set<EquipmentReq>([
   'no_tractor_trailer', 'uline_straight_truck', 'straight_truck_only', 'box_truck_only',
-  '26ft_max', 'no_53', 'no_overhead_clearance', 'liftgate_required',
+  '26ft_max', 'no_53', 'no_53ft', 'no_overhead_clearance', 'liftgate_required',
 ]);
 
 // Equipment requirements a 53' tractor-trailer can't satisfy. A dispatcher's explicit
@@ -25,7 +28,7 @@ export const KNOWN_REQS = new Set<EquipmentReq>([
 // restriction. Liftgate is orthogonal and is never suppressed.
 export const TRAILER_BLOCKERS = new Set<EquipmentReq>([
   'no_tractor_trailer', 'uline_straight_truck', 'straight_truck_only', 'box_truck_only',
-  '26ft_max', 'no_53', 'no_overhead_clearance',
+  '26ft_max', 'no_53', 'no_53ft', 'no_overhead_clearance',
 ]);
 
 export function equipmentReqsFrom(note: any, opts?: { tractorOnlyGreen?: boolean }): EquipmentReq[] {
