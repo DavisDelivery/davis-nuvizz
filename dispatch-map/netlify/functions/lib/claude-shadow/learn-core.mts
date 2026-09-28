@@ -14,8 +14,10 @@
 // A TRUCK TRIP here is the freight that went out on one route with one driver on one day:
 //   • deliveries only — a pickup (RA… / stopType PU) comes BACK on the truck and takes no outbound
 //     room, and its Display Seq is the terminal-return slot, not a run position;
-//   • grouped by route name AND driver, because on the list scan the load number IS the route name
-//     (lib/nuvizz-list.mts:264), so two drivers sharing a name would otherwise be one "truck";
+//   • grouped by route name AND driver, because a list row's loadNbr field holds the route NAME
+//     (lib/nuvizz-list.mts toBoardStop) and sealed history rows carry no roster join — the real load
+//     number is on that day's roster (nuvizz_load_roster; CLAUDE.md "THE ROSTER SCAN HAS THE LOAD
+//     NUMBERS") — so two drivers sharing a name would otherwise be one "truck";
 //   • only rows with EVIDENCE THEY RAN THAT DAY (v2, after review). "Filed on day D's board" is not
 //     "rode the truck on D": a carried-forward order keeps its old route and driver and is re-filed
 //     onto today while NuVizz still lists it open, and tomorrow's pre-built freight lands on today

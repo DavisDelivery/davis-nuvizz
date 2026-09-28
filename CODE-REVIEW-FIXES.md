@@ -22,6 +22,7 @@ Two standing rules from CLAUDE.md apply to this work specifically:
 
 - **Never trigger a NuVizz scan to check a fix.** A cold full scan costs about 3,000 calls. Verify in code and in tests; if a real number is needed, ask Chad for it.
 - **Mobile and desktop are two views.** A fix applied to one layout is half a fix.
+- **THE ROSTER SCAN HAS THE LOAD NUMBERS — settled, never asked.** A fix that needs a load's identity takes the day's roster load NUMBER (`nuvizz_load_roster`) — never a route name, which repeats every day.
 
 Every item carries its finding id (for example `A4-S21-2`). The same id appears in the review PDF and in `Davis-NuVizz-Code-Review-Findings.csv`, which hold the full write-up, the evidence and the verifier's reasoning.
 
@@ -564,6 +565,7 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
       <sub>Low · logic · A1-S5-9 · reproduced by running the code</sub>
 - [ ] **`dispatch-map/src/App.jsx:13332`** — Empty roster load row opens a route panel keyed by the NuVizz load id, not the route name  
       *Fix:* Push roster-only rows with `loadNbr: nm` (the route name, which is what stops carry) and keep the id only in `realId`.  
+      *Note (Sep 2026):* keep the roster load NUMBER as the load's identity and use the route name only as the grouping key the stops share. See CLAUDE.md "THE ROSTER SCAN HAS THE LOAD NUMBERS".  
       <sub>Low · data-contract · A1-S5-8 · reproduced by running the code</sub>
 
 

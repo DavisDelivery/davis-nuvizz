@@ -13,6 +13,11 @@ implementation. Do NOT implement in that chat — decide the numbers.**
 
 ## How scanning works today (read these files)
 
+> **THE ROSTER SCAN HAS THE LOAD NUMBERS — settled, never asked.** The scheduled path is list
+> discovery: the load roster (35833) gives every load's number, id, name, driver, status and stop
+> count per day (`nuvizz_load_roster`, free to read); the stop list gives the route NAME only. Which
+> orders a load holds is one `/load/info` by the roster's number. See CLAUDE.md.
+
 - **`netlify/functions/nuvizz-refresh-stops-background.mts`**
   Scheduled BACKGROUND writer. **CRON: `*/15 * * * *`** (every 15 min, 24/7).
   Delegates to `runRefreshStops`.

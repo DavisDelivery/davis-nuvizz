@@ -68,6 +68,12 @@ the data is perishable.
   prose outside the fence, no nested backticks, plain-text headers
   (=== HEADER ===). Every brief opens with an unmerged-work resolution pass.
 - **NuVizz is READ-ONLY** until Phase 4. No load/route/stop writes before then.
+- **THE ROSTER SCAN HAS THE LOAD NUMBERS — settled, never asked (Chad, Sep 2026).** The per-day
+  load roster (saved search 35833 → `nuvizz_load_roster/{tenant}__{date}`, `readLoadRoster`, free via
+  `nuvizz-loads-roster?date=…&cacheOnly=1`) carries every load's NUMBER, id, route name, driver,
+  status and stop count for that day. The stop list (77128) carries the route NAME only, and route
+  names repeat daily. Which orders a load holds is one `/load/info` by the roster's number. No brief,
+  agent or orchestrator may treat "does the roster have load ids" as an open question.
 - Netlify PAT is provided fresh each session and never stored. GitHub PAT is
   verified before use (may rotate).
 
@@ -99,6 +105,8 @@ the data is perishable.
   Mutable, stops-only, intra-day pruned, today+7 only. NOT history.
 - `customer_notes/{matchKey}` — forward-flowing customer corrections (equipment
   restrictions, receiving hours, etc.). Auto-applies to future stops by matchKey.
+- `nuvizz_load_roster/{tenant}__{date}` — the day's LOADS, first-class: load number, load id,
+  route name, driver, status, stop count (`trips`). THE ROSTER SCAN HAS THE LOAD NUMBERS.
 - (Phase 1, new) `history_*` — the immutable warehouse (see Section 6 / Appendix A).
 - (Phase 2, new) `routing_routes` — routes we build on our own data.
 
@@ -655,3 +663,9 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   drives place marks; school/church/government raise the in-app-only `place_trailer_conflict`
   flag on tractor routes (never texted, counted in the sweeps' run records). Live Firestore rules
   unchanged: the new collections are readable (and writable) without auth while login is off.
+- Sep 2026 — The roster has the load numbers, settled. Chad: "make sure no part of app or agent or
+  orchestrator ever has to ask about the roster scan not producing load ids." Appended correction to
+  §3's "no routes/drivers" and to the history keys below: a day's loads ARE first-class records in
+  `nuvizz_load_roster` (load number, id, driver, status, stop count per day), and a board row's
+  `loadNbr` field holds the route NAME on list-sourced rows — the day's real load number is the
+  roster's.

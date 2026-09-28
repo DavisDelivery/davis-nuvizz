@@ -1,5 +1,12 @@
 # Dispatch Map — Handoff
 
+## 📌 BINDING: THE ROSTER SCAN HAS THE LOAD NUMBERS (Chad, Sep 2026) — settled, never asked
+- Every day's load roster (`nuvizz_load_roster/davis__{date}`, free: `nuvizz-loads-roster?date=…&cacheOnly=1`)
+  carries each load's NUMBER, id, route name, driver, status and stop count. The stop list names the
+  route only. Which orders a load holds = one `/load/info` by the roster's number. See CLAUDE.md.
+- A board row's `loadNbr` field is the ROUTE NAME on list-sourced rows (the history keys below that
+  say `{loadNbr}` mean that field). The real load number is on that day's roster.
+
 ## ⏰ OPEN REMINDER (set 2026-06-18 eve) — surface this at the next session
 - **Evaluate the unplanned "periodic deep sweep" (Phase 7 candidate) call cost.** Chad
   chose to MEASURE FIRST (not implement yet). Tomorrow during work: (1) read the CLEAN

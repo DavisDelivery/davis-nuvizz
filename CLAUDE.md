@@ -99,8 +99,23 @@ Project-level guidance for Claude Code in this repository.
 - **A guess presented as a finding is the worst output this repo produces**
   (see the section below). "I cannot tell from here" is never a failure; it
   is the honest half of an answer, and the other half is the question.
+- **The one thing that is never an ask: whether the roster has load numbers.** It does, for every
+  load on every day (next section). Asking it — or writing "we don't know which load" into a reply,
+  a PR or a comment — is the mistake Chad has corrected ten times. Read the stored roster instead.
 
 ## THE ROSTER SCAN HAS THE LOAD NUMBERS (Chad, Sep 2026)
+
+- **SETTLED — NEVER ASK IT AGAIN.** Chad, 2026-09-28: **"make sure no part of app or agent or
+  orchestrator ever has to ask about the roster scan not producing load ids we get hung up on that
+  too often and blocks progress. I want every part of app to know and use the proper load numbers
+  for the correct day."** Whether the roster carries load numbers is NOT a question, an unknown, a
+  blocker or an ask — for Claude, for any agent or orchestrator, in any PR, report or code comment.
+  The only thing ever allowed to be open is whether ONE specific day's roster document was captured,
+  and that is a free read (`nuvizz-loads-roster?date=…&cacheOnly=1`, or `?explain=1&from=…&days=…`),
+  never a question for Chad and never a NuVizz call.
+- **Guarded in CI**: `test/roster-load-numbers-guard.test.mjs` fails if this rule leaves CLAUDE.md,
+  ORCHESTRATION.md, HANDOFF.md, the scan-schedule brief, the load-scan README or the review worklist,
+  if the roster stops returning `loadNbr`, or if a banned sentence below appears in the code or docs.
 
 - Chad, 2026-09-27: **"Why is it so hard to get this through to you that the roster scan
   produces the load numbers!!!!!! I've told you this 10 times and every time you find out
@@ -127,7 +142,10 @@ Project-level guidance for Claude Code in this repository.
      trail shows in `nuvizz-stop-explain` for free: *"The 2026-09-28 roster … resolves MARCUS
      to DAVIS000204645 (Draft), so the verify can read that load's own membership."*
   3. The roster's `trips` against the rows we hold under that name on that day is the free
-     trigger. A load that counts more orders than we show is the only one worth reading.
+     trigger — for TODAY's load, whose roster is re-pulled hourly. A LATER day's roster is
+     captured once a day (`rosterFreezeApplies`), so its count is the morning's: it can say which
+     load to read FIRST, never that a load cannot hold an order planned onto it since (an
+     adversarial review on 2026-09-28 reproduced planned freight read as unplanned that way).
 - **Banned sentences**, because each one is this mistake again: "we don't know which load",
   "the load number isn't available", "the list doesn't carry the load, so it takes a
   per-order read", "match on route name". The load numbers come from the roster. Which
@@ -382,6 +400,24 @@ Project-level guidance for Claude Code in this repository.
   code again — the rollback commit is still needed after it.
 - **Never run `--execute` on Chad's behalf without him asking for that rollback in that
   request.** Showing him the dry run is always the right first move.
+
+## SMALL CHUNKS — one change per PR (Chad, Sep 2026)
+
+- Chad, 2026-09-28, after the load-day filing took three build rounds and three adversarial
+  reviews without shipping: **"yes let's do in smaller chunks next time."**
+- **Split before building, not after.** A rule/docs change, a change to what a screen SHOWS, and a
+  change to WHERE THE SCAN FILES AN ORDER are three PRs, each reviewed on its own. Ship the chunk
+  that is safe today; a chunk that waits on a decision or a NuVizz fact waits alone and holds
+  nothing else back.
+- **Filing changes are their own chunk, always.** Where an order lands is decided by boardDayFor,
+  the carry-forward, the frozen-day pass, the write grace, the demotion verify and the open-order
+  pool together. A change to any one of them is reviewed against all of them — that is where the
+  load-day work broke three times (an order on two boards, a Save undone, planned freight read as
+  unplanned).
+- **Ask for the missing fact before building around it.** If a design rests on something NuVizz
+  does that the code cannot show, ask Chad first (see *ASK FOR THE CALL*) — building and reviewing
+  around the unknown is what made the load-day work expensive.
+- **Size the review to the chunk.** A small change gets a small review of the paths it touches.
 
 ## Merge it — do not ask (Chad, Aug 2026)
 
