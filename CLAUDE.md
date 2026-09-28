@@ -99,8 +99,36 @@ Project-level guidance for Claude Code in this repository.
 - **A guess presented as a finding is the worst output this repo produces**
   (see the section below). "I cannot tell from here" is never a failure; it
   is the honest half of an answer, and the other half is the question.
+- **The one thing that is never an ask: whether the roster has load numbers.** It does, for every
+  load on every day (next section). Asking it — or writing "we don't know which load" into a reply,
+  a PR or a comment — is the mistake Chad has corrected ten times. Read the stored roster instead.
 
 ## THE ROSTER SCAN HAS THE LOAD NUMBERS (Chad, Sep 2026)
+
+- **SETTLED — NEVER ASK IT AGAIN.** Chad, 2026-09-28: **"make sure no part of app or agent or
+  orchestrator ever has to ask about the roster scan not producing load ids we get hung up on that
+  too often and blocks progress. I want every part of app to know and use the proper load numbers
+  for the correct day."** Whether the roster carries load numbers is NOT a question, an unknown, a
+  blocker or an ask — for Claude, for any agent or orchestrator, in any PR, report or code comment.
+  The only thing ever allowed to be open is whether ONE specific day's roster document was captured,
+  and that is a free read (`nuvizz-loads-roster?date=…&cacheOnly=1`, or `?explain=1&from=…&days=…`),
+  never a question for Chad and never a NuVizz call.
+- **Every part of the app uses it (v1.82.0, `lib/route-load-day.mts`).** The scan writes onto each
+  routed order the load that holds it, for the correct day: `rosterLoadNbr` (`DAVIS000204645`),
+  `rosterLoadId`, `rosterLoadVia` (`membership` = read by `/load/info` by that number;
+  `roster-name` = the one live load of that name on that day's roster, counts agreeing) and
+  `loadDay`. They ride the Map feed and the open-order pool. Read them — never derive a load from a
+  route name. The Stop lookup card, stop-explain, Debug capture and the Claude shadow already do.
+- **Chad's day rule, which the scan applies:** an order ON a load is filed on THAT load's day; an
+  order still on a PAST day's load and not delivered is shown UNPLANNED in the pool (`heldOn` names
+  the load that still holds it — NuVizz refuses to add it to another load until it comes off that
+  one); anything the reads cannot settle keeps its old filing — nothing moves on a guess.
+  `NUVIZZ_ROUTE_LOAD_DAY=off` puts the old filing back; `NUVIZZ_ROUTE_LOAD_DAY_READS` (default 4 per
+  run, memoised) caps the `/load/info` reads, which are spent only when a load's roster count
+  disagrees with what the board shows.
+- **Guarded in CI**: `test/roster-load-numbers-guard.test.mjs` fails if this rule leaves CLAUDE.md,
+  ORCHESTRATION.md, HANDOFF.md, the scan-schedule brief or the load-scan README, if the roster stops
+  returning `loadNbr`, if the stamps leave the Map feed, or if a banned sentence below appears in the code.
 
 - Chad, 2026-09-27: **"Why is it so hard to get this through to you that the roster scan
   produces the load numbers!!!!!! I've told you this 10 times and every time you find out

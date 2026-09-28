@@ -17,7 +17,10 @@
 // Best-effort: an error returns ok:false and the UI just shows the stop-grouped loads it
 // already has. Creds stay server-side.
 //
-//   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,driver,trips}],
+//   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,loadNbr,name,status,driver,trips}],
+//                                       — EVERY load carries its NuVizz load NUMBER (loadNbr, "DAVIS000204645")
+//                                       and id for that day. Settled; see CLAUDE.md "THE ROSTER SCAN HAS
+//                                       THE LOAD NUMBERS". &cacheOnly=1 reads the stored copy: ZERO calls.
 //                                       pull?, shells?: { names, from } — see planAheadShells below }
 //   GET ?explain=1[&days=5][&from=]  → what the CACHE holds for each date, ZERO vendor calls
 import { loadRosterPull, shouldServeCachedRoster } from './lib/nuvizz-loads.mts';
