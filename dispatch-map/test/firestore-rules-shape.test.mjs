@@ -379,7 +379,19 @@ test('THE CUTOVER IS INERT: uncommenting it before the browser signs in denies e
   // reads are open to everything but the server-only list, writes additionally refuse
   // claude_shadow_*. Both lines have to be there — either one missing is a browser with no
   // active rule for that operation at all.
-  assert.match(RULES_TEXT, /match \/\{document=\*\*\} \{\s*\n\s*allow read: if !serverOnlyCollection\(document\);\s*\n\s*allow write: if !serverOnlyCollection\(document\) && !shadowCollection\(document\);/, 'the LIVE open block is gone while the cutover block is still commented — that leaves the file with no active ruleset for the browser at all');
+  // KEYED ON {collection}, never on a path index (2026-09-28): `document[0]` off a
+  // `{document=**}` wildcard is unbound for a COLLECTION read, so every onSnapshot(collection(…))
+  // was refused — proven in the Firestore emulator, and it greyed the Build Panel on uat-mirror.
+  assert.match(RULES_TEXT, /match \/\{collection\}\/\{rest=\*\*\} \{\s*\n\s*allow read: if !serverOnlyCollection\(collection\);\s*\n\s*allow write: if !serverOnlyCollection\(collection\) && !shadowCollection\(collection\);/, 'the LIVE open block is gone while the cutover block is still commented — that leaves the file with no active ruleset for the browser at all');
+});
+
+test('NO ACTIVE RULE READS A PATH BY INDEX — `x[0]` off a {x=**} wildcard is unbound for a collection read and denies every onSnapshot(collection(…))', () => {
+  // Found on 2026-09-28 by publishing this file to the uat-mirror database: the Build Panel's
+  // Box/Tractor went grey and "Missing or insufficient permissions" stayed up, because every
+  // COLLECTION read (a list) hit `document[0]` with nothing bound. The Firestore emulator says
+  // so in words: "Variable  is not bound in path template. for 'list'". Comments are prose.
+  const active = RULES_LINES.filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.doesNotMatch(active, /\b[A-Za-z_]\w*\[\d+\]/, 'an active rule indexes a path variable — key the rule on a single-segment wildcard like {collection} instead');
 });
 
 // ── the Claude shadow planner ────────────────────────────────────────────────
@@ -387,9 +399,9 @@ test('THE CUTOVER IS INERT: uncommenting it before the browser signs in denies e
 test('THE LIVE BLOCK refuses browser WRITES to claude_shadow_* — a stranger with the public web config cannot forge the comparison Chad reads as evidence about the router', () => {
   const fn = RULES_TEXT.match(/function\s+shadowCollection\s*\([^)]*\)\s*\{([\s\S]*?)\n\s*\}/);
   assert.ok(fn, 'shadowCollection() is gone from firestore.rules — claude_shadow_* is browser-writable again');
-  assert.match(fn[1], /document\[0\]\.matches\('claude_shadow_\.\+'\)/, 'shadowCollection() must match the whole claude_shadow_ prefix, and nothing shorter');
-  const live = RULES_TEXT.match(/match \/\{document=\*\*\} \{([\s\S]*?)\n\s*\}/);
-  assert.ok(live && /allow write:[^;]*!shadowCollection\(document\)/.test(live[1]), 'the live catch-all no longer refuses writes to claude_shadow_*');
+  assert.match(fn[1], /collection\.matches\('claude_shadow_\.\+'\)/, 'shadowCollection() must match the whole claude_shadow_ prefix, and nothing shorter');
+  const live = RULES_TEXT.match(/match \/\{collection\}\/\{rest=\*\*\} \{([\s\S]*?)\n\s*\}/);
+  assert.ok(live && /allow write:[^;]*!shadowCollection\(collection\)/.test(live[1]), 'the live catch-all no longer refuses writes to claude_shadow_*');
   assert.ok(!/allow read:[^;]*shadowCollection/.test(live[1]), 'reads stay open in the live block: the refusal is for WRITES only, like the file says');
 });
 
