@@ -283,3 +283,42 @@ export function compareAutoHoursEnabled(env) {
   const v = String(env?.VITE_COMPARE_AUTO_HOURS ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
 }
+
+// ── THE HOURS LINE ON A "CAN'T MAKE" ROW ─────────────────────────────────────
+//
+// Chad, 2026-09-28, looking at MCKESSON ("CAN'T MAKE 11:00A") and GENESIS BIOSCIENCES
+// ("CAN'T MAKE 12:00P") on SUW with no hours anywhere on either row: "2 stops can't meet
+// receiving hours however the hours are not listed on the card why?" — then: "make it 2 rows
+// on the card one with the hours and 2 with can't make 12 or whatever".
+//
+// The row used to DROP its hours chip whenever the verdict named the same close ("the same
+// clock twice is noise"). That hid the half of the window the verdict does not say — when the
+// dock OPENS — and where the hours came from ("· auto"). So a can't-make row now carries the
+// hours on their own line, and states the WHOLE window on file rather than "closes 11:00a"
+// again: MCKESSON reads 7:00a–11:00a, GENESIS 8:00a–12:00p · auto. Only the half that is on
+// file is stated — a dock that never said when it opens reads "closes 11:00a", never an
+// invented "–11:00a".
+/**
+ * PURE. The hours chip for the line above a "can't make" verdict: the same mark (kind, glyph,
+ * `auto`, title) with its text widened to the whole window on file.
+ * @param {{text:string, openMin:number|null, closeMin:number|null}|null} mark  a timeMarkChip result
+ * @returns the widened mark, or null for no mark
+ */
+export function unreachableHoursMark(mark) {
+  if (!mark) return null;
+  const o = Number.isFinite(mark.openMin) ? mark.openMin : null;
+  const c = Number.isFinite(mark.closeMin) ? mark.closeMin : null;
+  if (o == null && c == null) return mark;
+  const text = o != null && c != null ? `${fmtMin(o)}–${fmtMin(c)}`
+    : o != null ? `opens ${fmtMin(o)}`
+      : `closes ${fmtMin(c)}`;
+  return { ...mark, text };
+}
+
+/** VITE_COMPARE_UNREACHABLE_HOURS — house shape: default on, an off-word turns it off, anything
+ *  malformed leaves it on. Off puts a can't-make row back to the verdict alone, hours hidden.
+ *  Build-time, so flipping it is a redeploy. */
+export function compareUnreachableHoursEnabled(env) {
+  const v = String(env?.VITE_COMPARE_UNREACHABLE_HOURS ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
