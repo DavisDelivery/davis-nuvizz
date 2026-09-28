@@ -418,9 +418,10 @@ export function haversineKm(a, b) {
 
 // ── AN OVAL, WHERE THE WORK RUNS ALONG A ROAD ───────────────────────────────
 //
-// Chad asked at the very start for "circles or ovals of where their general work area is", and on
+// Chad asked at the very start for "circles or ovals of where their general work area is"; on
 // 2026-09-27, with the rings on the live map: "if for some drivers an oval would be a better shape
-// than a circle, use that instead."
+// than a circle, use that instead"; and the next morning: "Some may be circles others may be ovals
+// you just look at the data."
 //
 // "BETTER" IS A MEASUREMENT, NOT A LOOK. A ring claims that most of a driver's work — the 70% of
 // his stops the circle's radius is drawn round — sits inside it. Work strung out along a road (the
@@ -428,39 +429,70 @@ export function haversineKm(a, b) {
 // that width is ground he never touches. An oval that holds the SAME share of his stops on less
 // ground is the better claim, and that is the whole test:
 //
-//   • THE SHAPE comes from how his stops spread about the circle's own centre (their covariance):
-//     the long way is the way they string out, the stretch is how much further they go that way.
-//   • THE SIZE is the circle's own rule: the oval of that shape holding 70% of his stops, and never
-//     narrower than the 2.5km the circle is never smaller than.
-//   • IT IS DRAWN ONLY WHEN IT IS PLAINLY BETTER — the same share on at most 70% of the circle's
-//     ground, and at least half as long again as it is wide. A town whose work is round keeps its
-//     circle: a nearly-round oval would say nothing the circle does not, and would change from
-//     week to week on noise.
-//   • AND ONLY WITH ENOUGH WORK TO SHOW A DIRECTION — 60 stops (three a day for four weeks) at 12
-//     different places. An oval claims more than a circle does (which way), so it needs more to go
-//     on; below that the direction is mostly noise, and a smaller ring stays round.
+//   • THE OVAL IS THE SMALLEST ONE, centred where the circle is, that holds the same 70% of his
+//     stops — found by trying every direction in 5° steps and every stretch up to 4 to 1. A grid,
+//     not a fit with a random start, so the same stops always draw the same oval; and the circle
+//     is one of the shapes tried, so an oval can never cover more ground than the circle would.
+//   • NEVER NARROWER THAN 2.5km (the circle is never smaller than that) AND NEVER LONGER THAN 4 TO
+//     1. The very smallest oval round a road run is a needle as thin as the road, which claims a
+//     precision four weeks of stops do not have; 4 to 1 still reads as a run.
+//   • DRAWN ONLY WHEN IT IS PLAINLY BETTER: the same share of his stops on at most 62% of the
+//     circle's ground — and on half of it for a ring of under 100 stops, because a small sample
+//     shows a "direction" by chance more often — and at least half as long again as it is wide.
+//   • AND ONLY WITH ENOUGH WORK TO SHOW A DIRECTION: 60 stops (three a day for four weeks) at 12
+//     different places. Below that the ring stays round.
 //
 // THE CENTRE DOES NOT MOVE AND NOTHING ELSE CHANGES. Who gets a ring, the 30km rule and the
 // coverage test are all decided on the circle exactly as before; only the outline drawn differs.
 //
-// THESE NUMBERS ARE SET FROM GEOMETRY AND NOT YET CHECKED AGAINST DAVIS'S OWN HISTORY — unlike the
-// 30km rule above, which was measured on it. Tried on made-up work, 80 tries of each shape at 60
-// to 400 stops: a round town came out an oval at most 2 times in 80, and never from 100 stops up;
-// a string of three or four towns along a road, 77 times in 80 or more; two towns 16km apart, 65
-// or more; a town with a quarter of its work trailing out along one road, at most 10 in 80 and
-// none by 400 stops. If a ring on the real map is the wrong shape, OVAL_RULE is the place to look.
-export const OVAL_RULE = Object.freeze({ minStops: 60, minPlaces: 12, minAspect: 1.5, maxArea: 0.7 });
+// SET BY LOOKING AT DAVIS'S OWN HISTORY, 2026-09-28, as Chad asked: September 1–28, 13,876
+// deliveries, 52 rings with enough stops to have a shape, every one drawn over its own stops and
+// looked at. 24 come out ovals, and every one of them is work running along a road or between two
+// towns. There is no clean gap in the numbers — the smallest ovals run 0.31, … 0.56, 0.58, 0.61,
+// then 0.64, 0.64, 0.65 — so the line is where the pictures stop being runs: just past it are
+// Brent Dixon and Sirdedrick Sheats (scattered), Brian Worley, Theo Afunyah and Anthony Bennett
+// (oblong patches round a town), and Denis Salkic — a town with a trail of stops off one side, the
+// case a line has to keep round, because an oval there would point down the trail. The first
+// version (1.81.0) shaped the oval from how the stops spread (their covariance) and, on this same
+// history, left three plain runs round — Victor Fernandez, Rasheed Davis, Marcus Young — because
+// their outlying stops pulled that shape off the band. That is why the oval is now searched for.
+// Checked on made-up work too, 80 tries of each shape at 60 to 400 stops: a round town came out an
+// oval at most once in 80; three or four towns along a road, 64 in 80 or more (77 from 100 stops);
+// a town with a quarter of its work trailing out along one road, at most 7 in 80 and none from 200.
+export const OVAL_RULE = Object.freeze({
+  minStops: 60, minPlaces: 12, minAspect: 1.5, maxStretch: 4,
+  maxGround: 0.62, fewStops: 100, maxGroundFew: 0.5,
+});
+
+// The k-th smallest of `a` (0-based), reordering `a`. Hoare's selection: linear on average, and the
+// value it returns cannot depend on the order the stops arrived in.
+function kthSmallest(a, k) {
+  let lo = 0, hi = a.length - 1;
+  while (lo < hi) {
+    const p = a[(lo + hi) >> 1];
+    let i = lo, j = hi;
+    while (i <= j) {
+      while (a[i] < p) i++;
+      while (a[j] > p) j--;
+      if (i <= j) { const t = a[i]; a[i] = a[j]; a[j] = t; i++; j--; }
+    }
+    if (k <= j) hi = j;
+    else if (k >= i) lo = i;
+    else return a[k];
+  }
+  return a[k];
+}
 
 /**
  * THE OVAL THAT COULD REPLACE A CLUSTER'S CIRCLE — see the note above.
  *
  * `points` are the cluster's stops as { lat, lng }, one per stop, repeats and all (the same stops the
  * circle's radius is measured over); `centre` is the circle's centre. Returns null when there is too
- * little work to show a direction; otherwise the fit, whether or not it is drawn:
+ * little work to show a direction; otherwise the smallest oval, whether or not it is drawn:
  *   { majorKm, minorKm, angleDeg, aspect, areaRatio, better }
  * majorKm/minorKm are the HALF-lengths (the oval's "radii"); angleDeg is the long way, measured
- * anticlockwise from east, 0 ≤ angleDeg < 180; areaRatio is the oval's ground over the circle's;
- * `better` is whether it replaces the circle. Pure and deterministic — no seed, no search.
+ * anticlockwise from east, 0 ≤ angleDeg < 180, in 5° steps; areaRatio is the oval's ground over the
+ * circle's; `better` is whether it replaces the circle. Pure and deterministic.
  */
 export function fitOval(points = [], centre = null, opts = {}) {
   const rule = { ...OVAL_RULE, ...(opts.rule || {}) };
@@ -477,43 +509,37 @@ export function fitOval(points = [], centre = null, opts = {}) {
   const kx = kmPerDegLng(centre.lat);
   const xs = new Float64Array(n);
   const ys = new Float64Array(n);
-  let sxx = 0, syy = 0, sxy = 0;
   for (let i = 0; i < n; i++) {
-    const x = (pts[i].lng - centre.lng) * kx;
-    const y = (pts[i].lat - centre.lat) * KM_PER_DEG_LAT;
-    xs[i] = x; ys[i] = y;
-    sxx += x * x; syy += y * y; sxy += x * y;
+    xs[i] = (pts[i].lng - centre.lng) * kx;
+    ys[i] = (pts[i].lat - centre.lat) * KM_PER_DEG_LAT;
   }
-  // A street's width, (0.25km)², on the diagonal: stops that happen to fall on one straight line
-  // cannot make the spread singular. Against any real spread of several km it is nothing.
-  sxx = sxx / n + 0.0625; syy = syy / n + 0.0625; sxy /= n;
-  const mid = (sxx + syy) / 2;
-  const half = Math.sqrt(((sxx - syy) / 2) ** 2 + sxy * sxy);
-  const l1 = mid + half, l2 = mid - half;                 // spread the long way and the short way
-  const t = 0.5 * Math.atan2(2 * sxy, sxx - syy);          // the long way, radians anticlockwise from east
-  const c = Math.cos(t), s = Math.sin(t);
-  const along = new Float64Array(n);                       // how far out each stop is, in "ovals"
-  const round = new Float64Array(n);                       // …and in circles, measured the same way
-  for (let i = 0; i < n; i++) {
-    const u = xs[i] * c + ys[i] * s;
-    const v = ys[i] * c - xs[i] * s;
-    along[i] = (u * u) / l1 + (v * v) / l2;
-    round[i] = xs[i] * xs[i] + ys[i] * ys[i];
-  }
-  along.sort(); round.sort();
   const at = Math.min(n - 1, Math.floor(pctile * n));    // the circle's own percentile
-  const k = Math.sqrt(along[at]);
-  const minorKm = Math.max(minKm, k * Math.sqrt(l2));
-  const majorKm = Math.max(minorKm, k * Math.sqrt(l1));
-  const R = Math.max(minKm, Math.sqrt(round[at]));
+  const far = new Float64Array(n);                         // how far out each stop is, in this shape
+  for (let i = 0; i < n; i++) far[i] = xs[i] * xs[i] + ys[i] * ys[i];
+  const r2 = kthSmallest(far, at);                         // the circle, measured the same way
+  // Every direction, every stretch: an oval stretched q times as long as it is wide, holding the
+  // same 70%, covers ground in proportion to k² — so the smallest k² is the smallest oval.
+  let best = { q: 1, deg: 0, k2: r2 };
+  for (let deg = 0; deg < 180; deg += 5) {
+    const c = Math.cos((deg * Math.PI) / 180), s = Math.sin((deg * Math.PI) / 180);
+    for (let q = 1.1; q <= rule.maxStretch + 1e-9; q *= 1.1) {
+      for (let i = 0; i < n; i++) {
+        const u = xs[i] * c + ys[i] * s;
+        const v = ys[i] * c - xs[i] * s;
+        far[i] = (u * u) / q + v * v * q;
+      }
+      const k2 = kthSmallest(far, at);
+      if (k2 < best.k2) best = { q, deg, k2 };             // strictly smaller: a tie keeps the rounder
+    }
+  }
+  const k = Math.sqrt(best.k2);
+  const minorKm = Math.max(minKm, k / Math.sqrt(best.q));
+  const majorKm = Math.max(minorKm, k * Math.sqrt(best.q));
+  const R = Math.max(minKm, Math.sqrt(r2));
   const aspect = majorKm / minorKm;
   const areaRatio = (majorKm * minorKm) / (R * R);
-  return {
-    majorKm, minorKm,
-    angleDeg: (((t * 180) / Math.PI) % 180 + 180) % 180,
-    aspect, areaRatio,
-    better: aspect >= rule.minAspect && areaRatio <= rule.maxArea,
-  };
+  const maxGround = n < rule.fewStops ? rule.maxGroundFew : rule.maxGround;
+  return { majorKm, minorKm, angleDeg: best.deg, aspect, areaRatio, better: aspect >= rule.minAspect && areaRatio <= maxGround };
 }
 
 /**
@@ -858,18 +884,87 @@ export const TERRITORY_STOP_FIELDS = Object.freeze(['stopNbr', 'driverUserName',
 
 // COLOUR TELLS RINGS APART. IT DOES NOT NAME ANYBODY.
 //
-// Ten swatches across 59 drivers means six men share every colour, so a colour cannot identify a
-// person — and the first sheet printed a legend that implied it could, which cost a whole page
-// and told the reader something false. There is no legend. The colours exist so that two rings
-// crossing each other read as two rings; the NAME in the middle is the answer. Varied lightness
-// as well as hue, because the sheet gets photocopied. Moved here from the sheet so the screen
-// colours a driver exactly as the paper does.
-export const RING_PALETTE = Object.freeze(['#1f4e79', '#a4462d', '#3f7d3f', '#6b4a8a', '#8a6d1f',
-  '#256b6b', '#8a3060', '#4a5a6b', '#2f6f9e', '#7a3b1e']);
+// A dozen swatches across sixty drivers means several men share every colour, so a colour cannot
+// identify a person — and the first sheet printed a legend that implied it could, which cost a
+// whole page and told the reader something false. There is no legend. The colours exist so that
+// two rings crossing each other read as two rings, and so a name can be matched to its ring; the
+// NAME is the answer. Kept here, not in the sheet, so the screen colours a driver exactly as the
+// paper does.
+//
+// VARIED AND BRIGHT, BECAUSE THE FIRST SET COULD NOT BE TOLD APART. It was ten muted print colours
+// — navy, slate, a second blue, two browns — and on the live map fifty-odd thin lines in near-black
+// shades read as one tangle, with names whose colour nobody could match to a line. Chad,
+// 2026-09-28: "Make drivers name match color of their circle ... and give circles a varied color
+// pallette." Twelve now, each from a different family — red, blue, green, orange, purple, teal,
+// pink, gold, sky, brown, violet, olive — every one dark enough to read as bold 11px type on the
+// map (3.8:1 against white or better) and bright enough not to read as black.
+export const RING_PALETTE = Object.freeze(['#d62728', '#1565c0', '#2e7d32', '#e04e00', '#8e24aa', '#00897b',
+  '#d81b60', '#9e6a00', '#0288d1', '#6d4c41', '#5e35b1', '#827717']);
 
-/** Each driver's ring colour, by his place in the busiest-first driver list. */
-export function ringColours(drivers = []) {
-  return new Map((drivers || []).map((d, i) => [d.key, RING_PALETTE[i % RING_PALETTE.length]]));
+// How different two palette colours LOOK: distance in CIE Lab (ΔE), not in the list's order.
+function labOf(hex) {
+  const lin = (c) => { const v = c / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const [r, g, b] = [1, 3, 5].map((i) => lin(parseInt(hex.slice(i, i + 2), 16)));
+  const f = (t) => (t > 216 / 24389 ? Math.cbrt(t) : ((24389 / 27) * t + 16) / 116);
+  const X = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047);
+  const Y = f(0.2126 * r + 0.7152 * g + 0.0722 * b);
+  const Z = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883);
+  return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
+}
+const PALETTE_LAB = RING_PALETTE.map(labOf);
+const LOOK_APART = PALETTE_LAB.map((p) => PALETTE_LAB.map((q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2])));
+
+/**
+ * EACH DRIVER'S RING COLOUR — AND NEIGHBOURS GET DIFFERENT ONES.
+ *
+ * Twelve colours over sixty rings: handed out by rank, two drivers side by side could get the same
+ * one, and two blue rings crossing are exactly the confusion colour is there to end. So colours go
+ * out busiest first (`drivers` is driverCore's order) and each driver takes the colour that clashes
+ * least with the rings his own rings touch (overlap, or pass within 2km). The same colour on a
+ * neighbour counts fully, a similar one partly, a different one hardly at all — and a neighbour
+ * whose ring sits right on top of his counts far more than one that only grazes it, because that
+ * is where two names and two lines crowd together. Ties go to the colour used least so far, then to
+ * palette order, so the same rings always get the same colours. On the four weeks to 2026-09-28
+ * (52 drivers with rings, 191 pairs overlapping by more than half) handing out by rank left 12 of
+ * those heavy pairs in one colour; this leaves 4.
+ *
+ * `circleSets` is driverCircles' output. Without it — no positions to go on — colours go by rank, as
+ * they did before. A driver with no ring gets one too (nobody sees it), after everyone who has one.
+ */
+export function ringColours(drivers = [], circleSets = null) {
+  const list = drivers || [];
+  if (!circleSets) return new Map(list.map((d, i) => [d.key, RING_PALETTE[i % RING_PALETTE.length]]));
+  const ringsOf = new Map(circleSets.map((c) => [c.key, c.circles || []]));
+  const reach = (c) => ovalOf(c)?.majorKm ?? c.radiusKm;
+  // How much two drivers' rings crowd each other: 0 when no ring of one comes within 2km of the
+  // other's, 0.15 for a graze, up to 1.15 for two rings on the same centre.
+  const crowding = (a, b) => {
+    let w = 0;
+    for (const x of a) for (const y of b) {
+      const d = haversineKm(x, y), reachBoth = reach(x) + reach(y);
+      if (d <= reachBoth + 2) w = Math.max(w, 0.15 + Math.max(0, 1 - d / reachBoth));
+    }
+    return w;
+  };
+  const out = new Map();
+  const used = RING_PALETTE.map(() => 0);
+  const coloured = [];                                     // { rings, i } for every driver done so far
+  const ringed = list.filter((d) => (ringsOf.get(d.key) || []).length);
+  for (const d of ringed) {
+    const mine = ringsOf.get(d.key);
+    const near = coloured.map((o) => ({ i: o.i, w: crowding(mine, o.rings) })).filter((o) => o.w > 0);
+    let pick = 0;
+    let worst = Infinity;
+    for (let i = 0; i < RING_PALETTE.length; i++) {
+      const clash = near.reduce((t, o) => t + o.w * Math.exp(-((LOOK_APART[i][o.i] / 20) ** 2)), 0);
+      if (clash < worst - 1e-9 || (Math.abs(clash - worst) <= 1e-9 && used[i] < used[pick])) { pick = i; worst = clash; }
+    }
+    used[pick]++;
+    coloured.push({ rings: mine, i: pick });
+    out.set(d.key, RING_PALETTE[pick]);
+  }
+  list.filter((d) => !out.has(d.key)).forEach((d, n) => out.set(d.key, RING_PALETTE[n % RING_PALETTE.length]));
+  return out;
 }
 
 /**
@@ -926,7 +1021,7 @@ export function territoryModel(stops = [], opts = {}) {
   const inWindow = all.filter((s) => active.has(driverKeyOf(s)));
   const drivers = opts.drivers || driverCore(inWindow, { roster });
   const circleSets = opts.circles || driverCircles(all, { roster, active });
-  return { roster, active, excluded, inWindow, drivers, circleSets, colourOf: ringColours(drivers), hidden };
+  return { roster, active, excluded, inWindow, drivers, circleSets, colourOf: ringColours(drivers, circleSets), hidden };
 }
 
 const round = (v, dp) => Number(Number(v).toFixed(dp));

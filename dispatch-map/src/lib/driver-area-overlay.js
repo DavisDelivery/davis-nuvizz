@@ -14,6 +14,13 @@
 //     a name sitting over a pin would swallow the click meant for that stop. So the rings are
 //     clickable:false and the names are pointer-events:none. The overlay is paint and nothing else;
 //     every pin, line and panel behaves exactly as it does with the switch off.
+//   • POINT AT A NAME AND THAT DRIVER'S AREA FILLS IN. Chad, 2026-09-28: "when you hover over
+//     there name there area gets a translucent background." Fifty-odd outlines cross each other,
+//     and the colour alone cannot always say which one a name belongs to; filling it in can. The
+//     names still take no clicks: the pointer is watched on the map itself and matched against
+//     where the names are drawn, so a name never stands between a click and the pin under it. On
+//     a phone, where nothing hovers, a tap on a name does the same — and the tap still reaches
+//     whatever is underneath, exactly as it did before.
 //   • THE NAMES DECLUTTER BY ZOOM. Paper has one scale and could walk a name out along its ring
 //     with a leader line; a live map has every scale. A name that would collide is not drawn at
 //     this zoom and appears as you zoom in — how Google's own place names behave, which a
@@ -61,6 +68,24 @@ export function ringReach(it, a) {
  *
  * Deterministic: the same rings at the same view always lay out the same way.
  */
+/**
+ * WHICH NAME THE POINTER IS ON, or -1. `boxes` are the names as drawn — { left, top, right,
+ * bottom } in the same pixels as (x, y) — and `pad` is a little slack round each, so a name reads as
+ * pointed at from its edge rather than only from inside the letters. Names never overlap (see
+ * placeRingLabels), so at most one can match; the first wins if they ever did.
+ */
+export function nameAt(boxes = [], x, y, pad = 2) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return -1;
+  for (let i = 0; i < (boxes || []).length; i++) {
+    const b = boxes[i];
+    if (b && x >= b.left - pad && x <= b.right + pad && y >= b.top - pad && y <= b.bottom + pad) return i;
+  }
+  return -1;
+}
+
+/** The fill a pointed-at driver's area gets: his own colour, see-through. */
+export const HOVER_FILL = 0.22;
+
 export function placeRingLabels(items = [], view = {}) {
   const W = Number(view.width) || 0;
   const H = Number(view.height) || 0;
@@ -146,7 +171,9 @@ export function driverAreasStatus({ on, status, layer, error } = {}) {
   // no history until tonight's capture, and naming it would claim deliveries nobody has read.
   const when = fmtWindow(layer.dataWindow || layer.window);
   if (rings.length) {
-    lines.push(`${rings.length} driver${rings.length === 1 ? '' : 's'}${when ? ` · ${when}` : ''} — usual areas, not today's routes. Zoom in to see more names.`);
+    // The last sentence is the only way anybody learns a name can be pointed at: nothing on the
+    // map looks clickable, and it must not (a name never takes a click).
+    lines.push(`${rings.length} driver${rings.length === 1 ? '' : 's'}${when ? ` · ${when}` : ''} — usual areas, not today's routes. Zoom in to see more names; point at a name (or tap it) to fill in his area.`);
   } else if (deliveries > 0) {
     // History came back and nobody earned a ring — a different fact from "no history", and the
     // lines below say who was looked at and why each has none.
@@ -186,13 +213,16 @@ const NAME_CSS = 'position:absolute;transform:translate(-50%,-50%);white-space:n
  */
 export function makeDriverAreaOverlayClass(google) {
   class RingNames extends google.maps.OverlayView {
-    constructor(labels) {
+    constructor(labels, onPoint) {
       super();
       this.labels = labels;
+      this.onPoint = onPoint || (() => {});
       this.box = null;
       this.els = [];
       this.widths = [];
       this.idle = null;
+      this.watch = null;
+      this.pointed = null;
     }
 
     onAdd() {
@@ -224,6 +254,38 @@ export function makeDriverAreaOverlayClass(google) {
       // draw() runs on zoom; a PAN changes what is on screen without a zoom, and the names follow
       // the view, so they are laid out again whenever the map comes to rest.
       this.idle = map ? google.maps.event.addListener(map, 'idle', () => this.draw()) : null;
+      this.watchPointer(map && map.getDiv ? map.getDiv() : null);
+    }
+
+    // THE POINTER IS WATCHED ON THE MAP, NOT ON THE NAMES — capture phase and passive, so every move
+    // is seen before anything under it handles it, and nothing is stopped or prevented: a click on
+    // a name still lands on the pin beneath it. The names are matched by where they are drawn at
+    // that moment (their own boxes on screen), so a name that has moved with a pan is still found.
+    watchPointer(div) {
+      if (!div || !div.addEventListener) return;
+      const at = (e) => {
+        const shown = this.els.map((el) => (el.style.display === 'none' ? null : el.getBoundingClientRect()));
+        const i = nameAt(shown, e.clientX, e.clientY);
+        this.point(i >= 0 ? this.labels[i].key : null);
+      };
+      const move = (e) => { if (e.pointerType !== 'touch' && !e.buttons) at(e); };   // a drag is not a hover
+      const down = (e) => { if (e.pointerType === 'touch') at(e); };                 // a phone taps instead
+      const leave = (e) => { if (e.pointerType !== 'touch') this.point(null); };
+      div.addEventListener('pointermove', move, { capture: true, passive: true });
+      div.addEventListener('pointerdown', down, { capture: true, passive: true });
+      div.addEventListener('pointerleave', leave, { passive: true });
+      this.watch = () => {
+        div.removeEventListener('pointermove', move, { capture: true });
+        div.removeEventListener('pointerdown', down, { capture: true });
+        div.removeEventListener('pointerleave', leave);
+      };
+    }
+
+    point(key) {
+      if (key === this.pointed) return;
+      this.pointed = key;
+      if (this.box) this.box.setAttribute('data-driver-area-pointed', key || '');
+      this.onPoint(key);
     }
 
     draw() {
@@ -276,6 +338,9 @@ export function makeDriverAreaOverlayClass(google) {
       // real API, and the one the browser guards' stand-in google.maps also understands.
       if (this.idle) this.idle.remove();
       this.idle = null;
+      if (this.watch) this.watch();
+      this.watch = null;
+      this.point(null);
       if (this.box && this.box.parentNode) this.box.parentNode.removeChild(this.box);
       this.box = null;
       this.els = [];
@@ -287,6 +352,8 @@ export function makeDriverAreaOverlayClass(google) {
       this.rings = (layer && layer.rings) || [];
       this.shapes = [];
       this.names = null;
+      this.byDriver = new Map();                             // driver key → his coloured ring shapes
+      this.filled = null;                                    // the driver whose area is filled in
     }
 
     attach(map) {
@@ -322,18 +389,33 @@ export function makeDriverAreaOverlayClass(google) {
       // trainee is trying to learn. Lines only, so the base map and every pin read as they do
       // with the switch off.
       for (const { d, Shape, at } of drawn) {
-        this.shapes.push(new Shape({ ...at, strokeColor: d.colour, strokeOpacity: 0.95, strokeWeight: 2, fillOpacity: 0 }));
+        const ring = new Shape({ ...at, strokeColor: d.colour, strokeOpacity: 0.95, strokeWeight: 2, fillOpacity: 0 });
+        this.shapes.push(ring);
+        if (!this.byDriver.has(d.key)) this.byDriver.set(d.key, []);
+        this.byDriver.get(d.key).push({ ring, colour: d.colour });
       }
-      const labels = drawn.map(({ d, c, ends }) => ({ text: d.label, colour: d.colour, lat: c.lat, lng: c.lng, radiusKm: c.radiusKm, ends }));
-      this.names = new RingNames(labels);
+      const labels = drawn.map(({ d, c, ends }) => ({ key: d.key, text: d.label, colour: d.colour, lat: c.lat, lng: c.lng, radiusKm: c.radiusKm, ends }));
+      this.names = new RingNames(labels, (key) => this.fill(key));
       this.names.setMap(map);
     }
 
+    // POINTED AT: every ring of that driver — a man who works two areas has both filled — in his
+    // own colour, see-through, with the line a touch heavier. Only his: the rest stay hollow, so
+    // the one area stands out of the tangle and the streets under it still read.
+    fill(key) {
+      if (key === this.filled) return;
+      for (const { ring } of this.byDriver.get(this.filled) || []) ring.setOptions({ fillOpacity: 0, strokeWeight: 2 });
+      this.filled = key;
+      for (const { ring, colour } of this.byDriver.get(key) || []) ring.setOptions({ fillColor: colour, fillOpacity: HOVER_FILL, strokeWeight: 3 });
+    }
+
     detach() {
-      for (const s of this.shapes) s.setMap(null);
-      this.shapes = [];
       if (this.names) this.names.setMap(null);
       this.names = null;
+      for (const s of this.shapes) s.setMap(null);
+      this.shapes = [];
+      this.byDriver = new Map();
+      this.filled = null;
     }
   };
 }

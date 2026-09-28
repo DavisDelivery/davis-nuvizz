@@ -15,7 +15,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  fitOval, ovalOf, ovalPath, ovalEnds, OVAL_RULE, driverCircles, territoryLayer, haversineKm,
+  fitOval, ovalOf, ovalPath, ovalEnds, OVAL_RULE, driverCircles, territoryLayer, haversineKm, RING_PALETTE,
 } from '../src/lib/driver-territory.js';
 import { territorySheetHtml } from '../src/lib/territory-sheet-html.js';
 import { placeRingLabels, ringReach, NAME_H, makeDriverAreaOverlayClass } from '../src/lib/driver-area-overlay.js';
@@ -91,7 +91,8 @@ test('THE OVAL HOLDS THE SAME SHARE AS THE CIRCLE, on less ground — that is wh
   assert.ok(inOval >= 0.69, `the oval holds ${Math.round(inOval * 100)}% of his stops — the circle's 70% rule`);
   assert.ok(inCircle >= 0.69, `the circle holds ${Math.round(inCircle * 100)}%`);
   const ground = (ring.oval.majorKm * ring.oval.minorKm) / (ring.radiusKm * ring.radiusKm);
-  assert.ok(ground <= OVAL_RULE.maxArea + 0.01, `on ${Math.round(ground * 100)}% of the circle's ground`);
+  const limit = ring.stops < OVAL_RULE.fewStops ? OVAL_RULE.maxGroundFew : OVAL_RULE.maxGround;
+  assert.ok(ground <= limit + 0.01, `on ${Math.round(ground * 100)}% of the circle's ground`);
 });
 
 test('TOO LITTLE WORK TO SHOW A DIRECTION KEEPS THE CIRCLE — the stops, and the places', () => {
@@ -203,7 +204,8 @@ test('A SHEET WITH NO OVAL DRAWS ITS RINGS AS IT ALWAYS HAS — no ellipse, no o
   // The circle markup exactly as the sheet printed it before ovals existed — attribute order,
   // precision and line breaks — on page one and on the card. (The whole page was also compared
   // byte for byte against the previous renderer on five fixtures when this was written.)
-  assert.match(html, /<circle cx="\d+\.\d" cy="\d+\.\d" r="\d+\.\d"\n {6}fill="#1f4e79" fill-opacity="0\.05" stroke="#1f4e79" stroke-width="1\.6" stroke-opacity="0\.95"\/>/);
+  const col = RING_PALETTE[0];                               // the only driver, so the first colour
+  assert.match(html, new RegExp(`<circle cx="\\d+\\.\\d" cy="\\d+\\.\\d" r="\\d+\\.\\d"\n {6}fill="${col}" fill-opacity="0\\.05" stroke="${col}" stroke-width="1\\.6" stroke-opacity="0\\.95"\/>`));
   assert.match(html, /<circle cx="\d+\.\d" cy="\d+\.\d" r="\d+\.\d" fill="none" stroke="#fff" stroke-width="4\.2" stroke-opacity="0\.85"\/>\n {8}<circle cx="\d+\.\d" cy="\d+\.\d" r="\d+\.\d" fill="#1f4e79" fill-opacity="0\.09" stroke="#1f4e79" stroke-width="2\.2"\/>/);
   assert.match(html, /<span class="muted">· about \d+ miles across<\/span>/);
 });

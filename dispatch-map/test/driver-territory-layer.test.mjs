@@ -79,13 +79,18 @@ test('every ringed driver\'s name is on the printed page too', () => {
   for (const r of territoryLayer(stops).rings) assert.ok(html.includes(r.label), `${r.label} is on the sheet`);
 });
 
-test('colours are the sheet\'s palette, busiest driver first — the same rule the paper uses', () => {
+test('colours are the sheet\'s palette, handed out by the same rule the paper uses', () => {
+  // Busiest first, each driver taking the colour least like his neighbours' (ringColours; the
+  // rule itself is pinned in driver-area-colours.test.mjs). What matters here: ONE rule, so the
+  // screen and the paper can never colour a man differently.
   const stops = fixture();
   const m = territoryModel(stops);
-  const expect = ringColours(driverCore(m.inWindow));
-  for (const r of territoryLayer(stops).rings) assert.equal(r.colour, expect.get(r.key), r.label);
-  assert.equal(RING_PALETTE.length, 10);
-  assert.equal(ringColours([{ key: 'A' }]).get('A'), RING_PALETTE[0]);
+  const expect = ringColours(driverCore(m.inWindow), m.circleSets);
+  for (const r of territoryLayer(stops).rings) {
+    assert.equal(r.colour, expect.get(r.key), r.label);
+    assert.ok(RING_PALETTE.includes(r.colour), `${r.label}: ${r.colour} is a palette colour`);
+  }
+  assert.equal(ringColours([{ key: 'A' }]).get('A'), RING_PALETTE[0], 'with nothing near him, the first colour');
 });
 
 test('A DRIVER WHO WORKS TWO AREAS GETS TWO RINGS, not one stretched across the ground between', () => {
