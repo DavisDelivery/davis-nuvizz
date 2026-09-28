@@ -956,10 +956,16 @@ export function normalizeStopEvents(d: any): StopEvent[] {
 
 // On-demand activity timeline for a single stop. Prefers /event/eventinfo (carries the
 // "By:" user + "From:" company) when the system stopId is known; falls back to
-// /stop/eventinfo by stop number. One NuVizz call (two only if the rich call fails and we
-// fall back). Rides the shared requester so it counts against the daily ceiling.
+// /stop/eventinfo by stop number. Rides the shared requester so it counts against the daily
+// ceiling. THE PRICE, read off the code below: one /stop/info + one events call = 2 NuVizz
+// calls, 3 when the rich call fails and it falls back.
+//
+// `refresh: false` — for a caller that already holds the order's stopId and has no use for a
+// refreshed record (the Stop lookup's order panel shows the sealed or board copy and never
+// folds NuVizz's answer into it). The /stop/info has no job left there, so it is not spent:
+// 1 call, 2 on the fallback. Without a stopId it is still the way to one, and is still made.
 export async function fetchStopEvents(
-  stopNbr: string, stopId?: string | null,
+  stopNbr: string, stopId?: string | null, opts: { refresh?: boolean } = {},
 ): Promise<{ ok: boolean; events?: StopEvent[]; source?: string; reason?: string; stop?: NormalizedStop | null }> {
   if (!scansEnabled()) return { ok: false, reason: 'scans_disabled' };
   const { companyCode } = getCreds();
@@ -970,7 +976,7 @@ export async function fetchStopEvents(
   // (carries the "By:" user, "From:" company and GPS). One /stop/info + one events call.
   let id = stopId && String(stopId).trim() ? String(stopId).trim() : null;
   let refreshed: NormalizedStop | null = null;
-  if (String(stopNbr || '').trim()) {
+  if ((opts.refresh !== false || !id) && String(stopNbr || '').trim()) {
     try { const r = await lookupStopByPro(String(stopNbr)); if (r.ok && r.stop) { refreshed = r.stop; if (!id && r.stop.stopId) id = String(r.stop.stopId); } } catch { /* fall back to lean below */ }
   }
   try {

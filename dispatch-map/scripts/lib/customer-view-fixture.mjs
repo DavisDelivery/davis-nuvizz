@@ -143,7 +143,9 @@ export const ORDER_DETAIL = {
   source: 'sealed', complete: true, errors: {},
   matchKey: 'earthly|1100|atlanta',
   stop: {
-    date: '2026-09-18', source: 'sealed', stopNbr: '007180002', pro: '007180002',
+    // stopId: every real detail carries NuVizz's own id since v1.83.0 (buildOrderDetail), and the
+    // activity timeline's button prices itself off it — one call with it, two without.
+    date: '2026-09-18', source: 'sealed', stopNbr: '007180002', stopId: '88412903', pro: '007180002',
     pros: ['007180002', '007180003', '007180004'],
     name: 'EARTHLY ALTERNATIVE DISTRIBUTION SOUTHEAST',
     address: { addr1: '1100 NORTHSIDE DRIVE NW SUITE 210', addr2: 'DOCK 4 REAR', city: 'ATLANTA', state: 'GA', zip: '30318' },
@@ -186,4 +188,19 @@ export const ORDER_DETAIL = {
     flags: [{ key: 'no_tractor', label: 'No tractor — box truck only', tone: 'amber' }],
     contacts: [{ name: 'RAY WHITTINGTON-BOYD', phone: '7705551212', email: 'receiving@earthlyalternative.example.com' }],
   },
+};
+
+/** THE ORDER PANEL'S ACTIVITY TIMELINE, ANSWERED (v1.83.0) — nuvizz-stop-events' reply, in the
+ *  shape normalizeStopEvents (lib/nuvizz-scan.mts) returns, newest first. Worst rows for the
+ *  layout: an event name that wraps twice at 360px, a user that is one unbroken email address,
+ *  two GPS links (each a tap target on a phone), and events with neither user nor position. */
+export const ORDER_EVENTS = {
+  ok: true, source: 'event', nuvizzCalls: 1, stop: null,
+  events: [
+    { code: '90', name: 'DELIVERED', dttm: '2026-09-18T13:44:12', user: 'ROBERT MENSAH-ADDAI', company: 'DAVIS DELIVERY SERVICE INC', routeName: 'ATLANTA SOUTHWEST 3', lat: 33.7801234, lng: -84.4123456 },
+    { code: '80', name: 'ARRIVED AT DELIVERY LOCATION — WAITING FOR A DOCK DOOR ASSIGNMENT FROM RECEIVING', dttm: '2026-09-18T13:29:40', user: 'ROBERT MENSAH-ADDAI', company: 'DAVIS DELIVERY SERVICE INC', routeName: 'ATLANTA SOUTHWEST 3', lat: 33.7799871, lng: -84.4120012 },
+    { code: '50', name: 'UPDATED', dttm: '2026-09-18T07:02:00', user: 'dispatch.whittington-boyd@davisdelivery.example.com', company: 'DAVIS DELIVERY SERVICE INC', routeName: null, lat: null, lng: null },
+    { code: '40', name: 'DISPATCHED', dttm: '2026-09-18T06:10:00', user: 'CHAD', company: 'DAVIS DELIVERY SERVICE INC', routeName: 'ATLANTA SOUTHWEST 3', lat: null, lng: null },
+    { code: '20', name: 'STOP PLANNED', dttm: '2026-09-17T16:45:00', user: null, company: null, routeName: null, lat: null, lng: null },
+  ],
 };
