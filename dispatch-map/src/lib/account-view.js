@@ -160,7 +160,11 @@ export function rolloutSteps({ loginMode, configured, authRequired, mode, users 
     {
       key: 'gate', state: loginMode === 'server' ? 'done' : 'todo',
       label: 'The sign-in screen is switched on',
-      detail: loginMode === 'server' ? 'VITE_LOGIN_ENABLED is on in this build.' : 'Set VITE_LOGIN_ENABLED=true in Netlify and redeploy — it is a build-time switch.',
+      // What the flip does to THIS screen is said here, where the admin decides to flip it:
+      // from then on only admins see Account & logins (lib/auth-gate.js accountsTabVisible).
+      detail: loginMode === 'server'
+        ? 'VITE_LOGIN_ENABLED is on in this build. Only admins see this screen now; everyone else signs out from the menu.'
+        : 'Set VITE_LOGIN_ENABLED=true in Netlify and redeploy — it is a build-time switch. After that only admins see this screen; everyone else signs out from the menu.',
     },
     {
       key: 'enforce', state: tri(authRequired),

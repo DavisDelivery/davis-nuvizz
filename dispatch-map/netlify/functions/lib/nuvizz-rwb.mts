@@ -259,7 +259,7 @@ function heldRefusal(cfg: RwbConfig, key: string): string | null {
   const age = Date.now() - held.at;
   if (age >= REFUSAL_HOLD_MS) { refusedLogins.delete(key); return null; }
   const mins = Math.max(1, Math.round(age / 60000));
-  return `NuVizz refused the NuVizz login saved as ${cfg.username} ${mins} min ago (${held.detail}) — not tried again, so NuVizz does not lock the account. Re-enter it under Account & logins.`;
+  return `NuVizz refused the NuVizz login saved as ${cfg.username} ${mins} min ago (${held.detail}) — not tried again, so NuVizz does not lock the account. It has to be re-entered under Account & logins.`;
 }
 
 function credsMissingMessage(cfg: RwbConfig): string {

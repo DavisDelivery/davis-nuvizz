@@ -244,6 +244,12 @@ export interface ResolveInput {
   open: (blob: string, appUser: string, nuvizzUser: string) => string | null;
 }
 
+// WORDED FOR WHOEVER READS IT (v1.82.2). Once sign-in is live, Account & logins is admins-only
+// (src/lib/auth-gate.js accountsTabVisible), so "re-enter yours there" would send a dispatcher to a
+// screen they cannot open. The sentences say what has to happen and where; the browser's bar adds
+// who does it — a button into the screen for someone who can open it, "ask an admin" for everyone
+// else (src/components/NuvizzLoginBar.jsx). Not-signed-in keeps "sign in there": it can only happen
+// before sign-in goes live, when the screen is open to everyone.
 const WHERE = 'under Account & logins';
 
 /**
@@ -283,15 +289,15 @@ export function resolveIdentity(input: ResolveInput): Identity {
   const nuvizzUser = doc?.nuvizzUsername ? String(doc.nuvizzUsername) : '';
   const sealed = doc?.nuvizzPasswordSealed ? String(doc.nuvizzPasswordSealed) : '';
   if (!nuvizzUser || !sealed) {
-    return fallback('not-saved', `No NuVizz login is saved for ${who} — add yours ${WHERE}.`);
+    return fallback('not-saved', `No NuVizz login is saved for ${who} — one has to be added ${WHERE}.`);
   }
   if (doc?.nuvizzRejectedAt) {
-    return fallback('rejected', `NuVizz refused the login saved for ${who} (${String(doc.nuvizzRejectedReason || 'wrong username or password')}) — re-enter it ${WHERE}.`);
+    return fallback('rejected', `NuVizz refused the login saved for ${who} (${String(doc.nuvizzRejectedReason || 'wrong username or password')}) — it has to be re-entered ${WHERE}.`);
   }
   let password: string | null = null;
   try { password = open(sealed, appUser, nuvizzUser); } catch { password = null; }
   if (!password) {
-    return fallback('unreadable', `The NuVizz login saved for ${who} can no longer be read (the server key changed) — re-enter it ${WHERE}.`);
+    return fallback('unreadable', `The NuVizz login saved for ${who} can no longer be read (the server key changed) — it has to be re-entered ${WHERE}.`);
   }
   return { kind: 'personal', appUser, nuvizzUser, password };
 }
