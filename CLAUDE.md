@@ -100,6 +100,46 @@ Project-level guidance for Claude Code in this repository.
   (see the section below). "I cannot tell from here" is never a failure; it
   is the honest half of an answer, and the other half is the question.
 
+## THE ROSTER SCAN HAS THE LOAD NUMBERS (Chad, Sep 2026)
+
+- Chad, 2026-09-27: **"Why is it so hard to get this through to you that the roster scan
+  produces the load numbers!!!!!! I've told you this 10 times and every time you find out
+  that it is true."** And on 2026-09-15, the first time it was written into code
+  (`lib/name-collision.mts`, top of file): *"our roster scans do carry the load id you just
+  aren't using it correctly."*
+- **The fact, from the code.** The roster pull (saved search 35833, `lib/nuvizz-loads.mts`,
+  `normalizeLoads`) returns, **for every load on every day**: the load NUMBER
+  (`DAVIS000204645`), the load id, the route name, the driver, the status and NuVizz's
+  stop count (`trips`). It is stored per day in Firestore and reads for **zero NuVizz calls**:
+
+      nuvizz-loads-roster?date=YYYY-MM-DD&cacheOnly=1     loads[].loadNbr, loadId, name, driver, status, trips
+
+- **The stop list is the one without it.** The stop saved search (77128, `lib/nuvizz-list.mts`)
+  names a stop's route by NAME only. Verified with one call on 2026-09-27: its 25 columns have
+  no load number, no load id and no load date. Route names repeat every day. There is a
+  MARCUS on Friday (`DAVIS000204535`) and a MARCUS on Monday (`DAVIS000204645`), and a
+  row that says "MARCUS" does not say which.
+- **So the join is always this, and it is already built:**
+  1. **roster** → which loads exist on which day, by load number (free, cached);
+  2. **one `/load/info` read per load, by that number** → which orders that load holds
+     (`lookupLoadStopNbrs` / `lookupLoadPlan` in `lib/nuvizz-scan.mts`). The scan already
+     spends this read, memoised, in the name-collision anchor and the demotion verify. Its
+     trail shows in `nuvizz-stop-explain` for free: *"The 2026-09-28 roster … resolves MARCUS
+     to DAVIS000204645 (Draft), so the verify can read that load's own membership."*
+  3. The roster's `trips` against the rows we hold under that name on that day is the free
+     trigger. A load that counts more orders than we show is the only one worth reading.
+- **Banned sentences**, because each one is this mistake again: "we don't know which load",
+  "the load number isn't available", "the list doesn't carry the load, so it takes a
+  per-order read", "match on route name". The load numbers come from the roster. Which
+  orders a load holds is one read per load, by roster load number. Say that, or say
+  exactly which of the two you have not got and why.
+- **What it cost, 2026-09-26/27.** Two orders on Monday's MARCUS (WHITING TURNER
+  007182304-1, 11 sk, and POREX) and one on Monday's DARVIN were filed on Saturday's board,
+  so Monday's MARCUS card read 17 sk / 9,074 lb against NuVizz's 29 sk / 15,807 lb. The
+  diagnosis took three rounds. It proposed a trips-arithmetic heuristic, then per-order
+  `/stop/info` reads, "because the list doesn't carry the load", before landing where Chad
+  had started: the roster has the load numbers.
+
 ## NEVER REASON AT ME — CHECK THE CODE (Chad, Aug 2026)
 
 - Chad: **"I never want you to reason when giving me an answer. I always
