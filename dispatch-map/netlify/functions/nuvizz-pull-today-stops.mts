@@ -46,12 +46,6 @@ const TENANT = 'davis';
 // a shift, so last night's refusal never lands on this morning's screen.
 const REFUSAL_MAX_AGE_MIN = 360;
 
-function addDaysUTC(dateStr: string, n: number): string {
-  const d = new Date(dateStr + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
 // Fold still-unplanned stops from the prior `carryDays` days into `stops`,
 // deduped by stopNbr, flagged carryover + scheduledDate. Reads only existing per-day indexes
 // (cheap). Those indexes are FROZEN snapshots from when each day was last scanned, so a stop that
@@ -93,12 +87,18 @@ export async function mergeCarryover(stops: any[], date: string, carryDays: numb
     // below is the fallback, and with neither the fold folds everything and prunes nothing.
     readPoolFn(TENANT).catch(() => null),
   ]);
+  // THE JUDGES' CLOCK, read HERE: after the judges are in and BEFORE the prior-day reads, which is
+  // where this feed read it for the pool's and the snapshot's 7-day backstops until v1.77.0 moved
+  // the fold into lib/carryover-fold.mts and the read moved with it, to after the reads (audit
+  // feed-refactor F2). Read once and passed in; the per-row checks (the 48h stamp, the 60-minute
+  // grace) still read `now` while the fold runs, after the reads, as they always did.
+  const judgedAtMs = now();
   const reads = await Promise.all(
     priorDates.map((d) => readStopsFn(TENANT, d, mask ? { mask } : undefined).then((r) => ({ d, stops: r.stops })).catch(() => ({ d, stops: [] as any[] }))),
   );
-  // THE DECISIONS are lib/carryover-fold.mts (v1.76.0): the same rule, pure, so the Claude shadow's
+  // THE DECISIONS are lib/carryover-fold.mts (v1.77.0): the same rule, pure, so the Claude shadow's
   // planning area reads carry-over exactly as this board does.
-  const stats = foldCarryover(stops, { date, reads, live, retired, pool, nowMs: now, lastUnplannedScanAt, log: (m) => console.log(m) });
+  const stats = foldCarryover(stops, { date, reads, live, retired, pool, nowMs: now, judgedAtMs, lastUnplannedScanAt, log: (m) => console.log(m) });
   if (io?.stats) Object.assign(io.stats, stats);
   return stats.added;
 }

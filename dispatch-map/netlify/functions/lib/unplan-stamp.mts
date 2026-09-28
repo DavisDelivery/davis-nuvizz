@@ -1,4 +1,4 @@
-// lib/unplan-stamp.mts — ONE RULE, PURE, IMPORTED BY EVERY SURFACE THAT APPLIES IT (v1.76.0).
+// lib/unplan-stamp.mts — ONE RULE, PURE, IMPORTED BY EVERY SURFACE THAT APPLIES IT (v1.77.0).
 //
 // unplanStampOvertaken lived in nuvizz-list.mts, which imports the NuVizz client, so nothing that
 // must never reach NuVizz could apply it — the Claude shadow's planning area among them. It is

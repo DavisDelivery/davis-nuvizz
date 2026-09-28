@@ -526,7 +526,7 @@ export function keepForBoardDate(stops: any[], targetDate: string): any[] {
   return out;
 }
 
-// ownBoardDay and filterFinishedPriorDay moved to lib/board-day.mts (v1.76.0), unchanged, so the
+// ownBoardDay and filterFinishedPriorDay moved to lib/board-day.mts (v1.77.0), unchanged, so the
 // Claude shadow's planner applies the board's read-time filter without reaching NuVizz code.
 // Imported and re-exported here; every caller keeps its import.
 import { ownBoardDay, filterFinishedPriorDay } from './board-day.mts';
@@ -1012,7 +1012,7 @@ export function mergeEnrich(target: any, src: any): any {
 // guard past expiry; the longer grace just avoids burning verify reads on ordinary lag.
 export const BOARD_WRITE_GRACE_MIN = 60;
 
-// unplanStampOvertaken moved to lib/unplan-stamp.mts (v1.76.0), unchanged, so the pool module and
+// unplanStampOvertaken moved to lib/unplan-stamp.mts (v1.77.0), unchanged, so the pool module and
 // the carry-over fold are pure and the Claude shadow's planner can apply the board's carry-over rule
 // without reaching NuVizz code. Imported here (this module applies it) and re-exported, so every
 // caller keeps its import.
