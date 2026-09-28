@@ -24,7 +24,10 @@
 //                                       pull?, shells?: { names, from } — see planAheadShells below }
 //   GET ?explain=1[&days=5][&from=]  → what the CACHE holds for each date, ZERO vendor calls
 import { loadRosterPull, shouldServeCachedRoster } from './lib/nuvizz-loads.mts';
-import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, markLoadRosterEmpty, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, markLoadRosterEmpty, etDayString, setDoc } from './lib/firestore.mts';
+import { liveSyncEnabled } from './lib/uat-live-sync.mts';
+import { getProdDocStamped } from './lib/prod-mirror-read.mts';
+import { ROSTER_COLLECTION } from './lib/uat-mirror-refresh.mts';
 import { acceptRosterWrite, explainRosterRow } from './lib/roster-write.mts';
 import { shellLookbackDates, standardShellNames, shouldOfferShells, pickShellSources, closedDayReason } from './lib/roster-shells.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -147,6 +150,51 @@ export default async (req: Request): Promise<Response> => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return new Response(JSON.stringify({ ok: false, reason: 'missing or bad date (YYYY-MM-DD)' }), { status: 400, headers: cors });
   }
+
+  // ── ON THE UAT MIRROR THE ROSTER IS PRODUCTION'S, AND THIS ENDPOINT NEVER CALLS NUVIZZ ───────
+  //
+  // Chad, 2026-09-26: "my loads are missing this is not a match to production like its supposed
+  // to be." Measured on the UAT site that evening, not inferred: with the mirror's copy of 09-26
+  // a day old and empty, shouldServeCachedRoster sent the read LIVE — and on a mirror "live" is
+  // the UAT NuVizz tenant (the UAT site's NUVIZZ_BASE_URL is uat.nuvizz.com). It answered 88
+  // loads without a single driver, and the write below put that over production's copy, stamped
+  // 2026-09-27T00:43Z. So the Loads tab was showing the UAT tenant's shells under production's
+  // date, and the live sync (lib/uat-live-sync.mts), which re-copies only what PRODUCTION has
+  // changed, would never have put production's back.
+  //
+  // On a mirror, then: an AUTOMATIC read serves the copy the live sync keeps — whatever its age,
+  // because it is production's latest answer and its `at` says how old — or 'none' when
+  // production holds nothing for the date. ?live=1, the Refresh button, re-copies production's
+  // document for the date right now and serves that. Firestore on both sides; zero NuVizz calls.
+  // ?cacheOnly=1 keeps its own branch below, which never calls either.
+  //
+  // PRODUCTION IS UNTOUCHED: liveSyncEnabled() is false on any deploy that is not a mirror.
+  // UAT_LIVE_SYNC=off puts a mirror back on the old path along with the tick.
+  if (!cacheOnly && liveSyncEnabled() && isFirestoreEnabled()) {
+    const path = `${ROSTER_COLLECTION}/${TENANT}__${date}`;
+    try {
+      let refreshed = false;
+      if (live) {
+        const got = await getProdDocStamped(path);
+        if (got) { await setDoc(path, got.data); refreshed = true; }
+      }
+      const held = await readLoadRoster(TENANT, date);
+      if (!held) {
+        return J({
+          ok: true, date, source: 'none', at: null, count: 0, loads: [], shells: null, mirror: true,
+          note: 'UAT mirror — production holds no roster for this date yet; the live sync copies it here within 10 minutes of production capturing it',
+        });
+      }
+      return J({
+        ok: true, date, source: 'cache', at: held.at, count: held.loads.length, loads: held.loads,
+        pull: held.pull ?? null, shells: await planAheadShells(date, held.loads), mirror: true,
+        ...(live ? { refreshed_from_production: refreshed } : {}),
+      });
+    } catch (e: any) {
+      return new Response(JSON.stringify({ ok: false, reason: `UAT mirror roster read failed: ${e?.message || e}` }), { status: 502, headers: cors });
+    }
+  }
+
   try {
     // 1) Cached roster (scanner-persisted) — instant, no NuVizz call. Skipped on ?live=1.
     // WHEN a cache may answer is a rule with four cases and a clock, so it lives in
