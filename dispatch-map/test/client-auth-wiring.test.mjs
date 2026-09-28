@@ -257,8 +257,9 @@ test('AND THE APP BAR — the one this test is named after and never checked', (
   // Shell owns the order, so Shell computes "is anything above the header?" — once, and
   // spelled out, rather than each bar guessing where it sits.
   // v1.75.0 added the NuVizz-login bar to the stack above the header, so the header gives up the
-  // inset while it shows too.
-  assert.match(shell, /const headerAtTop = !updateAvailable && !denials\.length && !roleRefusal && !LEGACY_FLAG_ONLY && !loginNotice;/,
+  // inset while it shows too. v1.85.0 added the UAT site's Live / Planning bar, which is ALWAYS in
+  // the stack on a UAT host (BENCH_ON) — so there the header never carries it.
+  assert.match(shell, /const headerAtTop = !updateAvailable && !denials\.length && !roleRefusal && !LEGACY_FLAG_ONLY && !loginNotice && !BENCH_ON;/,
     'the header is last in the stack and says so');
   assert.match(shell, /<MobileAppBar[\s\S]{0,400}?atTop=\{headerAtTop\}/, 'the PHONE header is handed it');
   assert.match(shell, /<header className="shrink-0 relative z-30[^>]*style=\{headerAtTop \? \{ paddingTop: 'env\(safe-area-inset-top\)' \} : undefined\}/,

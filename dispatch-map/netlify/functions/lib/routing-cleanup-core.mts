@@ -35,7 +35,9 @@
 // ZERO NuVizz calls, ZERO writes. This produces a proposal; the dispatcher edits
 // it on the Compare workbench and the existing Save is the only path to NuVizz.
 
-import { readStops } from './firestore.mts';
+// The day's board as a planning surface reads it: on the UAT site in planning mode every row reads
+// unplanned (lib/uat-planning-mode.mts); everywhere else this is readStops, unchanged.
+import { readStopsForPlanning } from './uat-planning-mode.mts';
 import { DEPOT } from './history-derive.mts';
 import { ENGINE_VERSION, loadEngineConfig, type EngineConfig } from './routing-engine-config.mts';
 import { type ZonePrecisions } from './zones.mts';
@@ -1471,7 +1473,7 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
 }
 
 // I/O wrapper: live board + the same as-of learning inputs the nightly uses.
-// ZERO NuVizz calls — readStops and loadPlanInputs are Firestore-only.
+// ZERO NuVizz calls — readStopsForPlanning and loadPlanInputs are Firestore-only.
 export async function runCleanup(
   tenant: string, date: string, trucks: CleanupTruckInput[], excludeStopNbrs?: string[],
   ruleOpts: { tractorOnlyGreen?: boolean; windowMode?: 'strict' | 'advisory' } = {},
@@ -1491,7 +1493,7 @@ export async function runCleanup(
   }
 
   const cfg = await loadEngineConfig(tenant);
-  const { meta, stops } = await readStops(tenant, date);
+  const { meta, stops } = await readStopsForPlanning(tenant, date);
   if (!stops.length) {
     return { ok: false, status: 404, error: `no board data for ${date} — the scheduled scan has not written that day yet` };
   }
