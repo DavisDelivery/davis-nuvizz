@@ -474,6 +474,61 @@ export function historyShowsOrder(answer, pro) {
     .some((v) => bare(v) === want);
 }
 
+// ── THE ORDER PANEL'S ACTIVITY TIMELINE — asked for, never fetched on its own ────────────
+//
+// Chad, 2026-09-28, looking at an order on this screen: "Where is my activity history?" — and,
+// once told it is a NuVizz read we do not keep: "yes i want the activity timeline button there
+// doesn't automatically make the call unless someone selects it."
+//
+// The timeline (planned, dispatched, updated, arrived — with who did it) is NOT in our records:
+// the stop card has always fetched it live, from nuvizz-stop-events, on first open. So on this
+// screen it is a button with the price on it, and the price is read off fetchStopEvents
+// (netlify/functions/lib/nuvizz-scan.mts), not guessed.
+
+/**
+ * PURE: what one press costs, quoted BEFORE it is pressed. Holding the order's own NuVizz id,
+ * the panel asks the detailed history by it and nothing else — ONE call. Without the id, a
+ * /stop/info goes first to find it — TWO. Either way one more if NuVizz's detailed history
+ * does not answer and it falls back to the plain one. The button quotes the usual price; what
+ * the press actually cost comes back counted (`nuvizzCalls`) and is what the screen adds up.
+ */
+export function timelinePrice(order) {
+  const calls = s(order?.stopId) ? 1 : 2;
+  return { calls, text: `${calls} NuVizz call${calls === 1 ? '' : 's'}` };
+}
+
+/**
+ * PURE: the query the panel's timeline sends. `refresh=0` always: the panel shows the sealed or
+ * board copy and never folds NuVizz's answer into it, so the stop card's /stop/info refresh
+ * would buy nothing here. The server still makes it when there is no stopId, because then it is
+ * the way to one. The stop NUMBER rides along for the plain-history fallback.
+ */
+export function timelineQuery(order) {
+  const p = new URLSearchParams();
+  const nbr = s(order?.stopNbr) || s(order?.pro);
+  const id = s(order?.stopId);
+  if (nbr) p.set('stopNbr', nbr);
+  if (id) p.set('stopId', id);
+  p.set('refresh', '0');
+  return p.toString();
+}
+
+/**
+ * PURE: a timeline that did not come back, as a sentence — and whether pressing again could
+ * change it. Scans switched off or the breaker open refuse before the wire, so a second press
+ * would only be refused again; anything else (NuVizz busy, a timeout) may answer next time.
+ * An HTTP status is REPORTED, not interpreted: what a 404 from /stop/eventinfo means is a fact
+ * about NuVizz the code does not hold (probeStop in nuvizz-scan.mts says the same of /stop/info).
+ */
+export function timelineFailure(reason) {
+  const r = s(reason);
+  if (r === 'scans_disabled') return { retry: false, text: 'NuVizz calls are switched off on this site — nothing was asked.' };
+  if (/breaker|circuit/i.test(r)) return { retry: false, text: 'The NuVizz call breaker is open — the daily ceiling has been reached. Nothing was asked; try again tomorrow, or raise the ceiling in Diagnostics.' };
+  const http = /^http_(\d{3})$/.exec(r);
+  if (http) return { retry: true, text: `NuVizz answered with an error (HTTP ${http[1]}) and sent no history.` };
+  return { retry: true, text: `NuVizz could not answer: ${r || 'no answer came back'}.` };
+}
+
 /** PURE: the ledger row for the source this answer came from — the calls it cost, on request.
  *  `calls` is what the requester counted (a retried busy answer costs more than one); absent,
  *  it is one. */
@@ -1092,6 +1147,9 @@ export function buildOrderDetail(stop, { date, today, source = 'sealed' } = {}) 
     date: s(date),
     source,
     stopNbr: s(st.stopNbr) || null,
+    // NuVizz's own id for THIS record. The activity timeline asks by it — one call, and never
+    // the other order sharing the number (an Estes twin) — see timelineQuery.
+    stopId: s(st.stopId) || null,
     pro: s(st.pro) || s(st.primaryPro) || s(st.stopNbr) || null,
     pros,
     name: s(st.businessName) || null,

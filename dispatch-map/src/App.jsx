@@ -66,7 +66,7 @@ import { rollbackTargets, rollbackRequestBody } from './lib/rollback-targets.js'
 // ONE rule decides whether a typed box is a PRO or a customer name, and the screen and the
 // endpoint (netlify/functions/stop-lookup.mts) both read it from here — so the box can never
 // be classified one way by the client and the other way by the server.
-import { classifyQuery, notesSummary, promptedCallsOnScreen, historyShowsOrder } from './lib/stop-lookup.js';
+import { classifyQuery, notesSummary, promptedCallsOnScreen, historyShowsOrder, timelinePrice, timelineQuery, timelineFailure } from './lib/stop-lookup.js';
 import { DEVICE_SWITCHES, switchReport, encodeValue, describeValue } from './lib/device-switches.js';
 // The trainee's driver-area rings on the Map tab — the printed sheet's page one, drawn live.
 import { DRIVER_AREAS_URL, driverAreasStatus, makeDriverAreaOverlayClass } from './lib/driver-area-overlay.js';
@@ -190,7 +190,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.82.2';
+const APP_VERSION = '1.83.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -244,6 +244,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.83.0', 'THE ACTIVITY TIMELINE IS IN STOP LOOKUP\u2019S ORDER PANEL NOW \u2014 AND IT ASKS NUVIZZ ONLY WHEN YOU PRESS IT. Chad, on an order open in Stop lookup: \u201cWhere is my activity history?\u201d \u2014 then: \u201cyes i want the activity timeline button there doesn\u2019t automatically make the call unless someone selects it.\u201d Every order panel has an Activity timeline section: one sentence saying what it is, and a button with its price on it (\u201cShow the activity timeline \u2014 1 NuVizz call\u201d). Nothing is asked until it is pressed. Then it lists every event NuVizz logged on the order \u2014 planned, dispatched, changed, delivered \u2014 with who did it, when, and the GPS spot where NuVizz has one. It is the same NuVizz read the stop card\u2019s timeline makes, made CHEAPER here: the card also re-reads the whole order (/stop/info) to fold new notes into itself, and the panel never does that. So with the order\u2019s own NuVizz id \u2014 every sealed, board and prompted record carries it \u2014 a press is ONE call, not two, and it asks by that id, so it can never show the other order sharing the number. Without the id it is two (/stop/info finds it) and the button says two; one more if NuVizz\u2019s detailed history fails and it falls back to the plain one. What a press ACTUALLY cost is counted by the server \u2014 retries included, the same count the daily ceiling is charged \u2014 and added to the header chip. The \u201cAnswered by NuVizz\u201d banner and the order\u2019s source line still quote only what the order itself cost. Scans off or the breaker open: it says nothing was asked and offers no retry. The stop card\u2019s timeline is unchanged. Putting it back is one commit \u2014 git revert.'],
   ['1.82.2', 'ACCOUNT & LOGINS BECOMES ADMIN-ONLY THE MOMENT SIGN-IN GOES LIVE. Chad: “so i can get all the users set up on the backend before we turn this on so its seemless then the access to the usesrs tab will only be in my admin setup after we go live.” Until VITE_LOGIN_ENABLED is switched on nothing changes: the screen stays under More for everyone, because it is where the first admin is created, where the accounts and their NuVizz logins get set up, and where a dispatcher can sign in ahead of the switch so the switch changes nothing for them. From the switch on, only admins see it, in the desktop More menu and the phone menu alike, and everyone gets a Sign out at the bottom of the menu — the only one used to be inside that screen, so a shared office PC could not have changed hands at shift change. When NuVizz refuses a dispatcher’s saved NuVizz login, the bar now asks them to get Chad or another admin to update it instead of offering a button into a screen they cannot open, and the sentences about it say the login has to be re-entered under Account & logins rather than “re-enter yours”.'],
   ['1.82.1', '\u201cOPEN THIS ORDER\u2019S FULL HISTORY\u201d GOES SOMEWHERE NOW. Chad, on an attempted order\u2019s panel in Stop lookup: \u201cwhen you click open orders full history nothing happens.\u201d Reproduced in a real browser before it was fixed. The button re-runs the lookup for the order\u2019s PRO \u2014 and when the panel was opened from that order\u2019s OWN full history (the list of every day it was on file), it re-ran the page it sat on: the panel closed and the same page came back. Now, on the order\u2019s own history, the panel says so instead (\u201cThis is the order\u2019s full history \u2014 every day it was on file is in the list above\u201d), and the button is offered only where it goes somewhere. AND WHERE IT DID GO SOMEWHERE it could still look like nothing: from a customer\u2019s or an address\u2019s list, the new page came up scrolled wherever the old list had been, so a desktop showed the middle of the order\u2019s history. The jump now lands on the new page\u2019s start on every width (the phone already scrolled to a new answer, but only downward). Zero NuVizz calls; the lookup itself is unchanged.'],
   ['1.82.0', 'DRIVER AREAS: COLOURS YOU CAN TELL APART, A NAME THAT LIGHTS UP ITS AREA, AND OVALS SET BY LOOKING AT THE REAL HISTORY. Chad, 2026-09-28: \u201cMake drivers name match color of their circle and when you hover over there name there area gets a translucent background. and give circles a varied color pallette\u201d \u2014 and on the ovals: \u201cSome may be circles others may be ovals you just look at the data.\u201d COLOURS: the ten muted print colours (navy, slate, a second blue, two browns) read as one dark tangle on the live map, so a name\u2019s colour could not be matched to its line. Twelve now, one per colour family \u2014 red, blue, green, orange, purple, teal, pink, gold, sky, brown, violet, olive \u2014 all readable as a name on the map; the name is drawn in its ring\u2019s colour as before, and now it shows. NEIGHBOURS GET DIFFERENT ONES: colours were handed out by rank, so rings on top of each other could share one; now each driver, busiest first, takes the colour least like the rings he overlaps (on the four weeks to Sep 28, same-colour pairs among rings overlapping by more than half went from 12 to 4). The printed sheet uses the same colours. POINT AT A NAME and that driver\u2019s whole area \u2014 both rings, for a man who works two \u2014 fills in his colour, see-through, with a heavier line; pointing away puts it back. On a phone a tap on the name does it. The names still take no clicks: the pointer is followed on the map and matched to where the names are drawn, so a click on a name still reaches the pin under it. The switch\u2019s line says so. OVALS, BY LOOKING AT THE DATA: all 52 real rings with enough stops were drawn over their own stops and looked at. The first version shaped an oval from how the stops spread and left three plain road runs round (Victor Fernandez, Rasheed Davis, Marcus Young). The oval is now the smallest one holding the same 70% of his stops (every direction in 5\u00b0 steps, up to 4 to 1 long), drawn when it covers at most 62% of the circle\u2019s ground (half, under 100 stops). 24 of the 52 are ovals, every one a run along a road or between towns; those just under the line are round or scattered patches, or a town with a trail off one side. PUT IT BACK: revert this commit.'],
@@ -37682,10 +37683,109 @@ function DetailSection({ title, children, note }) {
   );
 }
 
+/**
+ * THE ORDER'S ACTIVITY TIMELINE — ASKED FOR, NEVER FETCHED ON ITS OWN.
+ *
+ * Chad, 2026-09-28: "yes i want the activity timeline button there doesn't automatically make
+ * the call unless someone selects it." Who planned the order, dispatched it, changed it, and
+ * when is not in our records — it is a NuVizz read (the stop card's timeline, same endpoint) —
+ * so here it is a button with the price on it, and nothing is asked until it is pressed. The
+ * rules are pure and pinned in src/lib/stop-lookup.js (timelinePrice / timelineQuery /
+ * timelineFailure). What a press actually cost comes back COUNTED and goes to `onSpent`, which
+ * the header chip adds up. The call site keys this by the order, so a different order always
+ * starts unasked.
+ */
+function OrderActivityTimeline({ order, onSpent }) {
+  const [st, setSt] = useState({ phase: 'idle', events: [], reason: null, calls: 0 });
+  const alive = useRef(true);
+  const inFlight = useRef(false);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const price = timelinePrice(order);
+  const ask = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setSt((x) => ({ ...x, phase: 'asking', reason: null }));
+    let j;
+    try {
+      const r = await apiFetch(`/.netlify/functions/nuvizz-stop-events?${timelineQuery(order)}`, { cache: 'no-store' });
+      j = await r.json();
+    } catch (e) { j = { ok: false, reason: String(e?.message || e) }; }
+    inFlight.current = false;
+    // Closed while NuVizz was answering: nothing of it is on screen, so nothing is added to
+    // the screen's count — the same rule Ask NuVizz follows for an answer that was replaced.
+    if (!alive.current) return;
+    const n = Number(j?.nuvizzCalls) > 0 ? Number(j.nuvizzCalls) : 0;
+    if (n) onSpent?.(n);
+    setSt((x) => ({
+      phase: j?.ok ? 'done' : 'failed',
+      events: j?.ok && Array.isArray(j.events) ? j.events : [],
+      reason: j?.ok ? null : (j?.reason || null),
+      calls: x.calls + n,
+    }));
+  };
+  const fail = st.phase === 'failed' ? timelineFailure(st.reason) : null;
+  const spent = st.calls > 0 ? `${st.calls} NuVizz call${st.calls === 1 ? '' : 's'}` : null;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+        <Activity size={12} /> Activity timeline
+      </div>
+      <div className="rounded-xl border bg-white px-3 py-2 space-y-2">
+        {st.phase === 'done' ? (
+          st.events.length ? (
+            <ol className="space-y-2">
+              {st.events.map((e, i) => (
+                <li key={`${e.dttm}-${i}`} className="flex gap-2 min-w-0">
+                  <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-slate-400" />
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-slate-800 break-words">{e.name || '—'}</div>
+                    <div className="text-[11px] text-slate-500 break-words">
+                      {[fmtNoteTime(e.dttm), e.user && `by ${e.user}`, e.company && `from ${e.company}`].filter(Boolean).join(' · ')}
+                    </div>
+                    {e.lat != null && e.lng != null && (
+                      <a href={`https://www.google.com/maps/search/?api=1&query=${e.lat},${e.lng}`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] text-blue-700 hover:underline">
+                        <MapPin size={11} /> {Number(e.lat).toFixed(5)}, {Number(e.lng).toFixed(5)}
+                      </a>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : <div className="text-sm text-slate-600">NuVizz sent back no activity for this order.</div>
+        ) : (
+          <>
+            <div className="text-[13px] leading-snug text-slate-600">
+              Every event NuVizz logged on this order &mdash; planned, dispatched, changed, delivered &mdash; with who did it and when.
+              We don&rsquo;t keep it, so nothing is asked until you press.
+            </div>
+            {fail && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 break-words">{fail.text}</div>}
+            {(!fail || fail.retry) && (
+              <button type="button" onClick={ask} disabled={st.phase === 'asking'}
+                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-400 bg-white px-3 min-h-[44px] text-sm font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60">
+                <Activity size={14} className={st.phase === 'asking' ? 'animate-pulse' : ''} />
+                {/* The price never splits across lines ("— 1 / NuVizz call" on a phone). */}
+                {st.phase === 'asking' ? 'Asking NuVizz…'
+                  : <span>{fail ? 'Try again' : 'Show the activity timeline'} — <span className="whitespace-nowrap">{price.text}</span></span>}
+              </button>
+            )}
+          </>
+        )}
+        {spent && (
+          <div className="text-[11px] text-slate-500">
+            {st.phase === 'done' ? `From NuVizz, asked for just now — ${spent}.` : `${spent} spent so far, on request.`}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** The body of the panel. Shared by both shapes, because the CONTENT is the same question —
  *  only the SHAPE differs: given real width the sections sit side by side, and on a phone they
  *  stack. See OrderDetailPanel for why there is width to use at all now. */
-function OrderDetailBody({ data, onOpenHistory, wide }) {
+function OrderDetailBody({ data, onOpenHistory, onTimelineSpent, wide }) {
   const d = data?.stop;
   if (!d) return null;
   const note = data.note;
@@ -37839,6 +37939,11 @@ function OrderDetailBody({ data, onOpenHistory, wide }) {
 
       </div>
 
+      {/* FULL WIDTH, UNDER THE RECORD AND OVER ITS SOURCE LINE: the timeline is NuVizz's, not
+          ours, so it sits apart from the sections read out of our own records. Keyed by the
+          order — a different order is a fresh, unasked button. */}
+      <OrderActivityTimeline key={`${d.stopNbr || d.pro}|${d.stopId || ''}|${d.date}`} order={d} onSpent={onTimelineSpent} />
+
       <div className="rounded-xl border bg-slate-50 p-3 space-y-2">
         <div className="text-[11px] text-slate-500">
           {/* WHICH KIND OF RECORD THIS IS. The seal cannot change again; a board copy is live
@@ -37894,7 +37999,7 @@ function OrderDetailBody({ data, onOpenHistory, wide }) {
  * full-cover sheet with this, and that is a gain: the sheet replaced the list, so a rep
  * checking three of a customer's orders left and re-entered it three times.
  */
-function OrderDetailPanel({ loading, err, data, stacked, onClose, onOpenHistory }) {
+function OrderDetailPanel({ loading, err, data, stacked, onClose, onOpenHistory, onTimelineSpent }) {
   const ref = useRef(null);
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -37916,12 +38021,12 @@ function OrderDetailPanel({ loading, err, data, stacked, onClose, onOpenHistory 
         <button onClick={onClose} aria-label="Close order detail"
           className="ml-auto rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50">Close</button>
       </div>
-      <OrderDetailInner loading={loading} err={err} data={data} wide={!stacked} onOpenHistory={onOpenHistory} />
+      <OrderDetailInner loading={loading} err={err} data={data} wide={!stacked} onOpenHistory={onOpenHistory} onTimelineSpent={onTimelineSpent} />
     </div>
   );
 }
 
-function OrderDetailInner({ loading, err, data, onOpenHistory, wide }) {
+function OrderDetailInner({ loading, err, data, onOpenHistory, onTimelineSpent, wide }) {
   if (loading) return <div className="text-sm text-slate-500">Loading the order…</div>;
   if (err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3 break-words">{err}</div>;
   // A READ THAT FAILED IS NOT A MISSING ORDER. The endpoint says `complete: false` (and why)
@@ -37947,7 +38052,7 @@ function OrderDetailInner({ loading, err, data, onOpenHistory, wide }) {
       </div>
     );
   }
-  return <OrderDetailBody data={data} onOpenHistory={onOpenHistory} wide={wide} />;
+  return <OrderDetailBody data={data} onOpenHistory={onOpenHistory} onTimelineSpent={onTimelineSpent} wide={wide} />;
 }
 
 // ── THE CUSTOMER VIEW — built for the person answering the phone ────────────
@@ -38824,7 +38929,9 @@ const LOOKUP_ORDER_HINT = 'Leading zeros are optional. A carrier PRO such as AVR
 /** THE PRICE OF WHAT IS ON SCREEN, read off the answer — not a slogan. Every Firestore answer
  *  says 0; a prompted answer says what the requester COUNTED (one, or more when a busy NuVizz
  *  was retried) and that it was asked for. A dot and a word, not a green box: it is a fact to
- *  be able to check, not the headline of the page. */
+ *  be able to check, not the headline of the page. At zero the hover says what is ON screen and
+ *  no more: two buttons here can ask NuVizz (Ask NuVizz on a miss, and since v1.83.0 the order
+ *  panel's activity timeline), each saying its price. */
 function LookupCallsPill({ calls }) {
   const n = Number(calls) > 0 ? Number(calls) : 0;
   const spent = n > 0;
@@ -38832,7 +38939,7 @@ function LookupCallsPill({ calls }) {
     <span
       // "Asked", not "answered": the count now stays up after NuVizz had nothing too (app-A4-8),
       // and over that miss the order on screen did NOT come from NuVizz.
-      title={spent ? `NuVizz was asked about this order, on request — ${n === 1 ? 'one call' : `${n} calls`} spent.` : 'Everything on this screen is read from our own records. Nothing here spends a NuVizz call.'}
+      title={spent ? `NuVizz was asked about this order, on request — ${n === 1 ? 'one call' : `${n} calls`} spent.` : 'Everything on this screen was read from our own records — no NuVizz call has been spent. Only a button that says its price asks NuVizz.'}
       className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${
         spent ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-white text-slate-600 ring-slate-200'}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${spent ? 'bg-amber-500' : 'bg-emerald-500'}`} />
@@ -39713,18 +39820,27 @@ function StopLookupScreen() {
    */
   // `opts.stacked` — a list that sits in a NARROW column on a desktop (a load's stops beside its
   // map) asks for the panel's one-column layout; three columns in 560px is a squeeze, not a view.
+  /** THE ACTIVITY TIMELINE'S CALLS, KEPT APART FROM WHAT THE ANSWER COST. `nuvizzCalls` is the
+   *  answer's own price — the prompted banner and the order's source line quote it as "Answered
+   *  by NuVizz — N calls" — so a timeline press folded into it would say the order itself cost
+   *  more than it did. The header chip adds the two; a new search starts both at nothing. */
+  const timelineSpent = useCallback((n) => {
+    setData((cur) => (cur ? { ...cur, timelineCalls: promptedCallsOnScreen(cur.timelineCalls, n) } : cur));
+  }, []);
+
   const renderOrderPanel = useCallback((stopNbr, date, opts = {}) => {
     if (!detail) return null;
     if (detail.stopNbr !== String(stopNbr ?? '').trim() || detail.date !== String(date ?? '').trim()) return null;
     const pro = detailData?.stop?.pro || detail.stopNbr;
     return (
-      <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={opts.stacked ?? isMobile}
+      <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={opts.stacked ?? isMobile} onTimelineSpent={timelineSpent}
         onClose={closeOrder} onOpenHistory={historyShowsOrder(data, pro) ? null : () => pick(pro)} />
     );
-  }, [detail, detailLoading, detailErr, detailData, isMobile, closeOrder, pick, data]);
+  }, [detail, detailLoading, detailErr, detailData, isMobile, closeOrder, pick, data, timelineSpent]);
 
   /**
-   * ASK NUVIZZ — the one thing on this screen that spends a call, and only a person can do it.
+   * ASK NUVIZZ — one of the two things on this screen that spend a call (the other is the order
+   * panel's activity timeline, OrderActivityTimeline), and only a person can do either.
    *
    * Chad: "if it's a specific customer pro or date range that is not in the firestore data
    * allow a prompted nuvizz call." Offered only after a COMPLETE miss (every source that could
@@ -40057,7 +40173,7 @@ function StopLookupScreen() {
             <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900">Stop lookup</h1>
             <p className="mt-1 text-sm text-slate-500">Search our delivery records by order, customer, address or city &mdash; or look at a driver&rsquo;s week of loads.</p>
           </div>
-          <LookupCallsPill calls={data?.nuvizzCalls} />
+          <LookupCallsPill calls={promptedCallsOnScreen(data?.nuvizzCalls, data?.timelineCalls)} />
         </header>
 
         <div ref={panelRef}>

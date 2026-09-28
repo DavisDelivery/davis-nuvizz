@@ -225,8 +225,10 @@ test('THE BUTTON SAYS ITS PRICE, is offered only after a COMPLETE miss, and call
 test('a NuVizz answer is LABELLED as one, on the screen and in the drawer, and the header chip counts it', () => {
   assert.match(APP, /Answered by NuVizz — 1 call, on request\./, 'the banner over a prompted order');
   assert.match(APP, /Straight from NuVizz — one call, asked for just now\./, 'the drawer says which kind of record it is');
-  // The chip reads the ANSWER's own count, not a slogan (v1.63.0 moved it into LookupCallsPill).
-  assert.match(APP, /<LookupCallsPill calls=\{data\?\.nuvizzCalls\} \/>/, 'the chip is handed the answer\'s count');
+  // The chip reads the ANSWER's own count, not a slogan (v1.63.0 moved it into LookupCallsPill) —
+  // plus, since v1.83.0, what the order panel's activity timeline spent, kept in its own field so
+  // the banner and the source line above still quote what the answer itself cost.
+  assert.match(APP, /<LookupCallsPill calls=\{promptedCallsOnScreen\(data\?\.nuvizzCalls, data\?\.timelineCalls\)\} \/>/, 'the chip is handed the answer\'s count and the timeline\'s');
   const pill = APP.slice(APP.indexOf('function LookupCallsPill'), APP.indexOf('function LookupSectionHead'));
   // …and prints the count the answer carries: a retried busy NuVizz spends more than one
   // (audit 2026-09-27, shiplify-lookup-uat-6), and `calls === 1` printed "0" for those.

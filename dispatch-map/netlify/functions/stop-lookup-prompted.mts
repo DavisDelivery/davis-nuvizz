@@ -1,4 +1,7 @@
-// stop-lookup-prompted.mts — THE ONE DOOR ON THE STOP LOOKUP SCREEN THAT SPENDS A NUVIZZ CALL.
+// stop-lookup-prompted.mts — THE ONE DOOR ON THE STOP LOOKUP SCREEN THAT SPENDS A NUVIZZ CALL ON
+// FINDING AN ORDER. (Since v1.83.0 the order panel has a second, separate one: its activity
+// timeline, which asks nuvizz-stop-events — the stop card's endpoint — only when its priced
+// button is pressed. Neither is in stop-lookup.mts, whose zero-call promise below still holds.)
 //
 // Chad, 2026-09-19: "if it's a specific customer pro or date range that is not in the
 // firestore data allow a prompted nuvizz call."

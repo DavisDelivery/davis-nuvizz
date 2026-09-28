@@ -34,6 +34,7 @@ import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
+import { ORDER_EVENTS } from './lib/customer-view-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
@@ -545,6 +546,29 @@ const PROBES = {
         await order.click();
         await page.waitForTimeout(900);
         return page.getByText(/proof of delivery/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // THE ACTIVITY TIMELINE ASKED FOR (v1.83.0): the order panel with NuVizz's events under it
+      // — a name that wraps twice, a user that is one unbroken email address and two GPS links,
+      // each a tap target. None of it exists until the priced button is pressed.
+      name: "an order's activity timeline asked for",
+      open: async (page) => {
+        const box = page.getByLabel(/find a customer by name/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('earthly alternative');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        const order = page.getByRole('button', { name: /^007180002$/ }).first();
+        if (!(await order.isVisible().catch(() => false))) return false;
+        await order.click();
+        await page.waitForTimeout(900);
+        const ask = page.getByRole('button', { name: /show the activity timeline/i }).first();
+        if (!(await ask.isVisible().catch(() => false))) return false;
+        await ask.click();
+        await page.waitForTimeout(700);
+        // PROVES ITS STATE: the event that wraps twice is on screen.
+        return page.getByText(/waiting for a dock door assignment/i).first().isVisible().catch(() => false);
       },
     },
     {
@@ -1110,6 +1134,9 @@ function stubRoutes(page, emailHtml) {
     // (scripts/lib/driver-week-fixture.mjs). Before the catch-all, which would answer it with an
     // empty board and measure a screen with nothing on it.
     if (u.includes('driver-loads')) return R(driverWeekAnswer(u));
+    // THE ORDER PANEL'S ACTIVITY TIMELINE (v1.83.0), answered with the worst rows. Before the
+    // catch-all, which would answer it with an empty board — a panel saying NuVizz sent nothing.
+    if (u.includes('nuvizz-stop-events')) return R(ORDER_EVENTS);
     if (u.includes('stop-lookup')) return R(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.
