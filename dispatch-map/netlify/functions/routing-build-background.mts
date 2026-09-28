@@ -28,6 +28,7 @@ import { requireUserForBackground } from './lib/background-gate.mts';
 // The truck/stop rule is shared with step 4's "Fill my loads" (routing-cleanup-core) — one rule,
 // two builders, so the same stop cannot ride a tractor from one button and a box from the other.
 import { equipmentReqsFrom } from './lib/routing-equipment.mts';
+import { buildRules, buildFreightFields, trucksWithRoomLeft, withExistingFreight, type BuildRules } from './lib/routing-build-rules.mts';
 
 // Overall job deadline (belt-and-suspenders with the per-call 8s timeouts). A
 // normal deterministic build finishes in well under a second; this only fires if
@@ -46,8 +47,12 @@ async function readNoteFor(stop: any): Promise<any | null> {
   } catch { return null; }
 }
 
-// Resolve the pipeline's stop inputs from selectedStopIds against the live cache.
-async function resolveStops(tenant: string, date: string, selectedStopIds: string[], opts?: { tractorOnlyGreen?: boolean }): Promise<PipelineStopInput[]> {
+// Resolve the pipeline's stop inputs from selectedStopIds against the live cache. Returns the
+// board too: the room-left rule counts a load's existing stops off the same rows.
+async function resolveStops(
+  tenant: string, date: string, selectedStopIds: string[],
+  opts: { tractorOnlyGreen?: boolean; panelGreen?: Set<string>; rules: BuildRules },
+): Promise<{ stops: PipelineStopInput[]; boardById: Map<string, any> }> {
   const { stops } = await readStops(tenant, date);
   // TIME RESTRICTIONS (routing-time-windows.mts) — on unless ROUTING_TIME_RESTRICTIONS=off.
   // The vendor's default creation slot is detected over the WHOLE board, never the
@@ -64,12 +69,15 @@ async function resolveStops(tenant: string, date: string, selectedStopIds: strin
     const note = await readNoteFor(s);
     out.push({
       stopNbr: s.stopNbr, lat: Number(s.lat), lng: Number(s.lng),
-      pallets: s.pallets, weight: s.weight, weightUOM: s.weightUOM,
-      stopDetails: s.stopDetails || [],
+      // pallets, weight, line items — and the real skid count (cartons) unless
+      // ROUTING_BUILD_COUNT_SKIDS=off (lib/routing-build-rules.mts).
+      ...buildFreightFields(s, opts.rules),
       signalSources: s.signalSources || null, addr2: s.addr2 || null,
       scheduledFrom: s.scheduledFrom || null, scheduledTo: s.scheduledTo || null,
       timeConstraint: s.timeConstraint || null,
-      equipmentReqs: equipmentReqsFrom(note, opts),
+      // "Only green on a 53′" reads the panel's green when the browser sent it
+      // (ROUTING_BUILD_GREEN_MATCHES_PANEL); restrictions and red marks apply regardless.
+      equipmentReqs: equipmentReqsFrom(note, { tractorOnlyGreen: opts.tractorOnlyGreen, panelGreen: !!opts.panelGreen?.has(String(s.stopNbr)) }),
       // "Whether or not it's a tractor friendly stop": the clock rule never reads an
       // eligibility mark (pinned by test), so a green stop and a red stop with the same
       // hours get the same window.
@@ -77,7 +85,7 @@ async function resolveStops(tenant: string, date: string, selectedStopIds: strin
       businessName: s.businessName || null,
     });
   }
-  return out;
+  return { stops: out, boardById: byId as Map<string, any> };
 }
 
 async function resolveTrucks(profileIds: string[]): Promise<SolverTruck[]> {
@@ -133,10 +141,20 @@ export default async function handler(req: Request): Promise<Response> {
     // shortcut the client does not currently use (it always sends selectedStopIds); a
     // future caller that pre-resolves r.stops must bake the eligibility reqs in itself,
     // since this path bypasses equipmentReqsFor.
-    const stops: PipelineStopInput[] = Array.isArray(r.stops) && r.stops.length
-      ? r.stops
-      : await resolveStops(tenant, date, r.selectedStopIds || [], { tractorOnlyGreen });
-    const trucks = Array.isArray(r.trucks) && r.trucks.length ? r.trucks : await resolveTrucks(r.truckProfileIds || []);
+    // THE BUILD'S CAPACITY AND GREEN RULES (lib/routing-build-rules.mts), each its own switch.
+    const rules = buildRules();
+    const panelGreen = rules.greenMatchesPanel && Array.isArray(r.panelGreenStopIds)
+      ? new Set<string>(r.panelGreenStopIds.slice(0, 2000).map((x: any) => String(x))) : undefined;
+    let boardById = new Map<string, any>();
+    let stops: PipelineStopInput[];
+    if (Array.isArray(r.stops) && r.stops.length) stops = r.stops;
+    else ({ stops, boardById } = await resolveStops(tenant, date, r.selectedStopIds || [], { tractorOnlyGreen, panelGreen, rules }));
+    let trucks = Array.isArray(r.trucks) && r.trucks.length ? r.trucks : await resolveTrucks(r.truckProfileIds || []);
+    // A picked load that already carries stops is offered only the room it has LEFT.
+    let existing: Record<string, any> = {};
+    if (rules.countsExisting && Array.isArray(r.trucks) && r.trucks.length && r.existingByTruck && typeof r.existingByTruck === 'object') {
+      ({ trucks, existing } = trucksWithRoomLeft(trucks, r.existingByTruck, boardById, rules, (r.selectedStopIds || []).map(String)));
+    }
 
     if (!stops.length) { await updateJob(jobId, { status: 'error', error: 'no mappable stops selected', finished_at: new Date().toISOString() }); return json({ ok: true, jobId, accepted: true }); }
     if (!trucks.length) { await updateJob(jobId, { status: 'error', error: 'no truck profiles selected', finished_at: new Date().toISOString() }); return json({ ok: true, jobId, accepted: true }); }
@@ -190,7 +208,13 @@ export default async function handler(req: Request): Promise<Response> {
       // aiRequested lets the result panel tell "never asked" apart from "asked, and the site
       // has no ANTHROPIC_API_KEY" — the second is a configuration problem, and it used to read
       // as the same "off".
-      result: { ...plan, aiConfigured: aiOn, aiRequested: r.aiAssist === true },
+      result: {
+        // A load that already carried freight reports its true load against its whole profile.
+        ...withExistingFreight(plan, existing, trucks), aiConfigured: aiOn, aiRequested: r.aiAssist === true,
+        // Which of the Build's rules ran, read back from the build itself — never from the switch
+        // settings in someone's memory — and what each load already carried.
+        buildRules: { ...rules, panelGreenStops: panelGreen ? panelGreen.size : null, existing },
+      },
     });
   } catch (e: any) {
     console.error('routing-build:', e?.message);

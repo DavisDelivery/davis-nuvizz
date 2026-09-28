@@ -31,7 +31,14 @@ export const TRAILER_BLOCKERS = new Set<EquipmentReq>([
   '26ft_max', 'no_53', 'no_53ft', 'no_overhead_clearance',
 ]);
 
-export function equipmentReqsFrom(note: any, opts?: { tractorOnlyGreen?: boolean }): EquipmentReq[] {
+// opts.panelGreen — the browser says the Selected panel paints this stop GREEN (tractor OK by the
+// hand-painted mark, the "Tractor trailer friendly" badge, or a tractor having delivered there:
+// App.jsx stopTractorFriendly, the one rule the panel, its "Drop N non-tractor" button and the
+// bottom grid all read). It only answers the question "only green on a 53′" asks — a green stop is
+// not held to a box BY THAT TICK. It lifts nothing else: a red Box-only mark and every
+// restriction on the note still apply exactly as before, so it can only ever let a stop the panel
+// already calls tractor-OK onto a trailer, never a stop somebody said no to.
+export function equipmentReqsFrom(note: any, opts?: { tractorOnlyGreen?: boolean; panelGreen?: boolean }): EquipmentReq[] {
   try {
     let reqs: EquipmentReq[] = [];
     const arr = note?.equipment_restrictions;
@@ -45,7 +52,7 @@ export function equipmentReqsFrom(note: any, opts?: { tractorOnlyGreen?: boolean
     const elig = note?.vehicle_eligibility;
     if (elig === 'tractor') {
       reqs = reqs.filter((r) => !TRAILER_BLOCKERS.has(r));
-    } else if (elig === 'box_only' || opts?.tractorOnlyGreen === true) {
+    } else if (elig === 'box_only' || (opts?.tractorOnlyGreen === true && opts?.panelGreen !== true)) {
       if (!reqs.includes('box_truck_only')) reqs.push('box_truck_only');
     }
     return reqs;

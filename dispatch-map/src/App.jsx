@@ -191,7 +191,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.85.1';
+const APP_VERSION = '1.86.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -245,6 +245,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.86.0', 'THE BUILD BUTTON STOPS A TRUCK AT WHAT IT CAN CARRY, AND ONLY GREEN ON A 53\u2032 MEANS THE GREEN THE PANEL PAINTS. Chad, after a Build onto CHE (a 53\u2032) and SCOTT (a 26\u2032 box) put 24 stops and 30 skids on the box and one stop on the trailer, with the Selected panel reading \u201cleaves 11 a tractor can run\u201d: \u201ca 14 skid box truck stops with 14 skids and if not enough green stops to fit on a tractor then it stops there too or at 30 skids either one. then lists everything that didn\u2019t fit.\u201d READ OFF THE CODE, THREE THINGS STOOD IN THE WAY, and the real Build pipeline reproduces his screen from them \u2014 on a 26-stop board of his shape it put 1 stop on CHE and 25 stops, 33 real skids, on SCOTT, having counted 0: (1) SKIDS WERE NOT COUNTED \u2014 the Build was sent pallets, weight and line items but never cartons, the field NuVizz carries the skid count in, so a stop\u2019s skids came only from lines itemised in pallets and a box filled on weight alone; (2) \u201cGREEN\u201d WAS NARROWER THAN THE PANEL\u2019S \u2014 with \u201cOnly green on a 53\u2032\u201d ticked the Build held every stop without a HAND-PAINTED green to a box, while the panel paints green for the painted mark, the \u201cTractor trailer friendly\u201d badge and a tractor having delivered there; (3) WHAT A LOAD ALREADY CARRIES WAS NOT COUNTED \u2014 a load that already holds stops was handed its whole truck again. NOW, on the same board: CHE takes the 11 stops the panel paints green (16 skids), SCOTT stops at exactly 14 skids, and the 6 stops that fit nowhere are listed with the reason (\u201cover skid capacity\u201d). A tractor stops at its own profile\u2019s skids too \u2014 the shipped tractor profile says 28; if yours holds 30 that is one field in Profiles. The browser sends the panel\u2019s own answer (stopTractorFriendly, the rule the Selected rows, \u201cDrop N non-tractor\u201d and the bottom grid already share) and what each picked load carries; the server counts both with its own freight rule. The panel\u2019s green only answers what the tick asks \u2014 a red Box-only mark, a hand-ticked No tractor trailer or No 53ft, and a Uline advisory still keep a 53\u2032 away exactly as before. Fill my loads reads the same green under the same tick, so the two buttons still agree on the same stop. A load that already carried freight reports its true load against its whole truck in the result (not \u201c9 / 9\u201d). PUT IT BACK, one rule at a time, each a Netlify switch read only in lib/routing-build-rules.mts: ROUTING_BUILD_COUNT_SKIDS=off, ROUTING_BUILD_GREEN_MATCHES_PANEL=off (both buttons), ROUTING_BUILD_COUNTS_EXISTING=off; every build\u2019s result says which ran (result.buildRules). WHAT IT TOUCHES: the Build Panel \u2014 the Build button\u2019s request and the server build path, and Fill my loads\u2019 request; the Compare cards, staging, Save and the map are untouched. 13 new tests run the real Build handler on an in-memory Firestore with every other network call refused, including Chad\u2019s board as it was and as it is now; ten deliberate breaks of the rules each turn a test red. A stop already on a load that is selected again is counted once, as a stop being re-planned.'],
   ['1.85.1', 'A “CAN’T MAKE” STOP NOW SHOWS ITS HOURS, ON THEIR OWN LINE. Chad, 2026-09-28, with MCKESSON (“CAN’T MAKE 11:00A”) and GENESIS BIOSCIENCES (“CAN’T MAKE 12:00P”) on SUW and no hours anywhere on either row: “2 stops can’t meet receiving hours however the hours are not listed on the card why?” — then “make it 2 rows on the card one with the hours and 2 with can’t make 12 or whatever.” The card used to drop a stop’s hours whenever the verdict named the same close, which hid when the dock OPENS and where the hours came from. A can’t-make row now reads two lines under the name: the whole window on file first (MCKESSON 7:00a–11:00a; GENESIS 8:00a–12:00p · auto, because those were read from the order text), then the CAN’T MAKE verdict. Only the half on file is ever stated — a dock with no opening time reads “closes 11:00a”, never an invented window. Every other row is unchanged, on the phone and the desktop. VITE_COMPARE_UNREACHABLE_HOURS=off puts back the verdict alone (build-time, so a redeploy). Zero NuVizz calls. 4 new tests; the pinned suppression test rewritten to the new rule with Chad’s words on it.'],
   ['1.85.0', 'UAT HAS A PLANNING MODE: ONE SWITCH, AND EVERY DAY\u2019S ORDERS READ UNPLANNED AND EVERY LOAD EMPTY \u2014 PRODUCTION IS NOT TOUCHED. Chad, 2026-09-28: \u201ci want you to make everything from today\u2019s deliveries back to unplanned so i can test of some of the planning changes we have made \u2026 should change nothing in productions database\u201d, and then the shape: \u201cmaybe we have a planning mode in the uat where it makes the days orders all unplanned so you have a live version essentially of uat and then have a planning mode where everything on any given day is in unplanned.\u201d THE BAR AT THE TOP OF EVERY UAT SCREEN SAYS WHICH BOARD YOU ARE LOOKING AT \u2014 \u201cUAT \u00b7 LIVE\u201d (production\u2019s copy) or \u201cUAT \u00b7 PLANNING MODE\u201d \u2014 and its button flips it for everyone on UAT, then reloads so nothing on screen is left from the other mode. Phone and desktop each have their own layout; production never shows the bar. IN PLANNING MODE, whatever day you open: every order reads unplanned \u2014 off its load, no driver, no sequence, no planned ETA, nothing delivered or out for delivery \u2014 and every load on that day\u2019s roster reads as an empty truck with its driver and load number still on it, so \u201c2 \u00b7 Plan onto\u201d offers them all as empty. The address, freight, time windows and restrictions all stay: the planner needs them. Cancelled orders stay off the board as always. The same view reaches the draft and end-of-night solvers, so a server-side plan sees the same all-unplanned day the screen does. WHY A VIEW AND NOT A REWRITE: the first plan was to rewrite today\u2019s stored rows as unplanned \u2014 but production rescans its stops all day and the live sync copies every row it changes onto UAT within ten minutes, so the rewrite would have quietly undone itself mid-test. Nothing stored changes here, on either database: the sync keeps running underneath, and \u201cBack to live\u201d is instant and current, with nothing to put back. NOT CHANGED: stop lookup, a driver\u2019s week and history keep showing the order as it really is; the Claude shadow tab has its own \u201cevery stop\u201d scope and is untouched. PUT IT BACK: \u201cBack to live\u201d on the bar; UAT_PLANNING_MODE=off on the UAT site removes the feature outright. Zero NuVizz calls. CHECKED IN A REAL BROWSER on a UAT-named host at 390, 360 and 1440 wide: the bar sits in the flow above the header, its button is not covered, no sideways scroll. 16 new tests, 5 mutations killed; 7,105 green.'],
   ['1.84.0', 'UAT NOW PICKS UP PRODUCTION\u2019S CHANGES ON ITS OWN, EVERY 10 MINUTES \u2014 AND NOTHING FLOWS BACK. Chad, 2026-09-26: \u201cmy loads are missing this is not a match to production like its supposed to be any update i make to production should automatically be here as well but any change to uat should not automatically go to production without explicit approval.\u201d MEASURED, NOT GUESSED, with the two free read-backs (no NuVizz calls): production held 90 loads for Monday 09-28, 51 with a driver, captured 8:30 PM ET Saturday; the UAT site held production\u2019s FRIDAY 12:15 PM copy of that day \u2014 0 loads \u2014 because UAT copied production ONCE A DAY, at 06:45 UTC, and its last copy was Saturday 2:45 AM ET. Monday\u2019s loads were made after it. THE FIX IS A LIVE SYNC (uat-mirror-sync-background, every 10 minutes, UAT only). Each tick copies onto UAT exactly the documents PRODUCTION has changed since the last tick \u2014 judged by Firestore\u2019s own update stamp, not by a field some writer might forget \u2014 for a fixed list: the load rosters and the board for today plus three days, the open-order pool and carry-over documents the board folds in, board-date overrides, the NuVizz driver list, customer notes (the map\u2019s flags, restriction marks, hours and moved pins), the truck/engine settings, and Shiplify (copied whole, once per import). ONE WAY, BY CONSTRUCTION: the only door to production is the read-only reader that has no writer in it, and the job refuses to start unless the site is the mirror. A CHANGE MADE ON UAT STAYS ON UAT UNTIL PRODUCTION CHANGES THAT SAME DOCUMENT \u2014 then production wins. That is what keeps UAT usable for testing: a test edit is not wiped every 10 minutes, only when somebody edits the same customer in production (and the 06:45 refresh still re-copies the settings every morning, as it always has). STOPS PRODUCTION REMOVED LEAVE UAT WITHIN 10 MINUTES, not at the next morning\u2019s refresh \u2014 by the nightly\u2019s own rule (v1.81.3 boardRowsToPrune), so the UAT bench\u2019s own test orders are never touched. AND UAT\u2019S LOADS TAB NO LONGER ASKS NUVIZZ ON ITS OWN. Found on the same evening: with a stale empty copy, the roster read went live \u2014 and on UAT live means the UAT NuVizz tenant, which answered 88 loads with no drivers and was written over production\u2019s copy of 09-26 at 8:43 PM. On UAT the Loads tab now serves production\u2019s copy with its real age, and its Refresh re-copies production\u2019s roster for that day; zero NuVizz calls either way. Production\u2019s Loads behave exactly as before (the change is gated on the mirror). SEE IT: uat-mirror-refresh?sync=1 on the UAT site is the last tick, unit by unit; ?sync=explain is what the next tick would copy, writing nothing. COST: Firestore reads only \u2014 about 2,000 a tick for the notes and settings plus one per board stop in the window, every 10 minutes; writes only for what changed. PUT IT BACK: UAT_LIVE_SYNC=off on the UAT site stops the tick and returns the Loads tab to its old path, together. STILL CHAD\u2019S TO DO ON THE UAT SITE, NOT FIXABLE FROM CODE: the red \u201cdatabase refused the read\u201d bar is the uat-mirror database\u2019s own Firestore rules (set in the Firebase console, separately from production\u2019s) \u2014 until they allow the browser, UAT cannot show hours, flags, restriction marks, tractor paint or Shiplify pins whatever is copied; and MOTIVE_API_KEY is not set on the UAT site. 25 new tests; 7,089 green.'],
@@ -26689,6 +26690,35 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   const wouldBeElements = (selectedIds.size + 1) ** 2;
   const wouldBeCost = Math.round((wouldBeElements / 1000) * BASIC_RATE_PER_1K_USD * 100) / 100;
 
+  // WHAT A PICKED LOAD ALREADY CARRIES, in running order — its open card's order when one is open
+  // (unsaved work included), else its board stops by the same rule the card opens with — and the
+  // freight behind those ids as this browser sees it. The server prefers its own board row; the
+  // browser's row is what lets it count a carry-over order from another day, which is not on the
+  // day's board and otherwise goes uncounted. ONE rule for both builders — the Build button and
+  // step 4's Fill my loads — so they cannot count a load's freight two ways. Read, never written.
+  const loadExistingIds = useCallback((t) => {
+    const card = wbRoutes.find((r) => r.key === t.display || (t.loadId && String(r.loadId || '') === String(t.loadId)));
+    if (card) return card.order.map(String);
+    return orderRouteStops(boardStopsAllRef.current.filter((x) => !x.windowExtra && (x.routeName || x.loadNbr) === t.display)).map((x) => String(x.stopNbr));
+  }, [wbRoutes]);
+  const loadExistingRows = useCallback((ids) => ids.map((id) => {
+    const x = stopById.get(id) || boardStopById.get(id);
+    return x ? {
+      stopNbr: id, cartons: x.cartons ?? null, volume: x.volume ?? null, pallets: x.pallets ?? null, weight: x.weight ?? null,
+      lat: x.lat ?? null, lng: x.lng ?? null, businessName: x.businessName ?? null, addr1: x.addr1 ?? null, city: x.city ?? null,
+      zip: x.zip ?? null, scheduledFrom: x.scheduledFrom ?? null, scheduledTo: x.scheduledTo ?? null,
+    } : { stopNbr: id };
+  }), [stopById, boardStopById]);
+  // THE STOPS THE SELECTED PANEL PAINTS GREEN — its own rule (stopTractorFriendly: the painted
+  // mark, the "Tractor trailer friendly" badge, or a tractor having delivered there) on its own
+  // data, so "only green on a 53′" means on the server exactly what the panel shows here. Chad,
+  // 2026-09-28: the panel read "leaves 11 a tractor can run" and the Build put ONE stop on CHE —
+  // the Build had only ever counted the painted mark.
+  const panelGreenIds = useCallback(
+    (stops) => (stops || []).filter((s) => stopTractorFriendly(s, notes, tractorLocs)).map((s) => String(s.stopNbr)),
+    [notes, tractorLocs],
+  );
+
   const runBuild = useCallback(async () => {
     if (!db) { setJob({ status: 'error', error: 'Firestore not configured' }); return; }
     setBuilding(true); setJob({ status: 'queued' }); setSaveState(null);
@@ -26718,6 +26748,15 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       strategy: effectiveStrategy(strategy, useGoogle),
       matrixMode: useGoogle ? 'google' : 'haversine',
       tractorOnlyGreen: trailerGreenOnly,
+      // THE BUILD'S CAPACITY AND GREEN RULES (netlify/functions/lib/routing-build-rules.mts, each
+      // its own switch on the server): the stops the Selected panel paints green, and what each
+      // picked load already carries so the Build fills only the room it has LEFT. The server
+      // counts both with its own freight rule and says which rules ran in result.buildRules.
+      panelGreenStopIds: panelGreenIds(selectedStops),
+      ...(loadsBound ? { existingByTruck: Object.fromEntries(planTargets.map((t) => {
+        const ids = loadExistingIds(t);
+        return [t.display, { stopNbrs: ids, stops: loadExistingRows(ids) }];
+      })) } : {}),
       // OPT-IN per build. routing-build-background gates every model call on exactly this
       // flag; the panel never sent it, so the note box was read by nothing (review finding #2).
       aiAssist: aiAssist === true,
@@ -26739,7 +26778,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     } catch (e) {
       setJob({ status: 'error', error: e.message }); setBuilding(false);
     }
-  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle, trailerGreenOnly, planMode, planTargets, aiAssist, windowStrict]);
+  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle, trailerGreenOnly, planMode, planTargets, aiAssist, windowStrict, selectedStops, panelGreenIds, loadExistingIds, loadExistingRows]);
 
   // Save panel — a name (prefilled with a sensible auto-name per build) + optional
   // free-text initials. No native prompt(); no auth.
@@ -27204,26 +27243,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // The picked load's own board stops tell us its driver, when it has one; an
     // empty shell has none, and the card's driver picker is where that is settled.
     const driverByName = new Map(routeGroups.map((g) => [String(g.name || g.key).toLowerCase(), g.driver || null]));
-    // WHAT EACH PICKED LOAD ALREADY CARRIES, in running order — its open card's order when one
-    // is open (unsaved work included), else its board stops by the same rule the card opens
-    // with. The engine fills the room that is LEFT and runs these first on the clock, because
-    // the engine's stops are added after them. Read here, never written.
-    const existingFor = (t) => {
-      const card = wbRoutes.find((r) => r.key === t.display || (t.loadId && String(r.loadId || '') === String(t.loadId)));
-      if (card) return card.order.map(String);
-      return orderRouteStops(boardStopsAllRef.current.filter((x) => !x.windowExtra && (x.routeName || x.loadNbr) === t.display)).map((x) => String(x.stopNbr));
-    };
-    // The freight behind those ids as this browser sees it. The server prefers its own board
-    // row; this is what lets it count a carry-over order from another day on the card, which
-    // is not on the day's board and otherwise went uncounted.
-    const existingRowsFor = (ids) => ids.map((id) => {
-      const x = stopById.get(id) || boardStopById.get(id);
-      return x ? {
-        stopNbr: id, cartons: x.cartons ?? null, volume: x.volume ?? null, pallets: x.pallets ?? null, weight: x.weight ?? null,
-        lat: x.lat ?? null, lng: x.lng ?? null, businessName: x.businessName ?? null, addr1: x.addr1 ?? null, city: x.city ?? null,
-        zip: x.zip ?? null, scheduledFrom: x.scheduledFrom ?? null, scheduledTo: x.scheduledTo ?? null,
-      } : { stopNbr: id };
-    });
+    // What each picked load already carries (loadExistingIds / loadExistingRows, shared with the
+    // Build button): the engine fills the room that is LEFT and runs these first on the clock,
+    // because its stops are added after them.
     try {
       const res = await apiFetch('/.netlify/functions/routing-cleanup', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -27235,6 +27257,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
           // which rules ran in `rules`, so the panel below reports what happened, not this ask.
           tractor_only_green: trailerGreenOnly === true,
           window_mode: windowStrict ? 'strict' : 'advisory',
+          // The pool is every unplanned stop on the board; send the ones the Selected panel would
+          // paint green, so "only green on a 53′" reads the same green here as on the Build button.
+          green_stop_nbrs: trailerGreenOnly ? panelGreenIds(boardStopsAllRef.current.filter((x) => x.isUnplanned === true)) : [],
           trucks: planTargets.map((t) => ({
             key: t.display, name: t.name || null, loadNbr: t.loadNbr, loadId: t.loadId,
             truck_class: t.profile?.capabilities?.tractor ? 'tractor' : 'box_truck',
@@ -27246,7 +27271,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
             driver_user_name: driverByName.get(String(t.display).toLowerCase()) || null,
             // The profile's equipment, exactly what the Build button hands its solver.
             capabilities: t.profile?.capabilities || null,
-            ...(() => { const ids = existingFor(t); return { existing_stop_nbrs: ids, existing_stops: existingRowsFor(ids) }; })(),
+            ...(() => { const ids = loadExistingIds(t); return { existing_stop_nbrs: ids, existing_stops: loadExistingRows(ids) }; })(),
           })),
         }),
       });
@@ -27267,7 +27292,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     } finally {
       if (runId === engineRunRef.current) setCleanupBusy(false);
     }
-  }, [planTargets, selectedDate, wbRoutes, routeGroups, stageCleanupPlan, engineGate.allowed, engineGate.reason, trailerGreenOnly, windowStrict, stopById, boardStopById]);
+  }, [planTargets, selectedDate, wbRoutes, routeGroups, stageCleanupPlan, engineGate.allowed, engineGate.reason, trailerGreenOnly, windowStrict, loadExistingIds, loadExistingRows, panelGreenIds]);
 
   const runEngineDraft = useCallback(async () => {
     if (!engineGate.allowed) { setDraftError(engineGate.reason); return; }

@@ -63,7 +63,7 @@ test('the answer SAYS which rules ran — a panel can never claim rules that did
   assert.equal(plan(rows, [shell('A')]).rules, 'build', 'default is the Build rules');
   assert.equal(plan(rows, [shell('A')], { rules: 'engine' }).rules, 'engine');
   const p = plan(rows, [shell('A')], { tractorOnlyGreen: true, windowMode: 'strict' });
-  assert.deepEqual(p.rules_detail, { tractor_only_green: true, window_mode: 'strict', time_restrictions: true });
+  assert.deepEqual(p.rules_detail, { tractor_only_green: true, window_mode: 'strict', time_restrictions: true, green_matches_panel: false });
 });
 
 test('ONE RULE, TWO BUILDERS: the Build button and Fill my loads import the same equipment rule', () => {
