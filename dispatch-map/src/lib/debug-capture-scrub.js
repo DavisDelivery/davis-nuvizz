@@ -36,6 +36,13 @@ export function scrubStop(s, seq, note) {
     stopNbr: s.stopNbr,
     pro: s.pro,
     loadNbr: s.loadNbr,
+    // The ROUTE name is loadNbr on a list row; the load NUMBER for the day comes from the roster
+    // (v1.82.0) — hand the agent both, labelled, so nobody has to ask which MARCUS this is.
+    routeName: s.routeName,
+    rosterLoadNbr: s.rosterLoadNbr,
+    rosterLoadId: s.rosterLoadId,
+    loadDay: s.loadDay,
+    heldOn: s.heldOn && typeof s.heldOn === 'object' ? { loadNbr: s.heldOn.loadNbr, day: s.heldOn.day, route: s.heldOn.route } : undefined,
     status: s.status,
     normalizedStatus: s.normalizedStatus,
     isPlanned: s.isPlanned,

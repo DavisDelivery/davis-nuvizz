@@ -227,8 +227,14 @@ export interface SectionInput {
   pickOf?: Map<string, number>;                  // pickIdentity → index of that pick in this plan
 }
 
-/** The key a board row's load goes by: its route name (a board row's loadNbr is the route name too). */
+/** The key a board row's ROUTE goes by: its route name (a list row's loadNbr is the route name too). */
 export const rowRouteKey = (r: any) => keyOf(String(r?.routeName || r?.loadNbr || ''));
+/** The key a board row's LOAD goes by (v1.82.0): the roster load number the scan wrote onto it, when it
+ *  wrote one (lib/route-load-day.mts), else null — the caller then falls back to the route name. */
+export const rowLoadNbrKey = (r: any): string | null => {
+  const n = String(r?.rosterLoadNbr ?? '').trim();
+  return n ? `nbr:${n}` : null;
+};
 
 /**
  * Of the board rows, the deliveries still to plan — and, counted, every row that is not.
@@ -275,11 +281,22 @@ export function selectPlanStops(
     if (isFinishedRow(r)) { counts.finished++; continue; }
     const at = locate(r);
     if (scope === 'unplanned' && r.isPlanned === true) {
-      const rk = rowRouteKey(r);
-      if (!rk || !keepOn.has(rk)) { counts.planned++; continue; }
-      // A board row names its load by route only; when the roster has two loads under that name the
-      // row cannot be tied to either, so it is neither kept on the picked one nor planned (review).
-      if (ambiguousNames.has(rk)) { counts.ambiguous++; continue; }
+      // BY LOAD NUMBER FIRST (v1.82.0). The scan writes onto a routed row the roster load number that
+      // holds it; when the picks name loads by number, that decides — a row on an unpicked load of the
+      // same name is NOT kept on the picked one, and two same-named loads are no longer a guess.
+      const nk = rowLoadNbrKey(r);
+      const picksHaveNbrs = [...keepOn].some((k) => k.startsWith('nbr:'));
+      let rk: string;
+      if (nk && picksHaveNbrs) {
+        if (!keepOn.has(nk)) { counts.planned++; continue; }
+        rk = nk;
+      } else {
+        rk = rowRouteKey(r);
+        if (!rk || !keepOn.has(rk)) { counts.planned++; continue; }
+        // A row that carries no load number, under a name the roster gives two loads: it cannot be
+        // tied to either, so it is neither kept on the picked one nor planned (review).
+        if (ambiguousNames.has(rk)) { counts.ambiguous++; continue; }
+      }
       if (earlier?.has(n)) seenEarlier.add(n);   // NuVizz has it on a picked load: kept there, as NuVizz says
       if (!at) { counts.keptNoLocation++; keptNoLocation.push(r); continue; }
       counts.kept++;
@@ -408,6 +425,9 @@ export function buildPlanProblem(input: PlanInput): BtProblem {
     else if (base.clipped) capNote = `your route cap ${base.typed} held to the ${cls === 'tractor' ? 'tractor' : 'box-truck'} ceiling ${base.ceiling} — a route cap is held to the truck that runs it`;
     return {
       id: `L${i + 1}`, route: pk.route, driver, cls, clsSource,
+      // The NuVizz load number, from the day's roster, for a picked roster load — so the model is told
+      // WHICH load, not just a route name that repeats every day.
+      ...(pk.kind === 'roster' && pk.loadNbr ? { loadNbr: pk.loadNbr } : {}),
       cap: r1(base.cap), capSource: pk.kind === 'truck' ? `${base.source} — an unnamed truck` : base.source, capNote,
       dispatch: [], orderSource: 'driven',
       maxMin: shiftMin, maxMinNote: null,
@@ -415,12 +435,15 @@ export function buildPlanProblem(input: PlanInput): BtProblem {
     };
   });
 
-  // THE PICKED ROSTER LOADS, by route: a stop already on one in NuVizz is kept on it. Two picks under
-  // one route name cannot be told apart on the board (its rows carry the route name, no load id), so
-  // the first takes them, and the note says so.
+  // THE PICKED ROSTER LOADS: a stop already on one in NuVizz is kept on it. By the roster LOAD NUMBER
+  // first — the scan writes the one that holds each routed row (rosterLoadNbr, v1.82.0) — and by route
+  // name only for a row that carries none; two picks under one name then fall to the first, and the note
+  // says so.
   const loadOfRoute = new Map<string, BtLoad>();
   params.picks.forEach((pk, i) => {
     if (pk.kind !== 'roster') return;
+    // By number first: a row the scan tied to this load by its roster number finds it here.
+    if (pk.loadNbr && !loadOfRoute.has(`nbr:${pk.loadNbr}`)) loadOfRoute.set(`nbr:${pk.loadNbr}`, loads[i]);
     const k = keyOf(pk.route);
     if (!loadOfRoute.has(k)) loadOfRoute.set(k, loads[i]);
     else { const l = loads[i]; l.capNote = `${l.capNote ? l.capNote + '; ' : ''}stops already on ${pk.route} in NuVizz are kept on ${loadOfRoute.get(k)!.id}, the first load picked under that name`; }
@@ -428,7 +451,7 @@ export function buildPlanProblem(input: PlanInput): BtProblem {
   // Kept stops with no location ride on their load all the same: their room is held back, as a backtest
   // does — and so do an earlier section's stops that have lost their map point, on a load picked again.
   const held: { r: any; l: BtLoad | undefined }[] = [
-    ...(input.keptNoLocation || []).map((r) => ({ r, l: loadOfRoute.get(rowRouteKey(r)) })),
+    ...(input.keptNoLocation || []).map((r) => ({ r, l: (rowLoadNbrKey(r) && loadOfRoute.get(rowLoadNbrKey(r)!)) || loadOfRoute.get(rowRouteKey(r)) })),
     ...(input.heldEarlier || []).map((h) => ({ r: h.r, l: loads[h.idx] })),
   ];
   for (const { r, l } of held) {
@@ -504,7 +527,7 @@ export function buildPlanProblem(input: PlanInput): BtProblem {
       ...sectionLines,
       'Truck class is each driver’s CURRENT MarginIQ vehicle type (or the class you picked).',
       ...(counts.corrected ? [`${counts.corrected} stop${counts.corrected === 1 ? ' is' : 's are'} placed at a pin a dispatcher corrected (customer notes), where the Map draws ${counts.corrected === 1 ? 'it' : 'them'}, not at the feed’s geocode.`] : []),
-      ...(counts.ambiguous ? [`${counts.ambiguous} stop${counts.ambiguous === 1 ? '' : 's'} on a picked route name that the roster gives to more than one load ${counts.ambiguous === 1 ? 'is' : 'are'} left out: the board names a load by route only, so it cannot say which of them carries ${counts.ambiguous === 1 ? 'it' : 'them'}.`] : []),
+      ...(counts.ambiguous ? [`${counts.ambiguous} stop${counts.ambiguous === 1 ? '' : 's'} on a picked route name that the roster gives to more than one load ${counts.ambiguous === 1 ? 'is' : 'are'} left out: ${counts.ambiguous === 1 ? 'its row carries' : 'their rows carry'} no roster load number yet (the scan writes one once it has read which load holds ${counts.ambiguous === 1 ? 'it' : 'them'}), and the name alone cannot say which of them carries ${counts.ambiguous === 1 ? 'it' : 'them'}.`] : []),
       ...(counts.keptNoLocation ? [`${counts.keptNoLocation} stop${counts.keptNoLocation === 1 ? '' : 's'} already on a picked load ${counts.keptNoLocation === 1 ? 'has' : 'have'} no map point: ${counts.keptNoLocation === 1 ? 'its' : 'their'} skid spots and pounds are held back on that load; the time ${counts.keptNoLocation === 1 ? 'it takes' : 'they take'} on the driver’s day is not.`] : []),
       hard
         ? `Skid caps HOLD: a cap you typed on a driver stands; a cap typed on a route, or a learned cap, is held to the class ceiling of the truck (box ${ceilings!.box_truck} spots, tractor ${ceilings!.tractor}); a driver with no history, or an unnamed truck, is held to the truck’s rating.`

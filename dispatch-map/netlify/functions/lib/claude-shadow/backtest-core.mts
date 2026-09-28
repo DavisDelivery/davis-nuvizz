@@ -109,6 +109,7 @@ export interface BtLoad {
   maxMin: number;                     // the load's day: drive + on-site minutes may not pass it
   maxMinNote: string | null;
   maxLbs?: number;                    // weight limit (profile rating, raised to what dispatch loaded)
+  loadNbr?: string;                   // v1.82.0: the NuVizz load number from the day's roster (plan picks only)
   lbsNote?: string | null;
   lbsRaisedFrom?: number | null;      // v1.74.1: the limit before it was raised to dispatch's own load, else null
 }
@@ -588,7 +589,8 @@ export const PLAN_SYSTEM = BT_SYSTEM
   .replace(
     'Leaving a stop unplanned is a failure on a day like this: every stop was delivered. The evaluator refuses it for any stop except a no-tractor stop that no box truck has room for.',
     'Place as many stops as the trucks can legally carry. Leave a stop unplanned only when no load has room for it, and say why in its reason; the dispatcher reads every one.',
-  ) + '\n\nA stop flagged "keep on Lx" is already on that load — in NuVizz, or (flagged "keep on Lx, earlier section") placed there by an earlier section of this plan: keep it on Lx and plan the other stops around it. Its skid spots, pounds and time count against Lx like any other stop.';
+  ) + '\n\nA load with a NuVizz load number is that exact load in NuVizz on this day — the number comes from the day\u2019s load roster; a route name repeats every day and never identifies a load by itself.'
+  + '\n\nA stop flagged "keep on Lx" is already on that load — in NuVizz, or (flagged "keep on Lx, earlier section") placed there by an earlier section of this plan: keep it on Lx and plan the other stops around it. Its skid spots, pounds and time count against Lx like any other stop.';
 
 export function btBriefing(p: BtProblem): string {
   const lines: string[] = [];
@@ -599,8 +601,11 @@ export function btBriefing(p: BtProblem): string {
   const two = [...shared.values()].filter((ls) => ls.length > 1);
   if (two.length) lines.push(`Drivers on more than one load (ONE day between them): ${two.map((ls) => `${ls[0].driver} = ${ls.map((l) => l.id).join('+')}`).join('; ')}.`);
   lines.push('');
-  lines.push('LOADS: id | route name | driver | truck | cap (skid spots) | max lbs | driver day limit (min)');
-  for (const l of p.loads) lines.push(`${l.id} | ${l.route} | ${l.driver} | ${l.cls === 'tractor' ? 'tractor 53ft' : 'box truck'} | ${l.cap} | ${l.maxLbs ?? ''} | ${l.maxMin}`);
+  // The NuVizz load number rides only when a load HAS one (a forward plan's roster picks): a backtest's
+  // loads never carry it, so a backtest briefing stays byte-for-byte what it was (a resumed run replays it).
+  const withNbr = p.loads.some((l) => l.loadNbr);
+  lines.push(`LOADS: id | route name | driver | truck | cap (skid spots) | max lbs | driver day limit (min)${withNbr ? ' | NuVizz load number' : ''}`);
+  for (const l of p.loads) lines.push(`${l.id} | ${l.route} | ${l.driver} | ${l.cls === 'tractor' ? 'tractor 53ft' : 'box truck'} | ${l.cap} | ${l.maxLbs ?? ''} | ${l.maxMin}${withNbr ? ` | ${l.loadNbr ?? '—'}` : ''}`);
   lines.push('');
   lines.push('STOPS: id | lat,lng | zip | city | customer | skids | loose | spots | lbs | flags');
   for (const s of p.stops) {

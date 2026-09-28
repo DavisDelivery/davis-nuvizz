@@ -219,6 +219,18 @@ export function explainStop(f: StopFacts): StopExplanation {
     else if (roster.resolution === 'no-roster') say(`No load roster is cached for ${f.date} — the verify could only consult the stop record.`);
   }
 
+  // ── 4b. Which load holds it (v1.82.0, lib/route-load-day.mts) ──────────────────
+  // The roster names every load by NUMBER, per day; one /load/info by that number says which
+  // orders it holds. The scan writes the answer onto the row, and this says it back in words.
+  if (row?.rosterLoadNbr) {
+    if (row.rosterLoadVia === 'membership') say(`NuVizz load ${row.rosterLoadNbr} holds it (read by that load number; ${routeOf(row) ?? 'its route'} on the ${row.loadDay ?? served.copy?.day} roster), so the scan files it on ${row.loadDay ?? served.copy?.day} — the day that load runs — whatever NuVizz's own arrival date for the order says.`);
+    else say(`The ${served.copy?.day} roster names its load: ${row.rosterLoadNbr}, the one live load called ${routeOf(row) ?? '?'} that day.`);
+  }
+  if (row?.heldOn && typeof row.heldOn === 'object') {
+    const h = row.heldOn;
+    say(`Shown UN-PLANNED on purpose: in NuVizz it is still on ${h.loadNbr ?? '?'} (${h.route ?? '?'}, ${h.day ?? '?'}) — a past day's load — and no load from today on holds it, so it is waiting to be planned. NuVizz refuses to add it to another load until it is taken off ${h.loadNbr ?? 'that load'}.`);
+  }
+
   // ── 5. Saves, history, overrides ──────────────────────────────────────────────
   if (f.writes?.length) say(`Write journal: ${f.writes.slice(0, 5).map((w) => `${clock(w.at)} ${w.op} ${w.status} — ${w.summary}`).join('; ')}.`);
   if (f.history) say(`Sealed history records it ${f.history.status} on ${f.history.day} — the scan drops a stale open copy of a stop history has sealed finished.`);
@@ -227,7 +239,7 @@ export function explainStop(f: StopFacts): StopExplanation {
     // boardDayFor (nuvizz-list.mts) lets a PAST dispatcher date give way to the live-route clamp
     // (A3-S18-1), so "files it there regardless" is only true of a date that has not passed.
     if (f.override < f.today && f.pastOverrideClamp !== false) {
-      say(`A dispatcher-set board date of ${f.override} is on file, but that day has passed: it no longer holds an open stop that is on a route (the scan files one of those on today's board); an unrouted order still files on ${f.override}. NUVIZZ_PAST_OVERRIDE_CLAMP=off puts the old filing back.`);
+      say(`A dispatcher-set board date of ${f.override} is on file, but that day has passed: it no longer holds an open stop that is on a route (the scan files one of those on the day of the load that holds it, read by the roster's load number — or on today's board when that cannot be read); an unrouted order still files on ${f.override}. NUVIZZ_PAST_OVERRIDE_CLAMP=off puts the old filing back.`);
     } else {
       say(`A dispatcher-set board date of ${f.override} is on file; the scan files the order there regardless of NuVizz's arrival date.`);
     }

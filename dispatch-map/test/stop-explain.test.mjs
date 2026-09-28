@@ -285,7 +285,7 @@ test('007174083-1 — off today\'s board because today\'s BUFORD does not hold i
 test('a dispatcher date that has passed: the explain no longer says it holds a routed stop there', () => {
   const past = explainStop(base({ copies: [{ day: today, row: planned() }], override: D1 })).findings;
   has(past, new RegExp(`board date of ${D1} is on file, but that day has passed`));
-  has(past, /files one of those on today's board/);
+  has(past, /files one of those on the day of the load that holds it, read by the roster's load number — or on today's board when that cannot be read/);
   hasNot(past, /regardless of NuVizz's arrival date/);
   // A deferral to today or later still holds, and says so.
   const later = addDays(today, 3);
@@ -296,3 +296,26 @@ test('a dispatcher date that has passed: the explain no longer says it holds a r
   has(off, new RegExp(`board date of ${D1} is on file; the scan files the order there regardless`));
   hasNot(off, /that day has passed/);
 });
+
+// v1.82.0 (lib/route-load-day.mts): the scan writes WHICH LOAD holds an order onto its row — by the
+// roster's load number and one /load/info — and the explain has to say it back, in words, so the
+// question "which MARCUS is this on?" is answered from the stop and never asked again.
+test('an order the scan filed on its load\'s day: the explain names the load NUMBER and the day it runs', () => {
+  const mon = addDays(today, 2);
+  const row = planned({ stopNbr: '007182304-1', loadNbr: 'MARCUS', routeName: 'MARCUS', boardDate: D1, loadDay: mon, rosterLoadNbr: 'DAVIS000204645', rosterLoadId: 'id', rosterLoadVia: 'membership' });
+  const out = explainStop(base({ stopNbr: '007182304-1', date: mon, copies: [{ day: mon, row }] })).findings;
+  has(out, new RegExp(`NuVizz load DAVIS000204645 holds it .* so the scan files it on ${mon} — the day that load runs — whatever NuVizz's own arrival date for the order says`));
+});
+
+test('an order named from its day\'s roster (no read needed) says which load that is', () => {
+  const row = planned({ rosterLoadNbr: 'DAVIS000204700', rosterLoadVia: 'roster-name' });
+  has(explainStop(base({ copies: [{ day: today, row }] })).findings, new RegExp(`The ${today} roster names its load: DAVIS000204700, the one live load called WILLIAM that day`));
+});
+
+test('an order still on a PAST day\'s load, shown unplanned: the explain says so, names the load, and says why a save onto another truck is refused', () => {
+  const row = unplanned({ stopNbr: '007182123', status: '20', boardDate: D1, heldOn: { route: 'TERRANCE', loadNbr: 'DAVIS000204484', loadId: 'x', day: D1, driver: 'Terrance Hawk' } });
+  const out = explainStop(base({ stopNbr: '007182123', copies: [{ day: today, row }] })).findings;
+  has(out, new RegExp(`Shown UN-PLANNED on purpose: in NuVizz it is still on DAVIS000204484 \\(TERRANCE, ${D1}\\)`));
+  has(out, /NuVizz refuses to add it to another load until it is taken off DAVIS000204484/);
+});
+

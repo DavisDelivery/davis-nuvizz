@@ -86,7 +86,8 @@ function buildIssueBody(bundle: any): string {
   lines.push(`| stops | ${src.stops_count_visible ?? '?'} visible / ${src.stops_count_total ?? '?'} total · src ${src.stops_source || '—'} |`);
   lines.push(`| freshness | refreshed ${src.last_refreshed || '—'} · scanned ${src.last_scanned_at || '—'} |`);
   const selDesc = sel.kind === 'stop' && sel.stop
-    ? `stop ${sel.stop.stopNbr ?? ''} (pro ${sel.stop.pro ?? ''}, load ${sel.stop.loadNbr ?? '—'})`
+    // `loadNbr` on a board row is the ROUTE name; the day's roster load NUMBER is rosterLoadNbr.
+    ? `stop ${sel.stop.stopNbr ?? ''} (pro ${sel.stop.pro ?? ''}, route ${sel.stop.routeName ?? sel.stop.loadNbr ?? '—'}, load ${sel.stop.rosterLoadNbr ?? '—'}${sel.stop.loadDay ? ` on ${sel.stop.loadDay}` : ''}${sel.stop.heldOn?.loadNbr ? `, still on ${sel.stop.heldOn.loadNbr} (${sel.stop.heldOn.day ?? '?'})` : ''})`
     : sel.kind === 'driver' && sel.driver
     ? `driver ${sel.driver.driverName ?? sel.driver.driverUserName ?? ''}`
     : sel.kind === 'route'
