@@ -12,7 +12,8 @@ import { selectPlanStops, rowRouteKey, rowLoadNbrKey } from '../netlify/function
 import { btBriefing, BT_SYSTEM, PLAN_SYSTEM } from '../netlify/functions/lib/claude-shadow/backtest-core.mts';
 
 const MON = '2026-09-28';
-const row = (nbr, route, extra = {}) => ({ stopNbr: nbr, routeName: route, loadNbr: route, isPlanned: true, isUnplanned: false, normalizedStatus: 'SCHEDULED', status: '20', lat: 33.6, lng: -84.6, stopType: 'DO', ...extra });
+// A stamp carries the route it was written for (rosterLoadRoute) — the scan always writes both.
+const row = (nbr, route, extra = {}) => ({ stopNbr: nbr, routeName: route, loadNbr: route, isPlanned: true, isUnplanned: false, normalizedStatus: 'SCHEDULED', status: '20', lat: 33.6, lng: -84.6, stopType: 'DO', ...(extra.rosterLoadNbr ? { rosterLoadRoute: route } : {}), ...extra });
 const marcusKey = rowRouteKey({ routeName: 'MARCUS' });
 
 test('a row the scan tied to Monday\'s MARCUS by number is kept on the MARCUS pick; one on another MARCUS is not', () => {
@@ -40,6 +41,13 @@ test('with no load numbers anywhere, the name rule is exactly what it was', () =
   assert.equal(sel.kept.get('m1'), marcusKey);
   assert.equal(rowLoadNbrKey(row('m1', 'MARCUS')), null);
   assert.equal(rowLoadNbrKey(row('m1', 'MARCUS', { rosterLoadNbr: ' DAVIS1 ' })), 'nbr:DAVIS1');
+});
+
+test('REVIEW #18: a row SAVED onto JOE since the scan is not kept on MARCUS\'s number — it goes by its route, as before stamps', () => {
+  const saved = row('007182304-1', 'JOE', { rosterLoadNbr: 'DAVIS000204600', rosterLoadRoute: 'MARCUS' });
+  assert.equal(rowLoadNbrKey(saved), null);
+  const sel = selectPlanStops([saved], MON, 'unplanned', 0, new Set(['nbr:DAVIS000204600']));
+  assert.equal(sel.kept.has('007182304-1'), false, 'never pinned to a truck it has left');
 });
 
 const problem = (loads) => ({

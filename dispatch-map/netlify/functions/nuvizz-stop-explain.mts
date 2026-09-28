@@ -35,6 +35,7 @@ import { getStop as getHistoryStop } from './lib/history-store.mts';
 import { requireUser } from './lib/require-user.mts';
 import { explainStop, sameNbr } from './lib/stop-explain.mts';
 import { pastOverrideClampEnabled } from './lib/nuvizz-list.mts';
+import { routeLoadDayEnabled } from './lib/route-load-day.mts';
 import type { StopCopy, StopFacts } from './lib/stop-explain.mts';
 
 const TENANT = 'davis';
@@ -177,7 +178,7 @@ export default async (req: Request): Promise<Response> => {
     stopNbr: stopRaw, date, today, copies,
     pool: pool ? { at: pool.at, windowStart: pool.windowStart, windowEnd: pool.windowEnd, thin: pool.thin === true, row: poolRow } : null,
     snapshot: snap ? { at: snap.at, windowStart: snap.windowStart, thin: snap.thin === true, listed: listedInSnapshot } : null,
-    retiredOn: firstHit(retired), override: firstHit(overrides), pastOverrideClamp: pastOverrideClampEnabled(),
+    retiredOn: firstHit(retired), override: firstHit(overrides), pastOverrideClamp: pastOverrideClampEnabled(), routeLoadDay: routeLoadDayEnabled(),
     verdicts, writes,
     roster: roster ? { at: roster.at ?? null, loads: (roster.loads || []).map((l: any) => ({ name: String(l?.name ?? l?.routeName ?? ''), loadNbr: l?.loadNbr ? String(l.loadNbr) : null, status: l?.status ? String(l.status) : null })) } : null,
     history,

@@ -41,6 +41,7 @@ export function scrubStop(s, seq, note) {
     routeName: s.routeName,
     rosterLoadNbr: s.rosterLoadNbr,
     rosterLoadId: s.rosterLoadId,
+    rosterLoadRoute: s.rosterLoadRoute,
     loadDay: s.loadDay,
     heldOn: s.heldOn && typeof s.heldOn === 'object' ? { loadNbr: s.heldOn.loadNbr, day: s.heldOn.day, route: s.heldOn.route } : undefined,
     status: s.status,

@@ -42,7 +42,7 @@ export const LEAN_STOP_FIELDS = [
   // Which load holds the order, from the roster + one /load/info (lib/route-load-day.mts):
   // the load NUMBER and id for the day it is filed on, how that was known, and — for an order
   // still on a past day's load and shown unplanned — which load still holds it.
-  'loadDay', 'rosterLoadNbr', 'rosterLoadId', 'rosterLoadVia', 'heldOn',
+  'loadDay', 'rosterLoadNbr', 'rosterLoadId', 'rosterLoadVia', 'rosterLoadRoute', 'heldOn',
 ];
 
 /**

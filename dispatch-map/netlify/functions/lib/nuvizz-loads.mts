@@ -27,6 +27,7 @@ import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
 // question answered, and a third copy of it is how two readers of one fact drift apart.
 import { OPENAPI_BASE, linkVal, periodForDate, isHashLikeId, looksLikeLoadNbr } from './nuvizz-list.mts';
 import { etDayString } from './firestore.mts';
+import { stampedLoadOf } from '../../../src/lib/route-load-stamp.js';
 export { looksLikeLoadNbr };
 
 // The saved load-list def the portal uses for the Loads grid (HAR-captured). Override
@@ -282,13 +283,14 @@ export function shouldServeCachedRoster(
   try { return etDayOf(at) === etDayOf(now); } catch { return false; }
 }
 
-// A board stop's load identity, when known. FIRST the load the scan resolved for it this run
-// from the roster (rosterLoadId, lib/route-load-day.mts — the load that holds it on the day it is
-// filed on); then the one-time enrichment's raw.load.loadId, which is the load it was on WHEN IT
-// WAS FIRST READ and goes stale the moment the order is moved to another day's load; then a bare
-// loadId. null when the stop has no load id yet.
+// A board stop's load identity, when known. FIRST the load the scan resolved for it from the
+// roster (rosterLoadId, lib/route-load-day.mts — the load that holds it on the day it is filed on),
+// while the row still says what it said when stamped (stampedLoadOf: planned, same route); then the
+// one-time enrichment's raw.load.loadId, which is the load it was on WHEN IT WAS FIRST READ and goes
+// stale the moment the order is moved to another day's load; then a bare loadId. null when the stop
+// has no load id yet.
 export function stopLoadId(s: any): string | null {
-  const id = s?.rosterLoadId ?? s?.raw?.load?.loadId ?? s?.loadId ?? null;
+  const id = stampedLoadOf(s)?.loadId ?? s?.raw?.load?.loadId ?? s?.loadId ?? null;
   return id ? String(id) : null;
 }
 

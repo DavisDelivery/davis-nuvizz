@@ -20,6 +20,7 @@ import { finishedGuardEnabled } from './finished-guard.mts';
 // Re-exported here so every existing caller keeps its import path unchanged.
 import { isHashLikeId, looksLikeLoadNbr } from './route-identity.mts';
 import { routeLoadDayEnabled, ROUTE_LOAD_FIELDS } from './route-load-day.mts';
+import { stampedLoadOf, heldLoadOf } from '../../../src/lib/route-load-stamp.js';
 export { isHashLikeId, looksLikeLoadNbr };
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
@@ -369,11 +370,15 @@ export function boardDayFor(s: any, today: string = etDayString(), overrides?: R
   // delivery actually happened is history, not a plan, and history is never re-filed.
   const set = overrides && s.stopNbr != null ? overrides[String(s.stopNbr)] : null;
   const onRoute = !!s.loadNbr;
+  // An order the scan found still sitting on a past day's load (route-load-day `heldOn`) is on a
+  // route in NuVizz even though the row now reads un-planned — the same "live work" a past
+  // deferral must not park on its past day.
+  const heldStamp = !finishedEarly && routeLoadDayEnabled() && !!heldLoadOf(s);
   // A deferral whose day has PASSED does not outrank the live-route clamp below. The scan
   // reads the override map unpruned (it is only pruned on its next write), so yesterday's
   // "not until the 11th" used to park a stop the driver is carrying today on the 11th's
   // board, off today's route. NUVIZZ_PAST_OVERRIDE_CLAMP=off restores the old filing.
-  const pastOnRoute = !!set && onRoute && set < today && pastOverrideClampEnabled();
+  const pastOnRoute = !!set && (onRoute || heldStamp) && set < today && pastOverrideClampEnabled();
   if (set && !finishedEarly && !pastOnRoute) return set;
   let d = s.boardDate || s.requestedDate || s.scheduledDate || null;
   const finished = finishedEarly;
@@ -385,11 +390,13 @@ export function boardDayFor(s: any, today: string = etDayString(), overrides?: R
   //   • loadDay  — it is ON a load from today on: file it on that load's day;
   //   • heldOn   — it is still on its own past day's load and no load from today on holds it:
   //                it is shown UNPLANNED, in today's pool, where the day's planning happens.
-  // Honoured only while the row still says what the stamp was written for (planned / unplanned),
-  // so a stale stamp can never move a row. NUVIZZ_ROUTE_LOAD_DAY=off ignores both.
+  // Honoured only while the row still says what the stamp was written for — planned on the same
+  // route / un-planned (src/lib/route-load-stamp.js, the one rule every reader uses) — so a stale
+  // stamp can never move a row. NUVIZZ_ROUTE_LOAD_DAY=off ignores both.
   if (!finished && routeLoadDayEnabled()) {
-    if (s.isPlanned === true && typeof s.loadDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.loadDay)) return s.loadDay;
-    if (s.isUnplanned === true && s.heldOn && typeof s.heldOn === 'object') return today;
+    const onLoad = stampedLoadOf(s);
+    if (onLoad && onLoad.day) return onLoad.day;
+    if (heldStamp) return today;
   }
   if (!finished && onRoute && (!d || d < today)) d = today; // live route work → today, not the past
   // A DATELESS open order is live work too — NuVizz's "-1" re-delivery duplicates arrive with
@@ -1080,7 +1087,7 @@ export function absentPlanDemoteCandidate(p: any): any {
     status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false, isUnplanned: true,
     loadNbr: null, routeName: null, routeSeq: null, driverName: null, driverUserName: null,
     // Which load held it (lib/route-load-day.mts) is part of the plan it no longer has.
-    loadDay: null, rosterLoadNbr: null, rosterLoadId: null, rosterLoadVia: null, heldOn: null,
+    ...Object.fromEntries(ROUTE_LOAD_FIELDS.map((f) => [f, null])),
     absentFromPull: true,   // diagnostic only — never read as truth, the verify decides
   };
 }
@@ -1124,6 +1131,9 @@ export async function applyDemotionVerify(
   }
   const keepPlan = (s: any, p: any) => {
     for (const k of PLAN_FIELDS) s[k] = p[k] ?? null;
+    // The load it is kept on is part of the plan kept — or the next scan files the kept copy by the
+    // old clamp and takes it off the later day's card it was just held on.
+    if (routeLoadDayEnabled()) for (const k of ROUTE_LOAD_FIELDS) s[k] = p[k] ?? null;
     if (p.board_write_at) { s.board_write_at = p.board_write_at; s.board_write_planned = p.board_write_planned; }
   };
   const cap = Math.min(checks.length, opts.max);

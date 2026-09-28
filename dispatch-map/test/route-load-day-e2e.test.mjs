@@ -84,9 +84,10 @@ const LOADS = {
   [NEXT_MARCUS]: loadInfoOf(NEXT_MARCUS, 'MARCUS', ['007182472', WHITING, '007182494', POREX]),
   [YDAY_TERRANCE]: loadInfoOf(YDAY_TERRANCE, 'TERRANCE', [HEADCOVERS]),
   [YDAY_MARCUS]: loadInfoOf(YDAY_MARCUS, 'MARCUS', ['007182304']),
+  [NEXT_TERRANCE]: loadInfoOf(NEXT_TERRANCE, 'TERRANCE', []),
 };
 
-async function scenario({ seed = {}, env = {} }, inspect) {
+async function scenario({ seed = {}, env = {}, rows = pullRows }, inspect) {
   const calls = [];
   const saved = {};
   for (const [k, v] of Object.entries(env)) { saved[k] = process.env[k]; if (v == null) delete process.env[k]; else process.env[k] = v; }
@@ -95,7 +96,7 @@ async function scenario({ seed = {}, env = {} }, inspect) {
     if (/PkgRoute/.test(url)) return json(rosterFor(init?.body));
     if (/VizzonStop/.test(url)) {
       const id = JSON.parse(init?.body || '{}').customListDefId;
-      return json(search(id === 77128 ? pullRows() : []));
+      return json(search(id === 77128 ? rows() : []));
     }
     const m = /\/load\/info\/([^/]+)\//.exec(url);
     if (m) return LOADS[m[1]] ? json(LOADS[m[1]]) : new Response('{}', { status: 404 });
@@ -130,13 +131,16 @@ test('an order dated yesterday and planned on the next business day\'s MARCUS is
     // The rest of the next day's MARCUS is named too, from that day's roster, for free.
     const bv = store.get(stopPath(nextDay, '007182472'));
     assert.equal(bv.rosterLoadNbr, NEXT_MARCUS);
-    // Reads: the next day's MARCUS (it counted more orders than its board showed) and yesterday's
-    // TERRANCE (for the leftover). Not yesterday's MARCUS — the next day's load already placed those.
-    assert.deepEqual(loadReads.slice().sort(), [YDAY_TERRANCE, NEXT_MARCUS].sort());
+    // Reads: the next day's MARCUS (it counted more orders than its board showed); the next day's
+    // TERRANCE — its roster count of 0 is the one capture a future day gets, so it answers nothing
+    // about an order planned onto it since, and "held" needs EVERY load from today on to answer;
+    // then yesterday's TERRANCE for the leftover. Not yesterday's MARCUS — the next day's load
+    // already placed those — and nothing twice.
+    assert.deepEqual(loadReads.slice().sort(), [YDAY_TERRANCE, NEXT_MARCUS, NEXT_TERRANCE].sort());
     const run = (body.dates || []).find((d) => d.date === today);
     assert.equal(run.routeLoadDay.load, 2);
     assert.equal(run.routeLoadDay.held, 1);
-    assert.equal(run.routeLoadDay.reads, 2);
+    assert.equal(run.routeLoadDay.reads, 3);
   });
 });
 
@@ -208,4 +212,42 @@ test('the load read FAILS → nothing moves: every carried order keeps the old f
       assert.equal(run.routeLoadDay.held, 0);
     });
   } finally { LOADS[NEXT_MARCUS] = saved; LOADS[YDAY_TERRANCE] = savedT; }
+});
+
+test('REVIEW #5: the list alone calling an order on the next day\'s MARCUS un-planned does NOT take it off that card — the verify decides', async () => {
+  let carried = {};
+  await scenario({}, async ({ store }) => { carried = Object.fromEntries(store); });
+  assert.equal(carried[stopPath(nextDay, WHITING)]?.loadDay, nextDay, 'precondition: filed on its load\'s day');
+  // The next scan's list says WHITING is un-planned (code 10, no route): list lag after a Save, or a
+  // vendor glitch. The next day's MARCUS still holds it — /load/info says so.
+  const lagged = () => pullRows().map((r) => (r[0] === WHITING ? row({ nbr: WHITING, code: '10', route: '', name: 'WHITING TURNER', weight: 6496, arrival: usFmt(yesterday, '08:00 AM') }) : r));
+  let again = {};
+  await scenario({ seed: carried, rows: lagged }, async ({ store, loadReads }) => {
+    const w = store.get(stopPath(nextDay, WHITING));
+    assert.ok(w, 'still on the next day\'s board');
+    assert.equal(w.isPlanned, true, 'held planned: the load itself was asked, and holds it');
+    assert.equal(w.loadNbr, 'MARCUS');
+    assert.equal(w.loadDay, nextDay, 'the load it is kept on is part of the plan kept');
+    assert.ok(loadReads.includes(NEXT_MARCUS), 'the verify read the load (or the load-day pass did, and shared it)');
+    assert.equal(store.get(stopPath(today, WHITING))?.isPlanned ?? false, false, 'and never a second planned copy on today');
+    again = Object.fromEntries(store);
+  });
+  // …and the scan after that, the list still lagging, keeps it there too (the kept copy carries its load).
+  await scenario({ seed: again, rows: lagged }, async ({ store }) => {
+    assert.equal(store.get(stopPath(nextDay, WHITING))?.isPlanned, true);
+  });
+});
+
+test('REVIEW #18: a confirmed Save onto JOE five minutes ago outranks the list — and takes the list\'s load stamps with it', async () => {
+  const at = new Date(Date.now() - 5 * 60_000).toISOString();
+  const seed = {
+    [stopPath(nextDay, WHITING)]: { stopNbr: WHITING, routeName: 'JOE', loadNbr: 'JOE', routeSeq: 1, isPlanned: true, isUnplanned: false, normalizedStatus: 'SCHEDULED', status: '20', boardDate: yesterday, scheduledDate: nextDay, board_write_at: at, board_write_planned: true },
+  };
+  await scenario({ seed }, async ({ store }) => {
+    const w = store.get(stopPath(nextDay, WHITING));
+    assert.equal(w.routeName, 'JOE', 'the Save holds');
+    assert.equal(w.rosterLoadNbr ?? null, null, 'no MARCUS load number beside Route JOE');
+    assert.equal(w.rosterLoadRoute ?? null, null);
+    assert.equal(w.loadDay ?? null, null);
+  });
 });

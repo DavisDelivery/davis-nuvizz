@@ -1775,24 +1775,36 @@ export async function writeNameCollisionMemo(tenant: string, memo: Record<string
 // ── Which load holds an order: the load-day memo (v1.82.0, lib/route-load-day.mts) ─────────
 //
 // One /load/info read per load answers "which orders does DAVIS000204645 hold". Keyed by the
-// roster's load NUMBER; an entry stands in for a fresh read while the roster's stop count for that
-// load has not moved (and for a bounded time). Its own document: the name-collision memo above has
-// a different key (a signature over the rows under a name) and a different writer.
+// roster's load NUMBER; an entry answers for an order only while NuVizz has not touched that order
+// since the read (route-load-day.mts memoValidFor), and for a bounded time. Its own document: the
+// name-collision memo above has a different key (a signature over the rows under a name) and a
+// different writer.
 const routeLoadMemoPath = (tenant: string) => `${OPS_COLLECTION}/route_load_day__${tenantKey(tenant)}`;
-export async function readRouteLoadMemo(tenant: string): Promise<Record<string, { at: string; trips: number | null; members: string[] }>> {
+// Returns null when the document could not be READ (as opposed to not existing, which is `{}`):
+// a failed read must never look like an empty memo, or the run that follows re-reads every load the
+// memo already knew and moves every order it had settled back to the old filing.
+export async function readRouteLoadMemo(tenant: string): Promise<Record<string, { at: string; trips: number | null; members: string[]; cover: string | null }> | null> {
   if (!isFirestoreEnabled()) return {};
   try {
     const doc = await getDoc(routeLoadMemoPath(tenant));
     if (!doc) return {};
     const obj = JSON.parse(doc.memoJson || '{}');
     return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
-  } catch { return {}; }
+  } catch { return null; }
 }
-export async function writeRouteLoadMemo(tenant: string, memo: Record<string, { at: string; trips: number | null; members: string[] }>): Promise<boolean> {
+// MERGES this run's new reads into the stored memo — never replaces it with what one run happened
+// to hold. Re-reads the stored document first; if that read fails, nothing is written (a partial
+// memo written over a whole one is how 76 settled loads were lost in the review's simulation).
+// Two overlapping runs can still race on the last write; each only ever ADDS its own reads.
+export async function writeRouteLoadMemo(tenant: string, updates: Record<string, { at: string; trips: number | null; members: string[]; cover: string | null }>): Promise<boolean> {
   if (!isFirestoreEnabled()) return false;
+  if (!updates || !Object.keys(updates).length) return false;
   try {
+    const stored = await readRouteLoadMemo(tenant);
+    if (stored == null) return false;
+    const merged: Record<string, any> = { ...stored, ...updates };
     // Bounded: a memo is for the loads of the last few days, not a history. Oldest reads go first.
-    const entries = Object.entries(memo || {}).sort((a, b) => String(b[1]?.at || '').localeCompare(String(a[1]?.at || ''))).slice(0, 400);
+    const entries = Object.entries(merged).sort((a, b) => String(b[1]?.at || '').localeCompare(String(a[1]?.at || ''))).slice(0, 400);
     const kept = Object.fromEntries(entries);
     await setDoc(routeLoadMemoPath(tenant), {
       tenant: tenantKey(tenant), updated_at: new Date().toISOString(),

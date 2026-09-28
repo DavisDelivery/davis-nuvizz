@@ -30,6 +30,7 @@
 // No I/O here: lib/claude-shadow/plan.mts reads the documents and calls these.
 import { type CarryoverStats } from '../carryover-fold.mts';
 import { normalizeMatchKey } from '../../../../src/lib/matchKey.js';
+import { stampedLoadOf } from '../../../../src/lib/route-load-stamp.js';
 import { employeeClassMap, CLASS_OVERRIDE } from '../driver-class.mts';
 import { DEFAULT_SERVICE_MIN } from '../routing-types.mts';
 import {
@@ -230,10 +231,12 @@ export interface SectionInput {
 /** The key a board row's ROUTE goes by: its route name (a list row's loadNbr is the route name too). */
 export const rowRouteKey = (r: any) => keyOf(String(r?.routeName || r?.loadNbr || ''));
 /** The key a board row's LOAD goes by (v1.82.0): the roster load number the scan wrote onto it, when it
- *  wrote one (lib/route-load-day.mts), else null — the caller then falls back to the route name. */
+ *  wrote one (lib/route-load-day.mts) and the row still says what it said then — planned, on the same
+ *  route (stampedLoadOf) — else null, and the caller falls back to the route name. A Save onto JOE
+ *  since the scan never keeps the stop on MARCUS's number. */
 export const rowLoadNbrKey = (r: any): string | null => {
-  const n = String(r?.rosterLoadNbr ?? '').trim();
-  return n ? `nbr:${n}` : null;
+  const st = stampedLoadOf(r);
+  return st ? `nbr:${st.loadNbr}` : null;
 };
 
 /**

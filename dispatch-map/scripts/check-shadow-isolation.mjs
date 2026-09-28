@@ -130,6 +130,8 @@ export const REVIEWED_SHARED = {
   'netlify/functions/lib/unplan-stamp.mts': 'one PURE predicate (an unplan stamp overtaken by a later list stamp), moved out of nuvizz-list.mts unchanged; imports only route-identity',
   'netlify/functions/lib/board-fields.mts': 'the Map\'s stop field projection (LEAN_STOP_FIELDS): constant lists, no imports',
   'src/lib/stop-cancelled.js': 'the Map\'s cancelled-stop rule and its BOARD_DROP_CANCELLED reader; PURE (the env is passed in), no imports',
+  // v1.82.0 — the one rule every reader uses for the scan's roster load stamps (lib/route-load-day.mts).
+  'src/lib/route-load-stamp.js': 'reads the roster load number the scan stamped on a board row (stampedLoadOf / heldLoadOf); PURE: row in, fields out, no imports, no I/O',
 };
 
 // The only builtins each reviewed module may import. Any other — and every builtin in a shadow
@@ -160,6 +162,9 @@ export const SHARED_IMPORTS = {
   'netlify/functions/lib/carryover-fold.mts': ['carryPriorDates'],
   'netlify/functions/lib/board-fields.mts': ['LEAN_STOP_FIELDS'],
   'src/lib/matchKey.js': ['normalizeMatchKey'],
+  // v1.82.0 — a board row's load NUMBER for the day, honoured only while the row still says what it
+  // said when the scan stamped it (plan-core rowLoadNbrKey).
+  'src/lib/route-load-stamp.js': ['stampedLoadOf'],
 };
 
 // Rule 4. What the gateway may import from firestore.mts, and the only names it may export.

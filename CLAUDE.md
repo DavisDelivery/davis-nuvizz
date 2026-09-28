@@ -116,16 +116,22 @@ Project-level guidance for Claude Code in this repository.
 - **Every part of the app uses it (v1.82.0, `lib/route-load-day.mts`).** The scan writes onto each
   routed order the load that holds it, for the correct day: `rosterLoadNbr` (`DAVIS000204645`),
   `rosterLoadId`, `rosterLoadVia` (`membership` = read by `/load/info` by that number;
-  `roster-name` = the one live load of that name on that day's roster, counts agreeing) and
-  `loadDay`. They ride the Map feed and the open-order pool. Read them — never derive a load from a
-  route name. The Stop lookup card, stop-explain, Debug capture and the Claude shadow already do.
+  `roster-name` = the one live load of that name on that day's roster, counts agreeing),
+  `rosterLoadRoute` (the route the stamp was written for) and `loadDay`. They ride the Map feed and
+  the open-order pool. Read them through `src/lib/route-load-stamp.js` — `stampedLoadOf(row)` /
+  `heldLoadOf(row)`, which honour a stamp only while the row still says what it said (a Save onto
+  another route since the scan voids it) — and never derive a load from a route name. The Stop
+  lookup card, stop-explain, Debug capture, the Claude shadow and the scan's own filing already do.
 - **Chad's day rule, which the scan applies:** an order ON a load is filed on THAT load's day; an
   order still on a PAST day's load and not delivered is shown UNPLANNED in the pool (`heldOn` names
   the load that still holds it — NuVizz refuses to add it to another load until it comes off that
   one); anything the reads cannot settle keeps its old filing — nothing moves on a guess.
+  "Shown unplanned" needs a known answer from EVERY live load under that name from today on plus
+  the past load — a later day's roster count is the morning's capture and never rules a load out.
   `NUVIZZ_ROUTE_LOAD_DAY=off` puts the old filing back; `NUVIZZ_ROUTE_LOAD_DAY_READS` (default 4 per
-  run, memoised) caps the `/load/info` reads, which are spent only when a load's roster count
-  disagrees with what the board shows.
+  run — up to 8 NuVizz calls with a retry) caps the `/load/info` reads. A stored read answers for an
+  order only while NuVizz's "Stop Updated" on that order is older than the read, so nothing is
+  re-read while nothing changes.
 - **Guarded in CI**: `test/roster-load-numbers-guard.test.mjs` fails if this rule leaves CLAUDE.md,
   ORCHESTRATION.md, HANDOFF.md, the scan-schedule brief or the load-scan README, if the roster stops
   returning `loadNbr`, if the stamps leave the Map feed, or if a banned sentence below appears in the code.
@@ -155,7 +161,10 @@ Project-level guidance for Claude Code in this repository.
      trail shows in `nuvizz-stop-explain` for free: *"The 2026-09-28 roster … resolves MARCUS
      to DAVIS000204645 (Draft), so the verify can read that load's own membership."*
   3. The roster's `trips` against the rows we hold under that name on that day is the free
-     trigger. A load that counts more orders than we show is the only one worth reading.
+     trigger — for TODAY's load, whose roster is re-pulled hourly. A LATER day's roster is
+     captured once a day, so its count is the morning's: it decides which load to read FIRST,
+     and never rules a load out before an order is shown unplanned (the adversarial review of
+     2026-09-28 found planned freight shown unplanned that way).
 - **Banned sentences**, because each one is this mistake again: "we don't know which load",
   "the load number isn't available", "the list doesn't carry the load, so it takes a
   per-order read", "match on route name". The load numbers come from the roster. Which
