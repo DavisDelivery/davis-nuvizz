@@ -15,11 +15,12 @@
 // saves or stages freight; the only money it can spend is at the model, capped per day, and every
 // button that spends asks first and says the ceiling.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Route, Play, X, Settings2, ChevronDown, ChevronRight, TrendingDown, History, MapPinned } from 'lucide-react';
+import { Route, Play, X, Settings2, ChevronDown, ChevronRight, ChevronLeft, TrendingDown, History, MapPinned } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
 import BacktestMap, { useBacktestDay } from './BacktestMap.jsx';
-import { RoutesTable, RouteCards, RoutePanel } from './RouteCompare.jsx';
-import { routeRows, sortRoutes, routeCompare, focusPicks, toggleTruck, pickTrucks, MAX_SELECTED } from './backtest-map-core.js';
+import { RoutesTable, RouteCards, RoutePanel, routeSummary } from './RouteCompare.jsx';
+import { routeRows, sortRoutes, routeCompare, focusPicks, partnersShownIn, toggleTruck, pickTrucks, MAX_SELECTED } from './backtest-map-core.js';
+import { routerChange } from './router-settings-core.js';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 const BACKTESTS_URL = '/.netlify/functions/claude-shadow?view=backtests';
@@ -195,24 +196,22 @@ function RouterSettings({ v, onSave }) {
   const s = v.settings;
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(null);
+  const [opened, setOpened] = useState(null);
   const [note, setNote] = useState(null);
   // Filled from the saved settings when the form OPENS — not on every poll, which hands back a new
   // settings object every 20 s while a job runs and would wipe what is being typed.
   const openForm = () => {
     // A weight limit the settings do not pin opens BLANK (the default shows as the placeholder), so
     // a form opened and saved untouched leaves the default in charge instead of pinning today's number.
-    setForm({ capRule: s.capRule, costPerMile: s.costPerMile ?? '', costPerDriveHour: s.costPerDriveHour ?? '', effort: s.effort, maxRounds: String(s.maxRounds), maxUsd: String(s.maxUsd), lbsBox: v.pinned?.lbsBox ? String(s.lbsBox) : '', lbsTractor: v.pinned?.lbsTractor ? String(s.lbsTractor) : '' });
+    const f = { capRule: s.capRule, costPerMile: s.costPerMile ?? '', costPerDriveHour: s.costPerDriveHour ?? '', effort: s.effort, maxRounds: String(s.maxRounds), maxUsd: String(s.maxUsd), lbsBox: v.pinned?.lbsBox ? String(s.lbsBox) : '', lbsTractor: v.pinned?.lbsTractor ? String(s.lbsTractor) : '' };
+    setForm(f); setOpened(f);
     setOpen(true);
   };
   const save = async () => {
-    const change = {
-      capRule: form.capRule, effort: form.effort, maxRounds: form.maxRounds, maxUsd: form.maxUsd,
-      costPerMile: String(form.costPerMile).trim() === '' ? null : form.costPerMile,
-      costPerDriveHour: String(form.costPerDriveHour).trim() === '' ? null : form.costPerDriveHour,
-      // A weight limit left blank goes back to the default (the engine's truck profile).
-      lbsBox: String(form.lbsBox).trim() === '' ? null : form.lbsBox,
-      lbsTractor: String(form.lbsTractor).trim() === '' ? null : form.lbsTractor,
-    };
+    // ONLY THE FIELDS CHANGED since the form opened are sent (audit 2026-09-27): the rest may have been
+    // saved by someone else meanwhile, and sending them would silently put the old values back.
+    const change = routerChange(opened, form);
+    if (!Object.keys(change).length) { setNote('Nothing was changed, so nothing was saved.'); setOpen(false); return; }
     const r = await onSave(change);
     // A day is built from the settings it was QUEUED with (the job's snapshot wins over the settings
     // doc), so a day already in the queue keeps the old limits — say so where he can still re-queue it.
@@ -422,6 +421,54 @@ function LoadRows({ r, phone }) {
   );
 }
 
+/**
+ * THE ROUTE DRAWER'S FRAME (v1.77.0): a panel from the right over the day on a desktop (the day stays
+ * visible to its left; a click there or Esc closes it), the whole screen on a phone. It declares
+ * data-overlay-layer: it EXISTS to cover the page. Kept in the page while hidden, so its maps survive.
+ */
+function RouteDrawer({ open, phone, drawerRef, cmp, onClose, prevId, nextId, position, total, onOpen, children }) {
+  const L = cmp?.load;
+  // Esc and Tab are handled ON the dialog (the screen may not listen on the page): Esc closes, and Tab
+  // cycles inside it, so focus never walks out behind the backdrop (review).
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); onClose(); return; }
+    if (e.key !== 'Tab') return;
+    const root = drawerRef.current;
+    const f = root ? [...root.querySelectorAll('button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter((el) => el.offsetParent !== null) : [];
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && (e.target === first || e.target === root)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (e.target === last || e.target === root)) { e.preventDefault(); first.focus(); }
+  };
+  return (
+    <div className={open ? '' : 'hidden'}>
+      {/* The dimmed page HOLDS the drawer, as the app's other dialogs do: a press on the dim part closes
+          it, a press inside does not, and a drag that starts inside and ends outside does not either.
+          (An empty full-screen box of its own is what the tablet guard's dead-space check exists to catch.) */}
+      <div className={phone ? '' : 'fixed inset-0 z-50 bg-slate-900/25'} onMouseDown={phone ? undefined : (e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div ref={drawerRef} role="dialog" aria-modal="true" aria-label={L ? `Route drawer: ${L.route}` : 'Route drawer'} tabIndex={-1} data-overlay-layer onKeyDown={onKeyDown}
+        className={`fixed z-50 bg-white overflow-y-auto outline-none ${phone ? 'inset-0 px-3 pb-3 space-y-3' : 'inset-y-0 right-0 w-[min(1320px,82vw)] border-l shadow-2xl px-4 pb-4 space-y-3'}`}>
+        {/* The header stays in reach however far down the drawer is read (review: on a phone it scrolled four screens away). */}
+        <div className={`sticky top-0 z-10 bg-white border-b pt-3 pb-2 flex ${phone ? 'flex-col gap-2' : 'items-start justify-between gap-3'}`}>
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700">Route</div>
+            <div className="text-base font-semibold text-slate-900 break-words">{L ? L.route : '—'} <span className="font-normal text-slate-600 text-sm">{L ? `· ${L.driver} · ${L.cls === 'tractor' ? 'tractor' : 'box truck'}` : ''}</span></div>
+            {cmp && <div className="text-xs text-slate-700 mt-0.5">{routeSummary(cmp)}</div>}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button onClick={() => prevId && onOpen(prevId)} disabled={!prevId} aria-label="Previous route" className="rounded-lg border bg-white min-h-[44px] min-w-[44px] inline-flex items-center justify-center disabled:opacity-40"><ChevronLeft size={16} /></button>
+            <span className="text-[11px] text-slate-500 tabular-nums px-1 whitespace-nowrap">{position ? `${position} of ${total}` : 'not in the list shown'}</span>
+            <button onClick={() => nextId && onOpen(nextId)} disabled={!nextId} aria-label="Next route" className="rounded-lg border bg-white min-h-[44px] min-w-[44px] inline-flex items-center justify-center disabled:opacity-40"><ChevronRight size={16} /></button>
+            <button onClick={onClose} aria-label="Close the route drawer" className="rounded-lg border bg-white px-3 min-h-[44px] inline-flex items-center justify-center gap-1 text-xs font-semibold"><X size={14} /> Close</button>
+          </div>
+        </div>
+        {children}
+      </div>
+      </div>
+    </div>
+  );
+}
+
 function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMap, route }) {
   const [raw, setR] = useState(null);
   const r = raw ? withRates(raw, rates) : null;
@@ -436,7 +483,23 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
   // The scorecard and the routes must be one run: if the day was backtested again between the two
   // reads, say so rather than show the new run's routes under the old run's numbers.
   const stale = !!(m && r && m.at && r.at && m.at !== r.at);
-  const { sel, setSel, focus, setFocus, q, setQ, sortBy, setSortBy } = route;
+  const { sel, setSel, focus, setFocus, q, setQ, sortBy, setSortBy, drawer, setDrawer, drawerFocus, setDrawerFocus, drawerSel, setDrawerSel } = route;
+  // THE ROUTE DRAWER (v1.77.1). Chad: "when i click on a row i want a drawer with maps of stops they
+  // had then ones that moved as well as maps of what dispatcher did vs what claude did as well as i
+  // want to have a button to show all the routes that were effected by changes that claude made so i
+  // can essentially layer information onto the map." A row opens the route in a drawer over the day:
+  // dispatch's map and Claude's, zoomed to that truck, the stops it kept, lost and gained ringed, and
+  // the trucks it traded with one button away. The drawer's maps are made the first time it opens and
+  // kept while the day is open, so walking route to route costs no more map loads. The drawer keeps its
+  // OWN route and coloured trucks (drawerFocus, drawerSel): what it shows never moves the page's maps,
+  // which open only when their button is pressed, as before.
+  const [drawerMade, setDrawerMade] = useState(!!drawer);
+  const drawerRef = useRef(null);
+  const dayRef = useRef(null);
+  const [drawerZoom, setDrawerZoom] = useState(0);
+  const [drawerNote, setDrawerNote] = useState(null);
+  // Each fresh open of the drawer clears a stop card left from an earlier visit (review).
+  const [cardKey, setCardKey] = useState(0);
   const [note, setNote] = useState(null);
   // Every explicit open re-frames the maps, even of the route already open (a counter, not the id).
   const [zoomTick, setZoomTick] = useState(0);
@@ -471,7 +534,38 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
       panelRef.current?.querySelector('section[aria-label^="Route "]')?.focus({ preventScroll: true });
     });
   }, [m, showMap, setSel, setFocus]);
-  const partnersShown = !!cmp && sel.size > 1;
+  // THE DRAWER'S OWN ROUTE. A row in the list opens it; ◀ ▶, a stop list or the drawer's map walk it.
+  const dcmp = useMemo(() => (m && drawerFocus && !stale ? routeCompare(m, drawerFocus) : null), [m, drawerFocus, stale]);
+  const openInDrawer = useCallback((id) => {
+    if (!m || !routeCompare(m, id)) return;
+    const fresh = !drawer;
+    setDrawerFocus(id);
+    setDrawerSel(new Map([[id, 0]]));
+    setDrawerNote(null);
+    setDrawerZoom((n) => n + 1);
+    setDrawer(true);
+    setDrawerMade(true);
+    if (fresh) setCardKey((n) => n + 1);
+    // Keyboard focus goes into the drawer when it opens — not when ◀ ▶ walks it, which keeps focus where it is.
+    requestAnimationFrame(() => { drawerRef.current?.scrollTo?.({ top: 0 }); if (fresh) drawerRef.current?.focus({ preventScroll: true }); });
+  }, [m, drawer, setDrawer, setDrawerFocus, setDrawerSel]);
+  const closeDrawer = useCallback(() => {
+    const was = drawerFocus;
+    setDrawer(false); setDrawerFocus(null); setDrawerSel(new Map()); setDrawerNote(null);
+    // Back to the row that opened it, so the dispatcher keeps their place in the list (review).
+    requestAnimationFrame(() => { if (was) dayRef.current?.querySelector(`[data-route-open="${was}"]`)?.focus(); });
+  }, [drawerFocus, setDrawer, setDrawerFocus, setDrawerSel]);
+  const drawerPartnersShown = partnersShownIn(dcmp, drawerSel);
+  const showDrawerPartners = useCallback(() => {
+    if (!dcmp) return;
+    const f = focusPicks(dcmp);
+    setDrawerSel(f.next);
+    setDrawerNote(f.left ? `${f.left} more truck${f.left === 1 ? '' : 's'} traded with this route and ${f.left === 1 ? 'is' : 'are'} not coloured — ${MAX_SELECTED} colours at a time.` : null);
+  }, [dcmp, setDrawerSel]);
+  const hideDrawerPartners = useCallback(() => { if (dcmp) { setDrawerSel(new Map([[dcmp.load.id, 0]])); setDrawerNote(null); } }, [dcmp, setDrawerSel]);
+  const pickInDrawer = useCallback((ids) => setDrawerSel((s0) => { const x = pickTrucks(s0, ids); setDrawerNote(x.refused ? TOO_MANY : null); return x.next; }), [TOO_MANY, setDrawerSel]);
+  const dAt = dcmp ? sorted.findIndex((x) => x.id === dcmp.load.id) : -1;
+  const partnersShown = partnersShownIn(cmp, sel);
   const showPartners = useCallback(() => {
     if (!cmp) return;
     const f = focusPicks(cmp);
@@ -484,9 +578,9 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
   const allRoutes = useCallback(() => { setFocus(null); setSel(new Map()); setNote(null); }, [setFocus, setSel]);
   const at = cmp ? sorted.findIndex((x) => x.id === cmp.load.id) : -1;
   const colourNote = cmp && partnersShown ? (() => { const left = focusPicks(cmp).left; return left ? `${left} more truck${left === 1 ? '' : 's'} traded with this route and ${left === 1 ? 'is' : 'are'} not coloured — ${MAX_SELECTED} colours at a time.` : null; })() : null;
-  const routesProps = { rows: sorted, total: rows.length, sel, onToggle: toggle, onOpen: openRoute, focus, q, setQ, sortBy, setSortBy, serviceMin: m?.serviceMin ?? 15, m };
+  const routesProps = { rows: sorted, total: rows.length, sel, onToggle: toggle, onOpen: openInDrawer, focus: drawer ? drawerFocus : focus, q, setQ, sortBy, setSortBy, serviceMin: m?.serviceMin ?? 15, m };
   return (
-    <div className="rounded-xl border-2 border-indigo-200 bg-white p-3 space-y-3">
+    <div ref={dayRef} className="rounded-xl border-2 border-indigo-200 bg-white p-3 space-y-3">
       <div className="flex items-start justify-between gap-2">
         <div>
           <div className="text-sm font-semibold text-slate-900">{fmtDay(date)} — Claude vs dispatch</div>
@@ -521,6 +615,19 @@ function DayDetail({ date, loadResult, phone, onClose, rates, showMap, setShowMa
           </div>
           {m && !stale && note && <p className="text-xs text-amber-800" role="status">{note}</p>}
           {m && !stale && (phone ? <RouteCards {...routesProps} /> : <RoutesTable {...routesProps} />)}
+          {drawerMade && m && !stale && (
+            <RouteDrawer open={drawer && !!dcmp} phone={phone} drawerRef={drawerRef} cmp={dcmp} onClose={closeDrawer}
+              prevId={dAt > 0 ? sorted[dAt - 1].id : null} nextId={dAt >= 0 && dAt < sorted.length - 1 ? sorted[dAt + 1].id : null}
+              position={dAt >= 0 ? dAt + 1 : null} total={sorted.length} onOpen={openInDrawer}>
+              <div data-drawer-map className="scroll-mt-24">
+                {/* The drawer's OWN map state: it never moves the page's maps under it. No "All routes" here — Close is the way back. */}
+                <BacktestMap m={m} phone={phone} sel={drawerSel} onPick={pickInDrawer} onClearPicks={() => { setDrawerSel(dcmp ? new Map([[dcmp.load.id, 0]]) : new Map()); setDrawerNote(null); }} focus={drawerFocus} zoomTick={drawerZoom} onOpenRoute={openInDrawer} onAllRoutes={null} partners={dcmp?.partners?.length || 0} partnersShown={drawerPartnersShown} onShowPartners={showDrawerPartners} onHidePartners={hideDrawerPartners} note={drawerNote} cardKey={cardKey} dayNotes={false} />
+              </div>
+              {/* The map's header above carries "Show the N trucks Claude traded with"; the panel does not repeat it. */}
+              {dcmp && <RoutePanel bare cmp={dcmp} m={m} phone={phone} sel={drawerSel} onOpen={openInDrawer} onClose={closeDrawer} onShowPartners={null} partnersShown={drawerPartnersShown} showMap
+                prevId={null} nextId={null} position={dAt >= 0 ? dAt + 1 : null} total={sorted.length} colourNote={null} />}
+            </RouteDrawer>
+          )}
           {!m && !day.err && <div className="text-xs text-slate-500">Loading the routes…</div>}
           {day.err && (
             <div className="space-y-2">
@@ -578,11 +685,16 @@ export function useOpenDay() {
   const [sel, setSel] = useState(() => new Map());
   const [q, setQ] = useState('');
   const [sortBy, setSortBy] = useState('triage');
-  const setOpenDay = useCallback((d) => { setDay(d); setShowMap(false); setFocus(null); setSel(new Map()); setQ(''); setSortBy('triage'); }, []);
-  return { openDay, setOpenDay, showMap, setShowMap, focus, setFocus, sel, setSel, q, setQ, sortBy, setSortBy };
+  // v1.77.1: the route drawer — open or not, and ITS route and coloured trucks, kept apart from the
+  // page map's so the drawer never moves the maps under it (review).
+  const [drawer, setDrawer] = useState(false);
+  const [drawerFocus, setDrawerFocus] = useState(null);
+  const [drawerSel, setDrawerSel] = useState(() => new Map());
+  const setOpenDay = useCallback((d) => { setDay(d); setShowMap(false); setFocus(null); setSel(new Map()); setQ(''); setSortBy('triage'); setDrawer(false); setDrawerFocus(null); setDrawerSel(new Map()); }, []);
+  return { openDay, setOpenDay, showMap, setShowMap, focus, setFocus, sel, setSel, q, setQ, sortBy, setSortBy, drawer, setDrawer, drawerFocus, setDrawerFocus, drawerSel, setDrawerSel };
 }
 
-export default function BacktestPanel({ phone, day }) {
+export default function BacktestPanel({ phone, day, onSettingsSaved }) {
   const b = useBacktests();
   const [picked, setPicked] = useState(() => new Set());
   const own = useOpenDay();
@@ -628,7 +740,8 @@ export default function BacktestPanel({ phone, day }) {
             <div className="text-xs font-semibold text-slate-700 mb-1 inline-flex items-center gap-1"><TrendingDown size={13} /> Across every day backtested — Claude against dispatch as driven</div>
             <Totals t={totals} phone={phone} spend={v.spend} />
           </div>
-          <RouterSettings v={v} onSave={b.saveSettings} />
+          {/* A save here also refreshes the planning area above, whose Plan button states the $ ceiling (audit 2026-09-27). */}
+          <RouterSettings v={v} onSave={async (change) => { const r = await b.saveSettings(change); if (r.ok) onSettingsSaved?.(); return r; }} />
           {openDay && <DayDetail key={`${openDay}|${days.find((d) => d.date === openDay)?.result?.at || ''}`} date={openDay} loadResult={b.loadResult} phone={phone} rates={rates} showMap={showMap} setShowMap={setShowMap} route={dayState} onClose={() => setOpenDay(null)} />}
           <div className="flex flex-wrap items-center gap-2">
             <button disabled={!picked.size || b.busy || !!v.refused} onClick={async () => { if (await b.queue([...picked], v.settings.maxUsd, v.ceiling)) setPicked(new Set()); }}

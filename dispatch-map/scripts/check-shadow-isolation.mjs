@@ -121,7 +121,7 @@ export const REVIEWED_SHARED = {
   'netlify/functions/lib/driver-class.mts': 'the engine\'s driver→truck-class rule (employees roster + the one pin); PURE, no imports — moved out of routing-plan-core.mts unchanged so the shadow can share it',
   'netlify/functions/lib/routing-types.mts': 'shared routing types and the Buford DEPOT constant; no imports',
   'netlify/functions/lib/routing-engine-config.mts': 'the engine\'s config defaults and clamps; the shadow imports only the PURE effectiveEngineConfig and engineConfigPath (rule 2), reads the stored doc itself with getDoc, and cannot reach the module\'s writer',
-  // v1.76.0 — the planning area plans the board the Map serves, through the Map's OWN read steps.
+  // v1.77.0 — the planning area plans the board the Map serves, through the Map's OWN read steps.
   // Every one is PURE: rows in, rows or counts out. The documents are read by firestore.mts's readers.
   'netlify/functions/lib/board-rows.mts': 'the Map\'s three read steps for one board day (finished-prior-day filter, carry-over fold, cancelled drop) in its order; PURE, imports only board-day, carryover-fold and stop-cancelled',
   'netlify/functions/lib/board-day.mts': 'PURE board-day predicates (ownBoardDay, filterFinishedPriorDay), moved out of nuvizz-list.mts unchanged; no imports',
@@ -144,7 +144,7 @@ export const REVIEWED_BUILTINS = {
 export const SHARED_IMPORTS = {
   // listDocs (v1.63.0, learning): a paged GET of one collection, optionally field-masked — a read,
   // and the egress lock judges it as one. The shadow learns from history_days with it.
-  // readStops / readActivePool / readActiveUnplannedSet / readCarryoverRetired (v1.76.0, the planning
+  // readStops / readActivePool / readActiveUnplannedSet / readCarryoverRetired (v1.77.0, the planning
   // area): the Map's own board readers — getDoc and listDocs underneath, nothing else; the egress lock
   // judges each request they make as a read.
   'netlify/functions/lib/firestore.mts': ['getDoc', 'isFirestoreEnabled', 'listDocs', 'readStops', 'readActivePool', 'readActiveUnplannedSet', 'readCarryoverRetired'],
@@ -155,7 +155,7 @@ export const SHARED_IMPORTS = {
   'netlify/functions/lib/driver-class.mts': ['employeeClassMap', 'CLASS_OVERRIDE'],
   'netlify/functions/lib/routing-types.mts': ['DEPOT', 'DEFAULT_SERVICE_MIN'],
   'netlify/functions/lib/routing-engine-config.mts': ['effectiveEngineConfig', 'engineConfigPath'],
-  // v1.76.0 — the planning area (lib/claude-shadow/plan-core.mts, plan.mts).
+  // v1.77.0 — the planning area (lib/claude-shadow/plan-core.mts, plan.mts).
   'netlify/functions/lib/board-rows.mts': ['boardRowsAsServed'],
   'netlify/functions/lib/carryover-fold.mts': ['carryPriorDates'],
   'netlify/functions/lib/board-fields.mts': ['LEAN_STOP_FIELDS'],

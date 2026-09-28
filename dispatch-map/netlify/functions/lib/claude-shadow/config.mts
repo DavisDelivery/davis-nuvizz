@@ -57,3 +57,15 @@ export function hardCapsEnabled(env: Record<string, any> = process.env): boolean
   const v = String(env?.SHADOW_HARD_CAPS ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
 }
+
+// THE BACKTEST'S ROOM CHECK (audit 2026-09-27, shadow-backend-5). A backtest may leave off only a
+// no-tractor stop dispatch ran on a tractor — and the briefing tells Claude it may do so only when no
+// box truck has ROOM for it, "and the evaluator refuses any other". The evaluator never checked the
+// room, so a box-only stop could be dropped beside a half-empty box truck and its miles read as
+// Claude's saving. With this ON the evaluator holds the backtest to the rule its briefing states (the
+// same roomFor a plan uses). House shape: default ON, an explicit off-word turns it off (the drop is
+// accepted with any reason again, as before), anything else leaves it ON.
+export function btRoomCheckEnabled(env: Record<string, any> = process.env): boolean {
+  const v = String(env?.SHADOW_BT_ROOM_CHECK ?? '').trim().toLowerCase();
+  return !OFF_WORDS.includes(v);
+}

@@ -3,6 +3,8 @@
 // Pure display rules for two sections of the stop card, kept out of App.jsx so
 // they can be unit-tested. Both exist because of a defect the dispatcher hit.
 
+import { isHashLikeId } from './route-identity.js';
+
 // ── ROUTE section: the load number line ──────────────────────────────────────
 // The Route box prints the route NAME in bold and the load NUMBER in small grey
 // mono underneath. For most loads those are different strings and the second
@@ -63,6 +65,51 @@ export function podPhotoFetchOffer(stop, { tried } = {}) {
     // that, silence means "not asked yet", which is a different thing.
     exhausted: offer && !!tried,
   };
+}
+
+// ── what a "View delivery photos" pull settled ───────────────────────────────
+// `d` is the pro-lookup answer; `fold` is the card's fold funnel (useLiveStop's
+// onRefreshed), which returns a refusal message when the by-number pull answered
+// with the OTHER order sharing this number, and null when it merged. A refused
+// pull looked at a different order, so it is NOT "tried" — counting it would
+// print "No delivery photos on file" for an order nobody asked about.
+export function podPhotoPullOutcome(d, fold) {
+  if (!(d && d.ok && d.stop)) return { tried: false, err: (d && d.reason) || 'not found' };
+  const refusal = typeof fold === 'function' ? fold(d.stop) : null;
+  if (refusal) return { tried: false, err: refusal };
+  return { tried: true, err: null };
+}
+
+// ── which RECORD the open card is showing ────────────────────────────────────
+// The card's per-order state (the refresh overlay, the loaded Activity timeline)
+// was keyed by stop NUMBER alone. NuVizz can hold two different orders under one
+// number (the Estes twin), and a recurring PRO returns as a new order with the
+// same number — so switching between them kept the first order's events and
+// refreshed fields on the second. The record is its number plus, when known,
+// its id-shaped stopId.
+export function stopRecordIdentity(stop) {
+  return {
+    nbr: String(stop?.stopNbr || stop?.pro || '').trim(),
+    id: String(stop?.stopId ?? '').trim(),
+  };
+}
+
+// Compare the record the card last held (`prev`) with the one it holds now.
+// Different when the number differs, or when BOTH carry an id-shaped stopId and
+// they disagree — the same evidence standard as the card's wrong-twin fold guard.
+// A card without an id that LEARNS one (its own refresh adopting the stopId) is
+// the same record; the learned id is kept so a later twin switch is caught.
+// `record` is `prev` itself when nothing new was learned, so a caller storing it
+// in state can compare by reference and never loops.
+export function trackStopRecord(prev, next) {
+  const p = prev || { nbr: '', id: '' };
+  const n = next || { nbr: '', id: '' };
+  if (p.nbr !== n.nbr) return { changed: true, record: n };
+  const pId = isHashLikeId(p.id);
+  const nId = isHashLikeId(n.id);
+  if (pId && nId && p.id !== n.id) return { changed: true, record: n };
+  if (!pId && nId) return { changed: false, record: n };
+  return { changed: false, record: p };
 }
 
 // ── folding a fresh /stop/info pull over the open card ───────────────────────

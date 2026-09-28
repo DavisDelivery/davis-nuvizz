@@ -42,10 +42,12 @@
 // DELETIONS. A document production deleted is deleted on the mirror only if THIS SYNC put it
 // there (it is in the unit's `seen` map), so nothing UAT created on its own is ever removed.
 // Board-day stops get one more rule, on the first tick that sees a day: the mirror's stops that
-// production no longer holds are removed unless they are the UAT bench's own orders (UT-…,
-// lib/uat-seed.mts). On a mirror nothing else creates board stops — the mirror never scans
-// (lib/mirror-guard.mts) — so any other stop there is a stale copy of production's, left by the
-// nightly refresh, which copies but never prunes.
+// production no longer holds are removed unless they are the UAT bench's own orders. That is the
+// nightly refresh's own rule since v1.81.3 (uat-mirror-refresh.mts boardRowsToPrune — a UT-
+// number or the bench's uatSeed provenance), called here rather than restated, so the two jobs
+// that copy the board cannot disagree about which rows are UAT's. On a mirror nothing else creates
+// board stops — the mirror never scans (lib/mirror-guard.mts) — so any other stop there is a stale
+// copy of production's.
 //
 // ZERO NuVizz calls, by construction: this file and its endpoint import nothing from any
 // nuvizz-* module (test/uat-live-sync.test.mjs pins it against the source).
@@ -56,9 +58,8 @@
 
 import { isMirrorDeploy } from './mirror-guard.mts';
 import { prodMirrorReadEnabled, type ProdStamp } from './prod-mirror-read.mts';
-import { isUatSeededNbr } from './uat-seed.mts';
 import { isBatchId, IMPORTS_COLLECTION, LOCATIONS_COLLECTION, INDEX_COLLECTION, SHIPLIFY_TENANT } from './shiplify-store.mts';
-import { BOARD_COLLECTION, ROSTER_COLLECTION } from './uat-mirror-refresh.mts';
+import { BOARD_COLLECTION, ROSTER_COLLECTION, boardRowsToPrune } from './uat-mirror-refresh.mts';
 
 export const SYNC_COLLECTION = 'uat_mirror_sync';
 export const SYNC_HORIZON_DAYS = 3;                 // today + 3, the nightly's board window (uat-mirror-refresh.mts)
@@ -187,19 +188,20 @@ export function readSeen(state: UnitState | null | undefined): Record<string, st
  * PURE. What a collection unit has to do: which production documents changed since this sync
  * last copied them, and which mirror documents to remove.
  *
- * `mirrorIds` is only consulted for a 'board' unit on its FIRST tick (no state yet) — see the
- * header for why a non-UT stop on a mirror's board is by construction a copy of production's.
+ * `mirrorRows` ({ _id, stopNbr, uatSeed }) is only consulted for a 'board' unit on its FIRST tick
+ * (no state yet) — see the header for why a non-bench stop on a mirror's board is by construction
+ * a copy of production's, and for why the rule is the nightly's boardRowsToPrune.
  */
 export function diffCollection(
   prod: ProdStamp[],
   seen: Record<string, string>,
-  opts: { prune: 'copied' | 'board'; firstTick: boolean; mirrorIds?: string[] },
+  opts: { prune: 'copied' | 'board'; firstTick: boolean; mirrorRows?: any[] },
 ): { changed: ProdStamp[]; removed: string[] } {
   const prodIds = new Set(prod.map((p) => p._id));
   const changed = prod.filter((p) => seen[p._id] !== p.updateTime);
   const gone = new Set(Object.keys(seen).filter((id) => !prodIds.has(id)));
   if (opts.prune === 'board' && opts.firstTick) {
-    for (const id of opts.mirrorIds || []) if (!prodIds.has(id) && !isUatSeededNbr(id)) gone.add(id);
+    for (const r of boardRowsToPrune(prod, opts.mirrorRows || [])) gone.add(String(r._id));
   }
   return { changed, removed: [...gone].sort() };
 }
@@ -215,7 +217,8 @@ export interface SyncDeps {
   getMirror: (docPath: string) => Promise<any | null>;
   setMirror: (docPath: string, data: any) => Promise<unknown>;
   deleteMirror: (docPath: string) => Promise<unknown>;
-  listMirrorIds: (collectionPath: string) => Promise<string[]>;
+  /** the mirror's rows of a board day's stops, masked to what boardRowsToPrune reads */
+  listMirrorRows: (collectionPath: string) => Promise<any[]>;
   now?: () => number;
   nowIso?: () => string;
   log?: (line: string) => void;
@@ -281,8 +284,8 @@ async function syncCollectionUnit(deps: SyncDeps, tenant: string, u: Extract<Syn
   const [prod, state] = await Promise.all([deps.listProdStamps(u.path), deps.getMirror(statePath) as Promise<UnitState | null>]);
   const seen = readSeen(state);
   const firstTick = !state;
-  const mirrorIds = u.prune === 'board' && firstTick ? await deps.listMirrorIds(u.path) : undefined;
-  const { changed, removed } = diffCollection(prod, seen, { prune: u.prune, firstTick, mirrorIds });
+  const mirrorRows = u.prune === 'board' && firstTick ? await deps.listMirrorRows(u.path) : undefined;
+  const { changed, removed } = diffCollection(prod, seen, { prune: u.prune, firstTick, mirrorRows });
   const rep: UnitReport = { key: u.key, path: u.path, changed: changed.length, copied: 0, removed: 0 };
   if (dry) {
     if (removed.length) rep.wouldRemove = removed.slice(0, 20);

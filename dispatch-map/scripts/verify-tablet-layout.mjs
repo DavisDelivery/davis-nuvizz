@@ -23,11 +23,12 @@
 import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
+import { ORDER_EVENTS } from './lib/customer-view-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
-import { claudeShadowFixtureFor, guardOpenBacktestDay, guardOpenFirstRoute } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, guardOpenBacktestDay, guardOpenFirstRoute, guardOpenStopPicker } from './lib/claude-shadow-fixture.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -101,6 +102,11 @@ const PROBES = {
   claudeshadow: [{
     name: 'a backtested day open, one route opened',
     open: async (page) => (await guardOpenBacktestDay(page)) && guardOpenFirstRoute(page),
+  }, {
+    // v1.78.0: the planning area's section stop map, open in its drawer (the map itself needs a key and
+    // is measured by verify-shadow-map.mjs; here it says it could not load, and the rest is measured).
+    name: 'a section’s stop map open',
+    open: async (page) => guardOpenStopPicker(page),
   }],
   routing: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
   map: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
@@ -127,6 +133,24 @@ const PROBES = {
       // EVERY PROBE PROVES ITS STATE. A probe that only proves it clicked something measures
       // whatever happened to be on screen and calls it by the state's name.
       return page.getByText(/proof of delivery/i).first().isVisible().catch(() => false);
+    } },
+    // THE ACTIVITY TIMELINE ASKED FOR (v1.83.0). Runs straight after "an order opened" with no
+    // reload, so the panel is normally already open under its row — it is opened here only if
+    // it is not, and then the priced button is pressed and the events are proven on screen.
+    { name: "an order's activity timeline asked for", open: async (page) => {
+      if (!(await page.getByRole('button', { name: /show the activity timeline/i }).first().isVisible().catch(() => false))) {
+        await closeOrderDrawer(page);
+        const box = page.getByLabel(/find a customer by name/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('earthly alternative');
+        if (!(await openByName(page, /^look up$/i))) return false;
+        await page.waitForTimeout(500);
+        if (!(await openByName(page, /^007180002$/))) return false;
+        await page.waitForTimeout(500);
+      }
+      if (!(await openByName(page, /show the activity timeline/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByText(/waiting for a dock door assignment/i).first().isVisible().catch(() => false);
     } },
     { name: 'a customer year', open: async (page) => {
       await closeOrderDrawer(page);
@@ -416,6 +440,8 @@ for (const dev of TABLETS) {
     if (u.includes('labels-by-shipper')) return J(labelsAnswer(u));
     // A DRIVER'S WEEK (v1.69.0) — the same built fixture the phone guard drives.
     if (u.includes('driver-loads')) return J(driverWeekAnswer(u));
+    // THE ORDER PANEL'S ACTIVITY TIMELINE (v1.83.0) — the same worst rows the phone guard uses.
+    if (u.includes('nuvizz-stop-events')) return J(ORDER_EVENTS);
     if (u.includes('stop-lookup')) return J(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.

@@ -1147,6 +1147,19 @@ export function addressLanded(readAddr: any, want: Record<string, any>): boolean
   return true;
 }
 
+/** Spelled-out street words → the USPS abbreviation, for Layer 2 below. NuVizz is recorded
+ *  expanding "RD" to "ROAD" (see above); these are the common street types, directionals and
+ *  unit words, so the same re-spelling of any of them reads as agreement, not as a failure. */
+const STREET_WORD_ABBREV: Record<string, string> = {
+  ROAD: 'RD', HIGHWAY: 'HWY', BOULEVARD: 'BLVD', LANE: 'LN', COURT: 'CT', DRIVE: 'DR',
+  PARKWAY: 'PKWY', PLACE: 'PL', CIRCLE: 'CIR', TERRACE: 'TER', TRAIL: 'TRL', CROSSING: 'XING',
+  EXPRESSWAY: 'EXPY', FREEWAY: 'FWY', CENTER: 'CTR', CENTRE: 'CTR', STREET: 'ST', AVENUE: 'AVE',
+  SQUARE: 'SQ', PLAZA: 'PLZ', POINT: 'PT', HEIGHTS: 'HTS', JUNCTION: 'JCT', MOUNTAIN: 'MTN',
+  NORTH: 'N', SOUTH: 'S', EAST: 'E', WEST: 'W',
+  NORTHWEST: 'NW', NORTHEAST: 'NE', SOUTHWEST: 'SW', SOUTHEAST: 'SE',
+  SUITE: 'STE', BUILDING: 'BLDG', FLOOR: 'FL',
+};
+
 /** PURE. Layer 2 — EVERY FIELD THE HUMAN TYPED reads back.
  *
  *  Compared against what was TYPED, never against the merged block: a field the caller left
@@ -1156,11 +1169,16 @@ export function addressLanded(readAddr: any, want: Record<string, any>): boolean
 export function addressMatchesTyped(readAddr: any, typed: Record<string, any>): boolean {
   const toks = (v: any) => String(v ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
   const a = (readAddr && typeof readAddr === 'object') ? readAddr : {};
+  // The prefix rule cannot see an abbreviation that is not a prefix — "RD"/"ROAD",
+  // "HWY"/"HIGHWAY", "NW"/"NORTHWEST" — so a landed correction NuVizz re-spelled read as
+  // failed (A4-S20-1). Those also agree when both sides name the SAME USPS abbreviation.
+  // Exact equality, never a prefix, so "NORTH" (N) still does not agree with "NE".
+  const canon = (t: string) => STREET_WORD_ABBREV[t] || t;
   const agrees = (stored: any, wanted: any) => {
     const w = toks(wanted), st = toks(stored);
     if (!w.length) return true;
     if (st.length !== w.length) return false;
-    return w.every((t, i) => st[i].startsWith(t) || t.startsWith(st[i]));
+    return w.every((t, i) => st[i].startsWith(t) || t.startsWith(st[i]) || canon(st[i]) === canon(t));
   };
   // STATE goes through the repo's own code map, not the token comparison. NuVizz expands the
   // code it is given, and the expansion is not always token-for-token: "GA" -> "GEORGIA" is

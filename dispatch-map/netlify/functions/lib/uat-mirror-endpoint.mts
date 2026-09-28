@@ -32,12 +32,12 @@
 // GET uat-mirror-refresh?status=1 — the progress document says what was copied, what the
 // miners did, where it stopped, and it carries nuvizz_calls: 0 on purpose.
 import { isMirrorDeploy, firestoreDatabaseName } from './mirror-guard.mts';
-import { isFirestoreEnabled, getDoc, setDoc, listDocs, etDayString } from './firestore.mts';
+import { isFirestoreEnabled, getDoc, setDoc, listDocs, deleteDoc, etDayString } from './firestore.mts';
 import { listProdDocs, getProdDoc, prodMirrorReadEnabled } from './prod-mirror-read.mts';
 import { gateScheduledOverride } from './background-gate.mts';
 import { runPostSealHooks, recordPostSealOutcome } from './history-postseal.mts';
 import {
-  planRefresh, runRefresh, progressPath, onOff, planLabel, TIME_BUDGET_MS,
+  planRefresh, runRefresh, progressPath, onOff, planLabel, boardPruneEnabled, TIME_BUDGET_MS,
   type RefreshDeps, type RefreshProgress,
 } from './uat-mirror-refresh.mts';
 
@@ -108,6 +108,8 @@ export async function mirrorRefreshHandler(req: Request, opts: MirrorRefreshOpti
     setDoc,
     listMirror: (p, o) => listDocs(p, o),
     getMirror: (p) => getDoc(p),
+    // UAT_MIRROR_BOARD_PRUNE=off hands the core no deleter, and the board copy is upsert-only again.
+    deleteMirror: boardPruneEnabled() ? (p) => deleteDoc(p) : undefined,
     // The SAME miners the nightly capture runs after a seal (lib/history-postseal.mts), over the
     // copied records, writing the mirror's learned collections. The outcome is recorded on the
     // copied manifest exactly as the nightly records it — history-capture-health on the UAT site

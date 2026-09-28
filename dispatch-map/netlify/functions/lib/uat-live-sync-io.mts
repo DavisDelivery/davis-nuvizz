@@ -21,11 +21,12 @@ export function realSyncDeps(): SyncDeps {
     getMirror: (p) => getDoc(p),
     setMirror: (p, d) => setDoc(p, d),
     deleteMirror: (p) => deleteDoc(p),
-    // Only the board's stops units ask (their first-tick prune). Masked to stopNbr so a day of
-    // stops carrying the vendor's raw payload lists in a few kilobytes. listDocs drops a document
-    // whose masked fields are all absent — so a stop with no stopNbr is never seen, and a stop
-    // that is never seen is never deleted. That is the safe direction to fail in.
-    listMirrorIds: async (p) => (await listDocs(p, { mask: ['stopNbr'] })).map((r: any) => String(r._id)),
+    // Only the board's stops units ask (their first-tick prune). Masked to what boardRowsToPrune
+    // reads (the nightly's PRUNE_MASK), so a day of stops carrying the vendor's raw payload lists in
+    // a few kilobytes. listDocs drops a document whose masked fields are all absent — so a stop
+    // with neither field is never seen, and a stop that is never seen is never deleted. That is
+    // the safe direction to fail in.
+    listMirrorRows: (p) => listDocs(p, { mask: ['stopNbr', 'uatSeed'] }),
     log: (line) => console.log(line),
   };
 }

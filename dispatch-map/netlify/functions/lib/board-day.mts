@@ -1,4 +1,4 @@
-// lib/board-day.mts — THE BOARD'S READ-TIME DAY FILTER, PURE (v1.76.0).
+// lib/board-day.mts — THE BOARD'S READ-TIME DAY FILTER, PURE (v1.77.0).
 //
 // Moved out of nuvizz-list.mts unchanged: the Map's read (nuvizz-pull-today-stops.mts) and the Claude
 // shadow's planning area apply the same filter to a day's rows, and the shadow may not import a module

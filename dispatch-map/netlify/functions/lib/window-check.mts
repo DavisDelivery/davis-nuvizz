@@ -22,7 +22,7 @@
 
 import { getNuvizzRequester } from './nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
-import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, rowDay, toBoardStop, LIST_MAX_RESULT, OPENAPI_BASE } from './nuvizz-list.mts';
+import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, rowDay, toBoardStop, boardDayFor, LIST_MAX_RESULT, OPENAPI_BASE } from './nuvizz-list.mts';
 
 export const ACTIVE_CODES = ['10', '20', '40', '50'];
 
@@ -31,6 +31,19 @@ export function checkCodes(requested: any): string[] {
   const want = Array.isArray(requested) ? requested.map((c) => String(c).trim()).filter((c) => ACTIVE_CODES.includes(c)) : [];
   const uniq = [...new Set(want)];
   return uniq.length ? uniq : ACTIVE_CODES.slice();
+}
+
+/**
+ * PURE: the request asked for statuses, and none of them is open work — a grid filtered to
+ * Completed and/or Cancelled. The grid's rows are already filtered to those buckets, so every
+ * one of them would be set aside and checkCodes' "none → all four" fallback would compare an
+ * EMPTY shown set against all open work: one call spent to list every open order as missing.
+ * No statuses at all (the unfiltered window) is not this — that is still all four.
+ */
+export function closedOnlyRequest(requested: any): boolean {
+  if (!Array.isArray(requested)) return false;
+  const asked = requested.map((c) => String(c ?? '').trim()).filter(Boolean);
+  return asked.length > 0 && !asked.some((c) => ACTIVE_CODES.includes(c));
 }
 
 export interface ShownRow {
@@ -84,7 +97,15 @@ const pick = (r: any) => ({
  * PURE: shown vs live, by stop number. `changed` compares only what a dispatcher acts on —
  * whether it is planned, which load, which day — never enrichment detail.
  */
-export function diffWindow(shown: ShownRow[], live: any[], opts: { all?: any[] | null } = {}): WindowDiff {
+export function diffWindow(shown: ShownRow[], live: any[], opts: { all?: any[] | null; today?: string } = {}): WindowDiff {
+  // THE BOARD'S OWN DAY for NuVizz's row. NuVizz keeps a rolled-over stop's arrival on the day
+  // it first arrived; the board files open route-assigned work on TODAY (boardDayFor's live-route
+  // clamp) and the window serves that day. Our day matching the day the board itself would file
+  // NuVizz's row on is agreement, not a day change — otherwise every multi-day routed stop in the
+  // window reads "changed" with plan, route and status all agreeing.
+  const boardDayOfLive = (l: any, rawDay: any) => boardDayFor({ ...l, boardDate: rawDay || l.boardDate || null }, opts.today);
+  const dayDiffers = (oursDay: any, theirsDay: any, l: any) =>
+    !!(oursDay && theirsDay && oursDay !== theirsDay && oursDay !== boardDayOfLive(l, theirsDay));
   const shownBy = new Map<string, any>();
   for (const s of shown || []) { const k = norm(s?.stopNbr); if (k && !shownBy.has(k)) shownBy.set(k, s); }
   const liveBy = new Map<string, any>();
@@ -94,6 +115,9 @@ export function diffWindow(shown: ShownRow[], live: any[], opts: { all?: any[] |
   const allBy = new Map<string, any>();
   for (const l of opts.all || []) { const k = norm(l?.stopNbr); if (k && !allBy.has(k)) allBy.set(k, l); }
   const stale: any[] = [], missing: any[] = [], changed: any[] = [];
+  // NuVizz rows whose raw arrival sits outside the window but which the board files inside it
+  // (the clamp above) — on both sides, so they count on both sides of the header numbers too.
+  const clampedIn: any[] = [];
   for (const [k, s] of shownBy) {
     const l = liveBy.get(k);
     if (!l) {
@@ -101,6 +125,9 @@ export function diffWindow(shown: ShownRow[], live: any[], opts: { all?: any[] |
       if (elsewhere) {
         const ours = { planned: plannedOf(s.status, s.routeName), routeName: norm(s.routeName), day: s.day || null };
         const theirs = { planned: plannedOf(elsewhere.status, elsewhere.routeName), routeName: norm(elsewhere.routeName), day: elsewhere.day || elsewhere.boardDate || null };
+        if (ours.planned === theirs.planned && ours.routeName === theirs.routeName && ours.day && theirs.day && ours.day !== theirs.day && !dayDiffers(ours.day, theirs.day, elsewhere)) {
+          clampedIn.push(elsewhere); continue;
+        }
         changed.push({ stopNbr: k, businessName: s.businessName ?? elsewhere.businessName ?? null, ours: { ...ours, status: s.status ?? null }, nuvizz: { ...theirs, status: elsewhere.status ?? null, weight: num(elsewhere.weight) }, movedOut: true });
         continue;
       }
@@ -108,7 +135,7 @@ export function diffWindow(shown: ShownRow[], live: any[], opts: { all?: any[] |
     }
     const ours = { planned: plannedOf(s.status, s.routeName), routeName: norm(s.routeName), day: s.day || null };
     const theirs = { planned: plannedOf(l.status, l.routeName), routeName: norm(l.routeName), day: l.day || l.boardDate || null };
-    if (ours.planned !== theirs.planned || ours.routeName !== theirs.routeName || (ours.day && theirs.day && ours.day !== theirs.day)) {
+    if (ours.planned !== theirs.planned || ours.routeName !== theirs.routeName || dayDiffers(ours.day, theirs.day, l)) {
       changed.push({ stopNbr: k, businessName: s.businessName ?? l.businessName ?? null, ours: { ...ours, status: s.status ?? null }, nuvizz: { ...theirs, status: l.status ?? null, weight: num(l.weight) } });
     }
   }
@@ -118,7 +145,7 @@ export function diffWindow(shown: ShownRow[], live: any[], opts: { all?: any[] |
   return {
     matches: !stale.length && !missing.length && !changed.length,
     shown: totalsOf([...shownBy.values()]),
-    nuvizz: totalsOf([...liveBy.values()]),
+    nuvizz: totalsOf([...liveBy.values(), ...clampedIn]),
     stale, missing, changed,
   };
 }

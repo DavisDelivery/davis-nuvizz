@@ -238,9 +238,11 @@ export function planGeo(m, plan, opts = {}) {
 export function coreBounds(m, tail = 0.03) {
   const pts = (m?.stops || []).filter((p) => Number.isFinite(p?.lat) && Number.isFinite(p?.lng));
   if (!pts.length) return { bounds: boundsOf(m), outside: 0 };
-  const q = (vals, t) => { const s = vals.slice().sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.max(0, Math.floor(t * (s.length - 1))))]; };
-  const lats = pts.map((p) => p.lat), lngs = pts.map((p) => p.lng);
-  let south = q(lats, tail), north = q(lats, 1 - tail), west = q(lngs, tail), east = q(lngs, 1 - tail);
+  // The same number of stops off each end, floor(tail · (n − 1)) of them (audit 2026-09-27: the top end's
+  // index was floored too, which cut the northernmost and easternmost stop of every day of 34 or fewer).
+  const cut = Math.max(0, Math.floor(tail * (pts.length - 1)));
+  const ends = (vals) => { const s = vals.slice().sort((a, b) => a - b); return [s[Math.min(cut, s.length - 1)], s[Math.max(0, s.length - 1 - cut)]]; };
+  let [south, north] = ends(pts.map((p) => p.lat)), [west, east] = ends(pts.map((p) => p.lng));
   if (m?.depot && Number.isFinite(m.depot.lat) && Number.isFinite(m.depot.lng)) {
     south = Math.min(south, m.depot.lat); north = Math.max(north, m.depot.lat);
     west = Math.min(west, m.depot.lng); east = Math.max(east, m.depot.lng);
@@ -534,6 +536,17 @@ export function focusPicks(cmp) {
   let slot = 1;
   for (const p of cmp.partners) { if (slot >= MAX_SELECTED) break; next.set(p.loadId, slot++); }
   return { next, left: Math.max(0, cmp.partners.length - (MAX_SELECTED - 1)) };
+}
+
+/**
+ * Are the trucks an opened route traded with on the map? Only when every one that "Show the N trucks"
+ * colours (focusPicks) is coloured — not merely when a second truck is (audit 2026-09-27: "Show both
+ * trucks" on one stop coloured L4 and the header read "Hide the 3 trucks it traded with").
+ */
+export function partnersShownIn(cmp, sel) {
+  if (!cmp || !cmp.partners?.length || !sel) return false;
+  for (const id of focusPicks(cmp).next.keys()) if (!sel.has(id)) return false;
+  return true;
 }
 
 // ── v1.74.3: ONE ROUTE AT A TIME ───────────────────────────────────────────────────────────────────

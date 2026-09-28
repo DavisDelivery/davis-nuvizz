@@ -1670,8 +1670,12 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         if (start == null) continue;
         // Same physical-visit collapse as the ETA walk: a 3-order customer is ONE stop
         // with hours, not three — "has 3 stops with receiving hours" overstated the load.
+        // DELIVERIES ONLY, as R5 does: a pickup has no receiving window, so a return pickup
+        // sequenced ahead of the delivery at the same customer used to claim the visit key
+        // and then be dropped by the deadline filter below, taking the delivery with it.
         const cSeen = new Set();
         const constrained = group
+          .filter((s) => !isPickupStop(s))
           .filter((s) => {
             const vk = String(s.matchKey || s.businessName || s.stopNbr || '').toLowerCase();
             if (cSeen.has(vk)) return false;
@@ -1951,6 +1955,11 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         driverName: r.driverName,
         etaMin: r.etaMin, lateBy: r.lateBy, anchored: r.anchored, detail: r.detail,
         scope: r.scope, servedDate: r.servedDate,
+        // WHICH KIND OF DEADLINE — 'typed' | 'auto' | 'assumed'. selectAlertable refuses an
+        // assumed 5pm close by this field alone, so dropping it here let every constituent of
+        // a collapsed amber batch through the late floor: three guessed deadlines emailed
+        // nobody and twenty-six emailed twenty-six. Flag history reads it for the same reason.
+        hoursTier: r.hoursTier,
         // R7's own facts. The text selector groups trailer conflicts BY ROUTE and quotes the
         // restriction back, so routeKey/routeConflicts/blockers are filter-and-render inputs
         // exactly as `scope` is — and the comment above is the receipt for what happens when

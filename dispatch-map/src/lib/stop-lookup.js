@@ -444,11 +444,99 @@ export function promptedOutcome(res) {
   return { ok: false, spent: true, reason: 'error', text: `NuVizz could not answer: ${r || 'unknown error'}.` };
 }
 
-/** PURE: the ledger row for the source this answer came from — one call, on request. */
-export function promptedSource({ day } = {}) {
+/**
+ * PURE: the call count of what is on screen after a prompted answer. EVERY call a prompted
+ * answer cost stays on it — a "NuVizz has nothing either" spent its call just as surely as a
+ * found order did, and a retry after an error adds to the first attempt rather than replacing
+ * it. Anything that is not a positive number counts as nothing.
+ */
+export function promptedCallsOnScreen(onScreen, answer) {
+  const n = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0);
+  return n(onScreen) + n(answer);
+}
+
+/**
+ * PURE: is this answer ALREADY the full history of order `pro`?
+ *
+ * Chad, 2026-09-28, on an order opened from its own full history: "when you click open orders
+ * full history nothing happens." The panel's "Open this order's full history" re-runs the lookup
+ * for its PRO — and when the screen is that PRO's history, it re-runs the page it sits on: the
+ * panel closes and the same page comes back. So the screen asks this first and offers the button
+ * only where it goes somewhere. Leading zeros do not count (007181840 is 7181840).
+ */
+export function historyShowsOrder(answer, pro) {
+  if (answer?.mode !== 'stop' || !answer?.dossier?.found) return false;
+  const bare = (v) => s(v).replace(/^0+/, '');
+  const want = bare(pro);
+  if (!want) return false;
+  const id = answer.dossier.identity || {};
+  return [id.pro, id.stopNbr, answer.dossier.query, ...(Array.isArray(answer.candidates) ? answer.candidates : [])]
+    .some((v) => bare(v) === want);
+}
+
+// ── THE ORDER PANEL'S ACTIVITY TIMELINE — asked for, never fetched on its own ────────────
+//
+// Chad, 2026-09-28, looking at an order on this screen: "Where is my activity history?" — and,
+// once told it is a NuVizz read we do not keep: "yes i want the activity timeline button there
+// doesn't automatically make the call unless someone selects it."
+//
+// The timeline (planned, dispatched, updated, arrived — with who did it) is NOT in our records:
+// the stop card has always fetched it live, from nuvizz-stop-events, on first open. So on this
+// screen it is a button with the price on it, and the price is read off fetchStopEvents
+// (netlify/functions/lib/nuvizz-scan.mts), not guessed.
+
+/**
+ * PURE: what one press costs, quoted BEFORE it is pressed. Holding the order's own NuVizz id,
+ * the panel asks the detailed history by it and nothing else — ONE call. Without the id, a
+ * /stop/info goes first to find it — TWO. Either way one more if NuVizz's detailed history
+ * does not answer and it falls back to the plain one. The button quotes the usual price; what
+ * the press actually cost comes back counted (`nuvizzCalls`) and is what the screen adds up.
+ */
+export function timelinePrice(order) {
+  const calls = s(order?.stopId) ? 1 : 2;
+  return { calls, text: `${calls} NuVizz call${calls === 1 ? '' : 's'}` };
+}
+
+/**
+ * PURE: the query the panel's timeline sends. `refresh=0` always: the panel shows the sealed or
+ * board copy and never folds NuVizz's answer into it, so the stop card's /stop/info refresh
+ * would buy nothing here. The server still makes it when there is no stopId, because then it is
+ * the way to one. The stop NUMBER rides along for the plain-history fallback.
+ */
+export function timelineQuery(order) {
+  const p = new URLSearchParams();
+  const nbr = s(order?.stopNbr) || s(order?.pro);
+  const id = s(order?.stopId);
+  if (nbr) p.set('stopNbr', nbr);
+  if (id) p.set('stopId', id);
+  p.set('refresh', '0');
+  return p.toString();
+}
+
+/**
+ * PURE: a timeline that did not come back, as a sentence — and whether pressing again could
+ * change it. Scans switched off or the breaker open refuse before the wire, so a second press
+ * would only be refused again; anything else (NuVizz busy, a timeout) may answer next time.
+ * An HTTP status is REPORTED, not interpreted: what a 404 from /stop/eventinfo means is a fact
+ * about NuVizz the code does not hold (probeStop in nuvizz-scan.mts says the same of /stop/info).
+ */
+export function timelineFailure(reason) {
+  const r = s(reason);
+  if (r === 'scans_disabled') return { retry: false, text: 'NuVizz calls are switched off on this site — nothing was asked.' };
+  if (/breaker|circuit/i.test(r)) return { retry: false, text: 'The NuVizz call breaker is open — the daily ceiling has been reached. Nothing was asked; try again tomorrow, or raise the ceiling in Diagnostics.' };
+  const http = /^http_(\d{3})$/.exec(r);
+  if (http) return { retry: true, text: `NuVizz answered with an error (HTTP ${http[1]}) and sent no history.` };
+  return { retry: true, text: `NuVizz could not answer: ${r || 'no answer came back'}.` };
+}
+
+/** PURE: the ledger row for the source this answer came from — the calls it cost, on request.
+ *  `calls` is what the requester counted (a retried busy answer costs more than one); absent,
+ *  it is one. */
+export function promptedSource({ day, calls } = {}) {
+  const price = Number.isFinite(calls) && calls > 1 ? `${calls} calls` : 'one call';
   return {
     key: 'nuvizz', label: 'NuVizz, asked just now', where: '/stop/info', looked: true, skipped: false,
-    note: day ? `one call, on request — filed under ${day}` : 'one call, on request — no delivery day on it',
+    note: day ? `${price}, on request — filed under ${day}` : `${price}, on request — no delivery day on it`,
     count: 1, found: true, state: 'found',
   };
 }
@@ -485,20 +573,73 @@ export function whenIso(v) {
   return null;
 }
 
+// THE FIELDS THE WRITERS ACTUALLY WRITE (audit 2026-09-27). This read `notes`/`note`,
+// `no_tractor` and `pin_override`/`lat_override` for weeks, and nothing in the repo writes any
+// of them — only test fixtures did, which is why every test passed while a customer with a
+// dock instruction and a Box-truck-only mark read "Nothing on file". The shared editor
+// (App.jsx StopNotesEditor over emptyNote) writes `dock_notes`, `vehicle_eligibility` and
+// `equipment_restrictions`; every pin writer writes `location_override`. The old names are
+// kept only as fallbacks, so a document shaped the old way still reads.
+const BOXONLY_SAME_AS = new Set(['No tractor trailer', 'Box truck only']);
+const WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const WEEK_LABEL = { mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun' };
+
+/** The editor's closed_days as week-ordered day keys ('fri'), tolerant of 'Fri' / 'FRIDAY'. */
+function closedDayKeys(notes) {
+  const raw = Array.isArray(notes?.closed_days) ? notes.closed_days : [];
+  const set = new Set(raw.map((d) => s(d).toLowerCase().slice(0, 3)).filter((d) => WEEK.includes(d)));
+  return WEEK.filter((d) => set.has(d));
+}
+
 export function notesSummary(notes) {
   if (!notes || typeof notes !== 'object') return null;
   const flags = [];
+  // WHAT A REP MAY NOT PROMISE, FIRST (audit 2026-09-27, app-A4-1). The editor writes all four
+  // and none was read, so a DNS, appointment-only, closed-Friday customer read "Nothing on
+  // file" — and a rep promised the Friday redelivery. Worded the way the Map's own read-only
+  // card words them (ReadOnlyNoteView), so the two screens say the same thing.
+  if (notes.do_not_send) {
+    const barred = (Array.isArray(notes.dns_drivers) ? notes.dns_drivers : []).map(s).filter(Boolean);
+    flags.push({ key: 'dns', label: `Do not send${barred.length ? ` — not: ${barred.join(', ')}` : ''}`, tone: 'amber' });
+  }
+  const closed = closedDayKeys(notes);
+  if (closed.length) flags.push({ key: 'closed', label: `Closed ${closed.map((d) => WEEK_LABEL[d]).join(', ')}`, tone: 'amber' });
+  if (notes.appointment_required) flags.push({ key: 'appointment', label: 'Appointment required', tone: 'amber' });
+  // THE VEHICLE MARK, the way the map draws it: 'box_only' is the dispatcher's dropdown, and a
+  // trailer-blocking restriction counts too — unless the same dispatcher set 'tractor' (53'
+  // fits), which drops every blocker on the map (drawnRestrictionKeys) and in the alert
+  // (dispatcherTrailerBlock). Labels are the dropdown's own words (TRAILER_BLOCKER_LABEL).
+  const elig = notes.vehicle_eligibility;
+  const boxOnly = elig === 'box_only' || notes.no_tractor === true;
+  const blockerKeys = elig === 'tractor' ? []
+    : (Array.isArray(notes.equipment_restrictions) ? notes.equipment_restrictions : []).filter((k) => isTrailerBlockerKey(k));
+  const blockerLabels = trailerBlockerLabels(blockerKeys).filter((l) => !(boxOnly && BOXONLY_SAME_AS.has(l)));
   if (notes.comms_opt_out === true) flags.push({ key: 'opt_out', label: 'No delivery emails', tone: 'slate' });
   if (notes.notify_cs === true) flags.push({ key: 'notify_cs', label: 'Notify customer service', tone: 'amber' });
-  if (notes.no_tractor === true) flags.push({ key: 'no_tractor', label: 'No tractor — box truck only', tone: 'amber' });
+  if (boxOnly) flags.push({ key: 'no_tractor', label: 'No tractor — box truck only', tone: 'amber' });
+  for (const label of blockerLabels) flags.push({ key: `restriction:${label}`, label, tone: 'amber' });
   if (notes.address_override) flags.push({ key: 'override', label: 'Address overridden here', tone: 'blue' });
-  if (notes.pin_override || notes.lat_override) flags.push({ key: 'pin', label: 'Pin moved by hand', tone: 'blue' });
+  const ov = notes.location_override;
+  const pinMoved = (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') || notes.pin_override || notes.lat_override;
+  if (pinMoved) flags.push({ key: 'pin', label: 'Pin moved by hand', tone: 'blue' });
   const contacts = (Array.isArray(notes.contacts) ? notes.contacts : [])
     .map((c) => ({ name: s(c?.name) || null, phone: s(c?.phone) || null, email: s(c?.email) || null }))
     .filter((c) => c.name || c.phone || c.email);
+  // The appointment instruction rides with the dock instruction: both are free text a rep
+  // reads out, and both screens already print `text` as a pre-wrapped block.
+  const appt = s(notes.appointment_notes);
+  const text = [s(notes.dock_notes) || s(notes.notes) || s(notes.note), appt ? `Appointment: ${appt}` : '']
+    .filter(Boolean).join('\n');
+  // A CLOSED DAY HAS NO HOURS. The editor's closed toggle leaves that day's times in place, and
+  // the Map prints "Closed" over them; printing "Fri 8:00 AM–4:00 PM" here beside "Closed Fri"
+  // would invite exactly the promise the flag exists to stop.
+  let hours = notes.receiving_hours || notes.hours || null;
+  if (hours && typeof hours === 'object' && closed.length) {
+    hours = Object.fromEntries(Object.entries(hours).filter(([d]) => !closed.includes(s(d).toLowerCase().slice(0, 3))));
+  }
   return {
-    text: s(notes.notes) || s(notes.note) || null,
-    hours: notes.receiving_hours || notes.hours || null,
+    text: text || null,
+    hours,
     customerNbr: s(notes.customer_nbr) || s(notes.customerNbr) || null,
     // `last_updated` FIRST — it is the field every writer of customer_notes actually writes
     // (the Map, Routing, the address fixer, Stop lookup). `updated_at` was read here for weeks
@@ -553,6 +694,7 @@ export { TERMINAL as TERMINAL_STATUSES };
 // address on its row, so both questions are answerable off one screen.
 
 import { normNameOf } from './matchKey.js';
+import { isTrailerBlockerKey, trailerBlockerLabels } from './trailer-block.js';
 
 /**
  * PURE: the grouping key for a customer NAME — for counting and grouping only, NEVER for a
@@ -967,14 +1109,16 @@ function lineItem(d) {
   };
 }
 
-/** PURE: the comment trail, newest first, with who said it and when. */
+/** PURE: the comment trail, newest first, with who said it and when.
+ *  `addedBy` / `addedOn` FIRST — they are what the scan actually stores (StopComment, written
+ *  by extractAllComments in lib/nuvizz-scan.mts); the other names are kept as fallbacks. */
 function comments(stop) {
   const raw = Array.isArray(stop?.allComments) ? stop.allComments : [];
   return raw
     .map((c) => ({
       text: s(c?.comment ?? c?.text ?? c?.note),
-      by: s(c?.userName ?? c?.author ?? c?.createdBy) || null,
-      at: s(c?.createdTime ?? c?.commentDTTM ?? c?.at) || null,
+      by: s(c?.addedBy ?? c?.userName ?? c?.author ?? c?.createdBy) || null,
+      at: s(c?.addedOn ?? c?.createdTime ?? c?.commentDTTM ?? c?.at) || null,
       kind: s(c?.commentType ?? c?.type) || null,
     }))
     .filter((c) => c.text)
@@ -1003,6 +1147,9 @@ export function buildOrderDetail(stop, { date, today, source = 'sealed' } = {}) 
     date: s(date),
     source,
     stopNbr: s(st.stopNbr) || null,
+    // NuVizz's own id for THIS record. The activity timeline asks by it — one call, and never
+    // the other order sharing the number (an Estes twin) — see timelineQuery.
+    stopId: s(st.stopId) || null,
     pro: s(st.pro) || s(st.primaryPro) || s(st.stopNbr) || null,
     pros,
     name: s(st.businessName) || null,

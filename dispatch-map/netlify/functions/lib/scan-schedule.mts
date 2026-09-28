@@ -42,7 +42,10 @@ export interface ScanConfig {
   routingWindowEnd?: number;   // ET hour it closes, wraps midnight (default 7)
   weekendBlackoutStart?: number; // Fri ET hour scans stop (default 22)
   weekendBlackoutEnd?: number;   // Sun ET hour scans resume (default 20)
-  saturdayHealHour?: number;     // ET hour of the single Saturday heal scan (0 = off)
+  // ET hour of the single Saturday heal scan (0 = off). NOT STORED: it is not in the bounds or the
+  // defaults below, so a Save cannot write it and the scanner never reads it from scan_config.
+  // NUVIZZ_SATURDAY_HEAL_ET is the one switch; this is only isSaturdayHeal's parameter.
+  saturdayHealHour?: number;
   // Deep sweep (the daily full-floor reconciliation) + spend cap + master switch.
   deepSweepHours?: number;     // min hours between deep sweeps (default 8)
   deepSweepHour?: number;      // earliest ET hour a deep sweep may run (default 13)
@@ -67,7 +70,6 @@ export const SCAN_CONFIG_BOUNDS: Record<string, [number, number]> = {
   routingWindowEnd: [0, 23],
   weekendBlackoutStart: [0, 23],
   weekendBlackoutEnd: [0, 23],
-  saturdayHealHour: [0, 23],
   deepSweepHours: [1, 168],
   deepSweepHour: [0, 23],
   // THIS FIELD IS THE SWITCH, and its bound is arithmetic rather than policy — imported, not
@@ -82,7 +84,7 @@ export const SCAN_CONFIG_BOUNDS: Record<string, [number, number]> = {
 
 // The default schedule, computed from env (so the UI shows the SITE's real current
 // values, e.g. the prod deep-sweep=24 / ceiling=35000 overrides). Pure: env injected.
-export function scanConfigDefaults(env: Record<string, any> = process.env): Required<Omit<ScanConfig, 'updatedAt' | 'updatedBy'>> {
+export function scanConfigDefaults(env: Record<string, any> = process.env): Required<Omit<ScanConfig, 'updatedAt' | 'updatedBy' | 'saturdayHealHour'>> {
   return {
     intervalDayMin: 30,
     intervalNightMin: 60,
@@ -92,7 +94,6 @@ export function scanConfigDefaults(env: Record<string, any> = process.env): Requ
     routingWindowEnd: Number(env.NUVIZZ_ROUTING_WINDOW_END_ET) || 7,
     weekendBlackoutStart: Number(env.NUVIZZ_WEEKEND_BLACKOUT_START_ET) || 23,
     weekendBlackoutEnd: Number(env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 19,
-    saturdayHealHour: SATURDAY_HEAL_HOUR,
     deepSweepHours: Number(env.NUVIZZ_DEEP_SWEEP_HOURS) || 8,
     deepSweepHour: Number(env.NUVIZZ_DEEP_SWEEP_HOUR) || 13,
     // An env var may only LOWER the default — it cannot reach the hard cap. The site has run
@@ -135,7 +136,7 @@ export function clampScanConfig(input: any): ScanConfig {
 
 // Effective config = env defaults overlaid with the (clamped) stored overrides.
 // What the scanner actually runs and what the UI displays as the live schedule.
-export function effectiveScanConfig(stored: ScanConfig | null | undefined, env: Record<string, any> = process.env): Required<Omit<ScanConfig, 'updatedAt' | 'updatedBy'>> & Pick<ScanConfig, 'updatedAt' | 'updatedBy'> {
+export function effectiveScanConfig(stored: ScanConfig | null | undefined, env: Record<string, any> = process.env): Required<Omit<ScanConfig, 'updatedAt' | 'updatedBy' | 'saturdayHealHour'>> & Pick<ScanConfig, 'updatedAt' | 'updatedBy'> {
   const merged: any = { ...scanConfigDefaults(env), ...clampScanConfig(stored || {}) };
   if (stored?.updatedAt) merged.updatedAt = stored.updatedAt;
   if (stored?.updatedBy) merged.updatedBy = stored.updatedBy;

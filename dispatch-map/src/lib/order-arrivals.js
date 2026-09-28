@@ -271,8 +271,16 @@ export function assess({ curve, nowMs, baseline, deliveryDate = null } = {}) {
   };
   if (lead == null) { out.why = 'no clock'; out.text = 'no reading — the date or the clock is unreadable'; return out; }
 
-  out.soFar = inHandAt(curve, lead);
-  if (out.soFar == null) { out.why = 'no curve'; out.text = 'no orders indexed for this day yet'; return out; }
+  const stampedSoFar = inHandAt(curve, lead);
+  if (stampedSoFar == null) { out.why = 'no curve'; out.text = 'no orders indexed for this day yet'; return out; }
+  // ONE BASIS, THE TOTAL — typicalFinal is a night's total, unstamped included, so tonight's side
+  // must be too. An unstamped order is already ON the board: writeStops stamps every new board
+  // document (firestore.mts firstSightStamps) and every other writer copies one, stamps and all.
+  // So it is counted as in hand now, and only the stamped part — the part with a pace — is
+  // projected. Projecting stamped orders alone against a total read every unstamped order as
+  // freight that never came, which pushed a heavy night toward "normal".
+  const unstampedInHand = Number(curve?.unstamped) || 0;
+  out.soFar = stampedSoFar + unstampedInHand;
 
   // The raw comparison is worth saying even when the projection is refused: "we have 431 and
   // a Tuesday usually has 388 by now" is actionable on its own.
@@ -298,7 +306,7 @@ export function assess({ curve, nowMs, baseline, deliveryDate = null } = {}) {
     return out;
   }
 
-  out.projected = Math.round(out.soFar / f);
+  out.projected = Math.round(stampedSoFar / f) + unstampedInHand;
   out.ratio = baseline.typicalFinal ? round1(out.projected / baseline.typicalFinal) : null;
   const r = out.projected / baseline.typicalFinal;
   out.verdict = r >= HEAVY_RATIO ? 'heavy' : r <= LIGHT_RATIO ? 'light' : 'normal';

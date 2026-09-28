@@ -15,7 +15,7 @@
 // Validation/clamping is the SAME pure helper the scanner uses (scan-schedule.mts),
 // so the UI can never persist a value the scanner would reject.
 
-import { isFirestoreEnabled, readScanConfig, writeScanConfig, getDoc, readScanKindStamps, readScanRuns, readCallStats, readCircuit, readScanRefusal, etDayString, readActivePoolMeta, readActiveUnplannedSet, readCarryoverRetired, readFrozenLedgerMeta } from './lib/firestore.mts';
+import { isFirestoreEnabled, readScanConfig, writeScanConfig, getDoc, readScanKindStamps, readScanRuns, readCallStats, readCircuit, readScanRefusal, etDayString, readActivePoolMeta, readActiveUnplannedSet, readCarryoverRetired, readFrozenLedgerMeta, readListLoadNbr } from './lib/firestore.mts';
 import { activeArrivalReachDays } from './lib/nuvizz-list.mts';
 import { refileReadCap, frozenCopyDepth } from './lib/refresh-stops-core.mts';
 import { SATURDAY_HEAL_HOUR } from './lib/scan-schedule.mts';
@@ -63,7 +63,7 @@ async function explain(): Promise<any> {
   const rulesStored = clampScanRules((cfg as any)?.rules);
   const rules = rulesStored.length ? rulesStored : defaultScanRules();
 
-  const [meta, kindStamps, runs, stats, circuit, bgRefusals, scanRefusal, poolMeta, activeSet, retiredMap, ledgerMeta] = await Promise.all([
+  const [meta, kindStamps, runs, stats, circuit, bgRefusals, scanRefusal, poolMeta, activeSet, retiredMap, ledgerMeta, listLoadNbr] = await Promise.all([
     getDoc(`nuvizz_stop_index/${TENANT}__${today}`).catch(() => null) as Promise<any>,
     readScanKindStamps().catch(() => ({})),
     readScanRuns().catch(() => []),
@@ -87,6 +87,9 @@ async function explain(): Promise<any> {
     readActiveUnplannedSet(TENANT).catch(() => null),
     readCarryoverRetired(TENANT).catch(() => ({} as Record<string, string>)),
     readFrozenLedgerMeta(TENANT).catch(() => null),
+    // The stop list's Load Number column (v1.81.6): which column the last scan read it from and
+    // how many routed orders carried one — or, if none matched, every column it was offered.
+    readListLoadNbr().catch(() => null),
   ]);
 
   const lastLoadScanAt = meta?.lastLoadScanAt ?? meta?.last_scanned_at ?? null;
@@ -158,6 +161,7 @@ async function explain(): Promise<any> {
     // `scansEnabled: false` with no way to tell "a mirror may not scan" from "somebody pulled
     // the kill switch". `reason` is the one word that separates them; `mirror` says whether
     // this deploy is a mirror at all and whether it has been given permission to scan.
+    listLoadNbr: listLoadNbr || null,
     killSwitch: {
       env: String(process.env.NUVIZZ_SCANS_ENABLED ?? '').toLowerCase() === 'false',
       config: (cfg as any)?.scansEnabled === false,
@@ -247,7 +251,10 @@ export default async (req: Request): Promise<Response> => {
       const clean = clampScanConfig(body);
       // Merge onto any existing overrides so a partial edit doesn't drop other fields,
       // then stamp metadata. The scanner re-clamps on read, so this is safe regardless.
-      const prior = await readScanConfig().catch(() => ({}));
+      // STRICT read: writeScanConfig REPLACES the document, so a blip read as {} would delete
+      // the kill switch and every override. A missing doc still reads {}; a failed read throws
+      // to the 500 below and nothing is written.
+      const prior = await readScanConfig();
       const toStore = { ...prior, ...clean, updatedAt: new Date().toISOString(), updatedBy: String(body?.updatedBy || 'diagnostics-ui').slice(0, 120) };
       await writeScanConfig(toStore);
 

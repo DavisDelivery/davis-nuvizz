@@ -28,11 +28,11 @@
 //     server refused is shown as refused, with its reason, not folded into a count.
 //  3. CLEAR IS DESTRUCTIVE AND ASKS. It cancels real orders in the UAT tenant, and after a
 //     route test it has to unplan them first. The confirm names the number and what happens.
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Beaker, Check, RefreshCw, Trash2, Eye, AlertTriangle, Loader2 } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
 // Pure core, thin edges: every judgement about a row lives in the lib and is tested there.
-import { rowSubtitle, windowLabel, matchesQuery, benchToday, BENCH_MAX } from '../lib/uat-bench-view.js';
+import { rowSubtitle, windowLabel, matchesQuery, benchToday, seedHeadline, isUnplannedRow, notPlannedLabel, BENCH_MAX } from '../lib/uat-bench-view.js';
 
 const FN = '/.netlify/functions/uat-seed';
 
@@ -47,6 +47,11 @@ export default function UatBench() {
   const [onlyUnplanned, setOnlyUnplanned] = useState(false);
   const [label, setLabel] = useState('');
   const [result, setResult] = useState(null);
+  // The newest catalogue read, and the day in the box. A date box fires a read per change, and a
+  // slower answer for a day the tester already moved off would otherwise land last and list that
+  // day under this one — so only the newest read, for the day still in the box, fills the list.
+  const catSeq = useRef(0);
+  const dateRef = useRef(date);
 
   const call = useCallback(async (body, method = 'POST') => {
     const res = method === 'GET'
@@ -58,12 +63,17 @@ export default function UatBench() {
   }, []);
 
   const loadCatalogue = useCallback(async (d) => {
+    const seq = ++catSeq.current;
     setLoading(true); setErr(null);
     try {
       const j = await call({ date: d }, 'GET');
+      if (seq !== catSeq.current || d !== dateRef.current) return;   // a newer read, or another day, owns the list now
       if (!j?.ok) { setErr(j?.error || 'could not read production\'s day'); setCat(null); }
       else { setCat(j); setPicked(new Set()); }
-    } finally { setLoading(false); }
+    } catch (e) {
+      if (seq !== catSeq.current || d !== dateRef.current) return;
+      setErr(e?.message || 'could not reach the server'); setCat(null);
+    } finally { if (seq === catSeq.current) setLoading(false); }
   }, [call]);
 
   useEffect(() => { loadCatalogue(date); }, [date, loadCatalogue]);
@@ -72,7 +82,7 @@ export default function UatBench() {
     const all = Array.isArray(cat?.rows) ? cat.rows : [];
     return all
       .filter((r) => matchesQuery(r, query))
-      .filter((r) => (onlyUnplanned ? (r?.isUnplanned === true || r?.isPlanned === false) : true))
+      .filter((r) => (onlyUnplanned ? isUnplannedRow(r) : true))
       .sort((a, b) => String(a?.city || '').localeCompare(String(b?.city || '')) || String(a?.businessName || '').localeCompare(String(b?.businessName || '')));
   }, [cat, query, onlyUnplanned]);
 
@@ -90,8 +100,13 @@ export default function UatBench() {
         : { op, date, stopNbrs: [...picked], label: label.trim() || null };
       const j = await call(body);
       setResult({ op, ...j });
+      // The day in the box NOW — the tester may have moved while this ran.
+      if (op === 'seed' || op === 'clear') await loadCatalogue(dateRef.current);
+      // AFTER the reload, which clears the error line: a refusal's reason is the only thing on
+      // screen that says why nothing was seeded or cleared.
       if (!j?.ok && j?.error) setErr(j.error);
-      if (op === 'seed' || op === 'clear') await loadCatalogue(date);
+    } catch (e) {
+      setErr(e?.message || 'could not reach the server');
     } finally { setBusy(null); }
   };
 
@@ -126,7 +141,10 @@ export default function UatBench() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <input
-              type="date" value={date} onChange={(e) => setDate(e.target.value)}
+              type="date" value={date}
+              // A new day empties the old day's list and picks at once, so neither can sit under
+              // the new date while its read is in flight (or after it fails).
+              onChange={(e) => { dateRef.current = e.target.value; setDate(e.target.value); setCat(null); setPicked(new Set()); }}
               className="border rounded px-2 py-1 text-sm min-h-[38px]"
               aria-label="Production board day to pick from"
             />
@@ -200,7 +218,7 @@ export default function UatBench() {
                       <td className="px-2 py-1.5 text-slate-600">{[r.addr1, r.city].filter(Boolean).join(', ')}</td>
                       <td className={`px-2 py-1.5 ${windowLabel(r) === 'no window' ? 'text-slate-400 italic' : 'text-slate-700'}`}>{windowLabel(r)}</td>
                       <td className="px-2 py-1.5 text-[11px]">
-                        {r.isPlanned ? <span className="text-slate-600">on {r.routeName || r.loadNbr || 'a load'}</span> : <span className="text-emerald-700">un-planned</span>}
+                        {r.isPlanned ? <span className="text-slate-600">on {r.routeName || r.loadNbr || 'a load'}</span> : <span className={isUnplannedRow(r) ? 'text-emerald-700' : 'text-slate-500'}>{notPlannedLabel(r)}</span>}
                       </td>
                     </tr>
                   );
@@ -229,7 +247,7 @@ export default function UatBench() {
                   <span className="block text-[11px] mt-0.5">
                     <span className={windowLabel(r) === 'no window' ? 'text-slate-400 italic' : 'text-slate-700'}>{windowLabel(r)}</span>
                     <span className="text-slate-300"> · </span>
-                    {r.isPlanned ? <span className="text-slate-500">on {r.routeName || 'a load'}</span> : <span className="text-emerald-700">un-planned</span>}
+                    {r.isPlanned ? <span className="text-slate-500">on {r.routeName || 'a load'}</span> : <span className={isUnplannedRow(r) ? 'text-emerald-700' : 'text-slate-500'}>{notPlannedLabel(r)}</span>}
                   </span>
                 </span>
               </button>
@@ -301,7 +319,7 @@ function BenchResult({ result }) {
     <div className="bg-white border rounded p-3 space-y-2 text-sm">
       <div className="font-semibold text-slate-800">
         {op === 'preview' && `Preview — ${result.willCreate ?? payloads.length} order(s) would be created, 0 NuVizz calls spent`}
-        {op === 'seed' && `Seeded ${result.seeded ?? 0}${result.failed ? `, ${result.failed} failed` : ''} · ${result.callsUsed ?? 0} UAT call(s) · board now holds ${result.boardRows ?? 0}`}
+        {op === 'seed' && seedHeadline(result)}
         {op === 'clear' && `Cancelled ${result.cancelled ?? 0}${result.unplannedFirst ? ` (${result.unplannedFirst} unplanned first)` : ''}${result.alreadyGone ? ` · ${result.alreadyGone} already gone` : ''} · ${result.callsUsed ?? 0} UAT call(s)`}
       </div>
 

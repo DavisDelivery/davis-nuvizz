@@ -41,7 +41,7 @@
 // would let one day's clear cancel an order another day's bench is still using.
 
 import { readProdDay, catalogueEnabled, CATALOGUE_MASK } from './lib/prod-catalogue.mts';
-import { planSeed, seedIndexRow, unsafeWriteTarget, isUatSeededNbr } from './lib/uat-seed.mts';
+import { planSeed, seedIndexRow, unsafeWriteTarget, isUatSeededNbr, supersededBoardDate } from './lib/uat-seed.mts';
 import { buildStopPayload } from './lib/nuvizz-write-ops.mts';
 import { runOp, resolveWriteCreds } from './lib/nuvizz-write.mts';
 import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
@@ -202,7 +202,17 @@ export default async (req: Request): Promise<Response> => {
       const at = new Date().toISOString();
 
       // ── THE LEDGER GOES FIRST — intent, not success. See the header. ──────
+      // A re-seed from ANOTHER day moves the one UAT order (supersededBoardDate): its old day's
+      // board row goes BEFORE the ledger stops naming that day, or nothing could ever clear it.
+      const priorLedger = new Map((await readLedger()).map((r) => [r.uatStopNbr, r]));
+      const struckDays = new Set<string>();
       for (const p of plan) {
+        const prior = supersededBoardDate(priorLedger.get(p.uatStopNbr), date);
+        if (prior) {
+          await deleteDoc(`${indexBase(prior)}/stops/${p.uatStopNbr}`);
+          struckDays.add(prior);
+          warnings.push(`${p.uatStopNbr} was seeded for ${prior} before — it is one order in the UAT tenant, so its row on ${prior}'s UAT board was removed before re-seeding it for ${date}.`);
+        }
         await setDoc(`${LEDGER}/${p.uatStopNbr}`, {
           uatStopNbr: p.uatStopNbr, prodStopNbr: p.prodStopNbr, boardDate: date,
           status: 'creating', stopId: null, at, label,
@@ -230,7 +240,8 @@ export default async (req: Request): Promise<Response> => {
           status: 'created', stopId: rec.stopId ?? null, at, label,
         } as any).catch(() => undefined);
         created.push({ prodStopNbr: p.prodStopNbr, uatStopNbr: String(rec.stopNbr), stopId: rec.stopId ?? null, updated: rec.updated });
-        const idxRow = seedIndexRow(prodByNbr.get(p.prodStopNbr), p, rec);
+        const sentSchedule = payloads.find((x) => x.uatStopNbr === p.uatStopNbr)?.payload?.to?.schedule ?? null;
+        const idxRow = seedIndexRow(prodByNbr.get(p.prodStopNbr), p, rec, sentSchedule);
         if (idxRow) { idxRow.uatSeed = { prodStopNbr: p.prodStopNbr, at, label }; indexRows.push(idxRow); }
         else failed.push({ prodStopNbr: p.prodStopNbr, uatStopNbr: p.uatStopNbr, error: 'NuVizz accepted the create but returned no stopId — the order is in the ledger (so a clear will find it) but has no board row' });
       }
@@ -241,10 +252,11 @@ export default async (req: Request): Promise<Response> => {
       // The board is recounted whatever happened: reporting 0 rows because THIS seed created
       // none would hide the rows a previous seed left standing.
       const meta = await rewriteMeta(date, at);
+      for (const d of struckDays) await rewriteMeta(d, at).catch(() => undefined);
 
       const callsUsed = reqr.getStats().totalThisInstance - before;
       await putOpRecord({ clientOpId: `uatseed_${at}`, op: 'uatSeed', status: failed.length ? 'failed' : 'succeeded', tenant: creds.companyCode, at, result: { date, label, created, failed, skipped } }).catch(() => undefined);
-      return J({ ok: failed.length === 0, op, date, bench, seeded: created.length, failed: failed.length, boardRows: meta.count, callsUsed, created, failed, skipped, warnings });
+      return J({ ok: failed.length === 0, op, date, bench, seeded: created.length, boardRows: meta.count, callsUsed, created, failed, skipped, warnings });
     }
 
     // ── CLEAR — strike the set ────────────────────────────────────────────────
@@ -280,6 +292,14 @@ export default async (req: Request): Promise<Response> => {
         try { read = await runOp(reqr, 'getStop' as any, { stopNbr: nbr }, creds); }
         catch (e: any) { read = { ok: false, error: e?.message || 'getStop threw' }; }
         if (!read?.ok || !read.stop?.stopId) {
+          // ONLY NuVizz's own "no such stop" proves it is gone — the same 404 the inline-create
+          // gate in nuvizz-write.mts relies on. A read that did not complete (breaker open, 401,
+          // 5xx, timeout, an answer naming no stop) proves nothing: forgetting the order then
+          // would leave it live in the tenant and in no ledger, which nothing can ever clear.
+          if (read?.httpStatus !== 404) {
+            stuck.push({ stopNbr: nbr, error: `could not confirm it is gone from the UAT tenant (${read?.httpStatus ? `NuVizz answered ${read.httpStatus}` : (read?.error || 'no answer')}) — kept in the ledger so a later clear can finish it` });
+            continue;
+          }
           // Not in the tenant: a create that never landed, or something already cancelled.
           // Nothing to cancel, so the ledger row and any board row go.
           gone.push(nbr);

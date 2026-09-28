@@ -5,15 +5,26 @@
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-/** "2026-07-29" or a Date -> "Jul 29, 2026". Returns '' for anything unparseable. */
+/**
+ * "2026-07-29" or a Date -> "Jul 29, 2026". Returns '' for anything unparseable.
+ *
+ * Only a BARE day is read as written. An instant ("2026-09-10T01:30:00Z") is a
+ * UTC moment, and its first ten characters are London's date: from 8pm ET until
+ * midnight that is tomorrow, printed beside the right ET clock time. Instants
+ * are read on the dock's clock, the same one fmtTime uses.
+ */
 export function fmtDate(v) {
   if (!v) return '';
   const s = String(v);
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
   if (m) return `${MONTHS[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}`;
   const d = v instanceof Date ? v : new Date(s);
   if (Number.isNaN(d.getTime())) return '';
-  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', year: 'numeric', month: 'numeric', day: 'numeric',
+  }).formatToParts(d);
+  const get = (t) => Number(parts.find((p) => p.type === t)?.value);
+  return `${MONTHS[get('month') - 1]} ${get('day')}, ${get('year')}`;
 }
 
 /** "Jul 2026". */

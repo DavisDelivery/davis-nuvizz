@@ -18,7 +18,19 @@ export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
-  const gate = await requireUser(req, { role: 'dispatcher' });
+  //
+  // ?date= / ?days= are the EXPLICIT number-probe scan (~3,000 NuVizz calls cold) — the same
+  // override nuvizz-refresh-stops-background already holds at ADMIN (OVERRIDE_PARAMS there,
+  // gateScheduledOverride). This endpoint forwards the caller's query string to the same core,
+  // so it was a dispatcher-level side door to that scan. Held to the same rule now: the plain
+  // Scan-now fallback (App.jsx sends no query string) stays dispatcher; the explicit-date scan
+  // Chad runs by hand stays, at admin. Presence, not value, decides — the same test
+  // overrideParams applies — so `?days=` with nothing after it cannot slip under the gate.
+  const q = new URL(req.url).searchParams;
+  const explicitScan = q.get('date') != null || q.get('days') != null;
+  const gate = explicitScan
+    ? await requireUser(req, { role: 'admin' })
+    : await requireUser(req, { role: 'dispatcher' });
   if (!gate.ok) return gate.response;
 
   // Force manual mode regardless of how this was invoked.

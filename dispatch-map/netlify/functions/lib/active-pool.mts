@@ -41,7 +41,7 @@
  *  1 MiB document limit per chunk (the writer chunks at 400 rows). */
 export const POOL_LIVE_FIELDS = [
   'status', 'normalizedStatus', 'isPlanned', 'isUnplanned',
-  'loadNbr', 'routeName', 'routeSeq', 'driverName', 'driverUserName', 'driverId',
+  'loadNbr', 'routeName', 'nuvizzLoadNbr', 'routeSeq', 'driverName', 'driverUserName', 'driverId',
   'listUpdatedDTTM', 'shipmentNbr', 'isAttempt',
   'weight', 'cartons', 'volume', 'scheduledFrom', 'plannedEtaDTTM',
 ] as const;

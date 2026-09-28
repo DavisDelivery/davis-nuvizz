@@ -99,6 +99,77 @@ Project-level guidance for Claude Code in this repository.
 - **A guess presented as a finding is the worst output this repo produces**
   (see the section below). "I cannot tell from here" is never a failure; it
   is the honest half of an answer, and the other half is the question.
+- **The one thing that is never an ask: whether the roster has load numbers.** It does, for every
+  load on every day (next section). Asking it — or writing "we don't know which load" into a reply,
+  a PR or a comment — is the mistake Chad has corrected ten times. Read the stored roster instead.
+
+## THE ROSTER SCAN HAS THE LOAD NUMBERS (Chad, Sep 2026)
+
+- **SETTLED — NEVER ASK IT AGAIN.** Chad, 2026-09-28: **"make sure no part of app or agent or
+  orchestrator ever has to ask about the roster scan not producing load ids we get hung up on that
+  too often and blocks progress. I want every part of app to know and use the proper load numbers
+  for the correct day."** Whether the roster carries load numbers is NOT a question, an unknown, a
+  blocker or an ask — for Claude, for any agent or orchestrator, in any PR, report or code comment.
+  The only thing ever allowed to be open is whether ONE specific day's roster document was captured,
+  and that is a free read (`nuvizz-loads-roster?date=…&cacheOnly=1`, or `?explain=1&from=…&days=…`),
+  never a question for Chad and never a NuVizz call.
+- **Guarded in CI**: `test/roster-load-numbers-guard.test.mjs` fails if this rule leaves CLAUDE.md,
+  ORCHESTRATION.md, HANDOFF.md, the scan-schedule brief, the load-scan README or the review worklist,
+  if the roster stops returning `loadNbr`, or if a banned sentence below appears in the code or docs.
+
+- Chad, 2026-09-27: **"Why is it so hard to get this through to you that the roster scan
+  produces the load numbers!!!!!! I've told you this 10 times and every time you find out
+  that it is true."** And on 2026-09-15, the first time it was written into code
+  (`lib/name-collision.mts`, top of file): *"our roster scans do carry the load id you just
+  aren't using it correctly."*
+- **The fact, from the code.** The roster pull (saved search 35833, `lib/nuvizz-loads.mts`,
+  `normalizeLoads`) returns, **for every load on every day**: the load NUMBER
+  (`DAVIS000204645`), the load id, the route name, the driver, the status and NuVizz's
+  stop count (`trips`). It is stored per day in Firestore and reads for **zero NuVizz calls**:
+
+      nuvizz-loads-roster?date=YYYY-MM-DD&cacheOnly=1     loads[].loadNbr, loadId, name, driver, status, trips
+
+- **The stop list carries it too, since 2026-09-28.** Chad added a Load Number column to the
+  stop saved search (77128): **"Yes the load number is now on every scan so set it up whatever
+  needs it to use it."** Every order on a load now carries that load's NUMBER as
+  `nuvizzLoadNbr`, beside the route name (`loadNbr` still holds the NAME — the whole app reads
+  it that way). `lib/nuvizz-list.mts`: `listLoadNbrColumn` finds the column by its label,
+  `toBoardStop` keeps only a load-number-shaped value on a routed row. Before that date the
+  list named a route by NAME only (25 columns on 2026-09-27, no load number) — and route names
+  repeat every day: Friday's MARCUS (`DAVIS000204535`) and Monday's MARCUS (`DAVIS000204645`)
+  read the same. What the last scan found reads for **zero NuVizz calls**:
+
+      nuvizz-scan-config?explain=1     listLoadNbr: the column it read, and routed / withNumber per saved search
+
+  A number stays with the route it was read with. A Save's write-through names a route and not
+  its number, so a row the write grace holds on a new route has `nuvizzLoadNbr: null` until the
+  list catches up — never the old load's number. (v1.81.6 CAPTURES the number and nothing else;
+  filing an order on its load's day is its own change — see *SMALL CHUNKS*.)
+- **So the join is always this, and it is already built:**
+  1. **roster** → which loads exist on which day, by load number (free, cached);
+  2. **the order's own `nuvizzLoadNbr`** → which of those loads it is on (free, every scan);
+  3. **one `/load/info` read per load, by that number** → which orders that load holds
+     (`lookupLoadStopNbrs` / `lookupLoadPlan` in `lib/nuvizz-scan.mts`). The scan already
+     spends this read, memoised, in the name-collision anchor and the demotion verify. Its
+     trail shows in `nuvizz-stop-explain` for free: *"The 2026-09-28 roster … resolves MARCUS
+     to DAVIS000204645 (Draft), so the verify can read that load's own membership."*
+     — still the read for when the list lags a Save or disagrees with the load.
+  4. The roster's `trips` against the rows we hold under that name on that day is the free
+     trigger — for TODAY's load, whose roster is re-pulled hourly. A LATER day's roster is
+     captured once a day (`rosterFreezeApplies`), so its count is the morning's: it can say which
+     load to read FIRST, never that a load cannot hold an order planned onto it since (an
+     adversarial review on 2026-09-28 reproduced planned freight read as unplanned that way).
+- **Banned sentences**, because each one is this mistake again: "we don't know which load",
+  "the load number isn't available", "the list doesn't carry the load, so it takes a
+  per-order read", "match on route name". The load numbers come from the roster. Which
+  orders a load holds is one read per load, by roster load number. Say that, or say
+  exactly which of the two you have not got and why.
+- **What it cost, 2026-09-26/27.** Two orders on Monday's MARCUS (WHITING TURNER
+  007182304-1, 11 sk, and POREX) and one on Monday's DARVIN were filed on Saturday's board,
+  so Monday's MARCUS card read 17 sk / 9,074 lb against NuVizz's 29 sk / 15,807 lb. The
+  diagnosis took three rounds. It proposed a trips-arithmetic heuristic, then per-order
+  `/stop/info` reads, "because the list doesn't carry the load", before landing where Chad
+  had started: the roster has the load numbers.
 
 ## NEVER REASON AT ME — CHECK THE CODE (Chad, Aug 2026)
 
@@ -342,6 +413,24 @@ Project-level guidance for Claude Code in this repository.
   code again — the rollback commit is still needed after it.
 - **Never run `--execute` on Chad's behalf without him asking for that rollback in that
   request.** Showing him the dry run is always the right first move.
+
+## SMALL CHUNKS — one change per PR (Chad, Sep 2026)
+
+- Chad, 2026-09-28, after the load-day filing took three build rounds and three adversarial
+  reviews without shipping: **"yes let's do in smaller chunks next time."**
+- **Split before building, not after.** A rule/docs change, a change to what a screen SHOWS, and a
+  change to WHERE THE SCAN FILES AN ORDER are three PRs, each reviewed on its own. Ship the chunk
+  that is safe today; a chunk that waits on a decision or a NuVizz fact waits alone and holds
+  nothing else back.
+- **Filing changes are their own chunk, always.** Where an order lands is decided by boardDayFor,
+  the carry-forward, the frozen-day pass, the write grace, the demotion verify and the open-order
+  pool together. A change to any one of them is reviewed against all of them — that is where the
+  load-day work broke three times (an order on two boards, a Save undone, planned freight read as
+  unplanned).
+- **Ask for the missing fact before building around it.** If a design rests on something NuVizz
+  does that the code cannot show, ask Chad first (see *ASK FOR THE CALL*) — building and reviewing
+  around the unknown is what made the load-day work expensive.
+- **Size the review to the chunk.** A small change gets a small review of the paths it touches.
 
 ## Merge it — do not ask (Chad, Aug 2026)
 

@@ -52,7 +52,7 @@ function world({ prod = {}, mirror = {} } = {}) {
     getMirror: async (p) => (M.has(p) ? structuredClone(M.get(p)) : null),
     setMirror: async (p, d) => { calls.sets.push(p); M.set(p, structuredClone(d)); },
     deleteMirror: async (p) => { calls.deletes.push(p); M.delete(p); },
-    listMirrorIds: async (c) => childrenOf(M, c).map(idOf),
+    listMirrorRows: async (c) => childrenOf(M, c).map((k) => ({ _id: idOf(k), ...structuredClone(M.get(k)) })),
     nowIso: () => '2026-09-27T01:00:00.000Z',
   };
   const snapshot = () => JSON.stringify([...P.entries()].sort());
@@ -98,11 +98,11 @@ test('diffCollection: changed = production updateTime differs from this sync\'s 
   const { changed, removed } = diffCollection(prod, { a: 't1', b: 't1', gone: 't0' }, { prune: 'copied', firstTick: false });
   assert.deepEqual(changed.map((c) => c._id), ['a']);
   assert.deepEqual(removed, ['gone']);
-  const uatOnly = diffCollection(prod, {}, { prune: 'copied', firstTick: true, mirrorIds: ['uat-made'] });
+  const uatOnly = diffCollection(prod, {}, { prune: 'copied', firstTick: true, mirrorRows: [{ _id: 'uat-made' }] });
   assert.deepEqual(uatOnly.removed, [], 'a collection unit never removes a document it did not put there');
-  const board = diffCollection(prod, {}, { prune: 'board', firstTick: true, mirrorIds: ['a', 'stale', 'UT-12345'] });
-  assert.deepEqual(board.removed, ['stale'], 'a board day\'s first tick removes a stale production copy but keeps the UAT bench\'s UT- order');
-  const later = diffCollection(prod, { a: 't2', b: 't1' }, { prune: 'board', firstTick: false, mirrorIds: ['stale'] });
+  const board = diffCollection(prod, {}, { prune: 'board', firstTick: true, mirrorRows: [{ _id: 'a' }, { _id: 'stale' }, { _id: 'UT-12345' }, { _id: 'X9', uatSeed: { prodStopNbr: 'X9' } }] });
+  assert.deepEqual(board.removed, ['stale'], 'a board day\'s first tick removes a stale production copy but keeps the bench\'s rows — by UT- number or by uatSeed, the nightly\'s own rule');
+  const later = diffCollection(prod, { a: 't2', b: 't1' }, { prune: 'board', firstTick: false, mirrorRows: [{ _id: 'stale' }] });
   assert.deepEqual(later.removed, [], 'after the first tick the mirror listing is not consulted');
 });
 
@@ -173,7 +173,7 @@ test('THE BOARD: stale stops the nightly left behind go on the day\'s first tick
     },
     mirror: {
       [`${base}/stops/A1`]: { stopNbr: 'A1', isPlanned: false },            // the nightly's older copy
-      [`${base}/stops/CANCELLED9`]: { stopNbr: 'CANCELLED9' },               // production pruned it; the nightly never does
+      [`${base}/stops/CANCELLED9`]: { stopNbr: 'CANCELLED9' },               // production pruned it after the last copy
       [`${base}/stops/UT-0060189919`]: { stopNbr: 'UT-0060189919' },         // the UAT bench's own test order
     },
   });

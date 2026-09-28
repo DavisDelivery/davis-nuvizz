@@ -57,6 +57,14 @@ export interface ScanRow {
    */
   voidedAt?: string | null;
   voidReason?: string;
+  /**
+   * When the phone that sent this row last took the piece back or put it back,
+   * and last marked or un-marked it damaged. Null: that phone never touched the
+   * flag — its damaged:false / voidedAt:null are defaults, not a clear. Absent
+   * altogether: an app build from before these were sent (see mergeScans).
+   */
+  voidChangedAt?: string | null;
+  damageChangedAt?: string | null;
 }
 
 /** Normalize one incoming scan, or explain why it cannot be used. */
@@ -118,20 +126,26 @@ export function normalizeScan(raw: any): { row?: ScanRow; reason?: string } {
   const voidedRaw = String(raw?.voidedAt ?? '').trim();
   const voidedAt = voidedRaw && !Number.isNaN(Date.parse(voidedRaw)) ? new Date(voidedRaw).toISOString() : null;
 
-  return {
-    row: {
-      og,
-      pro,
-      scannedAt,
-      stopNbr: String(raw?.stopNbr ?? '').trim(),
-      // A typed piece is never reported as scanned, whatever the client claims.
-      engine: TYPED_RE.test(og) ? 'manual' : engine,
-      damaged: !!raw?.damaged,
-      damageNote: raw?.damaged ? String(raw?.damageNote ?? '').slice(0, 500) : '',
-      voidedAt,
-      voidReason: voidedAt ? String(raw?.voidReason ?? '').slice(0, 500) : '',
-    },
+  const row: ScanRow = {
+    og,
+    pro,
+    scannedAt,
+    stopNbr: String(raw?.stopNbr ?? '').trim(),
+    // A typed piece is never reported as scanned, whatever the client claims.
+    engine: TYPED_RE.test(og) ? 'manual' : engine,
+    damaged: !!raw?.damaged,
+    damageNote: raw?.damaged ? String(raw?.damageNote ?? '').slice(0, 500) : '',
+    voidedAt,
+    voidReason: voidedAt ? String(raw?.voidReason ?? '').slice(0, 500) : '',
   };
+  // Kept only when the phone sent them, so an older build stays recognisable.
+  const isoOrNull = (v: any) => {
+    const t = String(v ?? '').trim();
+    return t && !Number.isNaN(Date.parse(t)) ? new Date(t).toISOString() : null;
+  };
+  if (raw && Object.prototype.hasOwnProperty.call(raw, 'voidChangedAt')) row.voidChangedAt = isoOrNull(raw.voidChangedAt);
+  if (raw && Object.prototype.hasOwnProperty.call(raw, 'damageChangedAt')) row.damageChangedAt = isoOrNull(raw.damageChangedAt);
+  return { row };
 }
 
 // ── Size caps ────────────────────────────────────────────────────────────────
@@ -277,6 +291,62 @@ const sameFlags = (a: ScanRow, b: ScanRow) => {
 };
 
 /**
+ * THE WAY BACK. LOADSCAN_FLAG_MERGE=off restores last-writer-wins on the flags
+ * for every phone, exactly as before, with no code change. The phone still
+ * sends its change times; with the switch off they are simply not consulted.
+ * /health echoes the raw variable. House shape: default ON, only an explicit
+ * off-word turns it off, anything malformed leaves it ON.
+ */
+export function flagMergeByTimeEnabled(env: any = process.env): boolean {
+  const v = String(env?.LOADSCAN_FLAG_MERGE ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** Did this row come from an app build that sends flag change times? */
+const carriesChangeTimes = (r: ScanRow) => r.voidChangedAt !== undefined || r.damageChangedAt !== undefined;
+
+/**
+ * Keep the NEWEST real change per flag.
+ *
+ * No phone reads the session back, so a second loader (or the driver) scanning
+ * a piece another phone already booked sends it with default flags. Taking those
+ * defaults as a clear erased the first loader's damage claim and let a stale
+ * retry put a taken-back piece on the truck again.
+ *
+ *   ON/OFF THE TRUCK  every row is evidence with a time: a take-back or put-back
+ *                     carries voidChangedAt, a void carries voidedAt, and a live
+ *                     scan says the piece was on the truck when it was scanned —
+ *                     the same rule the phone applies when a voided piece is
+ *                     scanned again. The latest evidence wins.
+ *   DAMAGED           only a phone that actually marked or un-marked it can
+ *                     change it, newest change winning. A row that never
+ *                     touched the flag says nothing about the freight.
+ */
+export function mergeFlagsByTime(prior: ScanRow, r: ScanRow): ScanRow {
+  const next: ScanRow = { ...prior };
+  const voidTime = (x: ScanRow) => x.voidChangedAt || (x.voidedAt ? x.voidedAt : x.scannedAt) || '';
+  const inV = voidTime(r);
+  if (inV > voidTime(prior)) {
+    next.voidedAt = r.voidedAt ?? null;
+    next.voidReason = r.voidReason ?? '';
+    next.voidChangedAt = inV;
+  }
+  const inD = r.damageChangedAt || '';
+  if (inD && inD > (prior.damageChangedAt || '')) {
+    next.damaged = !!r.damaged;
+    next.damageNote = r.damageNote ?? '';
+    next.damageChangedAt = inD;
+  } else if (!inD && r.damaged && !prior.damaged) {
+    // Marked damaged on a row flagged before the phone stamped change times. A
+    // mark is always deliberate (the default is false), and a claim nobody
+    // raises costs more than a piece somebody walks over to check.
+    next.damaged = true;
+    next.damageNote = r.damageNote ?? '';
+  }
+  return next;
+}
+
+/**
  * Merge incoming scans into the existing set, keyed by OG.
  *
  * First write of an OG wins on timestamp — a replay must not move a piece's
@@ -295,6 +365,7 @@ const sameFlags = (a: ScanRow, b: ScanRow) => {
 export function mergeScans(
   existing: ScanRow[],
   incoming: ScanRow[],
+  byTime: boolean = flagMergeByTimeEnabled(),
 ): { scans: ScanRow[]; added: number; duplicates: number; updated: number } {
   const byOg = new Map<string, ScanRow>();
   for (const r of existing) byOg.set(r.og, r);
@@ -306,7 +377,13 @@ export function mergeScans(
     const prior = byOg.get(r.og);
     if (prior) {
       duplicates++;
-      if (!sameFlags(prior, r)) {
+      if (byTime && carriesChangeTimes(r)) {
+        // See mergeFlagsByTime. A build that sends no change times, or the
+        // switch off, falls through to last-writer-wins exactly as before.
+        const next = mergeFlagsByTime(prior, r);
+        byOg.set(r.og, next);
+        if (!sameFlags(prior, next)) updated++;
+      } else if (!sameFlags(prior, r)) {
         byOg.set(r.og, { ...prior, ...flagsOf(r) });
         updated++;
       }

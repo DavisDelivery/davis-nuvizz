@@ -30,7 +30,7 @@ test('densityToClass: standard density breakpoints', () => {
 test('deriveShipmentFreight: full L×W×H → real density + class', () => {
   // One pallet-sized line, 48x40x48 in (~53.33 ft³), 800 lb → ~15 pcf → class 70.
   const stop = {
-    pallets: 1, weight: 800, weightUOM: 'LB',
+    cartons: 1, weight: 800, weightUOM: 'LB',
     stopDetails: [{ quantity: 1, sku: 'SKU-1', product: 'Widget', length: 48, lengthUOM: 'IN', width: 40, widthUOM: 'IN', height: 48, heightUOM: 'IN', weight: 800, weightUOM: 'LB' }],
   };
   const f = deriveShipmentFreight(stop);
@@ -45,8 +45,8 @@ test('deriveShipmentFreight: full L×W×H → real density + class', () => {
 });
 
 test('deriveShipmentFreight: no dims → pallet-cube fallback, coverage flagged', () => {
-  // 2 pallets, 1200 lb, no line dims. Fallback cube = 2 × (48×40×60)/1728 = 133.33 ft³.
-  const stop = { pallets: 2, weight: 1200, weightUOM: 'LB', stopDetails: [{ quantity: 1, weight: 1200, weightUOM: 'LB' }] };
+  // 2 skids (stored as `cartons`), 1200 lb, no line dims. Fallback cube = 2 × (48×40×60)/1728 = 133.33 ft³.
+  const stop = { cartons: 2, weight: 1200, weightUOM: 'LB', stopDetails: [{ quantity: 1, weight: 1200, weightUOM: 'LB' }] };
   const f = deriveShipmentFreight(stop, { stackHeightIn: 60 });
   assert.equal(f.dimsCoverage, 'none');
   assert.equal(f.cubeSource, 'pallet_est');
@@ -55,7 +55,7 @@ test('deriveShipmentFreight: no dims → pallet-cube fallback, coverage flagged'
 });
 
 test('deriveShipmentFreight: criticalDimension-only is flagged "critical"', () => {
-  const stop = { pallets: 1, weight: 500, stopDetails: [{ quantity: 1, criticalDimension: 96, criticalDimensionUOM: 'IN' }] };
+  const stop = { cartons: 1, weight: 500, stopDetails: [{ quantity: 1, criticalDimension: 96, criticalDimensionUOM: 'IN' }] };
   const f = deriveShipmentFreight(stop);
   assert.equal(f.dimsCoverage, 'critical');
   assert.equal(f.cubeSource, 'pallet_est'); // no full L×W×H → estimate

@@ -14,10 +14,6 @@ import { readPlanDay, planOptions, planResult, planMap } from '../netlify/functi
 import { enqueuePlan, planView } from '../netlify/functions/lib/claude-shadow/plan-jobs.mts';
 import { workerTick, cancelJob, backtestView, jobPath, routerSettingsFrom } from '../netlify/functions/lib/claude-shadow/backtest.mts';
 import { BT_SYSTEM, PLAN_SYSTEM, btBriefing, evaluateAssignment, makeSequencer } from '../netlify/functions/lib/claude-shadow/backtest-core.mts';
-import { boardRowsAsServed } from '../netlify/functions/lib/board-rows.mts';
-import { mergeCarryover } from '../netlify/functions/nuvizz-pull-today-stops.mts';
-import { filterFinishedPriorDay } from '../netlify/functions/lib/nuvizz-list.mts';
-import { dropCancelledStops } from '../src/lib/stop-cancelled.js';
 import { effectiveEngineConfig } from '../netlify/functions/lib/routing-engine-config.mts';
 
 const D = '2026-09-28';
@@ -135,32 +131,11 @@ test('a day with no board on file is refused with the reason, before anything is
   await assert.rejects(readPlanDay({ ...PARAMS, date: '2026-10-05' }, RS, deps(st)), /no board on file for 2026-10-05/);
 });
 
-test('THE SAME RULE AS THE MAP: the planner’s board rows equal the Map feed’s, step for step, with and without a judge', async () => {
-  const POOL = { at: '2026-09-26T19:38:56Z', windowStart: '2026-09-20', windowEnd: '2026-10-05', count: 4, thin: false,
-    rows: ['U1', 'U2', 'U3', 'U4'].map((n) => ({ stopNbr: n, boardDate: D, scheduledDate: D, isPlanned: false, isUnplanned: true, normalizedStatus: 'UNPLANNED', status: '10' })) };
-  const bases = [];
-  for (const judges of [
-    {},
-    { live: { at: '2026-09-26T19:38:56Z', windowStart: '2026-09-20', stopNbrs: new Set(['U1', 'U2', 'U3', 'U4']), thin: false }, lastUnplannedScanAt: '2026-09-26T19:38:56Z' },
-    // The judge production uses: the open-order pool. U5 is not in it — closed or moved since.
-    { pool: POOL, lastUnplannedScanAt: '2026-09-26T19:38:56Z' },
-  ]) {
-    const b = board(undefined, judges);
-    const now = () => Date.parse('2026-09-26T20:00:00Z');
-    // The Map: nuvizz-pull-today-stops's own steps.
-    const mapRows = filterFinishedPriorDay((await b.readStops('davis', D)).stops, D);
-    const stats = {};
-    await mergeCarryover(mapRows, D, 1, { readStops: b.readStops, readActiveUnplannedSet: b.readActiveUnplannedSet, readCarryoverRetired: b.readCarryoverRetired, readActivePool: b.readActivePool, now, stats }, undefined, judges.lastUnplannedScanAt ?? null);
-    const mapServed = dropCancelledStops(mapRows, true).stops;
-    // The planner.
-    const reads = [{ d: PRIOR, stops: (await b.readStops('davis', PRIOR)).stops }];
-    const plan = boardRowsAsServed((await b.readStops('davis', D)).stops, D, { reads, live: judges.live ?? null, retired: {}, pool: judges.pool ?? null, nowMs: now, lastUnplannedScanAt: judges.lastUnplannedScanAt ?? null }, {});
-    assert.deepEqual(plan.rows, mapServed, JSON.stringify(Object.keys(judges)));
-    assert.deepEqual({ ...plan.carry }, { ...stats });
-    bases.push(plan.carry?.basis);
-  }
-  assert.deepEqual(bases, ['none', 'snapshot', 'pool'], 'each judge was actually the one used');
-});
+// THE SAME RULE AS THE MAP — the planner reads the board the Map serves — is held by
+// test/map-planner-parity-e2e.test.mjs, which runs the Map feed's handler and the planner's own board read
+// (readBoard / readPlanDay with LIVE_BOARD_READS) against one in-memory Firestore. The test that stood here
+// hand-copied the Map's steps and built the planner's fold inputs itself, so neither side's drift could fail it
+// (audit feed-refactor F1).
 
 test('the prompt a plan is run with differs from a backtest’s in exactly the rules it should', () => {
   assert.notEqual(PLAN_SYSTEM, BT_SYSTEM);

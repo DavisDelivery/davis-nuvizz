@@ -12,11 +12,20 @@
 //
 // A proposal, never a plan of record: nothing here sends, saves or stages freight. Two views, per the
 // house rule: tables on a desktop, stacked cards on a phone. Choices last the visit only.
+//
+// SECTIONS (v1.78.0). Chad, 2026-09-27: "instead of letting you do it all at once i would like the choice
+// to do it in sections where i have a map in a drawer and can select the stops i want you to put the
+// stops on." "A section I pick on the map" opens the board's stops in a drawer (StopPicker.jsx); only the
+// picked ones are planned. A finished plan offers "Plan the next section": the next one keeps what this
+// one put on a truck picked again, carries the rest forward, and never offers a placed stop twice.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, Play, X, Truck, Plus, Eye, MapPinned, AlertTriangle, Route } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
 import BacktestMap from './BacktestMap.jsx';
+import StopPicker from './StopPicker.jsx';
 import { truckColor } from './backtest-map-core.js';
+import { pruneSel, selTotals } from './stop-pick-core.js';
+import { asPick, pickKey, rebasePicks, nextSectionPicks } from './plan-pick-core.js';
 
 const ENDPOINT = '/.netlify/functions/claude-shadow';
 const PLANS_URL = '/.netlify/functions/claude-shadow?view=plans';
@@ -66,7 +75,8 @@ function usePlans() {
       const j = await r.json().catch(() => null);
       if (!r.ok || !j?.ok) throw new Error(j?.error || `HTTP ${r.status}`);
       setView(j); setErr(null);
-    } catch (e) { setErr(String(e?.message || e)); }
+      return j;
+    } catch (e) { setErr(String(e?.message || e)); return null; }
   }, []);
   useEffect(() => { load(); }, [load]);
   const anyActive = !!view?.jobs?.some((j) => ACTIVE.has(j.status));
@@ -77,13 +87,20 @@ function usePlans() {
   }, [anyActive, load]);
 
   const queue = useCallback(async (params, preview) => {
-    const maxUsd = view?.settings?.maxUsd;
-    const daily = view?.ceiling;
-    const cap = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd)} at the model (no round starts that could pass it), usually less.${daily ? ` Plans and backtests together stop at ${usd(daily.usd)} per 24 hours.` : ''}` : '';
-    const short = preview?.capacity?.short?.spots > 0 ? ` The picked loads are ${one(preview.capacity.short.spots)} skid spots short, so some stops will be left off, each with a reason.` : '';
-    if (!window.confirm(`Plan ${fmtDay(params.date)} with Claude onto ${params.picks.length} load${params.picks.length === 1 ? '' : 's'}?${cap}${short} Nothing is sent to NuVizz.`)) return null;
-    setBusy(true); setMsg(null);
+    // THE CEILING STATED IS THE ONE IN FORCE (audit 2026-09-27): the job is held to the settings as they
+    // are when it is queued, and Router settings saved since this area last read them (on this screen or
+    // another) would not be in `view` — so they are read again before the confirm says what it may spend.
+    // Busy from the start, so a second press during that read cannot open a second confirm.
+    setBusy(true);
     try {
+      const now = await load();
+      if (!now) { setMsg('Not queued: the spend ceiling in force could not be read — press Refresh and try again.'); return null; }
+      const maxUsd = now.settings?.maxUsd;
+      const daily = now.ceiling;
+      const cap = typeof maxUsd === 'number' ? ` It spends at most ${usd(maxUsd)} at the model (no round starts that could pass it), usually less.${daily ? ` Plans and backtests together stop at ${usd(daily.usd)} per 24 hours.` : ''}` : '';
+      const short = preview?.capacity?.short?.spots > 0 ? ` The picked loads are ${one(preview.capacity.short.spots)} skid spots short, so some stops will be left off, each with a reason.` : '';
+      if (!window.confirm(`Plan ${fmtDay(params.date)} with Claude onto ${params.picks.length} load${params.picks.length === 1 ? '' : 's'}?${cap}${short} Nothing is sent to NuVizz.`)) return null;
+      setMsg(null);
       const { r, j } = await post({ action: 'plan', plan: params, confirm: true, expectBoardAt: preview?.boardAt ?? null });
       if (!j) setMsg(`HTTP ${r.status} — no readable answer; press Refresh to see whether it was queued.`);
       else if (!r.ok || !j.ok) setMsg(`Not queued: ${j.error || (j.errors || []).join('; ') || `HTTP ${r.status}`}`);
@@ -91,13 +108,13 @@ function usePlans() {
         const when = j.waiting === 'ceiling' ? ` It waits while the 24-hour ceiling is spent (${usd(daily?.spent24h)} of ${usd(daily?.usd)} used) and starts when it rolls on.`
           : typeof j.ahead === 'number' && j.ahead > 0 ? ` It starts after the ${j.ahead} job${j.ahead === 1 ? '' : 's'} ahead of it, a few minutes each.`
           : ' It starts within about three minutes and takes a few more.';
-        setMsg(`Queued${typeof j.stops === 'number' && typeof j.loads === 'number' ? `: ${j.stops} stops onto ${j.loads} loads` : ''}.${when}`);
+        setMsg(`Queued${typeof j.stops === 'number' && typeof j.loads === 'number' ? `: ${j.stops} stops onto ${j.loads} loads` : ''}${typeof j.maxUsd === 'number' ? `, held to at most ${usd(j.maxUsd)} at the model` : ''}.${when}`);
       }
       await load();
       return j?.ok ? j.jobId : null;
     } catch (e) { setMsg(`Whether it was queued is unknown: ${String(e?.message || e)} — press Refresh.`); return null; }
     finally { setBusy(false); }
-  }, [post, load, view]);
+  }, [post, load]);
 
   const cancel = useCallback(async (jobId) => {
     if (!window.confirm('Stop this plan? A round already at the model still finishes and is billed.')) return;
@@ -177,9 +194,48 @@ function ScopePick({ scope, setScope, phone }) {
   );
 }
 
-// ── the loads ───────────────────────────────────────────────────────────────
+/** All of it at once, or a section picked on the map (v1.78.0) — and, for a section, what is picked. */
+function SectionPick({ area, phone }) {
+  const { sectionMode, setSectionMode, section, setSection, stopsRead, openPicker, pickerBtn, after, afterInfo, startFresh, scope } = area;
+  const totals = selTotals(stopsRead.data?.stops || [], section);
+  const opt = (v, title, sub) => (
+    <button onClick={() => setSectionMode(v)} aria-pressed={sectionMode === v}
+      className={`text-left rounded-lg border px-3 py-2 min-h-[44px] ${sectionMode === v ? 'border-indigo-700 bg-indigo-50' : 'bg-white'} ${phone ? 'w-full' : ''}`}>
+      <span className="block text-xs font-semibold text-slate-800">{title}</span>
+      <span className="block text-[11px] text-slate-600">{sub}</span>
+    </button>
+  );
+  return (
+    <div className="space-y-2">
+      <span className="text-xs font-semibold text-slate-700">How much at once</span>
+      <div className={phone ? 'flex flex-col gap-2' : 'grid grid-cols-2 gap-2'}>
+        {opt(false, 'All of them', `Every ${scope === 'open' ? 'open' : 'unplanned'} stop on the day, in one plan.`)}
+        {opt(true, 'A section I pick on the map', 'Pick the stops on a map; only those are planned. Then plan the next section on top of it.')}
+      </div>
+      {after && (
+        <div className="rounded border border-teal-300 bg-teal-50 px-3 py-2 text-xs text-teal-900 flex flex-wrap items-center gap-2">
+          <span className="min-w-0 flex-1">
+            {afterInfo?.pending
+              ? <>Next section: builds on the plan just queued{area.afterJob ? ` (${area.afterJob.status})` : ''}. {area.afterJob?.status === 'failed' || area.afterJob?.status === 'cancelled' ? 'That plan did not finish, so there is nothing to build on — press Start fresh.' : area.afterJob?.status === 'done' ? 'It is done: pick this section’s stops.' : 'This section can be previewed once that plan is done.'} </>
+              : <>Next section: builds on the plan of {fmtWhen(afterInfo?.at)}{typeof afterInfo?.placed === 'number' ? ` (${afterInfo.placed} stops placed so far)` : ''}. </>}
+            Its stops on a truck you pick again stay on it (that truck’s stop order is worked out afresh); the rest are carried forward; none is offered again. Keep {afterInfo?.scope === 'open' ? 'every open stop' : 'unplanned only'} and a look-back of {afterInfo?.lookbackDays ?? 0} day{afterInfo?.lookbackDays === 1 ? '' : 's'} or more.
+          </span>
+          <button onClick={startFresh} className={btn(phone)}>Start fresh</button>
+        </div>
+      )}
+      {sectionMode && (
+        <div className={`flex ${phone ? 'flex-col' : 'flex-wrap items-center'} gap-2`}>
+          <button ref={pickerBtn} onClick={openPicker} disabled={!area.date} className={btn(phone, true)}><MapPinned size={13} /> Pick stops on the map{section.size ? ` (${section.size} picked)` : ''}</button>
+          <span className="text-[11px] text-slate-600">{section.size ? `${section.size} picked${stopsRead.data ? ` · ${one(totals.spots)} skid spots · ${int(totals.lbs)} lb` : ' · reading the board…'}` : 'Nothing picked yet.'}</span>
+          {section.size > 0 && <button onClick={() => setSection(new Set())} className={btn(phone)}>Clear the picks</button>}
+        </div>
+      )}
+      {sectionMode && area.secNote && <p className="text-[11px] text-amber-800" role="status">{area.secNote}</p>}
+    </div>
+  );
+}
 
-const pickKey = (p) => (p.kind === 'roster' ? `r:${p.loadNbr || p.route}` : p.kind === 'driver' ? `d:${p.driver}` : `t:${p.route}`);
+// ── the loads ───────────────────────────────────────────────────────────────
 
 function LoadPicker({ opts, picks, setPicks, phone }) {
   const roster = opts?.roster?.loads || [];
@@ -189,7 +245,6 @@ function LoadPicker({ opts, picks, setPicks, phone }) {
   const has = (k) => picks.has(k);
   const toggle = (p) => setPicks((cur) => { const n = new Map(cur); const k = pickKey(p); if (n.has(k)) n.delete(k); else n.set(k, p); return n; });
   const setCls = (k, cls) => setPicks((cur) => { const n = new Map(cur); const p = n.get(k); if (p) n.set(k, { ...p, cls }); return n; });
-  const asPick = (l) => ({ kind: 'roster', route: l.route, driver: l.driver, cls: l.driver ? null : (l.cls || 'box_truck'), loadNbr: l.loadNbr, cap: l.cap, capSource: l.source, onBoard: l.onBoard, shownCls: l.cls });
   const shown = roster.filter((l) => !q.trim() || `${l.route} ${l.driver || ''}`.toLowerCase().includes(q.trim().toLowerCase()));
   const pickAll = (withDriver) => setPicks((cur) => { const n = new Map(cur); for (const l of roster) if (!withDriver || l.driver) n.set(pickKey(asPick(l)), asPick(l)); return n; });
   const clearRoster = () => setPicks((cur) => new Map([...cur].filter(([k]) => !k.startsWith('r:'))));
@@ -328,7 +383,9 @@ function PreviewCard({ pv, phone }) {
   const anyShort = short.spots > 0 || short.lbs > 0 || short.noTractor > 0 || short.time > 0;
   return (
     <div className="rounded-lg border bg-slate-50 p-3 space-y-2" role="region" aria-label="Preview">
-      <p className="text-sm text-slate-800"><b>{c.toPlan}</b> stop{c.toPlan === 1 ? '' : 's'} for Claude to place{days.length > 1 ? ` (${days.map(([d, n]) => `${n} filed ${fmtDay(d)}`).join(', ')})` : ''}{c.kept ? <>, and <b>{c.kept}</b> already on the picked loads, kept there</> : ''}.</p>
+      <p className="text-sm text-slate-800"><b>{c.toPlan}</b> stop{c.toPlan === 1 ? '' : 's'} for Claude to place{days.length > 1 ? ` (${days.map(([d, n]) => `${n} filed ${fmtDay(d)}`).join(', ')})` : ''}{c.kept ? <>, and <b>{c.kept}</b> already on the picked loads in NuVizz, kept there</> : ''}{c.earlierKept ? <>, and <b>{c.earlierKept}</b> placed by the earlier section on loads picked again, kept there</> : ''}.</p>
+      {c.section != null && <p className="text-[11px] text-slate-700">Section: {c.section} picked on the map{c.leftForLater ? ` · ${c.leftForLater} other open stop${c.leftForLater === 1 ? '' : 's'} left for another section` : ''}{c.sectionAlreadyPlaced ? ` · ${c.sectionAlreadyPlaced} already placed by the earlier section` : ''}{c.sectionMissing ? ` · ${c.sectionMissing} picked but not plannable now (no longer open, on a load not picked, or with no map point)` : ''}.</p>}
+      {pv.params?.after && <p className="text-[11px] text-slate-700">Builds on the earlier section: {c.earlierKept || 0} of its stops stay on the loads picked again · {c.earlierCarried || 0} ride loads not picked here and are carried forward as placed{c.earlierNoLocation ? ` · ${c.earlierNoLocation} lost ${c.earlierNoLocation === 1 ? 'its' : 'their'} map point and ${c.earlierNoLocation === 1 ? 'is' : 'are'} carried forward, room held back` : ''}{c.earlierDropped ? ` · ${c.earlierDropped} dropped: no longer open${pv.params.scope === 'unplanned' ? ', or now on a load in NuVizz (NuVizz outranks a section)' : ''}` : ''}.</p>}
       <p className="text-[11px] text-slate-600">Not planned here: {[
         c.planned ? `${c.planned} on loads you did not pick (they stay where they are)` : null,
         c.pickups ? `${c.pickups} pickup${c.pickups === 1 ? '' : 's'}` : null,
@@ -344,6 +401,7 @@ function PreviewCard({ pv, phone }) {
         <Need phone={phone} label="Time on site alone (before any driving)" need={cap.serviceMin / 60} have={cap.dayMin / 60} short={short.time / 60} unit=" h" />
       </div>
       {pv.infeasible && <div className="rounded border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 inline-flex gap-2" role="alert"><AlertTriangle size={14} className="shrink-0 mt-0.5" /><span>Plan is off: {pv.infeasible}.</span></div>}
+      {pv.nothingToPlace && <div className="rounded border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 inline-flex gap-2" role="alert"><AlertTriangle size={14} className="shrink-0 mt-0.5" /><span>Plan is off: {pv.nothingToPlace}.</span></div>}
       {anyShort
         ? <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 inline-flex gap-2"><AlertTriangle size={14} className="shrink-0 mt-0.5" /><span>The picked loads cannot carry all of this. Claude places what fits and leaves the rest off, each with its reason — and may not leave a stop off a truck that has room for it. Pick more loads to place more.</span></div>
         : <p className="text-[11px] text-emerald-800">The picked loads have the room on paper. Driving time is not counted above; Claude’s plan is held to each driver’s full day.</p>}
@@ -387,7 +445,7 @@ function JobList({ jobs, onOpen, onStop, openId, phone, view }) {
         return (
           <li key={j._id} className={`rounded-lg border px-3 py-2 ${openId === j._id ? 'border-indigo-700 bg-indigo-50' : 'bg-white'} flex ${phone ? 'flex-col' : 'flex-wrap items-center'} gap-2`}>
             <span className="text-xs text-slate-800 min-w-0 flex-1">
-              <b>{fmtDay(p.date || j.date)}</b> · {(p.picks || []).length} loads · {p.scope === 'open' ? 'every open stop' : 'unplanned only'} · look back {p.lookbackDays || 0}d
+              <b>{fmtDay(p.date || j.date)}</b> · {(p.picks || []).length} loads · {p.scope === 'open' ? 'every open stop' : 'unplanned only'} · look back {p.lookbackDays || 0}d{p.sectionSize ? ` · a section of ${p.sectionSize}` : ''}{p.after ? ' · builds on an earlier section' : ''}
               <span className="block text-[11px] text-slate-600">{queuedWord(j, view)}{j.rounds ? ` · ${j.rounds} rounds` : ''} · {usd(j.usd)} · {j.by || '—'} · {fmtWhen(j.createdAt)}{h ? ` · ${h.placed} placed${h.kept ? ` (+${h.kept} kept)` : ''}, ${h.unplanned} left off, ${h.trucks} trucks, ${one(h.miles)} mi` : ''}{j.error ? ` · ${j.error}` : ''}</span>
             </span>
             <span className="flex gap-2">
@@ -423,7 +481,7 @@ function usePlanResult(id, post) {
   return { res, map, err };
 }
 
-function ResultView({ res, map, phone }) {
+function ResultView({ res, map, phone, onNext }) {
   const [focus, setFocus] = useState(null);
   const [zoomTick, setZoomTick] = useState(0);
   // The map's picked trucks: a Map (truck id → colour slot), as BacktestMap reads it. Empty: every truck in its own colour.
@@ -441,6 +499,33 @@ function ResultView({ res, map, phone }) {
         ].map(([k, v]) => <div key={k} className="rounded-lg border bg-white px-3 py-2"><div className="text-[11px] text-slate-500">{k}</div><div className="text-sm font-semibold text-slate-800 tabular-nums">{v}</div></div>)}
       </div>
       <p className="text-[11px] text-slate-600">{res.planFrom === 'submitted' ? 'Claude’s submitted plan' : `Claude’s ${res.planFrom}`}, {fmtWhen(res.at)}. A proposal for {fmtDay(res.date)} only — nothing was sent to NuVizz.</p>
+      {(res.section?.carried?.length > 0) && <p className="text-[11px] text-slate-600">Carried forward from the earlier sections, on loads not picked in this one: {res.section.carried.length} stop{res.section.carried.length === 1 ? '' : 's'} ({[...new Set(res.section.carried.map((c) => c.route))].slice(0, 8).join(', ')}{new Set(res.section.carried.map((c) => c.route)).size > 8 ? ', …' : ''}).</p>}
+      {Array.isArray(res.placements) && (res.section?.after || res.section?.carried?.length > 0) && (() => {
+        // THE DAY SO FAR (review): what Claude has placed across every section of the chain, by truck —
+        // this section's trucks and the ones carried forward. A proposal: nothing is in NuVizz.
+        const byRoute = new Map();
+        const add = (route, driver, n, now) => { const k = `${route}|${driver}`; const x = byRoute.get(k) || { route, driver, n: 0, now: 0 }; x.n += n; x.now += now; byRoute.set(k, x); };
+        const loadById = new Map((res.loads || []).map((l) => [l.id, l]));
+        const perLoad = new Map();
+        for (const x of res.placements) perLoad.set(x.load, (perLoad.get(x.load) || 0) + 1);
+        for (const [id, n] of perLoad) { const l = loadById.get(id); if (l) add(l.route, l.driver, n, n - (l.earlier || 0)); }
+        for (const c of res.section?.carried || []) add(c.route, c.driver, 1, 0);
+        const rowsDay = [...byRoute.values()].sort((a, b) => a.route.localeCompare(b.route));
+        const total = rowsDay.reduce((a, x) => a + x.n, 0);
+        return (
+          <details>
+            <summary className="text-xs font-semibold text-indigo-700 min-h-[44px] flex items-center cursor-pointer">▸&nbsp;The day so far, across the sections: {total} stops placed on {rowsDay.length} trucks</summary>
+            <ul className="space-y-1">{rowsDay.map((x) => <li key={`${x.route}|${x.driver}`} className="text-[11px] text-slate-700"><b>{x.route}</b> · {x.driver} · {x.n} stop{x.n === 1 ? '' : 's'}{x.now ? ` (${x.now} in this section)` : ' (earlier sections)'}</li>)}</ul>
+            <p className="text-[11px] text-slate-500">Claude’s placements only, not the stops NuVizz already has on these trucks. A proposal: nothing is in NuVizz.</p>
+          </details>
+        );
+      })()}
+      {Array.isArray(res.placements) && onNext && (
+        <div className={`flex ${phone ? 'flex-col' : 'flex-wrap items-center'} gap-2`}>
+          <button onClick={() => onNext(res)} className={btn(phone, true)}><MapPinned size={13} /> Plan the next section</button>
+          <span className="text-[11px] text-slate-600">Pick more stops on the map. What this plan put on a truck stays on it when you pick that truck again, and is carried forward when you do not.</span>
+        </div>
+      )}
       {phone
         ? (
           <ul className="space-y-2">
@@ -448,7 +533,7 @@ function ResultView({ res, map, phone }) {
               <li key={l.id} className="rounded-lg border bg-white px-3 py-2">
                 <button onClick={() => open(l.id)} className="w-full text-left min-h-[44px]">
                   <span className="text-sm font-semibold text-slate-800 inline-flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-full" style={{ background: colorOf(l.id) }} />{l.route} · {l.driver}</span>
-                  <span className="block text-[11px] text-slate-600">{clsWord(l.cls)} · {l.claude ? `${l.claude.stops} stops${l.kept ? ` (${l.kept} kept)` : ''} · ${one(l.claude.spots)}/${one(l.cap)} spots · ${int(l.claude.weight)} lb · ${one(l.claude.miles)} mi · day ${hrs(l.claude.driverMin)} of ${hrs(l.maxMin)}` : 'not used'}</span>
+                  <span className="block text-[11px] text-slate-600">{clsWord(l.cls)} · {l.claude ? `${l.claude.stops} stops${l.kept ? ` (${l.kept} kept${l.earlier ? `, ${l.earlier} from the earlier section` : ''})` : ''} · ${one(l.claude.spots)}/${one(l.cap)} spots · ${int(l.claude.weight)} lb · ${one(l.claude.miles)} mi · day ${hrs(l.claude.driverMin)} of ${hrs(l.maxMin)}` : 'not used'}</span>
                   {l.why && <span className="block text-[11px] text-slate-500">{l.why}</span>}
                 </button>
               </li>
@@ -468,7 +553,7 @@ function ResultView({ res, map, phone }) {
                   <tr key={l.id} onClick={() => open(l.id)} className={`border-t cursor-pointer ${focus === l.id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}>
                     <td className="px-2 py-1 font-semibold"><span className="inline-flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-full" style={{ background: colorOf(l.id) }} />{l.route}</span></td>
                     <td className="px-2 py-1">{l.driver}</td><td className="px-2 py-1">{clsWord(l.cls)}</td>
-                    <td className="px-2 py-1 text-right tabular-nums">{l.claude ? `${l.claude.stops}${l.kept ? ` (${l.kept} kept)` : ''}` : 'not used'}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{l.claude ? `${l.claude.stops}${l.kept ? ` (${l.kept} kept${l.earlier ? `, ${l.earlier} earlier` : ''})` : ''}` : 'not used'}</td>
                     <td className="px-2 py-1 text-right tabular-nums">{l.claude ? `${one(l.claude.spots)} / ${one(l.cap)}` : `— / ${one(l.cap)}`}</td>
                     <td className="px-2 py-1 text-right tabular-nums">{l.claude ? `${int(l.claude.weight)} / ${int(l.maxLbs)}` : '—'}</td>
                     <td className="px-2 py-1 text-right tabular-nums">{l.claude ? one(l.claude.miles) : '—'}</td>
@@ -499,6 +584,33 @@ function ResultView({ res, map, phone }) {
   );
 }
 
+/**
+ * THE STOP MAP'S READ (v1.78.0): the board's open deliveries for the day, look-back, scope and earlier
+ * section on screen — read when a section is being picked, again whenever one of those changes, and on
+ * Refresh. A read that is under way for other settings never lands on the new ones.
+ */
+function useSectionStops(post, q, on) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [tick, setTick] = useState(0);
+  const key = on && q.date ? JSON.stringify({ date: q.date, lookbackDays: q.lookbackDays, scope: q.scope, after: q.after || null }) : null;
+  useEffect(() => {
+    setData(null);
+    if (!key) return undefined;
+    let live = true;
+    setLoading(true); setErr(null);
+    post({ action: 'plan-stops', plan: JSON.parse(key) }).then(({ r, j }) => {
+      if (!live) return;
+      if (!r.ok || !j?.ok) setErr(j?.error || (j?.errors || []).join('; ') || `HTTP ${r.status}`);
+      else setData(j);
+    }).catch((e) => { if (live) setErr(String(e?.message || e)); }).finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [key, post, tick]);
+  const retry = useCallback(() => setTick((t) => t + 1), []);
+  return { data, loading, err, retry };
+}
+
 // ── the panel ───────────────────────────────────────────────────────────────
 
 /**
@@ -519,6 +631,34 @@ export function usePlanArea() {
   const [previewing, setPreviewing] = useState(false);
   const [openId, setOpenId] = useState(null);
   const result = usePlanResult(openId, pl.post);
+  // SECTIONS (v1.78.0): the stops picked on the map, and the finished plan this section builds on.
+  const [sectionMode, setSectionMode] = useState(false);
+  const [section, setSection] = useState(() => new Set());
+  const [after, setAfter] = useState(null);
+  const [afterInfo, setAfterInfo] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [secNote, setSecNote] = useState(null);
+  const pickerBtn = useRef(null);
+  const stopsRead = useSectionStops(pl.post, { date, lookbackDays: lookback, scope, after }, sectionMode);
+  // The plan a section builds on, as the jobs list has it — a queued one is waited for, and when it is
+  // done the stop map is read again so its placements show (review).
+  const afterJob = useMemo(() => (after ? (pl.view?.jobs || []).find((j) => j._id === after) || null : null), [after, pl.view]);
+  const afterStatus = afterJob?.status || null;
+  useEffect(() => { if (afterStatus === 'done' && sectionMode) stopsRead.retry(); }, [afterStatus]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // A pick the board no longer offers (now on a load, placed by the earlier section, gone) comes off —
+  // and the screen says how many did, rather than planning fewer stops than it shows.
+  useEffect(() => {
+    if (!stopsRead.data) return;
+    const r = pruneSel(section, stopsRead.data.stops, scope);
+    if (r.dropped) { setSection(r.next); setSecNote(`${r.dropped} picked stop${r.dropped === 1 ? ' is' : 's are'} no longer offered for this section (now on a load, placed by the earlier section, or gone from the board) and ${r.dropped === 1 ? 'was' : 'were'} taken off.`); }
+    else setSecNote(null);
+  }, [stopsRead.data]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // A new day by hand is a new start: the picks and the plan to build on belong to the day they were made on.
+  // Re-tapping the day already on screen changes nothing (review: it wiped the picks and the chain).
+  const changeDate = useCallback((d) => { if (d === date) return; setDate(d); setAfter(null); setAfterInfo(null); setSection(new Set()); }, [date]);
+  const startFresh = useCallback(() => { setAfter(null); setAfterInfo(null); }, []);
+  const openPicker = useCallback(() => setPickerOpen(true), []);
+  const closePicker = useCallback(() => { setPickerOpen(false); requestAnimationFrame(() => pickerBtn.current?.focus()); }, []);
 
   // The picker's read for the day: the board days, the roster, every driver with the cap a plan holds.
   // The first read asks for no day and is answered for the latest board day; that answer is kept, not
@@ -541,9 +681,9 @@ export function usePlanArea() {
       if (!date && j.date) setDate(j.date);
       // Roster picks belong to their day: a new day keeps added drivers and trucks, not old roster loads —
       // and not a driver who has a load of their own on the new day's roster (one driver, one truck; review).
-      const here = new Set((j.roster?.loads || []).map((l) => `r:${l.loadNbr || l.route}`));
-      const onRoster = new Set((j.roster?.loads || []).map((l) => String(l.driver || '').trim().toUpperCase().replace(/\s+/g, ' ')).filter(Boolean));
-      setPicks((cur) => new Map([...cur].filter(([k, p]) => (k.startsWith('r:') ? here.has(k) : !(p.kind === 'driver' && onRoster.has(String(p.driver || '').trim().toUpperCase().replace(/\s+/g, ' ')))))));
+      // A roster load still on it is rebuilt from the row just read, so the plan carries the driver and
+      // class now on screen and the preview goes stale (audit 2026-09-27).
+      setPicks((cur) => rebasePicks(cur, j.roster?.loads || []));
     }).catch((e) => { if (live) setOptsErr(String(e?.message || e)); });
     return () => { live = false; };
   }, [date, pl.post, optsTick]);
@@ -551,7 +691,9 @@ export function usePlanArea() {
   const params = useMemo(() => ({
     date, lookbackDays: lookback, scope,
     picks: [...picks.values()].map((p) => ({ kind: p.kind, route: p.route, driver: p.driver ?? null, cls: p.cls ?? null, loadNbr: p.loadNbr ?? null })),
-  }), [date, lookback, scope, picks]);
+    section: sectionMode ? [...section].sort() : null,
+    after: after || null,
+  }), [date, lookback, scope, picks, sectionMode, section, after]);
   const key = JSON.stringify(params);
   const fresh = pv && pvKey === key;
 
@@ -564,14 +706,43 @@ export function usePlanArea() {
     } catch (e) { setPvErr(String(e?.message || e)); }
     finally { setPreviewing(false); }
   };
+  // A QUEUED SECTION IS THE BASE OF THE NEXT ONE (review): building on the older plan again would put a
+  // second truck's worth on a truck already used and drop this section from the chain. The picks are
+  // spent; the next section can be previewed once this one is done.
   const run = async () => {
     const id = await pl.queue(params, pv);
-    if (id) setOpenId(null);
+    if (!id) return;
+    setOpenId(null);
+    if (sectionMode || after) {
+      setAfter(id);
+      setAfterInfo({ at: null, placed: null, pending: true, lookbackDays: lookback, scope });
+      setSection(new Set());
+      setPv(null);
+    }
   };
-  const refresh = () => { pl.load(); setOptsTick((n) => n + 1); };
+  const refresh = () => { pl.load(); setOptsTick((n) => n + 1); if (sectionMode) stopsRead.retry(); };
+  // PLAN THE NEXT SECTION (v1.78.0): the same day, look-back, scope and loads as the finished plan, built
+  // on it, with nothing picked yet — and the map opens to pick.
+  const nextSection = useCallback((res) => {
+    const p = res?.params || {};
+    if (res?.date) setDate(res.date);
+    setLookback(Number.isInteger(p.lookbackDays) ? p.lookbackDays : 0);
+    setScope(p.scope === 'open' ? 'open' : 'unplanned');
+    // Held to the roster on screen when it is that day's, as a Refresh holds them (review, audit 2026-09-27).
+    setPicks(nextSectionPicks(p.picks, opts, res?.date || date));
+    setSectionMode(true);
+    setSection(new Set());
+    setAfter(res.jobId);
+    setAfterInfo({ at: res.at ?? null, placed: (res.placements?.length || 0) + (res.section?.carried?.length || 0), lookbackDays: Number.isInteger(p.lookbackDays) ? p.lookbackDays : 0, scope: p.scope === 'open' ? 'open' : 'unplanned' });
+    setPv(null);
+    setOpenId(null);
+    setPickerOpen(true);
+  }, [opts, date]);
   return {
-    pl, date, setDate, lookback, setLookback, scope, setScope, picks, setPicks, opts, optsErr,
+    pl, date, setDate: changeDate, lookback, setLookback, scope, setScope, picks, setPicks, opts, optsErr,
     pv, pvErr, previewing, fresh, preview, run, openId, setOpenId, result, refresh,
+    sectionMode, setSectionMode, section, setSection, after, afterInfo, afterJob, startFresh, stopsRead,
+    pickerOpen, openPicker, closePicker, pickerBtn, secNote, nextSection,
   };
 }
 
@@ -579,7 +750,9 @@ export default function PlanPanel({ phone = false, area }) {
   const {
     pl, date, setDate, lookback, setLookback, scope, setScope, picks, setPicks, opts, optsErr,
     pv, pvErr, previewing, fresh, preview, run, openId, setOpenId, result, refresh,
+    sectionMode, section, stopsRead, pickerOpen, closePicker, nextSection,
   } = area;
+  const needPicks = sectionMode && section.size === 0;
   const v = pl.view;
   const refused = v?.refused;
   return (
@@ -602,12 +775,13 @@ export default function PlanPanel({ phone = false, area }) {
       {opts && !opts.board && date && <p className="text-[11px] text-amber-800">No board is on file for {fmtDay(date)} yet: the scans have not written that day.</p>}
       {optsErr && <p className="text-[11px] text-rose-700">The loads could not be read: {optsErr}</p>}
       <ScopePick scope={scope} setScope={setScope} phone={phone} />
+      <SectionPick area={area} phone={phone} />
       <LoadPicker opts={opts} picks={picks} setPicks={setPicks} phone={phone} />
 
       <div className={`flex ${phone ? 'flex-col' : 'flex-wrap items-center'} gap-2`}>
-        <button onClick={preview} disabled={!date || !picks.size || previewing} className={btn(phone)}><Eye size={13} /> {previewing ? 'Reading the board…' : 'Preview (free)'}</button>
-        <button onClick={run} disabled={!fresh || !!refused || pl.busy || !!pv?.infeasible} className={btn(phone, fresh && !refused && !pv?.infeasible)}><Play size={13} /> {pl.busy ? 'Queuing…' : `Plan with Claude${typeof v?.settings?.maxUsd === 'number' ? ` (≤ ${usd(v.settings.maxUsd)})` : ''}`}</button>
-        <span className="text-[11px] text-slate-500">{!pv ? 'Preview first: it reads the board and says what the loads can carry, and spends nothing.' : fresh ? 'The preview matches what is picked.' : 'Something changed since the preview — preview again before planning.'}</span>
+        <button onClick={preview} disabled={!date || !picks.size || previewing || needPicks} className={btn(phone)}><Eye size={13} /> {previewing ? 'Reading the board…' : 'Preview (free)'}</button>
+        <button onClick={run} disabled={!fresh || !!refused || pl.busy || !!pv?.infeasible || !!pv?.nothingToPlace} className={btn(phone, fresh && !refused && !pv?.infeasible && !pv?.nothingToPlace)}><Play size={13} /> {pl.busy ? 'Queuing…' : `Plan with Claude${typeof v?.settings?.maxUsd === 'number' ? ` (≤ ${usd(v.settings.maxUsd)})` : ''}`}</button>
+        <span className="text-[11px] text-slate-500">{needPicks ? 'Pick at least one stop on the map for this section.' : !pv ? 'Preview first: it reads the board and says what the loads can carry, and spends nothing.' : fresh ? 'The preview matches what is picked.' : 'Something changed since the preview — preview again before planning.'}</span>
       </div>
       {pvErr && <p className="text-[11px] text-rose-700">Preview refused: {pvErr}</p>}
       {pv && <div className={fresh ? '' : 'opacity-60'}><PreviewCard pv={pv} phone={phone} /></div>}
@@ -619,10 +793,12 @@ export default function PlanPanel({ phone = false, area }) {
       </div>
       {openId && (
         result.res
-          ? <ResultView res={result.res} map={result.map} phone={phone} />
+          ? <ResultView res={result.res} map={result.map} phone={phone} onNext={nextSection} />
           : <p className="text-[11px] text-slate-500">{result.err ? `The plan could not be read: ${result.err}` : 'Reading the plan…'}</p>
       )}
       {openId && result.res && result.err && <p className="text-[11px] text-amber-800">{result.err}</p>}
+      <StopPicker open={pickerOpen} phone={phone} onClose={closePicker} board={stopsRead.data} loading={stopsRead.loading} err={stopsRead.err} onRetry={stopsRead.retry}
+        sel={section} setSel={area.setSection} scope={scope} note={area.secNote} />
     </section>
   );
 }

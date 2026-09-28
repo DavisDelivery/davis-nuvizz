@@ -44,6 +44,8 @@ export default async (req: Request): Promise<Response> => {
       carrier_hand_confirm_env: buildVar(process.env.LOADSCAN_CARRIER_HAND_CONFIRM),
       // Same: parsed in manifest.davisLabelsEnabled; the client obeys rules.davisLabels.
       davis_labels_env: buildVar(process.env.LOADSCAN_DAVIS_LABELS),
+      // Same: parsed in scan-session.flagMergeByTimeEnabled (damage/void merge).
+      flag_merge_env: buildVar(process.env.LOADSCAN_FLAG_MERGE),
       node: process.version,
       now: new Date().toISOString(),
     }),

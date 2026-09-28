@@ -63,9 +63,9 @@ import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mt
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
-import { sweepDue, LEGACY_STEP_MIN } from './lib/flag-sweep-cadence.mts';
+import { sweepDue, LEGACY_STEP_MIN, daySweepFiresNow, eveningHistoryYieldsEnabled } from './lib/flag-sweep-cadence.mts';
 import { earlyCloseOpt } from './lib/flag-policy.mts';
-import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
+import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable, smsClaimSubject, boxClaimByRouteEnabled, smsCapSkipsTextedEnabled } from './lib/flag-sms.mts';
 // Only to report WHERE the list came from — the list itself is resolved by smsRecipients.
 import { resolveChannel, channelSpec, recipientsFor } from './lib/alert-recipients.mts';
 // THIS PATH NOW EMAILS TOO, and the header above says it does not - so it is said here as
@@ -213,7 +213,6 @@ export default async (req: Request): Promise<Response> => {
       opts: { ...engineOpts(legInfo.legs), ...(placeLift ? { placeMarks: placeLift.placeMarks } : {}) },
     });
 
-    const candidates = selectTextable(flags.rows);
     // WHO IS ON THE LIST TONIGHT, read fresh every sweep. Chad edits this from Diagnostics
     // (nuvizz_ops/alert_recipients); a number removed at 8:15p is off the 9:00p sweep with no
     // redeploy. If that read fails we fall back to the environment rather than to silence —
@@ -248,6 +247,27 @@ export default async (req: Request): Promise<Response> => {
     };
     const textsSilenced = !recipients.length && (savedSilent('flagSmsTo') || savedSilent('flagSmsToNight'));
 
+    // THE PER-SWEEP CAP IS SPENT ON WHAT HAS NOT BEEN TEXTED YET. Selected before the claim
+    // check, the same top rows came back every sweep, all claimed, and the stops the cap had
+    // deferred were never texted. So the claims already standing are read first (one Firestore
+    // read per textable subject, zero NuVizz) and those subjects are left out of the cap. The
+    // claim below is still what guarantees one text per subject — this only decides who gets
+    // the slots. FLAG_SMS_CAP_SKIPS_TEXTED=off puts the old selection back.
+    const claimPathOf = (r: any) => smsClaimPath(TENANT, date, smsClaimSubject(r), r.rule);
+    const textedClaims = new Set<string>();
+    let alreadyTexted = 0;
+    if (smsCapSkipsTextedEnabled() && smsEnabled() && recipients.length) {
+      const every = selectTextable(flags.rows, Infinity, Infinity, Infinity);
+      await Promise.all(every.map(async (r: any) => {
+        const p = claimPathOf(r);
+        try { if (await getDoc(p)) textedClaims.add(p); } catch { /* unknown: left in, the claim decides */ }
+      }));
+      alreadyTexted = every.filter((r: any) => textedClaims.has(claimPathOf(r))).length;
+    }
+    const candidates = selectTextable(flags.rows, undefined, undefined, undefined, {
+      skip: (r: any) => textedClaims.has(claimPathOf(r)),
+    });
+
     const status: any = {
       tenant: TENANT, date, offsetDays, etMin, at: new Date().toISOString(),
       boardStops: stops.length, redCount: flags.redCount, amberCount: flags.amberCount,
@@ -271,7 +291,7 @@ export default async (req: Request): Promise<Response> => {
       // A near-match is named too, so nobody mistakes it for an exact join.
       unclassedRoutes: (rc?.unclassed ?? []).filter((u) => u.reason !== 'appointment_route'),
       nearMatches: rc?.nearMatches ?? [],
-      smsEnabled: smsEnabled(), sent: 0, failed: 0, alreadyClaimed: 0,
+      smsEnabled: smsEnabled(), sent: 0, failed: 0, alreadyClaimed: alreadyTexted,
       texted: [] as any[],
     };
 
@@ -287,10 +307,11 @@ export default async (req: Request): Promise<Response> => {
         // route with four conflicts would have nagged four times as they were fixed one by
         // one, and a stop that was BOTH late and on the wrong truck would have sent whichever
         // message came first and silently swallowed the other.
+        // A box-truck conflict is sent at the same load grain (smsClaimSubject; the switch
+        // FLAG_SMS_BOX_CLAIM_BY_ROUTE=off puts it back on the stop).
         const trailer = row.rule === 'trailer_conflict';
-        const claimSubject = trailer
-          ? String(row.routeKey || row.routeName || row.stopNbr)
-          : String(row.stopNbr);
+        const claimSubject = smsClaimSubject(row);
+        const byRoute = trailer || (row.rule === 'box_truck_conflict' && boxClaimByRouteEnabled());
         const claimed = await createDocIfAbsent(smsClaimPath(TENANT, date, claimSubject, row.rule), {
           at: status.at, rule: row.rule ?? 'hours_risk', stopNbr: row.stopNbr ?? null,
           routeName: row.routeKey ?? row.routeName ?? null,
@@ -306,7 +327,7 @@ export default async (req: Request): Promise<Response> => {
         status.texted.push({
           stopNbr: row.stopNbr, customer: row.customer ?? null, tier: row.tier,
           rule: row.rule ?? 'hours_risk',
-          ...(trailer ? { routeName: row.routeKey ?? row.routeName ?? null, routeConflicts: row.routeConflicts ?? 1 } : {}),
+          ...(byRoute ? { routeName: row.routeKey ?? row.routeName ?? null, routeConflicts: row.routeConflicts ?? 1 } : {}),
         });
       }
     }
@@ -319,7 +340,14 @@ export default async (req: Request): Promise<Response> => {
     // emailedStops is EMPTY on purpose: this path texts, it never emails, and claiming
     // otherwise in the history is the intent-as-outcome mistake that column already carries
     // scar tissue from.
-    if (etMin != null) {
+    //
+    // EXCEPT ON A TICK THE DAY SWEEP ALSO WORKS (6:00-6:59a on a winter weekday): both hold
+    // today's board and both write this whole document, and the later write replaces the
+    // earlier — which is how the day sweep's `emailed: true` got erased. The day sweep owns
+    // the document on those ticks. EVENING_HISTORY_YIELDS_TO_DAY=off puts this write back.
+    const yieldHistory = offsetDays === 0 && eveningHistoryYieldsEnabled() && daySweepFiresNow(new Date(), etMin);
+    if (yieldHistory) status.historySkipped = 'the day sweep writes this board\'s flag history on this tick';
+    if (etMin != null && !yieldHistory) {
       try {
         const path = flagHistoryPath(TENANT, date);
         const prev = await getDoc(path);
@@ -345,11 +373,13 @@ export default async (req: Request): Promise<Response> => {
     // 8pm-11pm fire that board is TOMORROW's, so this is the pass that gives Chad the warning
     // a day early; the claim is shared with the day sweep, so whichever sees an order first
     // sends the one email and the other stays quiet.
+    // recipientsFor already leads with customer service (the channel's alwaysAlso) and
+    // de-duplicates it; prepending ALERT_TO again put customerservice@ on the To: line twice.
     const mailTo = recipientsFor('alertCc', storedRecipients);
     const stacker = emailEnabled()
       ? await runStackerAlert(stops, date, TENANT, {
         createDocIfAbsent, send: sendEmail,
-        to: mailTo.length ? [ALERT_TO, ...mailTo] : ALERT_TO,
+        to: mailTo.length ? mailTo : ALERT_TO,
         at: status.at,
       })
       : { enabled: false, found: 0, claimed: 0, sent: 0, failed: 0, orders: [] as string[] };

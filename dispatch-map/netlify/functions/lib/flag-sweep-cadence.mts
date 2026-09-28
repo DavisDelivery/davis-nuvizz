@@ -63,3 +63,36 @@ export function sweepDue(etMin: number, stepMin: number, env: any = process.env)
 
 /** The legacy step for each sweep, in minutes — only ever consulted on the OFF path. */
 export const LEGACY_STEP_MIN = { evening: 60, day: 20 };
+
+// ── THE WINTER HOUR BOTH SWEEPS HOLD THE SAME BOARD ──────────────────────────
+//
+// The day sweep's cron is '*/5 11-23 * * 1-5' (UTC) and the evening sweep's '*/5 0-11 * * *'.
+// In EST, 11:00-11:59 UTC is 6:00-6:59a ET: the evening sweep still judges TODAY until 6:59a
+// (flag-sms eveningTargetDate) and the day sweep has already started, so both fire on the same
+// ticks and both read-merge-write the whole eta_flag_history/<today> document. Whichever
+// writes second replaces the other — and an evening write built on a read taken before the
+// day sweep's write erased the day sweep's `emailed: true`, the record that customer service
+// was told. On those ticks the day sweep owns the document; the evening sweep leaves it alone.
+
+/** House shape: default ON, an explicit off-word turns it off, anything malformed leaves it
+ *  ON. EVENING_HISTORY_YIELDS_TO_DAY=off puts the evening sweep's flag-history write back on
+ *  the ticks the day sweep also fires. */
+export function eveningHistoryYieldsEnabled(env: any = process.env): boolean {
+  const v = String(env?.EVENING_HISTORY_YIELDS_TO_DAY ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/**
+ * PURE. Does the DAY sweep (eta-flag-alert-background) fire and do its work on this tick?
+ *
+ * Mirrors its cron — weekdays, 11:00-23:59 UTC — and its own cadence gate, so on the
+ * twenty-minute revert path (FLAG_SWEEP_EVERY_TICK=off) the evening sweep only yields on the
+ * ticks the day sweep actually works. The cron cannot be imported (Netlify reads it as a
+ * literal), so a test pins the day sweep's schedule string to what this assumes.
+ */
+export function daySweepFiresNow(now: Date, etMin: number, env: any = process.env): boolean {
+  const dow = now.getUTCDay();
+  const h = now.getUTCHours();
+  if (!(dow >= 1 && dow <= 5) || !(h >= 11 && h <= 23)) return false;
+  return sweepDue(etMin, LEGACY_STEP_MIN.day, env);
+}

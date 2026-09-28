@@ -81,3 +81,78 @@ test('an end date that lands on a weekend still yields only business days', () =
   assert.equal(d.length, 5);
   assert.equal(d[d.length - 1], '2026-09-04', 'it walks back to the Friday');
 });
+
+// ── the read ────────────────────────────────────────────────────────────────
+import { readWindow, readVerdict } from '../netlify/functions/driver-territory.mts';
+import { TERRITORY_STOP_FIELDS } from '../src/lib/driver-territory.js';
+
+test('EVERY DAY IS READ MASKED to the territory fields — the whole vendor stop is never fetched', async () => {
+  // Measured 2026-09-27 before the mask: one week took 21s and four weeks did not answer inside
+  // 31s against a 26s ceiling, because each stop came back whole to have six fields read off it.
+  const asked = [];
+  const list = async (tenant, date, opts) => { asked.push({ tenant, date, mask: opts?.mask }); return [{ stopNbr: '1', zip: '30518' }]; };
+  const dates = windowDates('2026-09-25', 4);
+  await readWindow(dates, list);
+  assert.equal(asked.length, 20, 'one read per business day');
+  for (const a of asked) {
+    assert.equal(a.tenant, 'davis');
+    assert.deepEqual(a.mask, [...TERRITORY_STOP_FIELDS], `${a.date} was read masked`);
+  }
+});
+
+test('the board day comes from the collection the row was read from, not a stale stored field', async () => {
+  const list = async (_t, date) => [{ stopNbr: '1', boardDate: '2026-01-01' }, { stopNbr: '2' }].map((r) => ({ ...r, _id: date + r.stopNbr }));
+  const { stops } = await readWindow(['2026-09-24', '2026-09-25'], list);
+  assert.equal(stops.length, 4);
+  for (const s of stops) assert.equal(s.boardDate, s._id.slice(0, 10));
+});
+
+test('A DAY THAT FAILS TO READ IS SAID, and an empty day is listed — neither silently shrinks the window', async () => {
+  const list = async (_t, date) => {
+    if (date === '2026-09-23') throw new Error('Firestore 503');
+    if (date === '2026-09-24') return [];
+    return [{ stopNbr: date }];
+  };
+  const { stops, missing, failed, readMs } = await readWindow(['2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25'], list);
+  assert.equal(stops.length, 2);
+  assert.deepEqual(missing, ['2026-09-24']);
+  assert.deepEqual(failed.map((f) => f.date), ['2026-09-23']);
+  assert.match(failed[0].error, /503/);
+  assert.ok(Number.isFinite(readMs) && readMs >= 0, 'and it says how long the read took');
+});
+
+test('the read is bounded — a four-week window never opens more than six lists at once', async () => {
+  let inFlight = 0, peak = 0;
+  const list = async () => {
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight--;
+    return [];
+  };
+  await readWindow(windowDates('2026-09-25', 4), list);
+  assert.ok(peak <= 6, `peak concurrency ${peak}`);
+  assert.ok(peak > 1, 'and it really does read in parallel');
+});
+
+test('THE DAYS THE RINGS ARE BUILT FROM are the days that had history — not the window asked for', () => {
+  // Monday the 28th: the window runs to today, but tonight's capture has not filed today yet.
+  const dates = windowDates('2026-09-28', 1);
+  const v = readVerdict(dates, ['2026-09-28'], []);
+  assert.deepEqual(v.dataWindow, { from: '2026-09-22', to: '2026-09-25' });
+  assert.equal(v.daysWithData, 4);
+  assert.equal(v.allFailed, false);
+});
+
+test('a day that FAILED to read is not a day with data', () => {
+  const v = readVerdict(['2026-09-24', '2026-09-25'], [], [{ date: '2026-09-25' }]);
+  assert.equal(v.daysWithData, 1);
+  assert.deepEqual(v.dataWindow, { from: '2026-09-24', to: '2026-09-24' });
+});
+
+test('EVERY DAY FAILING is its own verdict — the map must say so in red, not draw an empty board', () => {
+  const dates = windowDates('2026-09-25', 1);
+  const v = readVerdict(dates, [], dates.map((date) => ({ date })));
+  assert.equal(v.allFailed, true);
+  assert.equal(v.dataWindow, null);
+  assert.equal(readVerdict([], [], []).allFailed, false, 'no window is not a failure');
+});

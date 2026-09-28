@@ -42,9 +42,9 @@ export const DEVICE_SWITCHES = [
   },
   {
     key: 'routing.compareLive', kind: 'toggle', on: 'on', off: 'off', dflt: true,
-    label: 'Compare cards follow the live board',
-    does: 'Compare cards keep reading the board as it changes.',
-    symptom: 'OFF and a card can show a stop the board has already moved.',
+    label: 'Save sends to NuVizz (● LIVE, not ○ Beta)',
+    does: 'Save on the Compare cards sends to NuVizz (● LIVE) instead of only previewing (○ Beta).',
+    symptom: 'OFF and every Save is a Beta preview — "Beta — nothing sent", and nothing reaches NuVizz.',
   },
   {
     key: 'routing.planMode', kind: 'choice', values: ['loads', 'trucks'], dflt: 'loads',
@@ -113,6 +113,14 @@ export const DEVICE_SWITCHES = [
     label: 'Lime as of board date (trial)',
     does: 'A location paints lime only if its first tractor delivery was before the board date — the board as it stood that morning. Applies to both tabs.',
     symptom: 'ON and lime pins go missing on older boards — a dock a tractor first served later reads as unproven. Routing shows a "Lime as of board date" notice while it is on.',
+  },
+  // THE TRAINEE'S DRIVER-AREA RINGS — default OFF: a reference for somebody learning the board,
+  // not something every dispatcher's map should carry.
+  {
+    key: 'dispatchMap.driverAreas', kind: 'toggle', on: 'on', off: 'off', dflt: false,
+    label: 'Driver areas — Map tab',
+    does: 'Draws a ring round where each driver usually delivers (his last 4 weeks), with his name in it — page one of the printed driver-area sheet. Paint only: clicks, pins and panels work as before.',
+    symptom: 'ON and coloured rings with driver names cover the Map. Nothing about the stops changes — turn it off and the rings go.',
   },
 ];
 

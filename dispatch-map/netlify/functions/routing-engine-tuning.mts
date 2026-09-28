@@ -59,7 +59,10 @@ export default async (req: Request): Promise<Response> => {
       if (!gate.ok) return gate.response;
       let body: any;
       try { body = await req.json(); } catch { return new Response(JSON.stringify({ ok: false, error: 'invalid JSON' }), { status: 400, headers: cors }); }
-      const prior = await getDoc(engineConfigPath(TENANT)).catch(() => null);
+      // STRICT read: the setDoc below REPLACES the document, so a blip read as null would
+      // delete every other saved knob. A missing doc still reads null; a failed read throws
+      // to the 500 below and nothing is written.
+      const prior = await getDoc(engineConfigPath(TENANT));
       const resets = Array.isArray(body?.reset) ? body.reset.map(String) : [];
       const merged = mergeEngineConfigUpdate(prior, body, resets);
       const toStore = {

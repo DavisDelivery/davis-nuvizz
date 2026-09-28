@@ -219,6 +219,24 @@ export function holdRwbLogin(auth: RwbAuth | null | undefined, detail: string): 
   refusedLogins.set(rwbSessionKey(rwbConfig(auth)), { at: Date.now(), detail: String(detail || 'refused') });
 }
 
+/**
+ * Drop this instance's hold on a login that PASSED a check at or after the moment it was held.
+ * The check (Test, or a re-save) runs in auth-nuvizz-login, a separate function, so it cannot
+ * clear this process's hold itself; the write endpoint reads the account fresh and hands the
+ * check's time here. A hold with no passing check since it was taken stays — that is the brake
+ * that keeps a stale password from locking the NuVizz account when marking the account failed.
+ */
+export function releaseRwbLoginCheckedSince(auth: RwbAuth | null | undefined, checkedOkAt: string | null | undefined): boolean {
+  if (!auth || !checkedOkAt) return false;
+  const t = Date.parse(checkedOkAt);
+  if (!Number.isFinite(t)) return false;
+  const key = rwbSessionKey(rwbConfig(auth));
+  const held = refusedLogins.get(key);
+  if (!held || held.at > t) return false;
+  refusedLogins.delete(key);
+  return true;
+}
+
 /** Is this personal login being held after a refusal (portal or API), in this instance? */
 export function rwbLoginHeld(auth: RwbAuth | null | undefined): boolean {
   if (!auth) return false;
@@ -241,7 +259,7 @@ function heldRefusal(cfg: RwbConfig, key: string): string | null {
   const age = Date.now() - held.at;
   if (age >= REFUSAL_HOLD_MS) { refusedLogins.delete(key); return null; }
   const mins = Math.max(1, Math.round(age / 60000));
-  return `NuVizz refused the NuVizz login saved as ${cfg.username} ${mins} min ago (${held.detail}) — not tried again, so NuVizz does not lock the account. Re-enter it under Account & logins.`;
+  return `NuVizz refused the NuVizz login saved as ${cfg.username} ${mins} min ago (${held.detail}) — not tried again, so NuVizz does not lock the account. It has to be re-entered under Account & logins.`;
 }
 
 function credsMissingMessage(cfg: RwbConfig): string {

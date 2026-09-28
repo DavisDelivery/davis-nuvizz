@@ -22,7 +22,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { MEASURE } from './lib/layout-measure.mjs';
-import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay, guardOpenFirstRoute, guardOpenMapAndTapStop } from './lib/claude-shadow-fixture.mjs';
+import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, guardOpenBacktestDay, guardOpenFirstRoute, guardOpenMapAndTapStop, guardOpenStopPicker } from './lib/claude-shadow-fixture.mjs';
 
 const DIST = process.argv[2] || 'dist';
 const PORT = Number(process.env.SMOKE_PORT) || 8815;
@@ -98,6 +98,29 @@ for (const size of SIZES) {
   const where = `${size.name} (${size.width}×${size.height})`;
   const step = async (label, fn) => { let ok = false; try { ok = await fn(); } catch { ok = false; } if (!ok) { failures += 1; console.log(`  \x1b[31m✗\x1b[0m ${where}: could not ${label}${pageErrors.length ? ` — page errors: ${pageErrors.slice(0, 2).join(' | ')}` : ''}`); } return ok; };
   if (!(await step('reach Routing → Shadow', () => toShadow(page, size.phone)))) { await ctx.close(); continue; }
+  // v1.78.0 — THE SECTION STOP MAP: open it, pick every stop in view, measure the drawer, close it, and
+  // see the picks come back to the planning area.
+  if (await step('open the section stop map', () => guardOpenStopPicker(page))) {
+    const dlg = page.locator('[role="dialog"][aria-label="Pick the stops for this section"]');
+    await dlg.getByRole('button', { name: /Add every stop in view/ }).first().click();
+    await page.waitForTimeout(300);
+    const head = (await dlg.locator('div.sticky').first().innerText().catch(() => '')).replace(/\s+/g, ' ');
+    const n = Number((head.match(/(\d+) stops? picked/) || [])[1] || 0);
+    const pm = await page.evaluate(MEASURE);
+    const pp = [];
+    if (!(n > 0)) pp.push(`"Add every stop in view" picked nothing (header: ${head.slice(0, 80)})`);
+    if (pm.docW > pm.vw + 1) pp.push(`content is ${pm.docW}px wide in a ${pm.vw}px viewport`);
+    for (const o of pm.offscreen || []) pp.push(`off-screen: right edge ${o.right}px — ${o.el}`);
+    if (!size.mouse) for (const t of pm.small || []) pp.push(`touch target ${t.w}×${t.h}px — ${t.el}`);
+    for (const o of pm.overlap || []) pp.push(`controls overlapping by ${o.px}px — ${o.el}`);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    if (await dlg.isVisible().catch(() => false)) pp.push('Esc did not close the stop map');
+    const back = await page.getByRole('button', { name: new RegExp(`^Pick stops on the map \\(${n} picked\\)`) }).first().isVisible().catch(() => false);
+    if (n > 0 && !back) pp.push(`the planning area does not show the ${n} picked stops after closing`);
+    if (pp.length) { failures += 1; console.log(`  \x1b[31m✗\x1b[0m ${where}: the section stop map`); for (const x of pp) console.log(`      ${x}`); }
+    else console.log(`  \x1b[32m✓\x1b[0m ${where}: the section stop map — ${n} stops picked in view, measured, closed`);
+  }
   if (!(await step('open the backtested day', () => guardOpenBacktestDay(page)))) { await ctx.close(); continue; }
   // v1.73.0: a route opened first, so the maps are measured zoomed to it with its stops numbered.
   if (!(await step('open a route', () => guardOpenFirstRoute(page)))) { await ctx.close(); continue; }

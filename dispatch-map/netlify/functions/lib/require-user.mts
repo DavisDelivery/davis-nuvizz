@@ -79,11 +79,11 @@ const __cache = new Map<string, { doc: UserDoc | null; at: number }>();
 
 export function _resetUserCacheForTests(): void { __cache.clear(); }
 
-async function loadUser(username: string, deps?: GateOptions['deps']): Promise<UserDoc | null> {
+async function loadUser(username: string, deps?: GateOptions['deps'], bypassCache = false): Promise<UserDoc | null> {
   const now = deps?.nowMs ?? Date.now();
   if (deps?.getUser) return deps.getUser(username);
   const hit = __cache.get(username);
-  if (hit && now - hit.at < USER_CACHE_MS) return hit.doc;
+  if (!bypassCache && hit && now - hit.at < USER_CACHE_MS) return hit.doc;
   const doc = await storeGetUser(username);
   __cache.set(username, { doc, at: now });
   return doc;
@@ -106,7 +106,16 @@ export async function requireUser(req: Request, opts: GateOptions = {}): Promise
   }
 
   let doc: UserDoc | null;
-  try { doc = await loadUser(claims.sub, opts.deps); } catch (e: any) {
+  try {
+    doc = await loadUser(claims.sub, opts.deps);
+    // A token can only carry a tokenVersion the store once held, so a cached doc whose version
+    // is BEHIND the token's is stale, not a revocation — the version was bumped (password
+    // change or reset, sign-out-everywhere, a role change) after this instance cached it, and
+    // this is the fresh token that bump handed out. Re-read once, bypassing the cache, and
+    // decide on that. A token BEHIND the cache is a plain revocation and is refused below off
+    // the cache, so a revoked session left polling costs no extra reads.
+    if (doc && (Number(doc.tokenVersion) || 0) < claims.tv) doc = await loadUser(claims.sub, opts.deps, true);
+  } catch (e: any) {
     // The store is unreachable. Fail CLOSED when enforcing; in legacy mode the caller
     // is no worse off than a caller with no token, so let the legacy principal through.
     if (enforce) return { ok: false, reason: 'store-error', response: denied(503, 'user store unavailable') };

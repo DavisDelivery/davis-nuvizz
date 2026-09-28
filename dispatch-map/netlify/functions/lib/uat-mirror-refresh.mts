@@ -51,6 +51,7 @@
 // `raw`, because the Map's order popups read it. ?lean=0 keeps it on history too.
 
 import { dayPath, HISTORY_COLLECTION } from './history-store.mts';
+import { isUatSeededNbr } from './uat-seed.mts';
 
 export const PROGRESS_COLLECTION = 'uat_mirror_refresh';
 export const BOARD_COLLECTION = 'nuvizz_stop_index';
@@ -146,6 +147,16 @@ export function onOff(v: any): boolean {
   return !/^(0|false|off|no)$/i.test(String(v ?? '').trim());
 }
 
+/**
+ * PURE: does a board copy remove the mirror's rows production no longer holds?
+ * UAT_MIRROR_BOARD_PRUNE=off puts back the upsert-only copy (house shape: unset or malformed = on).
+ * The endpoint reads it ONCE and hands the core a deleter only when it is on, so the switch
+ * covers the whole change.
+ */
+export function boardPruneEnabled(env: Record<string, any> = process.env): boolean {
+  return onOff(env.UAT_MIRROR_BOARD_PRUNE);
+}
+
 export interface RefreshDeps {
   /** production side — read only (lib/prod-mirror-read.mts) */
   listProd: (collectionPath: string, opts?: { mask?: string[] }) => Promise<any[]>;
@@ -154,6 +165,8 @@ export interface RefreshDeps {
   setDoc: (path: string, data: any) => Promise<boolean>;
   listMirror: (collectionPath: string, opts?: { mask?: string[] }) => Promise<any[]>;
   getMirror: (docPath: string) => Promise<any | null>;
+  /** mirror side: remove one document. Absent = a board copy never removes anything (UAT_MIRROR_BOARD_PRUNE=off). */
+  deleteMirror?: (path: string) => Promise<any>;
   /** the post-seal miners, run over a copied day's stop records (history-postseal.runPostSealHooks) */
   remine?: (tenant: string, date: string, stopRecords: any[]) => Promise<any>;
   /** persist progress after each unit of work (crash-safe resume) */
@@ -293,21 +306,53 @@ export function mirroredDayIsCurrent(
   return { current: true, why: 'unchanged in production since it was copied' };
 }
 
-export interface BoardDayCopy { date: string; parent: boolean; stops: number }
+export interface BoardDayCopy { date: string; parent: boolean; stops: number; pruned?: number }
 
-/** Copy one board day: the parent meta doc as production has it, plus every stop row, raw and all. */
+/** PURE: a mirror board row the UAT bench seeded (uat-seed.mts) — production never had it, so a
+ *  copy of production's day must never remove it. The UT- number, or the bench's provenance. */
+function benchSeededRow(row: any): boolean {
+  return isUatSeededNbr(row?._id) || isUatSeededNbr(row?.stopNbr) || !!row?.uatSeed;
+}
+
+/** The mask a board prune lists the mirror's rows with — what benchSeededRow reads. */
+const PRUNE_MASK = ['stopNbr', 'uatSeed'];
+
+/** PURE: the mirror's board rows a copy of production's day removes — every row production no
+ *  longer holds, except the bench's own. One rule for the copy and for ?explain=1, so the dry
+ *  run cannot describe a different prune than the one the nightly performs. */
+export function boardRowsToPrune(prodStops: any[], mirrorRows: any[]): any[] {
+  const keep = new Set(prodStops.map((s: any) => String(s._id)));
+  return mirrorRows.filter((r: any) => !keep.has(String(r._id)) && !benchSeededRow(r));
+}
+
+/**
+ * Copy one board day: the parent meta doc as production has it, plus every stop row, raw and all.
+ *
+ * THEN REMOVE WHAT PRODUCTION DROPPED (when deps.deleteMirror is given). Production's scan prunes
+ * a stop that leaves the day — cancelled, re-planned, moved to another day — and an upsert-only
+ * copy never did, so a cancelled order stayed on the UAT board for ever and a moved one sat on
+ * both days, planned by the UAT engine as freight production no longer has. The bench's own
+ * seeded rows are exempt. A day production holds nothing for returns above, before this, so
+ * "nothing there" is never read as "delete everything".
+ */
 export async function copyBoardDay(deps: RefreshDeps, tenant: string, date: string, opts: { nowIso?: string } = {}): Promise<BoardDayCopy> {
   const base = `${BOARD_COLLECTION}/${tenant}__${date}`;
   const [parent, stops] = await Promise.all([deps.getProd(base), deps.listProd(`${base}/stops`)]);
   if (!parent && !stops.length) return { date, parent: false, stops: 0 };
   const items = stops.map((s: any) => ({ path: `${base}/stops/${s._id}`, data: stripId(s) }));
   const nStops = await writeAll(deps, items);
+  let pruned: number | undefined;
+  if (deps.deleteMirror) {
+    const drop = boardRowsToPrune(stops, await deps.listMirror(`${base}/stops`, { mask: PRUNE_MASK }));
+    for (const r of drop) await deps.deleteMirror(`${base}/stops/${r._id}`);
+    pruned = drop.length;
+  }
   if (parent) {
     const nowIso = opts.nowIso || deps.nowIso?.() || new Date().toISOString();
     await deps.setDoc(base, { ...parent, mirrored_from: '(default)', mirrored_at: nowIso });
   }
-  deps.log?.(`[mirror-refresh] board ${date}: ${nStops} stop(s)${parent ? '' : ' (no parent meta in production)'}`);
-  return { date, parent: !!parent, stops: nStops };
+  deps.log?.(`[mirror-refresh] board ${date}: ${nStops} stop(s)${pruned ? `, ${pruned} production no longer holds removed` : ''}${parent ? '' : ' (no parent meta in production)'}`);
+  return { date, parent: !!parent, stops: nStops, ...(pruned === undefined ? {} : { pruned }) };
 }
 
 /** Copy one day's load roster document (name, number, id, status, driver, trips per load). */
@@ -335,8 +380,8 @@ export interface RefreshProgress {
   done: { static: boolean; history: string[]; board: string[] };
   counts: {
     static: StaticCounts | null;
-    history: Record<string, { stops: number; routes: number; drivers: number; roster: boolean; ledger: boolean; remined: boolean; skipped?: boolean }>;
-    board: Record<string, { stops: number; parent: boolean; roster: boolean }>;
+    history: Record<string, { stops: number; routes: number; drivers: number; roster: boolean; ledger: boolean; remined: boolean; skipped?: boolean; remine_failed?: string[] }>;
+    board: Record<string, { stops: number; parent: boolean; roster: boolean; pruned?: number }>;
   };
   history_dates_in_prod: string[];   // the dates the window resolved to, so a resume plans the same set
   started_at: string;
@@ -435,13 +480,20 @@ export async function runRefresh(
       const roster = await copyRosterDay(deps, plan.tenant, date);
       const ledger = await copyLedgerDay(deps, plan.tenant, date);
       let remined = false;
+      let mineFailed: string[] | null = null;
       if (plan.remine && deps.remine && copy.manifest && copy.stopRecords.length) {
-        await deps.remine(plan.tenant, date, copy.stopRecords);
-        remined = true;
+        // The OUTCOME, not the attempt: runPostSealHooks catches every miner's failure and
+        // answers ok:false, so "remined" was logged for a day whose miners all threw.
+        const res = await deps.remine(plan.tenant, date, copy.stopRecords);
+        if (res && res.ok === false) {
+          mineFailed = Object.entries(res.hooks || {}).filter(([, h]: [string, any]) => !h?.ok).map(([n]) => n);
+        } else {
+          remined = true;
+        }
       }
-      p.counts.history[date] = { stops: copy.stops, routes: copy.routes, drivers: copy.drivers, roster, ledger, remined };
+      p.counts.history[date] = { stops: copy.stops, routes: copy.routes, drivers: copy.drivers, roster, ledger, remined, ...(mineFailed ? { remine_failed: mineFailed } : {}) };
       p.done.history.push(date);
-      say(`history ${date}: ${copy.stops} stops${roster ? ', roster' : ''}${ledger ? ', ledger' : ''}${remined ? ', remined' : ''}`);
+      say(`history ${date}: ${copy.stops} stops${roster ? ', roster' : ''}${ledger ? ', ledger' : ''}${remined ? ', remined' : ''}${mineFailed ? `, miners FAILED (${mineFailed.join(', ') || 'unnamed'})` : ''}`);
       await persist();
     }
   }
@@ -453,9 +505,9 @@ export async function runRefresh(
       if (over()) { p.stopped_at = date; p.finished = false; await persist(); return trimLog(p, maxLog); }
       const copy = await copyBoardDay(deps, plan.tenant, date, { nowIso: nowIso() });
       const roster = await copyRosterDay(deps, plan.tenant, date);
-      p.counts.board[date] = { stops: copy.stops, parent: copy.parent, roster };
+      p.counts.board[date] = { stops: copy.stops, parent: copy.parent, roster, ...(copy.pruned === undefined ? {} : { pruned: copy.pruned }) };
       p.done.board.push(date);
-      say(`board ${date}: ${copy.stops} stops${roster ? ', roster' : ''}`);
+      say(`board ${date}: ${copy.stops} stops${copy.pruned ? `, ${copy.pruned} removed` : ''}${roster ? ', roster' : ''}`);
       await persist();
     }
   }
@@ -471,7 +523,11 @@ function trimLog(p: RefreshProgress, max: number): RefreshProgress {
   return p;
 }
 
-export interface ExplainRow { date: string; prod: { manifest: boolean; stops: number }; mirror: { manifest: boolean; stops: number } }
+export interface ExplainRow {
+  date: string; prod: { manifest: boolean; stops: number }; mirror: { manifest: boolean; stops: number };
+  /** board days only, and only when the prune is on: the mirror rows a copy would remove now */
+  would_remove?: number;
+}
 export interface ExplainResult {
   plan: RefreshPlan;
   history: ExplainRow[];
@@ -484,8 +540,12 @@ export interface ExplainResult {
 /**
  * What a run WOULD copy, against what the mirror already holds — reads both sides, writes
  * nothing. Bounded to the plan's window; the caller bounds the window.
+ *
+ * `prune` (the endpoint passes boardPruneEnabled()) adds, per board day, how many mirror rows the
+ * copy would REMOVE — the same boardRowsToPrune the copy uses, so a delete the nightly does on
+ * its own can be asked about first.
  */
-export async function explainRefresh(deps: RefreshDeps, plan: RefreshPlan): Promise<ExplainResult> {
+export async function explainRefresh(deps: RefreshDeps, plan: RefreshPlan, opts: { prune?: boolean } = {}): Promise<ExplainResult> {
   const mask = ['stopNbr'];
   const countBoth = async (base: string): Promise<{ prod: { manifest: boolean; stops: number }; mirror: { manifest: boolean; stops: number } }> => {
     const [pm, ps, mm, ms] = await Promise.all([
@@ -503,7 +563,15 @@ export async function explainRefresh(deps: RefreshDeps, plan: RefreshPlan): Prom
   const board: ExplainRow[] = [];
   if (plan.board) {
     for (const date of plan.boardDates) {
-      board.push({ date, ...(await countBoth(`${BOARD_COLLECTION}/${plan.tenant}__${date}`)) });
+      const base = `${BOARD_COLLECTION}/${plan.tenant}__${date}`;
+      const row: ExplainRow = { date, ...(await countBoth(base)) };
+      if (opts.prune) {
+        // copyBoardDay removes nothing on a day production holds nothing for — neither does this.
+        row.would_remove = row.prod.manifest || row.prod.stops
+          ? boardRowsToPrune(await deps.listProd(`${base}/stops`, { mask }), await deps.listMirror(`${base}/stops`, { mask: PRUNE_MASK })).length
+          : 0;
+      }
+      board.push(row);
     }
   }
   const statics: Record<string, { prod: number; mirror: number }> = {};

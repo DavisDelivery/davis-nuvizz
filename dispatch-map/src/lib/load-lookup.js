@@ -54,6 +54,16 @@ export function addDays(day, n) {
 }
 
 /**
+ * A YYYY-MM-DD that is ON THE CALENDAR. The shape alone lets 2026-09-00 and 2026-13-45 through
+ * (addDays then throws) and rolls 2026-02-31 over into March; a real day reads back as itself.
+ */
+export function isCalendarDay(day) {
+  if (typeof day !== 'string' || !DAY_RE.test(day)) return false;
+  const d = new Date(`${day}T12:00:00Z`);
+  return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === day;
+}
+
+/**
  * THE WEEK A DAY FALLS IN — Monday through Sunday. A payroll week and a dispatch week both
  * start on Monday here, and Saturday work belongs to the week it was run in, so it is Monday
  * to Sunday rather than the five business days the territory sheet reads.

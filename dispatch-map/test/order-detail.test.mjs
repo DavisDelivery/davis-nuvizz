@@ -254,7 +254,7 @@ test('the panel still closes on Escape, and only scrolls when it opened off-scre
 
 test('THE WIDTH IS USED: the sections go to columns when there is room, and stack on a phone', () => {
   const body = APP.slice(APP.indexOf('function OrderDetailBody'), APP.indexOf('function OrderDetailPanel'));
-  assert.match(body, /function OrderDetailBody\(\{ data, onOpenHistory, wide \}\)/);
+  assert.match(body, /function OrderDetailBody\(\{ data, onOpenHistory, onTimelineSpent, wide \}\)/);
   assert.match(body, /wide \? 'grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 items-start' : 'space-y-3'/);
   // `wide` is the DESKTOP question, so it is driven off the same flag the rest of the screen
   // splits on — not off a media query the tests cannot see.

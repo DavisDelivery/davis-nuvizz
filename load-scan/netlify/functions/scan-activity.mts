@@ -1,6 +1,6 @@
 // scan-activity.mts
 //
-// GET ?date=YYYY-MM-DD (defaults to today, ET) -> the dispatcher's daily view.
+// GET ?date=YYYY-MM-DD (defaults to the shift day, ET) -> the dispatcher's daily view.
 //
 // Answers the questions a dispatcher actually asks each morning:
 //   - which trucks has nobody touched?          (loads on the board, no session)
@@ -17,7 +17,8 @@ import { listDocs, readStops, isFirestoreEnabled } from './lib/firestore.mts';
 import { DRIVER_AUTH, authenticate, liveClaims, normalizeRole } from './lib/auth.mts';
 import { toManifestStop, groupIntoLoads } from './lib/manifest.mts';
 import { buildActivity } from './lib/activity.mts';
-import { ok, bad, unauthorized, forbidden, etDayString, DATE_RE, viaProxy } from './lib/http.mts';
+import { ok, bad, unauthorized, forbidden, DATE_RE, viaProxy } from './lib/http.mts';
+import { shiftDayString } from './lib/shift.mts';
 
 const TENANT = 'davis';
 const SESSIONS = 'nuvizz_load_scans';
@@ -38,7 +39,9 @@ export default async (req: Request): Promise<Response> => {
   if (claims.role !== 'dispatcher') return forbidden('dispatcher role required');
 
   const url = new URL(req.url);
-  const date = String(url.searchParams.get('date') || etDayString());
+  // Default to the SHIFT day, as load-manifest, load-assign and work-report do:
+  // between 8pm and midnight the calendar day is the shift that already finished.
+  const date = String(url.searchParams.get('date') || shiftDayString());
   if (!DATE_RE.test(date)) return bad('date must be YYYY-MM-DD');
 
   console.log(`[scan-activity] ${date} via ${viaProxy(req) ? 'dispatch-map-proxy' : 'load-scan-direct'} by ${claims.sub}`);

@@ -2,9 +2,11 @@
 //
 // Chad, 2026-09-15, ESTES on the board reading 16 stops against NuVizz's 10, BUFORD reading 8
 // against 7, after a fresh scan of each: "our roster scans do carry the load id you just aren't
-// using it correctly." He was right. The stop list (saved search 77128) names a stop's route by
+// using it correctly." He was right. The stop list (saved search 77128) named a stop's route by
 // its NAME only — `route.name`, no load number, no load id (nuvizz-list.mts) — so every list
-// row on today's board says "ESTES" and nothing on the row says WHICH ESTES. A recurring route
+// row on today's board said "ESTES" and nothing on the row said WHICH ESTES. (Since 2026-09-28
+// the list also carries a Load Number column, read into each row as `nuvizzLoadNbr`; this
+// module does not use it yet.) A recurring route
 // mints a new load every day, and an undelivered order left on Tuesday's ESTES still reads
 // "ESTES" on Friday. boardDayFor clamps an open routed stop with a past arrival forward onto
 // today (nuvizz-list.mts), the Routing card groups by name (App.jsx computeRouteGroups), and

@@ -18,6 +18,9 @@ site id `1cca4f6e-39d8-49e4-86a5-2beae0161023`), base directory `load-scan`.
   before any network attempt; the UI never waits on a request.
 - **Never guess a load.** If a driver's identity cannot be resolved to exactly one
   credential, the app says so and asks for the load number off the paperwork.
+- **THE ROSTER SCAN HAS THE LOAD NUMBERS — settled, never asked.** The day's load
+  NUMBER comes from that day's roster (`nuvizz_load_roster/davis__{date}`,
+  `readLoadRoster`); a board row's `loadNbr` is the route NAME. See CLAUDE.md.
 
 ## The label
 

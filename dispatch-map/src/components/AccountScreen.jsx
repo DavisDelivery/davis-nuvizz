@@ -36,7 +36,7 @@ import {
 } from '../lib/account-client.js';
 import {
   fmtWhen, modeSentence, nuvizzBadge, checkLine, readiness, rolloutSteps,
-  newPersonProblem, nuvizzUsernameProblem, ROLE_CHOICES,
+  newPersonProblem, nuvizzUsernameProblem, ROLE_CHOICES, resetAnswer,
 } from '../lib/account-view.js';
 import { useSortable, SortableTh } from '../lib/useSortable.jsx';
 
@@ -690,8 +690,10 @@ function PersonManage({ m, me, user, mailConfigured, mode, site, onChanged, onRe
               <div className="flex flex-wrap gap-2">
                 <Btn m={m} kind="danger" busy={busy === 'reset'} onClick={async () => {
                   const r = await act('reset', { action: 'reset', ...(confirm === 'reset' ? { tempPassword: true } : {}) });
-                  if (r?.tempPassword) setTemp(r.tempPassword);
-                  else if (r?.emailed) setNote(`Reset link emailed to ${user.email}.`);
+                  const out = resetAnswer(r, { email: user.email, asked: confirm === 'reset' ? 'temp' : 'email' });
+                  if (out?.temp) setTemp(out.temp);
+                  else if (out?.note) setNote(out.note);
+                  else if (out?.error) setErr(out.error);
                 }}>Yes, reset it</Btn>
                 <Btn m={m} kind="ghost" onClick={() => setConfirm(null)}>Cancel</Btn>
               </div>
@@ -894,6 +896,7 @@ function AboutCard({ m, mode }) {
         <li>Your NuVizz password is stored encrypted on the server and is never shown again — not to you, not to an admin.</li>
         <li>If NuVizz stops accepting it (you changed it in NuVizz, say), the app stops using it straight away instead of trying again, so NuVizz does not lock your account. Re-enter it here.</li>
         <li>The overnight scans and other automatic reads are nobody's action, so they keep using the shared login.</li>
+        <li>Once signing in is required on this site, this screen is for admins only. From then on an admin changes your password or NuVizz login for you, and you sign out from the menu.</li>
         <li>{modeSentence(mode)}</li>
       </ul>
     </Card>

@@ -196,8 +196,8 @@ export async function runStackerAlert(
     at?: string;
   },
   env: any = process.env,
-): Promise<{ enabled: boolean; found: number; claimed: number; sent: number; failed: number; orders: string[] }> {
-  const out = { enabled: stackerAlertEnabled(env), found: 0, claimed: 0, sent: 0, failed: 0, orders: [] as string[] };
+): Promise<{ enabled: boolean; found: number; claimed: number; claimFailed: number; sent: number; failed: number; orders: string[] }> {
+  const out = { enabled: stackerAlertEnabled(env), found: 0, claimed: 0, claimFailed: 0, sent: 0, failed: 0, orders: [] as string[] };
   if (!out.enabled) return out;
   const orders = selectStackerOrders(stops);
   out.found = orders.length;
@@ -205,10 +205,23 @@ export async function runStackerAlert(
 
   const fresh: StackerOrder[] = [];
   for (const o of orders) {
-    const won = await io.createDocIfAbsent(stackerClaimPath(tenant, date, o.stopNbr), {
-      at: io.at ?? null, stopNbr: o.stopNbr, pro: o.pro, customer: o.customer,
-      routeName: o.routeName, planned: o.planned, handling: o.handling,
-    });
+    // A CLAIM THAT THROWS IS COUNTED, NOT PROPAGATED. createDocIfAbsent throws on any Firestore
+    // failure that is not "already exists" (a 503, a 429, a timeout), and the day sweep runs
+    // this AFTER it has emailed customer service and BEFORE it records that it did — so a throw
+    // here used to abort the sweep and lose the "Emailed CS" mark for good. The order is not
+    // mailed this sweep; if the claim did not land, the next sweep claims and mails it. Same
+    // rule sendAlerts follows for its own claim.
+    let won = false;
+    try {
+      won = await io.createDocIfAbsent(stackerClaimPath(tenant, date, o.stopNbr), {
+        at: io.at ?? null, stopNbr: o.stopNbr, pro: o.pro, customer: o.customer,
+        routeName: o.routeName, planned: o.planned, handling: o.handling,
+      });
+    } catch (e: any) {
+      out.claimFailed += 1;
+      console.error('stacker alert claim failed:', e?.message || e);
+      continue;
+    }
     if (won) fresh.push(o);
   }
   out.claimed = fresh.length;

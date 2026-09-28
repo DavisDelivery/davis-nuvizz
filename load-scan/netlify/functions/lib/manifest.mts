@@ -257,9 +257,19 @@ export function prosFor(raw: any): string[] {
   return [...new Set(all)];
 }
 
-/** Match key: last 7 digits. Same rule as the WMS scanner and dispatch-map normalizePro. */
+/**
+ * Match key: last 7 digits. Same rule as the WMS scanner and dispatch-map normalizePro.
+ *
+ * A board stop number is often the 9-digit PRO plus a segment ("007157687-1")
+ * while the label carries the bare PRO. The segment is dropped first, or its
+ * digit is dragged into the key (1576871) and the right freight scans RED. Same
+ * narrow rule as dispatch-map proKeys: only a 1-2 digit tail after a full 9-digit
+ * group, so an Estes "028-8347656" is left whole. Mirrored in src/lib/scan-logic.js.
+ */
 export function normalizePro(v: any): string {
-  const digits = String(v ?? '').replace(/\D/g, '');
+  const raw = String(v ?? '').trim();
+  const seg = /^(\d{9})-(\d{1,2})$/.exec(raw);
+  const digits = (seg ? seg[1] : raw).replace(/\D/g, '');
   return digits ? digits.slice(-7) : '';
 }
 

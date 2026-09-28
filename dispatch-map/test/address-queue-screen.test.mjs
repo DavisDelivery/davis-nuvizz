@@ -255,7 +255,7 @@ test('THE BADGE COSTS ONE READ PER SESSION, and working the list moves it', () =
   assert.match(hook, /if \(__addrQueueBadgeCache != null\) return undefined;/, 'not polled');
   assert.ok(!/setInterval/.test(hook), 'three days of board rows is a real read');
   const q = fnSource('useAddressQueue');
-  assert.match(q, /bustProblemAddressCount\(\)/, 'or the badge goes stale and stops being read');
+  assert.match(q, /publishProblemAddressCount\(problemAddressTotal\(j\.summary, showDismissed\)\)/, 'or the badge goes stale and stops being read');
 });
 
 // ── v1.26.2 — what using it in anger turned up ───────────────────────────────

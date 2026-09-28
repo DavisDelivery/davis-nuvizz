@@ -25,14 +25,14 @@ import { callMessages, PRICES_PER_MTOK } from './anthropic.mts';
 import { claudeShadowEnabled, shadowModel, anthropicKeyConfigured } from './config.mts';
 import { learnRefusal, loosePerSkidFrom } from './learn.mts';
 import { ceilingsInForce } from './settings-core.mts';
-import { hardCapsEnabled } from './config.mts';
+import { hardCapsEnabled, btRoomCheckEnabled } from './config.mts';
 import { readSettings } from './settings.mts';
 import { LEARN_DAYS_COLLECTION, HISTORY_MANIFEST_MASK, sealedDaysFrom } from './learn-core.mts';
 import {
   BT_TENANT, BT_JOBS, BT_RESULTS, BT_STOP_MASK, LEARN_DAY_MASK, CAP_RULES,
   buildBacktestProblem, btLoopProblem, compareBacktest, backtestMapPayload, PROFILE_MAX_LBS, type BtProblem, type CapRule,
 } from './backtest-core.mts';
-import { restoreState, runRounds, type LoopState, type LoopSettings, type RoundRecord } from './plan-loop.mts';
+import { restoreState, runRounds, noPlanReason, type LoopState, type LoopSettings, type RoundRecord } from './plan-loop.mts';
 import { finishPlan } from './plan.mts';
 import { effectiveEngineConfig, engineConfigPath } from '../routing-engine-config.mts';
 import { DEPOT } from '../routing-types.mts';
@@ -99,6 +99,12 @@ export function routerSettingsFrom(doc: any): RouterSettings {
     lbsTractor: lbsIn(d.lbsTractor, 'lbsTractor') ?? ROUTER_DEFAULTS.lbsTractor,
   };
 }
+
+/** A READ THAT FAILED IS NOT "NO SETTINGS" (audit 2026-09-27). Swallowed as a missing document, a
+ *  throttled read queued the day on the defaults — a $5 cap where $1 was set, another cap rule, other
+ *  weight limits — frozen into the job and run to the end. So anything about to spend refuses instead. */
+export const settingsUnreadRefusal = (e: any) =>
+  `not queued — the Router settings could not be read, so the cap and rules set there are not known (${String(e?.message || e).slice(0, 200)}); nothing was written or spent — press again`;
 
 /** Which weight limits the stored settings PIN (a number of Chad's) as against leaving the default.
  *  The resolved settings cannot say: a stored 10,000 and no stored value both read 10,000. The form
@@ -271,7 +277,9 @@ export async function enqueueBacktests(dates: any, by: string | null, deps: BtDe
   const sealed = new Set(sealedDaysFrom(manifests).map((s) => s.date));
   const notSealed = list.filter((d) => !sealed.has(d));
   if (notSealed.length) return { status: 400, body: { ok: false, error: `not sealed history days: ${notSealed.join(', ')}` } };
-  const rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null));
+  let rs: RouterSettings;
+  try { rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH)); }
+  catch (e: any) { return { status: 502, body: { ok: false, error: settingsUnreadRefusal(e) } }; }
   const model = shadowModel(deps.env).model;
   const active = new Set((await listJobs(deps)).filter((j) => ACTIVE.has(j.status)).map((j) => j.date));
   const at = deps.now().toISOString();
@@ -317,12 +325,14 @@ async function loadState(id: string, deps: BtDeps): Promise<LoopState> {
   return restoreState(rounds);
 }
 
-/** Create-only claim on round n; takes over a claim whose invocation died. */
-async function claimRound(id: string, n: number, deps: BtDeps): Promise<boolean> {
+/** Create-only claim on round n; takes over a claim whose invocation died. A takeover answers 'lost':
+ *  the first claim's call went out and its record never landed (audit 2026-09-27), so the loop charges
+ *  it before paying for the next round. A later stale attempt paid nothing — it went straight to that. */
+async function claimRound(id: string, n: number, deps: BtDeps): Promise<boolean | 'lost'> {
   const now = deps.now();
   for (let k = 1; k <= 5; k++) {
     const path = `${jobPath(id)}/claims/r${n}a${k}`;
-    if (await deps.shadowCreate(path, { n, attempt: k, at: now.toISOString() })) return true;
+    if (await deps.shadowCreate(path, { n, attempt: k, at: now.toISOString() })) return k === 1 ? true : 'lost';
     const held = await deps.getDoc(path);
     const heldAt = Date.parse(String(held?.at || ''));
     if (Number.isFinite(heldAt) && now.getTime() - heldAt < CLAIM_STALE_MS) return false;   // someone is on it
@@ -414,7 +424,8 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
     }
     const problem: BtProblem = JSON.parse(stored.problemJson);
     const cfg = JSON.parse(stored.cfgJson);
-    const loopProblem = btLoopProblem(problem, cfg);
+    // SHADOW_BT_ROOM_CHECK=off puts the old backtest rule back (a no-tractor stop that rode a tractor may be left off with any reason).
+    const loopProblem = btLoopProblem(problem, cfg, { btRoomCheck: btRoomCheckEnabled(deps.env) });
     if (typeof stored.promptJson === 'string') Object.assign(loopProblem, frozenPrompt(stored.promptJson));
     const s = job.settings || {};
     const settings: LoopSettings = {
@@ -454,7 +465,8 @@ export async function workerTick(deps: BtDeps = LIVE): Promise<any> {
     }
     if (!state.ended) return { ok: true, job: id, rounds: state.rounds.length, usd: state.usd, continuing: true };
     if (job.kind === 'plan') {
-      const rsNow = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null));
+      // The cost rates come from here: a failed read throws (the next tick finishes it), never a result without them.
+      const rsNow = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH));
       return await finishPlan(id, job, problem, cfg, state, rsNow, deps, () => wasCancelled(id, deps), jobPath);
     }
     return await finishJob(id, job, problem, cfg, state, deps);
@@ -485,10 +497,11 @@ export async function finishJob(id: string, job: any, problem: BtProblem, cfg: a
   if (await wasCancelled(id, deps)) return { ok: true, job: id, cancelled: true, usd: state.usd };
   const plan = state.final ?? state.bestClean;
   if (!plan) {
-    await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at, updatedAt: at, error: `no plan without a hard-rule violation: ${state.endNote || state.ended}` });
+    await deps.shadowPatch(jobPath(id), { status: 'failed', finishedAt: at, updatedAt: at, error: noPlanReason(state) });
     return { ok: true, job: id, failed: state.ended };
   }
-  const rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH).catch(() => null));
+  // The cost rates come from here: a failed read throws (the next tick finishes it), never a result without them.
+  const rs = routerSettingsFrom(await deps.getDoc(ROUTER_SETTINGS_PATH));
   const cmp = compareBacktest(problem, plan, cfg, { perMile: rs.costPerMile, perDriveHour: rs.costPerDriveHour });
   const submitted = !!state.final;
   const result = {
@@ -538,7 +551,7 @@ export async function backtestView(deps: BtDeps = LIVE) {
     // EVERY run's spend — failed, stopped and re-run days included — not just each day's latest result.
     spend: { usd: Math.round(jobs.reduce((a: number, j: any) => a + (typeof j.usd === 'number' ? j.usd : 0), 0) * 100) / 100, runs: jobs.length },
     ceiling: ceilingView(every, routerSettingsFrom(rsDoc), deps),
-    settings: routerSettingsFrom(rsDoc), pinned: routerPinned(rsDoc), hardCaps: hardCapsEnabled(deps.env), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
+    settings: routerSettingsFrom(rsDoc), pinned: routerPinned(rsDoc), hardCaps: hardCapsEnabled(deps.env), btRoomCheck: btRoomCheckEnabled(deps.env), defaults: ROUTER_DEFAULTS, bounds: ROUTER_BOUNDS, efforts: EFFORTS, capRules: CAP_RULES,
     refused: routerRefusal(deps.env, deps.firestoreOn()),
     enabled: claudeShadowEnabled(deps.env),
     model: shadowModel(deps.env).model,

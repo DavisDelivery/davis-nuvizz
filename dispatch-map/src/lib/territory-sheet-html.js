@@ -32,8 +32,8 @@
 // PURE: no Firestore, no network, no filesystem, no clock of its own. `input.generatedAt` is
 // passed in rather than read, so the same data renders the same page every time.
 import {
-  zipOwnership, driverCore, territoryCoverage, activeDrivers, driverCircles, driverRewrites,
-  driverPoints, driverKeyOf, mapFrame, rosterOf,
+  zipOwnership, territoryCoverage, driverRewrites, driverPoints, mapFrame, rosterOf, territoryModel, ovalOf,
+  splitHidden,
 } from './driver-territory.js';
 import COUNTIES from './ga-north-counties.js';
 
@@ -49,40 +49,65 @@ const TOWNS = [
 
 const INK = '#1f4e79';   // ONE accent, not a palette — see the note above `depot` below.
 
+// A RING'S OUTLINE IN A MAP'S PIXELS: its circle, or — where the work runs along a road — its oval
+// (fitOval in driver-territory.js). `r` orders the drawing and the names: the circle's radius, or
+// the radius of a circle on the same ground as the oval. `reach(a)` is how far the outline sits
+// from the centre in direction `a` (radians, paper y running down), which is what walks a crowded
+// name out along an oval's own edge rather than a circle's. For a circle it is `r` itself, so the
+// circles lay out exactly as they did before ovals existed.
+function ringGeom(P, c, floor) {
+  const o = ovalOf(c);
+  if (!o) {
+    const r = Math.max(floor, P.rpx(c.radiusKm));
+    return { r, reach: () => r };
+  }
+  const rx = Math.max(floor, P.rpx(o.majorKm));
+  const ry = Math.max(floor, P.rpx(o.minorKm));
+  const rot = (-o.angleDeg * Math.PI) / 180;              // anticlockwise on the ground, y down on paper
+  return {
+    r: Math.sqrt(rx * ry), rx, ry, deg: o.angleDeg,
+    reach: (a) => (rx * ry) / Math.hypot(ry * Math.cos(a - rot), rx * Math.sin(a - rot)),
+  };
+}
+// The oval's position and turn as SVG attributes — `rotate` is clockwise on paper, hence the minus.
+function ellipseAt(P, c, g) {
+  const cx = P.sx(c.lng).toFixed(1), cy = P.sy(c.lat).toFixed(1);
+  return `cx="${cx}" cy="${cy}" rx="${g.rx.toFixed(1)}" ry="${g.ry.toFixed(1)}" transform="rotate(${(-g.deg).toFixed(1)} ${cx} ${cy})"`;
+}
+
 export function territorySheetHtml(input = {}) {
 const stops = input.stops || [];
 const roster = input.roster ? rosterOf(input.roster) : null;
 
-// ONLY DRIVERS WHO HAVE ACTUALLY RUN IN THE WINDOW. Chad: "terry hasn't ran for me in a long
-// time ... just guys that have ran in last 4 weeks."
-const { active: activeSet, excluded } = activeDrivers(stops, { roster, minStops: input.minStops ?? 5 });
-// THE KEY COMES FROM ONE PLACE. This filter used to re-derive it inline — uppercase, spaces to
-// underscores — which is what the key looks like for most names and is NOT what canonicalDriver
-// does. For "COLIN/DJ 1" the inline version produced COLIN/DJ_1, which is in no active set, so
-// Colin's second load vanished from the town table and the cards while driverCircles (which
-// asks properly) still drew it. Half the sheet disagreeing with the other half, silently.
-const inWindow = stops.filter((s) => activeSet.has(driverKeyOf(s)));
+// ONE PIPELINE FOR THE PAPER AND THE MAP OVERLAY — territoryModel in driver-territory.js decides
+// who is still running (Chad: "just guys that have ran in last 4 weeks"), draws the rings and
+// picks each man's colour. The overlay reads the same function, so a trainee holding this sheet
+// beside the screen sees the same ring in the same colour on both.
+const { active: activeSet, excluded, inWindow, drivers, circleSets, colourOf } = territoryModel(stops, {
+  roster, minStops: input.minStops, drivers: input.drivers, circles: input.circles,
+});
 const zips = input.zips || zipOwnership(inWindow, { roster });
-const drivers = input.drivers || driverCore(inWindow, { roster });
 const cov = input.coverage || territoryCoverage(inWindow, { roster });
+// WHAT WAS LEFT OUT is counted over the history BEFORE the sheet's own filter. inWindow holds
+// only active drivers' stops, so a stop with no driver can never be in it — counted there,
+// "had no driver" was always 0. Chad's by-name list (HIDDEN_FROM_RINGS) is set aside first,
+// exactly as territoryModel does, so the people he asked to be off the sheet are not counted.
+const dropped = input.coverage || territoryCoverage(splitHidden(stops).kept, { roster });
+const droppedParts = [
+  dropped.noZip ? `${dropped.noZip} stop${dropped.noZip === 1 ? '' : 's'} had no usable ZIP` : '',
+  dropped.noDriver ? `${dropped.noDriver}${dropped.noZip ? '' : ` stop${dropped.noDriver === 1 ? '' : 's'}`} had no driver` : '',
+].filter(Boolean);
+const droppedLine = droppedParts.length
+  ? `${droppedParts.join(' and ')} — ${droppedParts.length > 1 ? 'both ' : ''}left out.` : '';
 const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n) => `${Math.round((n || 0) * 100)}%`;
 
-// COLOUR TELLS RINGS APART. IT DOES NOT NAME ANYBODY.
-//
-// Ten swatches across 59 drivers means six men share every colour, so a colour cannot identify a
-// person — and the first sheet printed a legend that implied it could, which cost a whole page
-// and told the reader something false. There is no legend now. On the big map the colours exist
-// so that two rings crossing each other read as two rings; the NAME in the middle is the answer.
-// Varied lightness as well as hue, because this sheet gets photocopied.
-const PALETTE = ['#1f4e79', '#a4462d', '#3f7d3f', '#6b4a8a', '#8a6d1f',
-                 '#256b6b', '#8a3060', '#4a5a6b', '#2f6f9e', '#7a3b1e'];
+// COLOUR TELLS RINGS APART. IT DOES NOT NAME ANYBODY — see RING_PALETTE in driver-territory.js,
+// which is where the palette and the reason there is no legend now live, shared with the map.
 const depot = input.depot || { lat: 34.14838, lng: -83.95948, name: 'Buford Terminal' };
-const circleSets = input.circles || driverCircles(stops, { roster, active: activeSet });
 const pointsBy = driverPoints(inWindow, { roster, active: activeSet });
 const allPoints = [...pointsBy.values()].flat();
 const frame = mapFrame(allPoints, { include: [depot] });
-const colourOf = new Map(drivers.map((d, i) => [d.key, PALETTE[i % PALETTE.length]]));
 
 // ── the shared projection ───────────────────────────────────────────────────
 function projector(W) {
@@ -157,11 +182,15 @@ const overview = (() => {
   if (!frame) return '<p class="muted">No coordinates in this window, so no map can be drawn. The tables below use ZIP, which every stop carries.</p>';
   const P = projector(660);
   const drawn = circleSets.filter((d) => d.circles.length);
-  const all = drawn.flatMap((d) => d.circles.map((c) => ({ d, c, r: Math.max(6, P.rpx(c.radiusKm)) })));
+  const all = drawn.flatMap((d) => d.circles.map((c) => { const g = ringGeom(P, c, 6); return { d, c, r: g.r, g }; }));
 
   // Biggest first so a small ring is never buried under a big one's outline.
-  const rings = [...all].sort((a, b) => b.r - a.r).map(({ d, c, r }) => {
+  const rings = [...all].sort((a, b) => b.r - a.r).map(({ d, c, r, g }) => {
     const col = colourOf.get(d.key) || '#555';
+    if (g.rx) {
+      return `<ellipse ${ellipseAt(P, c, g)}
+      fill="${col}" fill-opacity="0.05" stroke="${col}" stroke-width="1.6" stroke-opacity="0.95"/>`;
+    }
     return `<circle cx="${P.sx(c.lng).toFixed(1)}" cy="${P.sy(c.lat).toFixed(1)}" r="${r.toFixed(1)}"
       fill="${col}" fill-opacity="0.05" stroke="${col}" stroke-width="1.6" stroke-opacity="0.95"/>`;
   }).join('');
@@ -178,18 +207,20 @@ const overview = (() => {
     placed.push({ x: P.sx(depot.lng) + 6 + depot.name.length * 2.6, y: P.sy(depot.lat) + 3, w: depot.name.length * 5.2 + 8 });
   }
   const clear = (x, y, w) => !placed.some((p) => Math.abs(p.x - x) < (p.w + w) / 2 && Math.abs(p.y - y) < 10);
-  const labels = [...all].sort((a, b) => a.r - b.r).map(({ d, c, r }) => {
+  const labels = [...all].sort((a, b) => a.r - b.r).map(({ d, c, g }) => {
     const cx = P.sx(c.lng), cy = P.sy(c.lat);
     const w = d.label.length * 4.6 + 4;
     let x = cx, y = cy + 3, leader = '';
     if (!clear(x, y, w)) {
       // Out along its own ring first, then further out. In the metro the small rings sit inside
       // each other, so the near offsets are all still in the crowd — a name has to be allowed to
-      // travel, and the leader line is what keeps it attached to the right circle.
+      // travel, and the leader line is what keeps it attached to the right circle. An oval's name
+      // travels along the oval (`reach`), not along a circle it is not drawn as.
       const tries = [];
       for (const f of [0.6, 0.95, 1.3, 1.8, 2.5, 3.4]) {
         for (const a of [-90, 90, 0, 180, -45, 45, -135, 135, -70, 70, -110, 110]) {
-          tries.push([cx + Math.cos((a * Math.PI) / 180) * r * f, cy + Math.sin((a * Math.PI) / 180) * r * f + 3]);
+          const k = g.reach((a * Math.PI) / 180);
+          tries.push([cx + Math.cos((a * Math.PI) / 180) * k * f, cy + Math.sin((a * Math.PI) / 180) * k * f + 3]);
         }
       }
       const hit = tries.find(([tx, ty]) => clear(tx, ty, w) && tx > w / 2 && tx < P.W - w / 2 && ty > 8 && ty < P.H - 4);
@@ -203,9 +234,12 @@ const overview = (() => {
   }).join('');
 
   const two = drawn.filter((d) => d.circles.length > 1);
+  const anyOval = all.some(({ g }) => g.rx);
   return `<div class="mapbox">${svgBox(P, basemap(P, false) + rings + labels, 186)}</div>
     <p class="muted">Each ring covers where most of that driver's work sits. Somebody who works two
-    areas gets two rings rather than one stretched between them${two.length ? ` — ${esc(two.map((d) => d.label).join(', '))}` : ''}.
+    areas gets two rings rather than one stretched between them${two.length ? ` — ${esc(two.map((d) => d.label).join(', '))}` : ''}.${anyOval ? `
+    Where a driver's work runs along a road rather than round a town, his ring is an oval: it holds
+    the same share of his stops as a circle would, on less ground.` : ''}
     A ring is a habit, not a boundary: rings overlap because areas are shared, and the town table
     on the next page says who usually has a place when two of them cross it.</p>`;
 })();
@@ -248,6 +282,12 @@ const cards = [...drivers].sort((a, b) => a.label.localeCompare(b.label)).map((d
     // dots, so his card and a no-ring card look alike. A white halo under the stroke lifts it
     // off the dots without inflating the ring, which would be a lie about the size.
     const rings = (cs?.circles || []).map((c) => {
+      const g = ringGeom(P, c, 7);
+      if (g.rx) {
+        const at = ellipseAt(P, c, g);
+        return `<ellipse ${at} fill="none" stroke="#fff" stroke-width="4.2" stroke-opacity="0.85"/>
+        <ellipse ${at} fill="${INK}" fill-opacity="0.09" stroke="${INK}" stroke-width="2.2"/>`;
+      }
       const r = Math.max(7, P.rpx(c.radiusKm)).toFixed(1);
       const at = `cx="${P.sx(c.lng).toFixed(1)}" cy="${P.sy(c.lat).toFixed(1)}" r="${r}"`;
       return `<circle ${at} fill="none" stroke="#fff" stroke-width="4.2" stroke-opacity="0.85"/>
@@ -260,11 +300,22 @@ const cards = [...drivers].sort((a, b) => a.label.localeCompare(b.label)).map((d
   // miles across and on a 96mm map of the whole metro they look much alike; a trainee reading
   // "usual area: Buford" off a ring nineteen miles wide has been told something false by the
   // picture. So the width is printed in miles, and the share falling outside it as well.
+  //
+  // A MAN WITH ONE OVAL gets both of its lengths — "about 22 miles long and 8 wide" — because one
+  // number would be either its length, which overstates the ground, or its width, which hides the
+  // run. A man with SEVERAL rings keeps the one number, the longest reach of any of them, so it
+  // still bounds every ring on his card: "20 long and 4 wide" over an oval and a 14-mile circle
+  // would have told the trainee his second area was smaller than it is.
+  const reachKm = (c) => ovalOf(c)?.majorKm ?? c.radiusKm;
   const across = cs && cs.circles.length
-    ? Math.round(2 * Math.max(...cs.circles.map((c) => c.radiusKm)) * 0.621371) : 0;
+    ? Math.round(2 * Math.max(...cs.circles.map(reachKm)) * 0.621371) : 0;
+  const onlyOval = cs && cs.circles.length === 1 ? ovalOf(cs.circles[0]) : null;
+  const size = onlyOval
+    ? `about ${across} miles long and ${Math.round(2 * onlyOval.minorKm * 0.621371)} wide`
+    : `about ${across} miles across`;
   const banner = cs && cs.circles.length
     ? `<p class="area"><b>Usual area:</b> ${esc(coreCities.slice(0, 5).join(', ') || d.core.map((c) => c.zip).join(', '))}
-       <span class="muted">· about ${across} miles across</span>
+       <span class="muted">· ${size}</span>
        ${cs.circles.length > 1 ? `<span class="muted">· works ${cs.circles.length} separate areas</span>` : ''}
        ${cs.outsideShare > 0.1 ? `<span class="muted">· ${pct(cs.outsideShare)} of his stops fall outside the ring${cs.circles.length > 1 ? 's' : ''}</span>` : ''}</p>`
     : `<p class="area nofix"><b>No fixed area.</b> His work is too spread out for a circle to describe —
@@ -342,7 +393,7 @@ ${overview}
 <div class="cov">
   <b>What this is built from.</b> ${cov.usable.toLocaleString()} deliveries across
   <b>${cov.days}</b> working day${cov.days === 1 ? '' : 's'}, ${drivers.length} drivers, ${zips.length} ZIP codes.
-  ${cov.noZip ? `${cov.noZip} stop${cov.noZip === 1 ? '' : 's'} had no usable ZIP and ${cov.noDriver} had no driver — both left out.` : ''}
+  ${droppedLine}
   ${!cov.rosterApplied ? '<br><b>Note:</b> no driver roster was applied, so line-haul carriers may appear in this list alongside people.' : ''}
   <br><b>How to use it.</b> An order comes in for a town — <b>look it up by town</b> (page 2). You want to know
   where somebody runs — find his card; they are in alphabetical order.

@@ -47,6 +47,7 @@ export type EquipmentReq =
   | 'box_truck_only'
   | '26ft_max'
   | 'no_53'
+  | 'no_53ft'   // the spelling the app's Equipment restrictions dropdown writes — same rule as no_53
   | 'no_overhead_clearance'
   | 'liftgate_required';
 

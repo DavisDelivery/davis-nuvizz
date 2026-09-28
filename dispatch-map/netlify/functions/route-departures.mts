@@ -69,6 +69,22 @@ function departuresForDay(stops: any[], date: string): Record<string, number> {
   return out;
 }
 
+/**
+ * PURE. The refit window from the raw query values. A5-S28-4: `Number('abc')` is NaN, which
+ * clamps to NaN, so `?days=abc` ran a zero-day loop and published an EMPTY table over the good
+ * one. A non-numeric `days` takes the documented default; a `through` that is not a real
+ * YYYY-MM-DD calendar day is refused rather than read.
+ */
+export function refitWindow(daysRaw: string | null, throughRaw: string | null, todayEt: string): { days: number; through: string; error?: undefined } | { error: string } {
+  const n = parseInt(String(daysRaw ?? '').trim(), 10);
+  const days = Math.max(1, Math.min(MAX_DAYS, Number.isFinite(n) ? n : 21));
+  if (throughRaw == null || throughRaw === '') return { days, through: addDays(todayEt, -1) };
+  const real = /^\d{4}-\d{2}-\d{2}$/.test(throughRaw) && !Number.isNaN(Date.parse(`${throughRaw}T12:00:00Z`))
+    && new Date(`${throughRaw}T12:00:00Z`).toISOString().slice(0, 10) === throughRaw;
+  if (!real) return { error: `through must be a YYYY-MM-DD day (got "${throughRaw}")` };
+  return { days, through: throughRaw };
+}
+
 const fmt = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 export default async (req: Request): Promise<Response> => {
@@ -103,8 +119,6 @@ export default async (req: Request): Promise<Response> => {
 
   try {
     const dry = url.searchParams.get('dry') === '1';
-    const days = Math.max(1, Math.min(MAX_DAYS, Number(url.searchParams.get('days') || 21)));
-    const through = url.searchParams.get('through') || addDays(etDayString(), -1);
 
     if (!refit) {
       const doc = await getDoc(routeDeparturePath(TENANT)).catch(() => null);
@@ -125,6 +139,10 @@ export default async (req: Request): Promise<Response> => {
       });
     }
 
+    const win = refitWindow(url.searchParams.get('days'), url.searchParams.get('through'), etDayString());
+    if (win.error !== undefined) return J({ ok: false, error: win.error }, 400);
+    const { days, through } = win;
+
     const daySamples: Array<{ date: string; byRoute: Record<string, number> }> = [];
     const scanned: string[] = [];
     for (let i = 0; i < days; i++) {
@@ -144,6 +162,15 @@ export default async (req: Request): Promise<Response> => {
       days: daySamples.length, routes: Object.keys(table).length,
       table, fitted_at: new Date().toISOString(), source: 'route-departures endpoint',
     };
+    // A refit that learned NOTHING does not replace the table: publishing an empty one would
+    // put every route on the 8:00a default in one write. The dry run still shows it.
+    if (!dry && Object.keys(table).length === 0) {
+      return J({
+        ok: false, refit: true, dry, through, days,
+        daysScanned: scanned.length, daysWithSamples: daySamples.length, routesPublished: 0,
+        error: 'refit learned no routes in this window — nothing published, the current table stands',
+      }, 409);
+    }
     if (!dry) await setDoc(routeDeparturePath(TENANT), payload);
 
     return J({

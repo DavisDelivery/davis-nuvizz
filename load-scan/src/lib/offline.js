@@ -166,9 +166,14 @@ export async function enqueueScan(loadNbr, date, scan, cap = null) {
   // undoing the void — putting the freight back on the truck — so it must revive
   // the row rather than be swallowed as a duplicate. Anything already marked on
   // it (damage, most of all) survives: the piece did not stop being damaged.
+  // A revive is a piece becoming real again, so it passes THE CAP below first —
+  // reviving ahead of it let a full stop read 3/2 off a re-read tombstone.
   if (existing?.voidedAt) {
+    if (cap && !cap.force && wouldExceedCap(await allQueued(), { loadNbr, date, scan, cap })) {
+      return ENQUEUE_OVER_CAP;
+    }
     await tx(STORE_QUEUE, 'readwrite', (s) =>
-      s.put({ ...existing, voidedAt: null, voidReason: '', syncedAt: null }),
+      s.put({ ...existing, voidedAt: null, voidReason: '', voidChangedAt: new Date().toISOString(), syncedAt: null }),
     );
     return true;
   }
@@ -200,8 +205,11 @@ export async function voidScan(loadNbr, og, reason = '') {
   const key = queueKey(loadNbr, og);
   const row = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
   if (!row || row.voidedAt) return false;
+  // voidChangedAt tells the server this phone MEANT it (see mergeFlagsByTime):
+  // another phone's copy of the row carries a default, not a decision.
+  const at = new Date().toISOString();
   await tx(STORE_QUEUE, 'readwrite', (s) =>
-    s.put({ ...row, voidedAt: new Date().toISOString(), voidReason: String(reason || ''), syncedAt: null }),
+    s.put({ ...row, voidedAt: at, voidReason: String(reason || ''), voidChangedAt: at, syncedAt: null }),
   );
   return true;
 }
@@ -212,7 +220,7 @@ export async function unvoidScan(loadNbr, og) {
   const row = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
   if (!row || !row.voidedAt) return false;
   await tx(STORE_QUEUE, 'readwrite', (s) =>
-    s.put({ ...row, voidedAt: null, voidReason: '', syncedAt: null }),
+    s.put({ ...row, voidedAt: null, voidReason: '', voidChangedAt: new Date().toISOString(), syncedAt: null }),
   );
   return true;
 }
@@ -233,6 +241,9 @@ export async function markDamaged(loadNbr, og, damaged = true, note = '') {
       damaged: !!damaged,
       damageNote: damaged ? String(note || '') : '',
       damagedAt: damaged ? new Date().toISOString() : null,
+      // Stamped on a mark AND an un-mark, so a deliberate clear can outrank the
+      // mark while another phone's never-touched default cannot.
+      damageChangedAt: new Date().toISOString(),
       syncedAt: null,
     }),
   );
@@ -328,7 +339,58 @@ export async function pruneSynced(days = 14) {
 
 // ── Manifest cache ───────────────────────────────────────────────────────────
 
-export const cacheKey = (date, driverNumber) => `manifest::${date}::${driverNumber}`;
+/**
+ * The day's list (a loader's pick list, a driver's own loads) and each truck
+ * opened BY NUMBER get separate slots. They shared one, so the truck a loader
+ * opened overwrote the pick list, and with no signal "Different truck" found only
+ * that truck and opened it again.
+ */
+export const cacheKey = (date, driverNumber, loadNbr = '') =>
+  `manifest::${date}::${driverNumber}${loadNbr ? `::load::${loadNbr}` : ''}`;
+
+/**
+ * What a saved manifest can honestly serve with no signal: { manifest, open }.
+ *
+ * Asked for a truck by number, the copy must hold that truck WITH its stops — a
+ * pick-list summary row or another truck's manifest is not it, and opening the
+ * pick on either put the loader on a 0/0 scan screen where every label reads NOT
+ * ON THIS LOAD. `manifest` is null then, and the caller keeps the picker up.
+ * Asked for the day's list, the copy is served as it is, and a lone load opens
+ * itself only when it is a real one — the same rule as the online path.
+ */
+export function manifestFromCache(cached, loadNbr = '') {
+  const m = cached && typeof cached === 'object' ? cached : null;
+  if (!m) return { manifest: null, open: null };
+  const loads = Array.isArray(m.loads) ? m.loads : [];
+  if (loadNbr) {
+    const hit = !m.summariesOnly && loads.find((l) => String(l?.loadNbr) === String(loadNbr));
+    return hit ? { manifest: m, open: hit.loadNbr } : { manifest: null, open: null };
+  }
+  return { manifest: m, open: loads.length === 1 && !m.summariesOnly ? loads[0].loadNbr : null };
+}
+
+/**
+ * Drop saved manifests for shift days before `keepFromDay` (YYYY-MM-DD).
+ *
+ * Only the CURRENT shift day's slots are ever read, and every truck opened by
+ * number now has a slot of its own — each carrying its stops' full board rows —
+ * so without this the store grew by every truck opened, every night, for good.
+ * Keys only are read (never the manifests themselves), and nothing but
+ * `manifest::<day>::…` slots is touched: the loaded-sequence stamps stay.
+ * A malformed day prunes nothing.
+ */
+export async function pruneManifestCache(keepFromDay) {
+  const keep = String(keepFromDay || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(keep)) return 0;
+  const keys = (await tx(STORE_CACHE, 'readonly', (s) => s.getAllKeys())) || [];
+  const stale = keys.filter((k) => {
+    const m = /^manifest::(\d{4}-\d{2}-\d{2})::/.exec(String(k));
+    return !!m && m[1] < keep;
+  });
+  if (!stale.length) return 0;
+  await tx(STORE_CACHE, 'readwrite', (s) => stale.forEach((k) => s.delete(k)));
+  return stale.length;
+}
 
 // ── Loaded-against sequence ──────────────────────────────────────────────────
 //

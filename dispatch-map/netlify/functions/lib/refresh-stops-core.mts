@@ -22,9 +22,10 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields, readActivePoolMeta, readFrozenLedger, writeFrozenLedger, recordPlanVerdicts } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields, readActivePoolMeta, readFrozenLedger, writeFrozenLedger, recordPlanVerdicts, recordListLoadNbr } from './firestore.mts';
 import type { FrozenLedgerEntry, PlanVerdictRow } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanPull, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays, LIST_MAX_RESULT, BOARD_WRITE_GRACE_MIN } from './nuvizz-list.mts';
+import type { ListLoadNbrSeen } from './nuvizz-list.mts';
 import { buildActivePool } from './active-pool.mts';
 import { strayFinishedRows, openPastRows, planRefile, planOpenStrays, nextCopyDays, rotate } from './refile-core.mts';
 import type { FrozenCopy, StrayRow, Heal } from './refile-core.mts';
@@ -201,6 +202,24 @@ export function reconsignedByListSig(priorSig: string | null | undefined, listSt
   const cur = addrListSig(listStop);
   if (!cur) return false;
   return cur !== priorSig;
+}
+
+// The per-PRO registry record was enriched for a DIFFERENT address than the one the list now
+// carries for this row. The record keeps the list signature of the address it was enriched for
+// (writeEnrichedPros stores the row, addrListSig and all), so this is list↔list and converges:
+// once the live re-read lands, the registry is rewritten under the new signature. Either side
+// without a signature is no evidence (a record from before the field, an address-less row) and
+// keeps the merge exactly as it was. PURE / exported for tests.
+//
+// NUVIZZ_REGISTRY_ADDRESS_GUARD=off puts it back (the registry merges regardless, as before).
+// House shape: default ON, only an explicit off-word turns it off, anything malformed leaves it ON.
+// What it costs while ON: a moved order the registry would have answered gets its one live
+// /stop/info instead — inside the run's existing ENRICH_MAX budget, and once per move.
+export function registryRecordForOtherAddress(listStop: any, record: any, env: Record<string, string | undefined> = process.env): boolean {
+  if (/^(off|0|false|no)$/i.test(String(env?.NUVIZZ_REGISTRY_ADDRESS_GUARD ?? '').trim())) return false;
+  const cur = String(listStop?.addrListSig ?? '').trim();
+  const was = String(record?.addrListSig ?? '').trim();
+  return !!(cur && was && cur !== was);
 }
 
 // ── Two records, one number (the Estes-0828068215 lesson, Aug 4) ──────────────
@@ -701,10 +720,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // clamped to safe bounds: an empty/missing doc or a read failure = the proven
   // env/default behavior. Overlaid on defaults inside scanDecision/intervalForHour.
   let scanCfg: Record<string, any> = {};
-  if (fsOn) { try { scanCfg = clampScanConfig(await readScanConfig()); } catch { scanCfg = {}; } }
+  let scanCfgRead = !fsOn;
+  if (fsOn) { try { scanCfg = clampScanConfig(await readScanConfig()); scanCfgRead = true; } catch { scanCfg = {}; } }
   if (typeof scanCfg.dailyCeiling === 'number') ceiling = scanCfg.dailyCeiling;
-  // Apply the configured spend cap to the per-call breaker for THIS invocation.
-  setDailyCeilingOverride(typeof scanCfg.dailyCeiling === 'number' ? scanCfg.dailyCeiling : null);
+  // Apply the configured spend cap to the per-call breaker for THIS invocation — but only when
+  // the read ANSWERED. A failed read is not "nothing is saved": handing null over here marked
+  // the 2,000 default as Chad's setting, and breakerTripped() below released a trip his lower
+  // ceiling had taken. Left alone, the breaker's own hydrator re-reads, and keeps what it had.
+  if (scanCfgRead) setDailyCeilingOverride(typeof scanCfg.dailyCeiling === 'number' ? scanCfg.dailyCeiling : null);
 
   let decision = scanDecision(now, isManual, lastLoadScanAt, scanCfg);
 
@@ -1298,6 +1321,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   if (LIST_DISCOVERY) {
     await startRun();
     let listError: string | null = null;
+    // What the stop list said about load numbers this run — onto the run row, compact (v1.81.6).
+    let listLoadNbr: { active: string; completed: string } | null = null;
     try {
       const scannedAt = new Date().toISOString();
       // THE STAMP GOES AFTER THE PULL, NOT BEFORE IT. This ran here, ahead of every NuVizz
@@ -1379,6 +1404,15 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const pull = TWO_SCAN ? await twoScanPull(boardDateOverrides) : null;
       const buckets = pull ? pull.buckets : null;
       if (pull) console.log(`[scan] two-scan pull: ${pull.activeCount} active + ${pull.completedCount} completed row(s) across ±${activeArrivalReachDays()}d${pull.truncated ? ' — TRUNCATED at the row cap' : ''}`);
+      // THE LOAD NUMBER COLUMN (Chad, 2026-09-28: "the load number is now on every scan"). Which
+      // column carried it and how many routed orders had one, recorded for nothing so the next
+      // question about it is a read (nuvizz-scan-config?explain=1 → listLoadNbr), not a call.
+      if (pull) {
+        const say = (x: ListLoadNbrSeen) => `${x.withNumber}/${x.routed} routed via ${x.column ?? 'NO Load Number column'}`;
+        listLoadNbr = { active: say(pull.loadNbr.active), completed: say(pull.loadNbr.completed) };
+        console.log(`[scan] load numbers on the list — active ${listLoadNbr.active}; completed ${listLoadNbr.completed}`);
+        await recordListLoadNbr({ at: scannedAt, ...pull.loadNbr });
+      }
 
       // ── CS NOTIFY, FIRST THING, ACROSS THE WHOLE PULL (Chad, 8/10) ───────────────
       // "DSV came in on Friday. The moment the scan picked it up on Friday, it should
@@ -1573,7 +1607,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           // "everything vanished" is a scan failure, not a hundred unplannings. Below the
           // ratio, plans carry forward untouched and unquestioned exactly as they always have.
           const pullHealthy = prevByNbr.size === 0 || dateStops.length >= prevByNbr.size * ABSENT_DEMOTE_MIN_RATIO;
-          let dropped = 0, healedDelivered = 0, absentPlanned = 0, refiledFinished = 0, refiledOpenKept = 0, refiledOpenGone = 0;
+          let dropped = 0, healedDelivered = 0, absentPlanned = 0, refiledFinished = 0, refiledOpenKept = 0, refiledOpenGone = 0, refiledOpenHeld = 0;
           for (const [nbr, p] of prevByNbr) {
             if (have.has(nbr)) continue;
             const priorOwnDay = boardDayFor(p, undefined, boardDateOverrides);
@@ -1598,6 +1632,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // or later (its own bucket has it) or stops listing it, it leaves this board.
             if (p.refiledOpen === true) {
               const lo = liveOpenByNbr.get(nbr);
+              // ABSENT FROM A PULL THIS SCAN HAS ALREADY JUDGED THIN (truncated at the row cap, or
+              // far shorter than the last pool or this board) is not evidence it closed — the same
+              // verdict every other absent row on this board gets. This copy is the only place the
+              // order lives (no past day holds an open copy), so dropping it here took it off every
+              // board until the next complete pull re-filed it. Carried as it was; a whole pull decides.
+              if (!lo && (pullThin || !pullHealthy)) { dateStops.push(p); refiledOpenHeld++; continue; }
               if (!lo || lo.day >= boardEtDate) { dropped++; refiledOpenGone++; continue; }
               dateStops.push({ ...lo.row, boardDate: boardEtDate, scheduledDate: date, refiledFrom: p.refiledFrom || lo.day, refiledOpen: true, carryover: true });
               refiledOpenKept++;
@@ -1635,6 +1675,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             dateStops.push(p);
           }
           if (dropped) console.log(`[scan] ${date}: carry-forward dropped ${dropped} wrong-day stop(s) (board=${boardEtDate})${refiledOpenGone ? ` incl. ${refiledOpenGone} open carry-over(s) NuVizz no longer lists on a past day` : ''}`);
+          if (refiledOpenHeld) console.warn(`[scan] ${date}: held ${refiledOpenHeld} open carry-over(s) absent from a THIN pull — absence is not evidence this scan`);
           if (refiledFinished || refiledOpenKept) console.log(`[scan] ${date}: carry-forward filed ${refiledFinished} finished stop(s) the pull reports under a past day; re-filed ${refiledOpenKept} open carry-over(s) from the live pull`);
           if (healedDelivered) console.log(`[scan] ${date}: dropped ${healedDelivered} stale-Scheduled stop(s) sealed DELIVERED in recent history (histReads=${histTerminal.reads()})`);
           if (absentPlanned) console.warn(`[scan] ${date}: ${absentPlanned} planned stop(s) absent from this pull — queued for demote verify (plan held unless NuVizz says the load dropped them)`);
@@ -1977,6 +2018,11 @@ export async function runRefreshStops(req: Request): Promise<Response> {
               if (reconsignedNbrs.has(nbr) || staleCacheNbrs.has(nbr)) continue;
               const r = reg.found.get(nbr);
               if (!r) continue;
+              // …and the same for a move the reconsign checks above can no longer see: the scan that
+              // noticed it wrote the row un-enriched (its /stop/info was capped or failed), so this
+              // scan's p.enriched is false and neither check fires. Merging the OLD address's record
+              // here put the new address under the old building's pin, marked enriched, for good.
+              if (registryRecordForOtherAddress(s, r)) continue;
               // A pickup cached before the ship-to fix holds OUR TERMINAL's address, so merging
               // it would mark the row enriched and skip the live read that is the only way back
               // to the real one. This is the cross-day half of the repair: the branch above only
@@ -2239,7 +2285,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       listError = String(e?.message || e).slice(0, 300);
     }
     await refreshOps();
-    await finishRun({ path: 'full', outcome: listError ? 'error' : 'ok', ...(listError ? { error: listError } : {}), dates: results });
+    await finishRun({ path: 'full', outcome: listError ? 'error' : 'ok', ...(listError ? { error: listError } : {}), ...(listLoadNbr ? { listLoadNbr } : {}), dates: results });
     // The log reports what this path DID, not what the hour windows would have allowed: the
     // list path now writes the whole horizon every acting fire, so printing the (unused) feed
     // flags here would describe a gate this path no longer consults.

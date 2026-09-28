@@ -70,21 +70,51 @@ function windowAwareOrder(stops: SolverStop[], indexById: Map<string, number>, m
   const rest = stops.filter((s) => !hasWindow(s));
   const byNode = new Map(stops.map((s) => [indexById.get(s.id)!, s]));
   const node = (s: SolverStop) => indexById.get(s.id)!;
-  let order: SolverStop[] = sequence(rest.map(node), strategy, matrix).map((n) => byNode.get(n)!);
+  const base: SolverStop[] = sequence(rest.map(node), strategy, matrix).map((n) => byNode.get(n)!);
   const dist = matrix.distanceMeters;
+  return insertByWindow(base, windowed, {
+    timeline: (cand) => timeline(cand, indexById, matrix, depart),
+    closeOf: (s) => (hasWindow(s) ? s.timeWindow!.endSec : null),
+    added: (prev, w, next) => {
+      const p = prev ? node(prev) : 0;
+      return dist[p][node(w)] + (next ? dist[node(w)][node(next)] - dist[p][node(next)] : 0);
+    },
+  });
+}
+
+/**
+ * THE INSERTION RULE, shared. Each windowed stop — in the order given, which callers make
+ * earliest-deadline first — goes in at the position that (1) leaves every windowed stop on
+ * time, then (2) idles the least waiting for docks to open, then (3) adds the least distance.
+ * When no position is on time it takes the least-late one; the caller decides whether that
+ * stop stays and is flagged (advisory) or comes off (strict). The un-windowed `base` order is
+ * never reshuffled — that is the dispatcher's strategy (Build) or the learned sequence
+ * (Fill my loads), and a clock is a reason to move a windowed stop, not everything else.
+ *
+ * Generic over the stop shape and the clock so the Build button (seconds, on its matrix) and
+ * step 4's "Fill my loads" (minutes, on the engine's travel model) run the SAME rule.
+ */
+export function insertByWindow<S>(
+  base: S[], windowed: S[],
+  fns: {
+    timeline: (order: S[]) => { etas: number[]; waits: number[] };
+    closeOf: (s: S) => number | null;
+    added: (prev: S | null, w: S, next: S | null) => number;
+  },
+): S[] {
+  let order = base.slice();
   for (const w of windowed) {
     let best: { pos: number; late: number; wait: number; added: number } | null = null;
     for (let pos = 0; pos <= order.length; pos++) {
       const cand = [...order.slice(0, pos), w, ...order.slice(pos)];
-      const { etas, waits } = timeline(cand, indexById, matrix, depart);
+      const { etas, waits } = fns.timeline(cand);
       let late = 0, wait = 0;
       cand.forEach((s, i) => {
-        if (hasWindow(s) && etas[i] > s.timeWindow!.endSec) late += etas[i] - s.timeWindow!.endSec;
+        const close = fns.closeOf(s);
+        if (close != null && etas[i] > close) late += etas[i] - close;
         wait += waits[i];
       });
-      const prev = pos === 0 ? 0 : node(order[pos - 1]);
-      const next = pos < order.length ? node(order[pos]) : null;
-      const added = dist[prev][node(w)] + (next != null ? dist[node(w)][next] - dist[prev][next] : 0);
+      const added = fns.added(pos === 0 ? null : order[pos - 1], w, pos < order.length ? order[pos] : null);
       const better = best == null
         || late < best.late
         || (late === best.late && (wait < best.wait || (wait === best.wait && added < best.added)));
@@ -170,7 +200,22 @@ function windowViolations(ordered: SolverStop[], etas: number[]): string[] {
   return ordered.filter((s, i) => !windowOk(s, etas[i])).map((s) => s.id);
 }
 
-export function repair(input: SolverInput, output: SolverOutput): SolverOutput {
+// PHASE B TRIES A STOP'S OWN TRUCK FIRST. Recovery used to be first-fit over the trucks in the
+// order they were picked, with no memory of where a spilled stop came from. On a strict build
+// repair can take a stop off for a missed window and then take a second stop off the same
+// truck — after which the first fits again. First-fit handed it to whichever truck was listed
+// first, so an east-side truck drove across town for one west-side stop while the west truck
+// the solver chose for it, which could still take it, ran light.
+// PUT IT BACK: ROUTING_REPAIR_ORIGIN_FIRST=off. House shape: default ON, an explicit
+// off/0/false/no turns it off, anything malformed leaves it ON. meta.recoverOriginFirst says
+// which ran.
+export function repairOriginFirstEnabled(env: Record<string, any> = process.env): boolean {
+  const v = String(env?.ROUTING_REPAIR_ORIGIN_FIRST ?? '').trim().toLowerCase();
+  return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
+}
+
+export function repair(input: SolverInput, output: SolverOutput, opts?: { originFirst?: boolean }): SolverOutput {
+  const originFirst = typeof opts?.originFirst === 'boolean' ? opts.originFirst : repairOriginFirstEnabled();
   const indexById = new Map<string, number>();
   input.stops.forEach((s, k) => indexById.set(s.id, k + 1));
   const idByIndex = new Map<number, string>();
@@ -186,16 +231,22 @@ export function repair(input: SolverInput, output: SolverOutput): SolverOutput {
   const unassigned: UnassignedStop[] = output.unassigned.map((u) => ({ stopId: u.stopId, reasons: [...u.reasons] }));
 
   // ── Phase A: shrink each truck until valid ───────────────────────────────────
+  const spilledFrom = new Map<string, string>();   // stopId → the truck Phase A took it off
   for (const truck of input.trucks) {
     let stops = sets.get(truck.id) ?? [];
+    // Budget fixed BEFORE the loop: each pass removes one stop, so a cap that re-read
+    // stops.length halved as it went and quit with violators still on the truck (the same
+    // trap routing-solver's Phase 3 documents). n passes suffice; +2 is slack.
+    const maxIters = stops.length + 2;
     let guard = 0;
-    while (stops.length && guard++ < stops.length + 2) {
+    while (stops.length && guard++ < maxIters) {
       const ordered = orderForTruck(stops, input, indexById);
       const etas = etasFor(ordered, indexById, input.matrix, depart);
       const v = worstViolator(ordered, etas, truck, enforceWindows);
       if (!v) { stops = ordered; break; }
       stops = ordered.filter((s) => s.id !== v.stop.id);
       unassigned.push({ stopId: v.stop.id, reasons: v.reasons });
+      spilledFrom.set(v.stop.id, truck.id);
     }
     sets.set(truck.id, stops);
   }
@@ -206,7 +257,9 @@ export function repair(input: SolverInput, output: SolverOutput): SolverOutput {
     const stop = stopById.get(u.stopId);
     if (!stop) { stillUnassigned.push(u); continue; }
     let placed = false;
-    for (const truck of input.trucks) {
+    const own = originFirst ? input.trucks.find((t) => t.id === spilledFrom.get(stop.id)) : undefined;
+    const tryOrder = own ? [own, ...input.trucks.filter((t) => t !== own)] : input.trucks;
+    for (const truck of tryOrder) {
       if (canInsert(stop, sets.get(truck.id)!, truck, input, indexById, enforceWindows)) {
         sets.set(truck.id, [...sets.get(truck.id)!, stop]);
         placed = true;
@@ -233,7 +286,7 @@ export function repair(input: SolverInput, output: SolverOutput): SolverOutput {
   return {
     routes,
     unassigned: dedupeUnassigned(stillUnassigned),
-    meta: { ...output.meta, repaired: true },
+    meta: { ...output.meta, repaired: true, recoverOriginFirst: originFirst },
   };
 }
 

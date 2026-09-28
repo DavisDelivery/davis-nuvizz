@@ -232,7 +232,11 @@ export function classifyChange(before: AddressParts, after: AddressParts): Addre
   // A zip is only a move when BOTH sides have one — see materialDiff. Without that guard a row
   // that simply gained its zip would report as a different building. Checked FIRST and outside
   // the swap guard below: a changed zip is a different place however the lines are arranged.
-  if (materialDiff(zip5(before?.zip), zip5(after?.zip))) return 'moved';
+  // BOTH, as the sentence says: materialDiff only rules out the zip that APPEARED, so a zip
+  // that DISAPPEARED ('30071' → '') filed as `moved` (audit 2026-09-27). A lost zip falls
+  // through to `region` below, beside a lost city or state.
+  const zb = zip5(before?.zip), za = zip5(after?.zip);
+  if (zb && za && zb !== za) return 'moved';
 
   const linePair = (p: AddressParts) => [normStreetOf(p?.addr1), normStreetOf(p?.addr2)].filter(Boolean).sort().join('|');
   // The lines must actually have MOVED for this to be a swap. Testing only that they carry
@@ -247,8 +251,9 @@ export function classifyChange(before: AddressParts, after: AddressParts): Addre
     if (streetBodyOf(b1) !== streetBodyOf(a1)) return 'renamed';
     if (unitTokensOf(before) !== unitTokensOf(after)) return 'suite';
   }
-  // Reachable either way: a swap that ALSO corrected the city is still a region change.
-  if (fields.includes('city') || fields.includes('state')) return 'region';
+  // Reachable either way: a swap that ALSO corrected the city is still a region change. A
+  // `zip` still in `fields` here can only be one that was LOST (see above).
+  if (fields.includes('city') || fields.includes('state') || fields.includes('zip')) return 'region';
 
   // Text moved; the freight did not. The suite migrating between addr1 and addr2 lands here
   // (our own "Fix & move pin" does exactly that swap), as does a contact name appearing in
@@ -309,6 +314,42 @@ export function diffStopAddress(prev: any, next: any): AddressChangeKind | null 
     { addr1: prev?.addr1, addr2: prev?.addr2, city: prev?.city, state: prev?.state, zip: prev?.zip },
     { addr1: next?.addr1, addr2: next?.addr2, city: next?.city, state: next?.state, zip: next?.zip },
   );
+}
+
+/**
+ * PURE: which of `rows` are NOT already on file in `prior` (the day's rows, newest first).
+ *
+ * WHAT THE DE-DUPE IS FOR. The scan compares the stored board row with the one it is about to
+ * write; one that files a change and then fails to write the stop leaves the old row in place,
+ * and the next scan would file the identical change again, every fifteen minutes.
+ *
+ * SO A REPEAT IS IDENTICAL TO THE NEWEST ROW FOR THAT STOP FROM THE SAME SIDE — the scan's
+ * rows against the scan's, a dispatcher's against the dispatchers' — in every address part
+ * (normalised, so case and punctuation do not make a repeat look new), the kind and the
+ * source. Keying on addr1 alone (audit 2026-09-27) made a zip override, its Reset and a
+ * second zip correction one key, kept only the first, and left the log naming a superseded
+ * override as the address. Comparing only against the NEWEST row keeps "A→B, Reset, A→B
+ * again" as three events; comparing per side keeps a dispatcher's edit in between from
+ * letting the scan re-file what it already filed.
+ */
+export function unrecordedAddressChanges(prior: any[], rows: any[]): any[] {
+  const parts = (p: any) => [normStreetOf(p?.addr1), normStreetOf(p?.addr2), flat(p?.city), flat(p?.state), zip5(p?.zip)].join('|');
+  const keyOf = (r: any) => [s(r?.source), s(r?.kind), parts(r?.before), parts(r?.after)].join('#');
+  const laneOf = (r: any) => `${s(r?.stopNbr)}|${s(r?.source) === 'scan' ? 'scan' : 'dispatch'}`;
+  const newest = new Map<string, string>();
+  for (const r of Array.isArray(prior) ? prior : []) {
+    const lane = laneOf(r);
+    if (!newest.has(lane)) newest.set(lane, keyOf(r));
+  }
+  const out: any[] = [];
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const lane = laneOf(r);
+    const key = keyOf(r);
+    if (newest.get(lane) === key) continue;
+    newest.set(lane, key);
+    out.push(r);
+  }
+  return out;
 }
 
 export interface AddressHistoryQuery {

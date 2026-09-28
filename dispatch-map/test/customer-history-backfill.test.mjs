@@ -122,13 +122,19 @@ test('A RUN WRITES ITS RECORD BEFORE THE FIRST DAY, AFTER EVERY DAY, AND AT THE 
   assert.equal(status, 200);
   assert.equal(body.ok, true);
   assert.equal(body.days, 2);
-  const writes = fake.log.sets.filter((w) => w.path === BACKFILL_PROGRESS_PATH);
+  // The plan replaces the record (a new run starts clean); every heartbeat and the finish are
+  // field-masked so a refusal written meanwhile survives (backfill-refusal-survives-heartbeat).
+  const plans = fake.log.sets.filter((w) => w.path === BACKFILL_PROGRESS_PATH);
+  const beats = (fake.log.patches || []).filter((p) => p.path === BACKFILL_PROGRESS_PATH);
+  const writes = [...plans.map((w) => ({ doc: w.doc })), ...beats.map((p) => ({ doc: p.fields }))];
   // plan + one heartbeat per day + finish
   assert.equal(writes.length, 1 + 2 + 1, 'plan, two heartbeats, finish');
+  assert.equal(plans.length, 1, 'only the plan is a whole-record write');
   assert.equal(writes[0].doc.running, true);
   assert.equal(writes[0].doc.done, 0);
   assert.equal(writes[1].doc.done, 1);
   assert.equal(writes[2].doc.done, 2);
+  for (const b of beats) assert.equal(b.mask.includes('last_refused'), false, 'a heartbeat never touches last_refused');
   const final = fake.store.get(BACKFILL_PROGRESS_PATH);
   assert.equal(final.running, false);
   assert.equal(final.done, 2);

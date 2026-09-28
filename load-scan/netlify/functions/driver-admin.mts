@@ -197,6 +197,12 @@ export default async (req: Request): Promise<Response> => {
         nuvizzAliases: aliases,
         active: body?.active === undefined ? existing?.active !== false : body.active === true,
       };
+      // Same guard as set-active: upsert writes `active` too, and without it one
+      // save could take the last dispatcher off duty — unrecoverable once the
+      // bootstrap secret is gone. Checked before any write.
+      if (existing && fields.active === false && isLastActiveDispatcher(await listDocs(DRIVER_AUTH), driverNumber)) {
+        return bad('cannot deactivate the last dispatcher — promote another one first', 409);
+      }
       // A PIN may ride along on creation. Adding a driver is ONE job — name,
       // spellings, PIN — and splitting it left half-made credentials that could
       // not sign in, with nothing on screen saying why.

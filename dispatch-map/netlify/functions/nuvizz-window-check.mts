@@ -11,7 +11,8 @@
 //
 //   POST { fromDate, toDate }        a calendar range (the grid's Custom / Last-N-days window)
 //   POST { arrivalPeriod: '0d' }     a NuVizz period preset
-//        + statusCodes?: string[]    clamped to open work (10/20/40/50); none → all four
+//        + statusCodes?: string[]    clamped to open work (10/20/40/50); none → all four;
+//                                    closed codes only (90/91/99) → 400, no call spent
 //        + shown: ShownRow[]         what the grid is showing: stopNbr, status, day, routeName,
 //                                    weight, cartons, volume, businessName, city
 //
@@ -21,7 +22,7 @@
 
 import { setCallTrigger } from './lib/nuvizz-request.mts';
 import { requireUser, readJsonBody, jsonResponse, throttled } from './lib/require-user.mts';
-import { checkCodes, diffWindow, pullLiveWindow, ACTIVE_CODES } from './lib/window-check.mts';
+import { checkCodes, closedOnlyRequest, diffWindow, pullLiveWindow, ACTIVE_CODES } from './lib/window-check.mts';
 
 const MAX_SHOWN_ROWS = 6000;
 
@@ -46,6 +47,11 @@ export default async (req: Request): Promise<Response> => {
     : null;
   const period = !range && typeof body.arrivalPeriod === 'string' ? body.arrivalPeriod : null;
   if (!range && !period) return jsonResponse({ ok: false, error: 'give fromDate+toDate or arrivalPeriod' }, 400, cors);
+  // A grid filtered to Completed/Cancelled only has no open work on screen to compare: refuse
+  // BEFORE the call rather than spend it listing every open order as "not shown here".
+  if (closedOnlyRequest(body.statusCodes)) {
+    return jsonResponse({ ok: false, error: 'Nothing to compare: the grid is filtered to Completed/Cancelled only, and the check compares open work (Un-Planned, Planned, In-Transit). Add one of those, or clear the status filter. No NuVizz call was made.' }, 400, cors);
+  }
   const codes = checkCodes(body.statusCodes);
   const shownIn: any[] = Array.isArray(body.shown) ? body.shown.slice(0, MAX_SHOWN_ROWS) : [];
   // Only open work is compared (see lib/window-check.mts): rows on screen outside the checked
