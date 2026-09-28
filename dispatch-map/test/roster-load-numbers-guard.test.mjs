@@ -119,3 +119,21 @@ test('no code or document outside CLAUDE.md\'s banned list says the load number 
   }
   assert.deepEqual(hits, [], 'banned sentence(s) found — the roster HAS the load numbers (CLAUDE.md)');
 });
+
+// ONE RULE FOR READING A STAMP (v1.82.0 round 2, REVIEW #18/#19). A Save rewrites a stored row's plan
+// without touching the stamps, so a raw `row.rosterLoadNbr` can name MARCUS's load beside "Route JOE",
+// and a raw `row.heldOn` can say "still on Friday's load" about an order just planned. Every reader
+// goes through src/lib/route-load-stamp.js (stampedLoadOf / heldLoadOf). Only these touch the fields:
+const RAW_STAMP_OK = new Map([
+  ['dispatch-map/netlify/functions/lib/route-load-day.mts', 'the writer'],
+  ['dispatch-map/src/lib/route-load-stamp.js', 'the one reader'],
+  ['dispatch-map/src/lib/debug-capture-scrub.js', 'a raw snapshot for an agent, labelled as such'],
+  ['dispatch-map/netlify/functions/lib/window-check.mts', '`loadDay` on the CHECK payload, which the client fills through stampedLoadOf'],
+  ['dispatch-map/netlify/functions/lib/refresh-stops-core.mts', 'the carry-forward asks only whether ANY stamp is present, to consult the live row instead'],
+]);
+test('nothing reads a raw load stamp outside the writer and the one shared reader', () => {
+  const RAW = /\.(?:rosterLoadNbr|rosterLoadId|rosterLoadVia|rosterLoadRoute|heldOn|loadDay)\b/;
+  const files = ['dispatch-map/netlify/functions', 'dispatch-map/src'].flatMap((r) => walk(r, []));
+  const hits = files.filter((f) => !RAW_STAMP_OK.has(f) && RAW.test(readFileSync(join(REPO, f), 'utf8')));
+  assert.deepEqual(hits, [], 'read the stamp through stampedLoadOf / heldLoadOf (src/lib/route-load-stamp.js)');
+});

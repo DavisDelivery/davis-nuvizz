@@ -74,8 +74,9 @@ the data is perishable.
   status and stop count for that day. The stop list (77128) carries the route NAME only, and route
   names repeat daily. The join is roster load number → one `/load/info` by that number. Since v1.82.0
   the scan writes the load that holds each routed order onto the row (`rosterLoadNbr`,
-  `rosterLoadId`, `loadDay`; `heldOn` for an order still on a past day's load, shown unplanned).
-  No brief, agent or orchestrator may treat "does the roster have load ids" as an open question.
+  `rosterLoadId`, `loadDay`; `heldOn` for an order still on a past day's load, shown unplanned) —
+  read them through `src/lib/route-load-stamp.js` (`stampedLoadOf` / `heldLoadOf`), which drops a
+  stamp a Save has overtaken since the scan. No brief, agent or orchestrator may treat "does the roster have load ids" as an open question.
 - Netlify PAT is provided fresh each session and never stored. GitHub PAT is
   verified before use (may rotate).
 
