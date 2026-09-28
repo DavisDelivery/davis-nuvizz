@@ -50,7 +50,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -193,7 +193,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.87.1';
+const APP_VERSION = '1.87.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -247,6 +247,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.87.2', 'THE COMPARE CARD NOW SAYS WHAT TRUCK EACH STOP CAN TAKE. Chad, with BRIAN open in Compare: \u201cI want the compare panel to have a faint green or red highlight if they are tractor friendly or not.\u201d The Selected window has painted a stop green (a 53-footer can go here) since v0.46.5 and red (somebody here said it cannot) since v1.37.1, but once the stop was sent to a card the card said neither \u2014 and the card is where the router decides what truck the load needs. Each stop row on a Compare card now wears a faint green for tractor-trailer friendly and a faint red for a Box-only mark or a confirmed \u201cNo tractor trailer\u201d, on the phone and the desktop alike. ONE RULE: the rows ask the same two helpers the Selected window asks, fed the same notes and the same lime-paint-aware tractor history, so a stop cannot be green in the selection and plain on the card it was sent to. A stop nobody has checked stays uncoloured, exactly as in the Selected window \u2014 red is the stated no, not the unknown. FAINTER THAN THE SELECTED WINDOW, AND MEASURED: at that window\u2019s shade a red row swallowed the card\u2019s own red \u201c30M LATE\u201d badge, so the card uses the lighter shade and the badge still reads. Dragging a stop across a coloured row keeps the colour and still draws the blue drop line; a plain row\u2019s drag cue is unchanged. Hovering a coloured row names why it is coloured. Nothing else on the card changes: counts, Send / Save, the map, the selection tools and closing a card are untouched. PUTTING IT BACK IS ONE REVERT \u2014 this adds a mark and is one commit. 10 new tests.'],
   ['1.87.1', 'EVERY COMPARE ROW WITH HOURS NOW SHOWS WHEN THE DOCK OPENS AS WELL AS WHEN IT CLOSES — AND A “CAN’T MAKE” STOP SAYS HOW LATE IT WOULD BE. Chad, 2026-09-29, on CHRIS HEAD’s rows reading “closes 2:30p · auto”: “i dont’ want just the closing time i want opening too.” The row printed only the edge that binds; it now prints the whole window on file (SIMS RECYCLING 7:00a–2:30p · auto), and a dock that states only one edge still says just that edge, never an invented half. VITE_COMPARE_FULL_WINDOW=off puts back “closes 2:30p”. AND: Chad, 2026-09-28, once those rows carried their hours on their own line: “If there’s not enough room on the can’t make 12 p.m. line to put the amount of time it would be late, then I think I’d rather have the amount of time the system’s going to think it’s going to be late than the can’t make it tag.” So on a Compare row that shows its hours (GENESIS BIOSCIENCES: 8:00a–12:00p · auto), the line under it now reads “2H 4M LATE” instead of “CAN’T MAKE 12:00P” — the close is already on the line above. It keeps the no-entry glyph and its hover (“Unreachable in any order …”), so it still reads as a stop no re-ordering will save. A row with no hours on file keeps “can’t make 12:00p”, because there the close would be printed nowhere. Merely-late rows are unchanged. VITE_COMPARE_UNREACHABLE_LATE=off puts “can’t make” back (build-time, so a redeploy). Zero NuVizz calls. 7 new tests.'],
   ['1.87.0', 'STEP 4\u2019S BY DRIVER IS A LIST YOU PICK FROM \u2014 TYPING ONLY NARROWS IT. Chad, on the box that read \u201cVictor, Scott\u201d: \u201cThis should be a list that i select from not a type in situation other than type in to find the name or route to select.\u201d NOW: step 4 \u00b7 Engine \u00b7 By driver lists every driver who ran a route in the 30 days before the day being built \u2014 the roster the engine computes every stop\u2019s candidates against, never the boss \u2014 A\u2192Z, each row saying the truck the draft will plan them on (Tractor / Box truck, the same rule the draft uses, pinned by test) and the routes they run most (\u201cRuns SUW 2 \u00b7 CHE\u201d, read exactly off each day\u2019s cached load roster, never guessed). Tap up to four; they show as chips you can tap off. The box above the list finds a driver by name, NuVizz code or route \u2014 \u201csuw\u201d finds whoever runs Suwanee \u2014 and only narrows the list; nothing typed is ever sent. The Draft button sends the picked drivers\u2019 exact keys, so the two typed-name faults the QA review found cannot happen from this screen: a code like VICTOR landing on the OTHER Victor (the one with an employee card), and \u201cAllen, John\u201d read as two people. SAID PLAINLY: the list is narrower than the old box in one case \u2014 a driver whose last route was more than 30 days ago. Typed, the box still drafted them with a \u201cterritory data may be stale\u201d warning; the list leaves them off, because the same rule would list every driver who has left. The 30 is ROSTER_WINDOW_DAYS, one number. TWO VIEWS: on a phone every row and chip is a 44px thumb target and the box is 16px so iOS does not zoom; on a desktop the rows are compact. The list opens in flow and scrolls itself, like the route card\u2019s driver search. WHAT IT READS: one windowed query of the driver days, the employees roster and the cached load rosters \u2014 Firestore only, zero NuVizz calls. Typed names are still accepted by the endpoint for anything else that sends them. PUT IT BACK: one commit \u2014 its revert puts the text box back. 14 new tests, including the real endpoint on an in-memory Firestore; 14 deliberate breaks of the rules each turn a test red. A role the engine refuses is not sent for the list at all \u2014 they see the reason under the button, as before.'],
   ['1.86.0', 'THE BUILD BUTTON STOPS A TRUCK AT WHAT IT CAN CARRY, AND ONLY GREEN ON A 53\u2032 MEANS THE GREEN THE PANEL PAINTS. Chad, after a Build onto CHE (a 53\u2032) and SCOTT (a 26\u2032 box) put 24 stops and 30 skids on the box and one stop on the trailer, with the Selected panel reading \u201cleaves 11 a tractor can run\u201d: \u201ca 14 skid box truck stops with 14 skids and if not enough green stops to fit on a tractor then it stops there too or at 30 skids either one. then lists everything that didn\u2019t fit.\u201d READ OFF THE CODE, THREE THINGS STOOD IN THE WAY, and the real Build pipeline reproduces the screen from them \u2014 on a 26-stop board of the same shape it put 1 stop on CHE and 25 stops, 33 real skids, on SCOTT, having counted 0: (1) SKIDS WERE NOT COUNTED \u2014 the Build was sent pallets, weight and line items but never cartons, the field NuVizz carries the skid count in, so a stop\u2019s skids came only from lines itemised in pallets and a box filled on weight alone; (2) \u201cGREEN\u201d WAS NARROWER THAN THE PANEL\u2019S \u2014 with \u201cOnly green on a 53\u2032\u201d ticked the Build held every stop without a HAND-PAINTED green to a box, while the panel paints green for the painted mark, the \u201cTractor trailer friendly\u201d badge and a tractor having delivered there; (3) WHAT A LOAD ALREADY CARRIES WAS NOT COUNTED \u2014 a load that already holds stops was handed its whole truck again. NOW, on the same board: CHE takes the 11 stops the panel paints green (16 skids), SCOTT stops at exactly 14 skids, and the 6 stops that fit nowhere are listed with the reason (\u201cover skid capacity\u201d). A tractor stops at its own profile\u2019s skids too \u2014 the shipped tractor profile says 28; if yours holds 30 that is one field in Profiles. The browser sends the panel\u2019s own answer (stopTractorFriendly, the rule the Selected rows, \u201cDrop N non-tractor\u201d and the bottom grid already share) and what each picked load carries; the server counts both with its own freight rule. The panel\u2019s green only answers what the tick asks \u2014 a red Box-only mark, a hand-ticked No tractor trailer or No 53ft, and a Uline advisory still keep a 53\u2032 away exactly as before. Fill my loads reads the same green under the same tick, so the two buttons still agree on the same stop. A load that already carried freight reports its true load against its whole truck in the result (not \u201c9 / 9\u201d). PUT IT BACK, one rule at a time, each a Netlify switch read only in lib/routing-build-rules.mts: ROUTING_BUILD_COUNT_SKIDS=off, ROUTING_BUILD_GREEN_MATCHES_PANEL=off (both buttons), ROUTING_BUILD_COUNTS_EXISTING=off; every build\u2019s result says which ran (result.buildRules). WHAT IT TOUCHES: the Build Panel \u2014 the Build button\u2019s request and the server build path, and Fill my loads\u2019 request; the Compare cards, staging, Save and the map are untouched. 13 new tests run the real Build handler on an in-memory Firestore with every other network call refused, including Chad\u2019s board as it was and as it is now; ten deliberate breaks of the rules each turn a test red. A stop already on a load that is selected again is counted once, as a stop being re-planned.'],
@@ -21605,7 +21606,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, savedAt = null, failedAt = null, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLocs = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, savedAt = null, failedAt = null, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -21632,6 +21633,19 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
       const chip = timeMarkChip(notes.get(s.matchKey), dayKey, { autoHours: COMPARE_AUTO_HOURS_ON, fullWindow: COMPARE_FULL_WINDOW_ON });
       if (chip) timeMarkByStop.set(String(s.stopNbr), chip);
     }
+  }
+  // CAN A 53-FOOTER GO HERE — the faint green / red on each row (v1.81.4). Chad: "I want the
+  // compare panel to have a faint green or red highlight if they are tractor friendly or not."
+  // The SAME two helpers the Selected window reads (stopTractorFriendly / stopTractorBlocked),
+  // fed the same notes and the same paint-toggle-aware tractorLocs, so a stop cannot be green
+  // in the selection and plain on the card it was sent to. Only the tinted rows are stored;
+  // the unknown ones stay uncoloured and a stub row has no customer behind it to ask about.
+  const tractorToneByStop = new Map();
+  for (const s of rows) {
+    if (s.__unresolved) continue;
+    const blocked = stopTractorBlocked(s, notes);
+    const tractorOk = !blocked && stopTractorFriendly(s, notes, tractorLocs);
+    if (blocked || tractorOk) tractorToneByStop.set(String(s.stopNbr), { tractorOk, blocked });
   }
   // Orders staged for removal (in `removed` but no longer in the live order) — shown in the footer.
   const removedRows = (route.removed || [])
@@ -21833,6 +21847,8 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
             // positional lookup would leave the warning sitting on whatever row inherited
             // the index — the most convincing possible way to be wrong.
             const pf = preflightByStop.get(id) || null;
+            // Green / red for a 53-footer, or undefined for a stop nobody has marked (v1.81.4).
+            const tt = tractorToneByStop.get(id);
             // THE SAME CLOCK TWICE IS NOISE. A hopeless verdict already prints the close it
             // cannot make ("can't make 11:00a"), so repeating "closes 11:00a" beside it says
             // nothing new and, on a phone, wraps the marks line onto two — on exactly the rows
@@ -21870,7 +21886,15 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
               onDragOver={isMobile ? undefined : (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverId(id); }}
               onDragLeave={isMobile ? undefined : () => setDragOverId((d) => (d === id ? null : d))}
               onDrop={isMobile ? undefined : (e) => onDrop(e, s.stopNbr)}
-              className={`text-[11px] ${isMobile ? '' : 'cursor-grab active:cursor-grabbing'} ${dragOverId === id ? 'border-t-2 border-t-blue-500 bg-blue-50/60' : ''}`}
+              // The drop line and the freight colour share this row; compareRowTone
+              // (lib/routing-select.js) keeps the line on every row and never lets the drag's
+              // blue fill cover a green or red one.
+              className={`text-[11px] ${isMobile ? '' : 'cursor-grab active:cursor-grabbing'} ${compareRowTone({ ...tt, dragOver: dragOverId === id })}`}
+              title={tt?.blocked
+                ? 'NO TRACTOR TRAILER — somebody here marked this stop box-only or ticked "No tractor trailer" (red)'
+                : tt?.tractorOk
+                  ? 'Tractor-trailer friendly — a 53′ trailer can be sent here (green)'
+                  : undefined}
             >
               <div className="px-2 py-1 flex items-center gap-1.5">
                 {!isMobile && <GripVertical size={11} className="text-slate-300 shrink-0" />}
@@ -21990,7 +22014,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
 // ungeocoded ones. Card membership, display, freight totals and the Save payload all use
 // boardStopById so what the card shows == what Save sends (a coord-less stop is still on
 // the load). Anything that needs geometry keeps using stopById.
-function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null, notice = null, onDismissNotice = null, maxCards = 6 }) {
+function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, tractorLocs = null, dayKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null, notice = null, onDismissNotice = null, maxCards = 6 }) {
   const lookup = boardStopById || stopById;
   // Save sends this whole board to NuVizz through nuvizz-write, which requires dispatcher.
   // Its own gate rather than a prop: this component owns the Save button and the confirm path,
@@ -22750,6 +22774,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
             route={r}
             preflight={preflightByKey?.get?.(r.key) || null}
             notes={notes}
+            tractorLocs={tractorLocs}
             dayKey={dayKey}
             stopById={lookup}
             otherKeys={wbRoutes.map((x) => x.key).filter((k) => k !== r.key)}
@@ -28117,7 +28142,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
                     )}
                     {engineResultContent}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} roadMatrixOn={roadMatrixOn} onToggleRoadMatrix={setRoadMatrixOn} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} tractorLocs={tractorLocs} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} roadMatrixOn={roadMatrixOn} onToggleRoadMatrix={setRoadMatrixOn} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -28182,7 +28207,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
               flex-1/min-h-0 resolves to what is actually left. */}
           {engineResultContent && <div className="p-2 pb-0 shrink-0 max-h-[45%] overflow-y-auto">{engineResultContent}</div>}
           <div className="flex-1 min-h-0">
-          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} roadMatrixOn={roadMatrixOn} onToggleRoadMatrix={setRoadMatrixOn} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} notice={lastAction} onDismissNotice={() => setLastAction(null)} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} tractorLocs={tractorLocs} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} roadMatrixOn={roadMatrixOn} onToggleRoadMatrix={setRoadMatrixOn} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} notice={lastAction} onDismissNotice={() => setLastAction(null)} />
           </div>
         </div>
       ) : leftPanelOn ? (
