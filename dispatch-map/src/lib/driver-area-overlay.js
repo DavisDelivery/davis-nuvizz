@@ -59,16 +59,6 @@ export function ringReach(it, a) {
 }
 
 /**
- * WHERE EACH RING'S NAME GOES AT THIS ZOOM, OR NOWHERE.
- *
- * `items`: { id, x, y, r, w, h } in container pixels — the ring's centre, its radius and the
- * name's box; an oval also carries { rx, ry, rot } (see ringReach), with `r` the radius of the
- * circle on the same ground, which is what orders it among the others. `view`: { width, height }
- * of the map. Returns Map(id → { x, y }); an id that is absent is not drawn at this zoom.
- *
- * Deterministic: the same rings at the same view always lay out the same way.
- */
-/**
  * WHICH NAME THE POINTER IS ON, or -1. `boxes` are the names as drawn — { left, top, right,
  * bottom } in the same pixels as (x, y) — and `pad` is a little slack round each, so a name reads as
  * pointed at from its edge rather than only from inside the letters. Names never overlap (see
@@ -86,6 +76,16 @@ export function nameAt(boxes = [], x, y, pad = 2) {
 /** The fill a pointed-at driver's area gets: his own colour, see-through. */
 export const HOVER_FILL = 0.22;
 
+/**
+ * WHERE EACH RING'S NAME GOES AT THIS ZOOM, OR NOWHERE.
+ *
+ * `items`: { id, x, y, r, w, h } in container pixels — the ring's centre, its radius and the
+ * name's box; an oval also carries { rx, ry, rot } (see ringReach), with `r` the radius of the
+ * circle on the same ground, which is what orders it among the others. `view`: { width, height }
+ * of the map. Returns Map(id → { x, y }); an id that is absent is not drawn at this zoom.
+ *
+ * Deterministic: the same rings at the same view always lay out the same way.
+ */
 export function placeRingLabels(items = [], view = {}) {
   const W = Number(view.width) || 0;
   const H = Number(view.height) || 0;
@@ -223,11 +223,13 @@ export function makeDriverAreaOverlayClass(google) {
       this.idle = null;
       this.watch = null;
       this.pointed = null;
+      this.mouse = null;                                     // the last mouse position over the map
     }
 
     onAdd() {
       const box = document.createElement('div');
       box.setAttribute('data-driver-area-names', String(this.labels.length));
+      box.setAttribute('data-driver-area-pointed', '');     // whose area is filled in; '' is nobody's
       // floatPane puts the names above the pins so they can be READ; pointer-events:none means a
       // click still lands on whatever is underneath. No z-index: the box goes in FIRST (below),
       // so everything else in the pane — the driver-truck plates, the hover cards, an info
@@ -263,14 +265,17 @@ export function makeDriverAreaOverlayClass(google) {
     // that moment (their own boxes on screen), so a name that has moved with a pan is still found.
     watchPointer(div) {
       if (!div || !div.addEventListener) return;
-      const at = (e) => {
-        const shown = this.els.map((el) => (el.style.display === 'none' ? null : el.getBoundingClientRect()));
-        const i = nameAt(shown, e.clientX, e.clientY);
-        this.point(i >= 0 ? this.labels[i].key : null);
+      const move = (e) => {                                 // a mouse or pen; a drag is not a hover
+        if (e.pointerType === 'touch' || e.buttons) return;
+        this.mouse = { x: e.clientX, y: e.clientY };
+        this.pointAt(this.mouse.x, this.mouse.y);
       };
-      const move = (e) => { if (e.pointerType !== 'touch' && !e.buttons) at(e); };   // a drag is not a hover
-      const down = (e) => { if (e.pointerType === 'touch') at(e); };                 // a phone taps instead
-      const leave = (e) => { if (e.pointerType !== 'touch') this.point(null); };
+      const down = (e) => { if (e.pointerType === 'touch') this.pointAt(e.clientX, e.clientY); };   // a phone taps
+      const leave = (e) => {
+        if (e.pointerType === 'touch') return;
+        this.mouse = null;
+        this.point(null);
+      };
       div.addEventListener('pointermove', move, { capture: true, passive: true });
       div.addEventListener('pointerdown', down, { capture: true, passive: true });
       div.addEventListener('pointerleave', leave, { passive: true });
@@ -279,6 +284,21 @@ export function makeDriverAreaOverlayClass(google) {
         div.removeEventListener('pointerdown', down, { capture: true });
         div.removeEventListener('pointerleave', leave);
       };
+    }
+
+    // The name under (x, y) in the page's own pixels — unless something is drawn OVER the names
+    // there: a map button, an info window, the attribution, or anything else in the float pane (the
+    // truck plates and hover cards go in after the names, so they paint over them). Pointing at
+    // those means them, not the name beneath.
+    pointAt(x, y) {
+      const shown = this.els.map((el) => (el.style.display === 'none' ? null : el.getBoundingClientRect()));
+      const i = nameAt(shown, x, y);
+      const top = i >= 0 && document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+      const pane = this.box && this.box.parentNode;
+      const covered = !!top && (
+        (pane && pane.contains(top) && !this.box.contains(top))
+        || !!(top.closest && top.closest('button, a, input, select, textarea, .gm-style-iw, .gm-style-iw-c, .gm-style-cc, .gm-svpc')));
+      this.point(i >= 0 && !covered ? this.labels[i].key : null);
     }
 
     point(key) {
@@ -331,6 +351,9 @@ export function makeDriverAreaOverlayClass(google) {
         el.style.left = `${(p.x + dx).toFixed(1)}px`;
         el.style.top = `${(p.y + dy).toFixed(1)}px`;
       });
+      // THE NAMES MOVED UNDER A STILL MOUSE (a wheel zoom, the map recentring itself): what it
+      // points at may have changed, so look again rather than leave the last driver filled in.
+      if (this.mouse) this.pointAt(this.mouse.x, this.mouse.y);
     }
 
     onRemove() {
@@ -340,6 +363,7 @@ export function makeDriverAreaOverlayClass(google) {
       this.idle = null;
       if (this.watch) this.watch();
       this.watch = null;
+      this.mouse = null;
       this.point(null);
       if (this.box && this.box.parentNode) this.box.parentNode.removeChild(this.box);
       this.box = null;

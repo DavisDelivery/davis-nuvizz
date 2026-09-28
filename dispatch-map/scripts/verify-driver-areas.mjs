@@ -320,7 +320,11 @@ const reachableName = (page, prefer) => page.evaluate((want) => {
   const ok = els.map((el) => {
     const r = el.getBoundingClientRect(); const x = (r.left + r.right) / 2, y = (r.top + r.bottom) / 2;
     const under = document.elementFromPoint(x, y);
-    return under && div && div.contains(under) ? { text: el.textContent, x, y, under: !!under.closest('[data-driver-area-names]') } : null;
+    // The overlay's own rule for "something is drawn over the name here" — skip those names.
+    const box = el.closest('[data-driver-area-names]'), pane = box && box.parentNode;
+    const covered = under && ((pane && pane.contains(under) && !box.contains(under))
+      || under.closest('button, a, input, select, textarea, .gm-style-iw, .gm-style-iw-c, .gm-style-cc, .gm-svpc'));
+    return under && div && div.contains(under) && !covered ? { text: el.textContent, x, y, under: !!under.closest('[data-driver-area-names]') } : null;
   }).filter(Boolean);
   return ok.find((n) => n.text === want) || ok[0] || null;
 }, prefer || null);
@@ -419,6 +423,21 @@ console.log('\nDriver areas — the Map tab, desktop (1440x950)');
       (await pointedOf(page)) === '' && after.every((c) => c.fill === 0)
         ? ok('moving the pointer off puts it back — nothing filled')
         : bad(`after moving off: pointed ${await pointedOf(page)}, fills ${after.map((c) => c.fill).join(',')}`);
+      // Pointed at, then the rings switched off and on: nothing may come back filled, and the old
+      // rings' pointer watch must be gone (a stale one would fill shapes no longer on the map).
+      await page.mouse.move(target.x, target.y); await page.waitForTimeout(200);
+      await sw.click(); await page.waitForTimeout(500); await sw.click(); await page.waitForTimeout(900);
+      await page.mouse.move(3, 3); await page.waitForTimeout(150);
+      const again = await liveShapes(page);
+      again.length === 2 * RING_COUNT && again.every((c) => c.fill === 0) && (await pointedOf(page)) === ''
+        ? ok('pointed at, switched off and on: the rings come back hollow')
+        : bad(`after off/on: ${again.length} live shapes, fills ${again.map((c) => c.fill).join(',')}`);
+      await page.mouse.move(target.x, target.y); await page.waitForTimeout(200);
+      const fresh = await liveShapes(page);
+      ringShapesOf(target.text).every((k) => fresh[k].fill > 0) && (await circles(page)).filter((c) => !c.onLatest || !c.onMap).every((c) => c.fill === 0)
+        ? ok('and pointing again fills the new rings — never the ones taken off')
+        : bad('pointing after off/on filled the wrong shapes');
+      await page.mouse.move(3, 3); await page.waitForTimeout(150);
     }
     const s1 = await statusOf(page);
     s1 && s1.state === 'ready' && s1.text.includes(`${LAYER.rings.length} drivers · Aug 31 – Sep 25, 2026`)

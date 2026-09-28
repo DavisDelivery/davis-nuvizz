@@ -430,9 +430,10 @@ export function haversineKm(a, b) {
 // ground is the better claim, and that is the whole test:
 //
 //   • THE OVAL IS THE SMALLEST ONE, centred where the circle is, that holds the same 70% of his
-//     stops — found by trying every direction in 5° steps and every stretch up to 4 to 1. A grid,
-//     not a fit with a random start, so the same stops always draw the same oval; and the circle
-//     is one of the shapes tried, so an oval can never cover more ground than the circle would.
+//     stops — found by trying every direction in 5° steps and fifteen stretches up to 4 to 1, each
+//     measured as it would be drawn (floors below applied). A grid, not a fit with a random start,
+//     so the same stops always draw the same oval; and the circle is one of the shapes tried, so an
+//     oval can never cover more ground than the circle would.
 //   • NEVER NARROWER THAN 2.5km (the circle is never smaller than that) AND NEVER LONGER THAN 4 TO
 //     1. The very smallest oval round a road run is a needle as thin as the road, which claims a
 //     precision four weeks of stops do not have; 4 to 1 still reads as a run.
@@ -448,17 +449,18 @@ export function haversineKm(a, b) {
 // SET BY LOOKING AT DAVIS'S OWN HISTORY, 2026-09-28, as Chad asked: September 1–28, 13,876
 // deliveries, 52 rings with enough stops to have a shape, every one drawn over its own stops and
 // looked at. 24 come out ovals, and every one of them is work running along a road or between two
-// towns. There is no clean gap in the numbers — the smallest ovals run 0.31, … 0.56, 0.58, 0.61,
-// then 0.64, 0.64, 0.65 — so the line is where the pictures stop being runs: just past it are
-// Brent Dixon and Sirdedrick Sheats (scattered), Brian Worley, Theo Afunyah and Anthony Bennett
-// (oblong patches round a town), and Denis Salkic — a town with a trail of stops off one side, the
-// case a line has to keep round, because an oval there would point down the trail. The first
-// version (1.81.0) shaped the oval from how the stops spread (their covariance) and, on this same
-// history, left three plain runs round — Victor Fernandez, Rasheed Davis, Marcus Young — because
-// their outlying stops pulled that shape off the band. That is why the oval is now searched for.
+// towns. There is no clean gap in the numbers — the ovals' share of the circle's ground runs 0.31,
+// … 0.56, 0.57, 0.61, then 0.63, 0.65, 0.65 — so the line is where the pictures stop being runs:
+// just past it are Anthony Bennett, Brian Worley and Theo Afunyah (oblong patches round a town),
+// Brent Dixon and Sirdedrick Sheats (scattered), George Leonard (one dense spot and a spray), and
+// Denis Salkic — a town with a trail of stops off one side, the case a line has to keep round,
+// because an oval there would point down the trail. The first version (1.81.0) shaped the oval
+// from how the stops spread (their covariance) and, on this same history, left three plain runs
+// round — Victor Fernandez, Rasheed Davis, Marcus Young — because their outlying stops pulled that
+// shape off the band. That is why the oval is now searched for.
 // Checked on made-up work too, 80 tries of each shape at 60 to 400 stops: a round town came out an
-// oval at most once in 80; three or four towns along a road, 64 in 80 or more (77 from 100 stops);
-// a town with a quarter of its work trailing out along one road, at most 7 in 80 and none from 200.
+// oval at most once in 80; three or four towns along a road, 68 in 80 or more (79 from 100 stops);
+// a town with a quarter of its work trailing out along one road, at most 8 in 80 and none from 200.
 export const OVAL_RULE = Object.freeze({
   minStops: 60, minPlaces: 12, minAspect: 1.5, maxStretch: 4,
   maxGround: 0.62, fewStops: 100, maxGroundFew: 0.5,
@@ -516,28 +518,32 @@ export function fitOval(points = [], centre = null, opts = {}) {
   const at = Math.min(n - 1, Math.floor(pctile * n));    // the circle's own percentile
   const far = new Float64Array(n);                         // how far out each stop is, in this shape
   for (let i = 0; i < n; i++) far[i] = xs[i] * xs[i] + ys[i] * ys[i];
-  const r2 = kthSmallest(far, at);                         // the circle, measured the same way
-  // Every direction, every stretch: an oval stretched q times as long as it is wide, holding the
-  // same 70%, covers ground in proportion to k² — so the smallest k² is the smallest oval.
-  let best = { q: 1, deg: 0, k2: r2 };
+  const R = Math.max(minKm, Math.sqrt(kthSmallest(far, at)));   // the circle, measured the same way
+  // Every direction, every stretch: an oval q times as long as it is wide that holds the same 70%
+  // has radii k·√q and k/√q. It is judged AS IT WOULD BE DRAWN — the short radius floored at 2.5km
+  // first — because the smallest oval before the floor can be a needle along a narrow road, and
+  // floored it keeps the length the needle needed while a less stretched one is smaller on paper.
+  // Fifteen stretches from 1.1 up to exactly 4 to 1, evenly spaced as ratios.
+  const stretches = Array.from({ length: 15 }, (_, i) => rule.maxStretch ** ((i + 1) / 15));
+  let best = { deg: 0, majorKm: R, minorKm: R, ground: R * R };
   for (let deg = 0; deg < 180; deg += 5) {
     const c = Math.cos((deg * Math.PI) / 180), s = Math.sin((deg * Math.PI) / 180);
-    for (let q = 1.1; q <= rule.maxStretch + 1e-9; q *= 1.1) {
+    for (const q of stretches) {
       for (let i = 0; i < n; i++) {
         const u = xs[i] * c + ys[i] * s;
         const v = ys[i] * c - xs[i] * s;
         far[i] = (u * u) / q + v * v * q;
       }
-      const k2 = kthSmallest(far, at);
-      if (k2 < best.k2) best = { q, deg, k2 };             // strictly smaller: a tie keeps the rounder
+      const k = Math.sqrt(kthSmallest(far, at));
+      const minorKm = Math.max(minKm, k / Math.sqrt(q));
+      const majorKm = Math.max(minorKm, k * Math.sqrt(q));
+      const ground = majorKm * minorKm;
+      if (ground < best.ground) best = { deg, majorKm, minorKm, ground };   // strictly: a tie keeps the rounder
     }
   }
-  const k = Math.sqrt(best.k2);
-  const minorKm = Math.max(minKm, k / Math.sqrt(best.q));
-  const majorKm = Math.max(minorKm, k * Math.sqrt(best.q));
-  const R = Math.max(minKm, Math.sqrt(r2));
+  const { majorKm, minorKm } = best;
   const aspect = majorKm / minorKm;
-  const areaRatio = (majorKm * minorKm) / (R * R);
+  const areaRatio = best.ground / (R * R);
   const maxGround = n < rule.fewStops ? rule.maxGroundFew : rule.maxGround;
   return { majorKm, minorKm, angleDeg: best.deg, aspect, areaRatio, better: aspect >= rule.minAspect && areaRatio <= maxGround };
 }

@@ -90,7 +90,9 @@ test('colours are the sheet\'s palette, handed out by the same rule the paper us
     assert.equal(r.colour, expect.get(r.key), r.label);
     assert.ok(RING_PALETTE.includes(r.colour), `${r.label}: ${r.colour} is a palette colour`);
   }
-  assert.equal(ringColours([{ key: 'A' }]).get('A'), RING_PALETTE[0], 'with nothing near him, the first colour');
+  const alone = [{ key: 'A', circles: [{ lat: 34, lng: -84, radiusKm: 6 }] }];
+  assert.equal(ringColours([{ key: 'A' }], alone).get('A'), RING_PALETTE[0], 'with nothing near him, the first colour');
+  assert.equal(ringColours([{ key: 'A' }, { key: 'B' }]).get('B'), RING_PALETTE[1], 'and with no positions at all, rank order');
 });
 
 test('A DRIVER WHO WORKS TWO AREAS GETS TWO RINGS, not one stretched across the ground between', () => {

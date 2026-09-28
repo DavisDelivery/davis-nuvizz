@@ -109,6 +109,20 @@ test('TOO LITTLE WORK TO SHOW A DIRECTION KEEPS THE CIRCLE — the stops, and th
   assert.ok(fitOval(over(OVAL_RULE.minPlaces), mean(over(OVAL_RULE.minPlaces))), `${OVAL_RULE.minPlaces} places is enough to fit`);
 });
 
+test('A NARROW ROAD RUN IS JUDGED BY THE OVAL AS DRAWN — not by a needle the 2.5km floor then fattens', () => {
+  // 100 stops spread evenly along 12km of one east-west road, never more than 650m off it. The very
+  // smallest oval holding 70% of them is a needle; floored to 2.5km wide it keeps the needle's
+  // extra length and covers MORE ground than a shorter oval would. Judged before the floor, this
+  // run stayed round (4.6 x 2.5km, 0.625 of the circle's ground); judged as drawn it is 4.3 x 2.5.
+  const off = [0, 0.45, -0.45, 0.225, -0.225, 0.65, -0.65];
+  const road = Array.from({ length: 100 }, (_, i) => ({ lat: 34 + off[i % off.length] / KY, lng: -84 + (-6 + (12 * i) / 99) / kx(34) }));
+  const f = fitOval(road, mean(road));
+  assert.equal(f.better, true, `a road run is an oval (${f.majorKm.toFixed(2)} x ${f.minorKm.toFixed(2)}km, ground ${f.areaRatio.toFixed(3)})`);
+  assert.equal(f.angleDeg, 0, 'lying along the road');
+  assert.equal(f.minorKm, 2.5, 'as narrow as an oval is ever drawn');
+  assert.ok(f.majorKm < 4.4, `and no longer than it has to be (${f.majorKm.toFixed(2)}km)`);
+});
+
 test('an oval is never narrower than the 2.5km a circle is never smaller than, and never inside-out', () => {
   // Stops along one straight street: without the floor the oval would be a line.
   const line = Array.from({ length: 90 }, (_, i) => ({ lat: 34.05 + (i % 30) * 0.004, lng: -83.95 }));

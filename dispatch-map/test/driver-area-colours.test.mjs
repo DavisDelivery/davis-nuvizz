@@ -190,7 +190,10 @@ test('POINTING AWAY PUTS IT BACK; pointing at another moves the fill to him', ()
   assert.ok(ringsOf(made).every((s) => s.o.fillOpacity === 0 && s.o.strokeWeight === 2), 'all hollow again');
 });
 
-test('taking the rings off the map forgets what was pointed at', () => {
+test('taking the rings off the map drops the fill bookkeeping — nothing left to repaint later', () => {
+  // The pointer wiring itself (listeners on, and off again when the rings go) runs in a real
+  // browser: verify-driver-areas.mjs points at a name, switches the rings off and on, and checks
+  // nothing comes back filled.
   const { google } = fakeGoogle();
   const o = new (makeDriverAreaOverlayClass(google))(LAYER);
   o.attach({});
