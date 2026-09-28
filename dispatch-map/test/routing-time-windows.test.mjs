@@ -52,13 +52,21 @@ test('a 3pm appointment at a dock that says 2pm: the APPOINTMENT stands and the 
 });
 
 test('CLOSED ON FRIDAY: there is no window to plan around, there is no delivery', () => {
-  const note = { closed_days: ['fri'], receiving_hours: { fri: { open: '08:00', close: '14:00' } } };
+  // Dispatcher-typed: since 2026-09-28 a closed day counts only when a person recorded it or THIS
+  // order says it (lib/closed-days.js); a scanner day stored from an old order counts for nothing.
+  const note = { closed_days: ['fri'], manual_overrides: { closed_days: true }, receiving_hours: { fri: { open: '08:00', close: '14:00' } } };
   const r = stopTimeRestriction({ stop: stamp('09:00', '09:30'), note, date: FRI });
   assert.equal(r.closedToday, true);
   assert.equal(r.label, 'closed Friday');
   // The same customer on Monday is a normal dock.
   const mon = stopTimeRestriction({ stop: {}, note: { ...note, receiving_hours: { mon: { open: '08:00', close: '14:00' } } }, date: '2026-09-14' });
   assert.equal(mon.closedToday, false);
+  // The ORDER saying it is enough, with nothing on file for the customer at all.
+  const said = stopTimeRestriction({ stop: { orderInstructions: 'SPL-INSTR-TEXT: CLOSED ON FRIDAYS' }, note: null, date: FRI });
+  assert.equal(said.closedToday, true);
+  // …and a scanner day stored from some earlier order does not close it.
+  const stored = { closed_days: ['fri'], auto_matches: { closed_days: [{ pattern: 'closed_fri', text: 'CLOSED ON FRIDAYS' }] } };
+  assert.equal(stopTimeRestriction({ stop: {}, note: stored, date: FRI })?.closedToday ?? false, false);
 });
 
 test('"opens at 10" with no close is a real constraint (cannot lead the route) and no deadline', () => {

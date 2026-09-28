@@ -83,7 +83,7 @@ export function stopTimeRestriction(
   const dayKey = weekdayKey(date);
   const sources: string[] = [];
 
-  if (dayKey && closedDayTier(note, dayKey)) {
+  if (dayKey && closedDayTier(note, dayKey, stop)) {
     const name = DAY_NAME[dayKey] || dayKey;
     return { openMin: null, closeMin: null, closedToday: true, sources: [`closed ${name}`], label: `closed ${name}` };
   }
