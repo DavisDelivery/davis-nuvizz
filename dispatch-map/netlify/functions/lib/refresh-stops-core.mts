@@ -22,18 +22,16 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields, readActivePoolMeta, readActivePool, readFrozenLedger, writeFrozenLedger, recordPlanVerdicts } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields, readActivePoolMeta, readFrozenLedger, writeFrozenLedger, recordPlanVerdicts } from './firestore.mts';
 import type { FrozenLedgerEntry, PlanVerdictRow } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanPull, completedScanRows, etDateForTargetUTC, boardDayFor, pastOverrideClampEnabled, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays, LIST_MAX_RESULT, BOARD_WRITE_GRACE_MIN } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich, twoScanPull, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays, LIST_MAX_RESULT, BOARD_WRITE_GRACE_MIN } from './nuvizz-list.mts';
 import { buildActivePool } from './active-pool.mts';
 import { strayFinishedRows, openPastRows, planRefile, planOpenStrays, nextCopyDays, rotate } from './refile-core.mts';
 import type { FrozenCopy, StrayRow, Heal } from './refile-core.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterPull } from './nuvizz-loads.mts';
 import { nameCollisionEnabled, nameCollisionLoadMax, nameCollisionMemoTtlMs, detectNameCollisions, membershipUsable, splitByMembership, otherInstances, memoUsable, collisionLedgerRows } from './name-collision.mts';
 import type { CollisionMemoEntry, RosterLoadLite } from './name-collision.mts';
-import { readNameCollisionMemo, writeNameCollisionMemo, readRouteLoadMemo, writeRouteLoadMemo } from './firestore.mts';
-import { applyRouteLoadDay, routeLoadDayEnabled, routeLoadHeldEnabled, routeLoadDayReadMax, ROUTE_LOAD_FIELDS, type PriorFiling } from './route-load-day.mts';
-import { heldLoadOf } from '../../../src/lib/route-load-stamp.js';
+import { readNameCollisionMemo, writeNameCollisionMemo } from './firestore.mts';
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
@@ -301,8 +299,6 @@ export function makeDemotionLookup(deps: {
   demoteByNbr: Map<string, { s: any; p: any }>;
   readRoster: () => Promise<{ loads: any[] } | null>;
   readLoadStopNbrs: (loadNbr: string) => Promise<Set<string> | null>;
-  /** loads already read by /load/info THIS run (never a stored read) — used before a budgeted read */
-  sharedLoadMembers?: Map<string, Set<string>> | null;
   readStopRecord: (nbr: string) => Promise<any>;
   verdictFromRecord: (rec: any) => boolean | null;
   loadReadBudget: number;
@@ -359,7 +355,6 @@ export function makeDemotionLookup(deps: {
       const realNbr = await rosterNbrFor(routeName);
       if (rosterFailed) return settle('roster-unreadable', `the day's load roster could not be read — held, never guessed`, null);   // (F9)
       if (realNbr) {
-        if (!loadMembers.has(realNbr) && deps.sharedLoadMembers?.has(realNbr)) loadMembers.set(realNbr, deps.sharedLoadMembers.get(realNbr)!);
         if (!loadMembers.has(realNbr)) {
           if (demoteLoadReads >= deps.loadReadBudget) return settle('load-read-budget', `load ${realNbr} (${routeName}) not read — this scan's load-read budget (${deps.loadReadBudget}) was spent`, null);
           demoteLoadReads++;
@@ -658,21 +653,6 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   let nameCollisionMemo: Record<string, CollisionMemoEntry> | null = null;   // read once per run, lazily
   let nameCollisionMemoDirty = false;
   const rosterLoadsCache = new Map<string, RosterLoadLite[] | null>();       // cached roster docs, per run
-  const rosterAtCache = new Map<string, string | null>();                    // …and when each was captured
-  // AN ORDER ON A LOAD IS FILED ON THAT LOAD'S DAY (v1.82.0; NUVIZZ_ROUTE_LOAD_DAY, default ON —
-  // see lib/route-load-day.mts). The roster names every load by NUMBER, per day; one /load/info
-  // by that number says which orders it holds. Resolved once, on the whole pull, before filing.
-  const ROUTE_LOAD_DAY = routeLoadDayEnabled();
-  // Firestore reads (free) of a stored board copy, to learn whether a Save touched an order the last
-  // scan filed on a later board or showed held — a handful on a real day; capped against a bad one.
-  const ROUTE_LOAD_SAVED_READ_CAP = 80;
-  const routeDayByNbr = new Map<string, string>();   // this run's answer: stop → the day it was filed on
-  // Every /load/info read this run MADE, by load number — shared with the name-collision anchor and
-  // the demotion verify so one scan never pays twice for the same load. Never a stored read: a memo
-  // entry answers only for the orders NuVizz has not touched since, which is route-load-day's rule
-  // and not one either of those callers applies.
-  const runLoadMembers = new Map<string, Set<string>>();
-  let routeLoadSummary: Record<string, any> | null = null;
   // Hard per-scan enrichment cap (backstop against a burst). 250 comfortably covers a
   // real day's incremental new orders (~700/day spread across many */15 scans) while
   // bounding the worst case if the registry is ever cold/unavailable — a cold board just
@@ -864,7 +844,6 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       ...(ds.find((d) => d?.frozen) ? { frozen: ds.find((d) => d?.frozen).frozen } : {}),
       // Two loads sharing a name (v1.31.0): the reads this run spent on it and the rows it took
       // off a board, so a "why did 5:26 cost two more calls" is answered from the run row.
-      ...(ds.find((d) => d?.routeLoadDay) ? { routeLoadDay: ds.find((d) => d?.routeLoadDay).routeLoadDay } : {}),
       ...(ds.some((d) => d?.nameCollisions) ? { nameCollisions: {
         checked: ds.reduce((a, d) => a + (Number(d?.nameCollisions?.checked) || 0), 0),
         reads: ds.reduce((a, d) => a + (Number(d?.nameCollisions?.reads) || 0), 0),
@@ -1419,71 +1398,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // TWO requests, whatever the arrival window is set to (v0.95.1 widened it to ±30d) —
       // plus whether either came back at the row cap, which is the one way a wider window could
       // hurt: a truncated list makes every order it omits look closed.
-      // Which load holds each carried order — stamped on the rows BEFORE they are filed, so the
-      // boards, the pool, the carry-over fold and CS notify all read one answer. Firestore reads
-      // for the rosters and for where the last scan filed each order (free); at most
-      // NUVIZZ_ROUTE_LOAD_DAY_READS /load/info reads, and none for an order nothing has touched.
-      const routeLoadPrepare = (ROUTE_LOAD_DAY && fsOn) ? {
-        prepare: async (rows: any[]) => {
-          // null = the memo could not be READ: no reads are spent this run (see applyRouteLoadDay)
-          // — never "an empty memo" that re-reads everything it knew.
-          const memo = await readRouteLoadMemo(TENANT);
-          // WHERE THE LAST SCAN FILED EACH OPEN ORDER — the open-order pool it wrote (a few
-          // documents). With it, an order the last scan settled keeps its board while nothing has
-          // touched it, and an order whose plan lives on a later board is filed there.
-          const priorByNbr = new Map<string, PriorFiling>();
-          try {
-            const pool = await readActivePool(TENANT);
-            for (const pr of pool?.rows || []) {
-              const k = String(pr?.stopNbr ?? '').trim();
-              if (k && typeof pr?.day === 'string' && !priorByNbr.has(k)) priorByNbr.set(k, { day: pr.day, row: pr, savedAt: undefined });
-            }
-          } catch { /* no prior filings this run: nothing is kept or pinned, exactly as before */ }
-          // …and, for the few the last scan filed by a load it READ (from today on) or showed held,
-          // whether a Save has touched that board's copy since (its board_write_at). Unknown →
-          // nothing kept for that order, and no Save pin.
-          const horizonDays = [...scanDates];
-          const targetKeyOf = (day: string) => targets.find((t) => etDateForTargetUTC(t, today) === day) ?? day;
-          const needSaved = [...priorByNbr.entries()]
-            .filter(([, pf]) => (pf.day >= today && horizonDays.includes(pf.day) && (pf.row?.rosterLoadVia === 'membership' || pf.row?.loadDay || pf.row?.pinnedFrom)) || pf.row?.heldOn)
-            .slice(0, ROUTE_LOAD_SAVED_READ_CAP);
-          await Promise.all(needSaved.map(async ([nbr, pf]) => {
-            try { const doc = await readStopDoc(TENANT, targetKeyOf(pf.day), nbr); pf.savedAt = doc?.board_write_at ?? null; pf.stored = doc ?? null; }
-            catch { pf.savedAt = undefined; }
-          }));
-          const out = await applyRouteLoadDay(rows, {
-            today, horizon: horizonDays,
-            readRoster: async (d: string) => {
-              if (!rosterLoadsCache.has(d) || !rosterAtCache.has(d)) {
-                const doc = await readLoadRoster(TENANT, d).catch(() => null);
-                rosterLoadsCache.set(d, doc?.loads ?? null);
-                rosterAtCache.set(d, doc?.at ?? null);
-              }
-              return (rosterLoadsCache.get(d) ?? null) as any;
-            },
-            rosterAt: (d: string) => { const t = Date.parse(String(rosterAtCache.get(d) ?? '')); return Number.isFinite(t) ? t : null; },
-            readMembers: (loadNbr: string) => lookupLoadStopNbrs(loadNbr),
-            memo, readMax: routeLoadDayReadMax(), nowMs: Date.now(),
-            heldEnabled: routeLoadHeldEnabled(),
-            priorOf: (nbr: string) => priorByNbr.get(String(nbr)) ?? null,
-            graceMs: BOARD_WRITE_GRACE_MIN * 60_000,
-            // A dispatcher-set board date governs its stop exactly as boardDayFor says it does.
-            hasActiveOverride: (r: any) => {
-              const set = boardDateOverrides[String(r?.stopNbr)];
-              return !!set && !(set < today && pastOverrideClampEnabled());
-            },
-            dayOf: (r: any) => boardDayFor(r, today, boardDateOverrides),
-            log: (m: string) => console.log(m),
-          });
-          for (const [k, v] of out.dayByNbr) routeDayByNbr.set(k, v);
-          for (const [k, v] of out.readThisRun) if (v && v.size) runLoadMembers.set(k, v);
-          routeLoadSummary = out.summary as any;
-          // MERGED into the stored memo (firestore.mts), never written over it.
-          if (out.memoDirty) await writeRouteLoadMemo(TENANT, out.memoUpdates).catch(() => { /* a memo, never a scan */ });
-          return { pins: out.pins };
-        },
-      } : undefined;
-      const pull = TWO_SCAN ? await twoScanPull(boardDateOverrides, routeLoadPrepare) : null;
+      const pull = TWO_SCAN ? await twoScanPull(boardDateOverrides) : null;
       const buckets = pull ? pull.buckets : null;
       if (pull) console.log(`[scan] two-scan pull: ${pull.activeCount} active + ${pull.completedCount} completed row(s) across ±${activeArrivalReachDays()}d${pull.truncated ? ' — TRUNCATED at the row cap' : ''}`);
 
@@ -1683,15 +1598,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           let dropped = 0, healedDelivered = 0, absentPlanned = 0, refiledFinished = 0, refiledOpenKept = 0, refiledOpenGone = 0, refiledOpenHeld = 0;
           for (const [nbr, p] of prevByNbr) {
             if (have.has(nbr)) continue;
-            // A row this run stamped with the load that holds it (or one a previous run stamped) is
-            // judged by where THIS pull filed it, never by the stored copy's old answer — or a row
-            // resolved onto Monday's load would be carried on Saturday's board as well.
-            // (An order the list now calls un-planned while this board holds its plan by its load is
-            // not here: the load-day pass PINNED this run's row to this board — pinsFor — so it is
-            // in `have` and the demotion verify decides it below, on this board, as one row.)
-            const stampedRow = ROUTE_LOAD_DAY && (routeDayByNbr.has(nbr) || !!p.loadDay || !!p.heldOn);
-            const liveDay = stampedRow ? liveOpenByNbr.get(nbr)?.day : undefined;
-            const priorOwnDay = liveDay ?? boardDayFor(p, undefined, boardDateOverrides);
+            const priorOwnDay = boardDayFor(p, undefined, boardDateOverrides);
             // The stop lived on THIS board while open, and the pull now shows it FINISHED under a
             // stale past arrival day (rolled-over work delivered today). File the finished row HERE
             // — pinned to this board's day so it stays — instead of re-carrying the open snapshot,
@@ -1969,11 +1876,6 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // hold the confirmed plan fields until the list agrees or the grace expires.
             const listStatusBeforeGrace = s.absentFromPull === true ? null : (s.status != null ? String(s.status) : null);
             const held = applyBoardWriteGrace(s, p, Date.now());
-            // A confirmed Save outranks this pull, so every load-day stamp computed FROM this pull
-            // goes with it — a load number named off the list row the Save overrules would read
-            // "Route JOE · Load <MARCUS's number>", and a held stamp "still on Friday's load" on an
-            // order just planned. The next scan past the grace stamps it afresh.
-            if (held) for (const f of ROUTE_LOAD_FIELDS) if (s[f] != null) s[f] = null;
             if (held && p.isPlanned === true && s.isPlanned === true) {
               graceHolds.push({
                 at: scannedAt, stopNbr: String(s.stopNbr), route: (p.loadNbr ?? p.routeName) != null ? String(p.loadNbr ?? p.routeName) : null,
@@ -1989,10 +1891,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // it). A fresh list row may NOT flip a previously-PLANNED row to unplanned on the
             // list's word alone: queue it for a one-call /stop/info check below and let NuVizz's
             // own stop record decide.
-            // …except a row the scan itself showed unplanned because the load that holds it is a PAST
-            // day's (route-load-day, `heldOn`): NuVizz's stop record would say "assigned" and put the
-            // plan straight back, which is the very filing Chad asked to end.
-            if (!held && p.isPlanned === true && p.loadNbr && s.isPlanned !== true && !(ROUTE_LOAD_DAY && routeLoadHeldEnabled() && heldLoadOf(s))) demoteChecks.push({ s, p });
+            if (!held && p.isPlanned === true && p.loadNbr && s.isPlanned !== true) demoteChecks.push({ s, p });
             // Don't seed a reconsigned stop's OLD coords — they belong to the previous address.
             // `s.enriched` is cleared just above when the shown address moved, so this also
             // stops the OLD coordinates being seeded for a stop that has just been re-addressed.
@@ -2042,8 +1941,6 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           demoteByNbr,
           readRoster: () => readLoadRoster(TENANT, date),
           readLoadStopNbrs: lookupLoadStopNbrs,
-          // A load the load-day pass already READ this run answers here for free.
-          sharedLoadMembers: runLoadMembers,
           readStopRecord: lookupStopByPro,
           verdictFromRecord: demotionLookupVerdict,
           loadReadBudget: DEMOTE_VERIFY_LOAD_MAX,
@@ -2232,10 +2129,6 @@ export async function runRefreshStops(req: Request): Promise<Response> {
                 let fromMemo = false;
                 if (memoUsable(memo, c.signature, nowMs, NAME_COLLISION_TTL_MS)) {
                   members = new Set(memo.members); readAt = memo.at; fromMemo = true; memoHits++;
-                } else if (runLoadMembers.has(c.loadNbr)) {
-                  // Read this very scan by the load-day pass (lib/route-load-day.mts): the same load,
-                  // the same minute — no second call.
-                  members = runLoadMembers.get(c.loadNbr)!; memoHits++;
                 } else if (nameCollisionCalls < NAME_COLLISION_LOAD_MAX) {
                   nameCollisionCalls++; reads++;
                   members = await lookupLoadStopNbrs(c.loadNbr);
@@ -2324,8 +2217,6 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           ...((demoteChecks.length || graceHolds.length) ? { planVerdicts: { disputed: demoteChecks.length, kept: dv.kept, held: dv.held, dropped: dv.dropped, graceHeld: graceHolds.length } } : {}),
           // Two loads sharing a name this scan: how many were checked, read, and what came off.
           ...(nameCollisionSummary ? { nameCollisions: nameCollisionSummary } : {}),
-          // Which load holds the carried orders (run-level; recorded once, on today's row).
-          ...(date === today && routeLoadSummary ? { routeLoadDay: routeLoadSummary } : {}),
         });
         // Both saved searches answered AND a day's board actually landed. NOW a scan happened.
         await stampScanKinds();

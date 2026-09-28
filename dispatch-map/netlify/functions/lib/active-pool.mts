@@ -44,15 +44,7 @@ export const POOL_LIVE_FIELDS = [
   'loadNbr', 'routeName', 'routeSeq', 'driverName', 'driverUserName', 'driverId',
   'listUpdatedDTTM', 'shipmentNbr', 'isAttempt',
   'weight', 'cartons', 'volume', 'scheduledFrom', 'plannedEtaDTTM',
-  // Which load holds the order and on which day (lib/route-load-day.mts) — live, so the Routing
-  // window's overlay carries this scan's answer and never a stale one.
-  'loadDay', 'rosterLoadNbr', 'rosterLoadId', 'rosterLoadVia', 'rosterLoadRoute', 'rosterLoadAt', 'heldOn', 'pinnedFrom',
 ] as const;
-/** The load-day stamps (route-load-day ROUTE_LOAD_FIELDS — asserted equal in test; not imported, so
- *  this module stays import-light for the Claude shadow). A pool row carries every one of them,
- *  null when the scan row has none, so an overlay CLEARS a stamp the scan no longer writes — a
- *  "still on Friday's TERRANCE" must not outlive the hold. */
-export const POOL_STAMP_FIELDS = ['loadDay', 'rosterLoadNbr', 'rosterLoadId', 'rosterLoadVia', 'rosterLoadRoute', 'rosterLoadAt', 'heldOn', 'pinnedFrom'] as const;
 export const POOL_STATIC_FIELDS = [
   'stopId', 'businessName', 'addr1', 'addr2', 'city', 'state', 'zip', 'stopType', 'proNbr',
   'requestedDate', 'dupNbr', 'dupNbrOtherId',
@@ -94,7 +86,6 @@ export function rowDayOf(s: any): string | null {
 export function projectPoolRow(s: any, day: string): any {
   const out: any = { stopNbr: String(s.stopNbr), day, boardDate: day, scheduledDate: day };
   for (const k of POOL_LIVE_FIELDS) if (s[k] !== undefined) out[k] = s[k];
-  for (const k of POOL_STAMP_FIELDS) out[k] = s[k] ?? null;
   for (const k of POOL_STATIC_FIELDS) if (s[k] !== undefined && s[k] !== null) out[k] = s[k];
   const instr = s.orderInstructions;
   if (typeof instr === 'string' && instr.trim()) out.orderInstructions = instr.length > INSTRUCTIONS_MAX ? instr.slice(0, INSTRUCTIONS_MAX) + '…' : instr;

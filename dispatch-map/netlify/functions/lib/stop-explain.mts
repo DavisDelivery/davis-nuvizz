@@ -21,8 +21,6 @@
 // a dispatcher can act on. Zero NuVizz calls anywhere in this path: the whole point is that the
 // question is answerable for free, before anyone spends a call on it.
 
-import { stampedLoadOf, heldLoadOf } from '../../../src/lib/route-load-stamp.js';
-
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TERMINAL = new Set(['DELIVERED', 'EXCEPTION', 'CANCELLED']);
 
@@ -49,9 +47,6 @@ export interface StopFacts {
   /** NUVIZZ_PAST_OVERRIDE_CLAMP's position as the endpoint read it (A3-S18-1). Absent = ON, the
    *  switch's own default: a PAST dispatcher date no longer holds an open stop that is on a route. */
   pastOverrideClamp?: boolean;
-  /** NUVIZZ_ROUTE_LOAD_DAY's position as the endpoint read it (lib/route-load-day.mts). Absent = ON,
-   *  the switch's own default: an order on a load is filed on that load's day. */
-  routeLoadDay?: boolean;
   /** the scan's plan-verdict ledger rows for THIS stop, newest first */
   verdicts: any[];
   /** write-journal rows that mention the stop (or its route on this day), newest first */
@@ -224,21 +219,6 @@ export function explainStop(f: StopFacts): StopExplanation {
     else if (roster.resolution === 'no-roster') say(`No load roster is cached for ${f.date} — the verify could only consult the stop record.`);
   }
 
-  // ── 4b. Which load holds it (v1.82.0, lib/route-load-day.mts) ──────────────────
-  // The roster names every load by NUMBER, per day; one /load/info by that number says which
-  // orders it holds. The scan writes the answer onto the row, and this says it back in words —
-  // through the same two readers every screen uses (src/lib/route-load-stamp.js), so a stamp a
-  // Save has overtaken since the scan is never spoken as the order's load.
-  const onLoad = f.routeLoadDay === false ? null : stampedLoadOf(row);
-  const heldOn = f.routeLoadDay === false ? null : heldLoadOf(row);
-  if (onLoad) {
-    if (onLoad.via === 'membership' && onLoad.day) say(`NuVizz load ${onLoad.loadNbr} holds it (read by that load number; ${onLoad.route} on the ${onLoad.day} roster), so the scan files it on ${onLoad.day} — the day that load runs — whatever NuVizz's own arrival date for the order says.`);
-    else say(`The ${served.copy?.day} roster names its load: ${onLoad.loadNbr}, the one live load called ${onLoad.route} that day.`);
-  }
-  if (heldOn) {
-    say(`Shown UN-PLANNED on purpose: in NuVizz it is still on ${heldOn.loadNbr} (${heldOn.route ?? '?'}, ${heldOn.day ?? '?'}) — a past day's load — and every load under that name from today on was read and does not hold it, so it is waiting to be planned. NuVizz refuses to add it to another load until it is taken off ${heldOn.loadNbr}.`);
-  }
-
   // ── 5. Saves, history, overrides ──────────────────────────────────────────────
   if (f.writes?.length) say(`Write journal: ${f.writes.slice(0, 5).map((w) => `${clock(w.at)} ${w.op} ${w.status} — ${w.summary}`).join('; ')}.`);
   if (f.history) say(`Sealed history records it ${f.history.status} on ${f.history.day} — the scan drops a stale open copy of a stop history has sealed finished.`);
@@ -247,10 +227,7 @@ export function explainStop(f: StopFacts): StopExplanation {
     // boardDayFor (nuvizz-list.mts) lets a PAST dispatcher date give way to the live-route clamp
     // (A3-S18-1), so "files it there regardless" is only true of a date that has not passed.
     if (f.override < f.today && f.pastOverrideClamp !== false) {
-      const routedFiling = f.routeLoadDay === false
-        ? `the scan files one of those on today's board`
-        : `the scan files one of those on the day of the load that holds it, read by the roster's load number — or on today's board when that cannot be read`;
-      say(`A dispatcher-set board date of ${f.override} is on file, but that day has passed: it no longer holds an open stop that is on a route (${routedFiling}); an unrouted order still files on ${f.override}. NUVIZZ_PAST_OVERRIDE_CLAMP=off puts the old filing back.`);
+      say(`A dispatcher-set board date of ${f.override} is on file, but that day has passed: it no longer holds an open stop that is on a route (the scan files one of those on today's board); an unrouted order still files on ${f.override}. NUVIZZ_PAST_OVERRIDE_CLAMP=off puts the old filing back.`);
     } else {
       say(`A dispatcher-set board date of ${f.override} is on file; the scan files the order there regardless of NuVizz's arrival date.`);
     }

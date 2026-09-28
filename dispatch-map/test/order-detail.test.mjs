@@ -325,36 +325,3 @@ test('the customer card shows every dock, so "which one did it go to" is answera
   // matter while v1.53.0's docks/noteKey/onEdit ride along beside them.
   assert.match(APP, /<StopNotesCard notes=\{v\.notes\} locations=\{v\.locations\}[\s\S]{0,300}?\/>/);
 });
-
-// v1.82.0: THE "LOAD" LINE IS A LOAD NUMBER, NEVER THE ROUTE NAME. A list row's loadNbr IS the route
-// name, so the card printed "Route MARCUS" and "Load MARCUS". The roster names every load by number
-// per day and the scan writes the one that holds the order (rosterLoadNbr).
-test('the Load line shows the roster load number the scan wrote, not the route name', () => {
-  const d = buildOrderDetail({ stopNbr: '007182304-1', routeName: 'MARCUS', loadNbr: 'MARCUS', isPlanned: true, rosterLoadNbr: 'DAVIS000204645', rosterLoadRoute: 'MARCUS' }, { date: '2026-09-28', today: '2026-09-28' });
-  assert.equal(d.route, 'MARCUS');
-  assert.equal(d.loadNbr, 'DAVIS000204645');
-});
-// REVIEW #18/#19: a Save rewrites the stored row's plan without touching the stamps, so until the next
-// scan the row can read "Route JOE" beside MARCUS's number, or "planned" beside "still on Friday's".
-test('saved onto JOE since the scan: no "Load <the MARCUS number>" beside Route JOE', () => {
-  const d = buildOrderDetail({ stopNbr: '007182304-1', routeName: 'JOE', loadNbr: 'JOE', isPlanned: true, rosterLoadNbr: 'DAVIS000204600', rosterLoadRoute: 'MARCUS' }, { date: '2026-09-26', today: '2026-09-26' });
-  assert.equal(d.route, 'JOE');
-  assert.equal(d.loadNbr, null);
-});
-test('planned since it was shown held: no "Still on" row', () => {
-  const d = buildOrderDetail({ stopNbr: '007182123', routeName: 'JOE', loadNbr: 'JOE', isPlanned: true, isUnplanned: false, heldOn: { route: 'TERRANCE', loadNbr: 'DAVIS000204484', day: '2026-09-25' } }, { date: '2026-09-26', today: '2026-09-26' });
-  assert.equal(d.heldOnLoad, null);
-});
-test('no roster number and a route name in loadNbr → no Load line at all (a name is not a load number)', () => {
-  const d = buildOrderDetail({ stopNbr: '1', routeName: 'MARCUS', loadNbr: 'MARCUS', isPlanned: true }, { date: '2026-09-28', today: '2026-09-28' });
-  assert.equal(d.loadNbr, null);
-});
-test('a sealed record that carries the real number keeps it', () => {
-  const d = buildOrderDetail({ stopNbr: '1', routeName: 'MARCUS', loadNbr: 'DAVIS000204535', isPlanned: true }, { date: '2026-09-25', today: '2026-09-28' });
-  assert.equal(d.loadNbr, 'DAVIS000204535');
-});
-test('an order still on a past day\'s load, shown unplanned, says which load holds it', () => {
-  const d = buildOrderDetail({ stopNbr: '007182123', isPlanned: false, isUnplanned: true, heldOn: { route: 'TERRANCE', loadNbr: 'DAVIS000204484', day: '2026-09-25' } }, { date: '2026-09-26', today: '2026-09-26' });
-  assert.equal(d.route, null, 'it reads un-planned');
-  assert.deepEqual(d.heldOnLoad, { loadNbr: 'DAVIS000204484', day: '2026-09-25', route: 'TERRANCE' });
-});

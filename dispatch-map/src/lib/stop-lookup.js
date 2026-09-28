@@ -620,8 +620,6 @@ export { TERMINAL as TERMINAL_STATUSES };
 // address on its row, so both questions are answerable off one screen.
 
 import { normNameOf } from './matchKey.js';
-import { looksLikeLoadNbr } from './route-identity.js';
-import { stampedLoadOf, heldLoadOf } from './route-load-stamp.js';
 import { isTrailerBlockerKey, trailerBlockerLabels } from './trailer-block.js';
 
 /**
@@ -1100,16 +1098,7 @@ export function buildOrderDetail(stop, { date, today, source = 'sealed' } = {}) 
     driver: s(st.driverName) || s(st.driverUserName) || null,
     driverUserName: s(st.driverUserName) || null,
     route: s(st.routeName) || null,
-    // THE LOAD NUMBER, NEVER THE ROUTE NAME (v1.82.0). A list row's loadNbr IS the route name
-    // ("MARCUS"), so the "Load" line used to print the name twice. The roster names every load by
-    // number per day, and the scan writes the one that holds this order (rosterLoadNbr) — read
-    // through stampedLoadOf, so a Save onto another route since the scan never prints the old
-    // route's number beside the new route; a sealed record from the number-probe path carries the
-    // real number itself. Anything else: no line.
-    loadNbr: stampedLoadOf(st)?.loadNbr || (looksLikeLoadNbr(st.loadNbr) ? s(st.loadNbr) : '') || null,
-    // Still on a past day's load in NuVizz, shown unplanned — which load, so the card can say why.
-    // Only while the order is still un-planned (heldLoadOf): one planned since is not "still on" it.
-    heldOnLoad: (() => { const h = heldLoadOf(st); return h ? { loadNbr: h.loadNbr, day: h.day, route: h.route } : null; })(),
+    loadNbr: s(st.loadNbr) || null,
     seq: numOrNull(st.loadStopSeq ?? st.routeSeq),
     planned: st.isPlanned === true,
 

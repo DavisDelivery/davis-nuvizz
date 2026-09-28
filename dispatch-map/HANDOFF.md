@@ -3,14 +3,9 @@
 ## 📌 BINDING: THE ROSTER SCAN HAS THE LOAD NUMBERS (Chad, Sep 2026) — settled, never asked
 - Every day's load roster (`nuvizz_load_roster/davis__{date}`, free: `nuvizz-loads-roster?date=…&cacheOnly=1`)
   carries each load's NUMBER, id, route name, driver, status and stop count. The stop list names the
-  route only. Which orders a load holds = one `/load/info` by the roster's number.
-- Since v1.82.0 the scan writes the load that holds each routed order onto the row — `rosterLoadNbr`,
-  `rosterLoadId`, `loadDay` — and files it on that load's day; an order still on a past day's load is
-  shown unplanned with `heldOn`. Read them through `src/lib/route-load-stamp.js` (`stampedLoadOf` /
-  `heldLoadOf`) — never the raw fields. `NUVIZZ_ROUTE_LOAD_DAY=off` puts the old filing back; "shown
-  unplanned" (`heldOn`) ships OFF behind `NUVIZZ_ROUTE_LOAD_HELD=on`. See CLAUDE.md.
+  route only. Which orders a load holds = one `/load/info` by the roster's number. See CLAUDE.md.
 - A board row's `loadNbr` field is the ROUTE NAME on list-sourced rows (the history keys below that
-  say `{loadNbr}` mean that field). The real load number is `rosterLoadNbr`, or the roster itself.
+  say `{loadNbr}` mean that field). The real load number is on that day's roster.
 
 ## ⏰ OPEN REMINDER (set 2026-06-18 eve) — surface this at the next session
 - **Evaluate the unplanned "periodic deep sweep" (Phase 7 candidate) call cost.** Chad

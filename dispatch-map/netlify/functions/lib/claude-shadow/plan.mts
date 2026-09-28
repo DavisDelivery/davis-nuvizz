@@ -150,14 +150,8 @@ export async function readPlanDay(params: PlanParams, rs: { capRule: any; lbsBox
     return { ...pk, route: l.name.trim(), driver };
   }) };
   // With 'unplanned only', stops already on a PICKED roster load stay on it and their room counts —
-  // unless the roster has two loads under that name AND the row carries no roster load number (the scan
-  // writes one — rosterLoadNbr — once it has read which load holds the order), when the name alone
-  // cannot say which it rides.
-  // A pick is its roster load NUMBER as well as its name (v1.82.0): the scan now writes onto every
-  // routed board row the load that holds it (rosterLoadNbr — the roster's number for that day, read
-  // by /load/info where it mattered), so a row is tied to its load by number and the name is only the
-  // fallback for a row that carries none.
-  const keepOn = new Set(params.picks.filter((p) => p.kind === 'roster').flatMap((p) => [keyOf(p.route), ...(p.loadNbr ? [`nbr:${p.loadNbr}`] : [])]));
+  // unless the roster has two loads under that name, when a board row cannot say which it rides.
+  const keepOn = new Set(params.picks.filter((p) => p.kind === 'roster').map((p) => keyOf(p.route)));
   const rosterList = (rosterLoadsOf(rosterDoc) || []).filter((l: any) => !/cancel/i.test(String(l?.status ?? '')));
   const nameCount = new Map<string, number>();
   for (const l of rosterList) { const k = keyOf(l?.name); if (k) nameCount.set(k, (nameCount.get(k) || 0) + 1); }

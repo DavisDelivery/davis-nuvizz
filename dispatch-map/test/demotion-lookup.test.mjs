@@ -302,15 +302,3 @@ test('reasonFor: the holds each name their cause — unreadable roster, spent bu
   assert.equal(await tt.lookup('6'), false);
   assert.equal(tt.reasonFor('6').basis, 'fresh-terminal');
 });
-
-test('demotion: a load the load-day pass already READ this run answers for free — no second /load/info (v1.82.0, REVIEW #15)', async () => {
-  const { deps, calls } = makeDeps({
-    readRoster: async () => ({ loads: [{ name: 'MARCUS', loadNbr: 'DAVIS000204645' }] }),
-    sharedLoadMembers: new Map([['DAVIS000204645', new Set(['500'])]]),
-  });
-  deps.demoteByNbr = new Map([chk('500', { routeName: 'MARCUS' })]);
-  const d = makeDemotionLookup(deps);
-  assert.equal(await d.lookup('500'), true, 'the shared read holds it: the plan stays');
-  assert.deepEqual(calls.loads, [], 'no call spent on a load this run already read');
-  assert.equal(d.reads().loadReads, 0);
-});

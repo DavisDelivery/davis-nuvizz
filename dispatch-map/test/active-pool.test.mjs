@@ -256,15 +256,3 @@ test('explain: every decision names its stop numbers, so "why did this row vanis
   assert.deepEqual(stats.decisions.closed, ['STALE-X']);
   assert.deepEqual(stats.decisions.added, ['LIVE-X']);
 });
-
-// v1.82.0 round 2 (REVIEW #9): the load-day stamps are written on EVERY pool row, null when the scan
-// row has none — so the Routing window's overlay and the carry-over fold CLEAR a stamp the scan no
-// longer writes, and "still on Friday's TERRANCE" never outlives the hold.
-test('a pool row carries every load-day stamp, null when the scan has none — and they equal route-load-day\'s', async () => {
-  const { projectPoolRow, POOL_STAMP_FIELDS, POOL_LIVE_FIELDS } = await import('../netlify/functions/lib/active-pool.mts');
-  const { ROUTE_LOAD_FIELDS } = await import('../netlify/functions/lib/route-load-day.mts');
-  assert.deepEqual([...POOL_STAMP_FIELDS].sort(), [...ROUTE_LOAD_FIELDS].sort());
-  for (const f of POOL_STAMP_FIELDS) assert.ok(POOL_LIVE_FIELDS.includes(f));
-  const r = projectPoolRow({ stopNbr: 'X', status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false, isUnplanned: true }, '2026-09-28');
-  for (const f of POOL_STAMP_FIELDS) assert.ok(f in r && r[f] === null, `${f} present and null`);
-});

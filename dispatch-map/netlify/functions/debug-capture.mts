@@ -22,7 +22,6 @@
 
 import { tokenMatches } from './lib/secure-compare.mts';
 import { requireUser } from './lib/require-user.mts';
-import { stampedLoadOf, heldLoadOf } from '../../src/lib/route-load-stamp.js';
 
 const DEFAULT_REPO = 'DavisDelivery/davis-nuvizz';
 const MAX_BODY_CHARS = 60000; // GitHub issue body hard cap is 65536.
@@ -86,12 +85,8 @@ function buildIssueBody(bundle: any): string {
   lines.push(`| date | ${scope.date || '—'}${scope.date_is_today ? ' (today)' : ''}${scope.mock_mode ? ' · MOCK' : ''} |`);
   lines.push(`| stops | ${src.stops_count_visible ?? '?'} visible / ${src.stops_count_total ?? '?'} total · src ${src.stops_source || '—'} |`);
   lines.push(`| freshness | refreshed ${src.last_refreshed || '—'} · scanned ${src.last_scanned_at || '—'} |`);
-  // `loadNbr` on a board row is the ROUTE name; the day's roster load NUMBER is rosterLoadNbr, read
-  // through the one rule every screen uses (src/lib/route-load-stamp.js).
-  const selLoad = sel.kind === 'stop' && sel.stop ? stampedLoadOf(sel.stop) : null;
-  const selHeld = sel.kind === 'stop' && sel.stop ? heldLoadOf(sel.stop) : null;
   const selDesc = sel.kind === 'stop' && sel.stop
-    ? `stop ${sel.stop.stopNbr ?? ''} (pro ${sel.stop.pro ?? ''}, route ${sel.stop.routeName ?? sel.stop.loadNbr ?? '—'}, load ${selLoad?.loadNbr ?? '—'}${selLoad?.day ? ` on ${selLoad.day}` : ''}${selHeld ? `, still on ${selHeld.loadNbr} (${selHeld.day ?? '?'})` : ''})`
+    ? `stop ${sel.stop.stopNbr ?? ''} (pro ${sel.stop.pro ?? ''}, load ${sel.stop.loadNbr ?? '—'})`
     : sel.kind === 'driver' && sel.driver
     ? `driver ${sel.driver.driverName ?? sel.driver.driverUserName ?? ''}`
     : sel.kind === 'route'

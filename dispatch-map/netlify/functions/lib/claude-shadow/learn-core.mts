@@ -17,8 +17,7 @@
 //   • grouped by route name AND driver, because a list row's loadNbr field holds the route NAME
 //     (lib/nuvizz-list.mts toBoardStop) and sealed history rows carry no roster join — the real load
 //     number is on that day's roster (nuvizz_load_roster; CLAUDE.md "THE ROSTER SCAN HAS THE LOAD
-//     NUMBERS"), and rows the scan resolved carry it as rosterLoadNbr — so two drivers sharing a name
-//     would otherwise be one "truck";
+//     NUMBERS") — so two drivers sharing a name would otherwise be one "truck";
 //   • only rows with EVIDENCE THEY RAN THAT DAY (v2, after review). "Filed on day D's board" is not
 //     "rode the truck on D": a carried-forward order keeps its old route and driver and is re-filed
 //     onto today while NuVizz still lists it open, and tomorrow's pre-built freight lands on today

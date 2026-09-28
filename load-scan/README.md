@@ -20,8 +20,7 @@ site id `1cca4f6e-39d8-49e4-86a5-2beae0161023`), base directory `load-scan`.
   credential, the app says so and asks for the load number off the paperwork.
 - **THE ROSTER SCAN HAS THE LOAD NUMBERS — settled, never asked.** The day's load
   NUMBER comes from that day's roster (`nuvizz_load_roster/davis__{date}`,
-  `readLoadRoster`); a board row's `loadNbr` is the route NAME, and routed rows the
-  scan resolved also carry `rosterLoadNbr` / `rosterLoadId` (v1.82.0). See CLAUDE.md.
+  `readLoadRoster`); a board row's `loadNbr` is the route NAME. See CLAUDE.md.
 
 ## The label
 

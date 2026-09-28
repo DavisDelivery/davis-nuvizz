@@ -15,9 +15,8 @@ implementation. Do NOT implement in that chat — decide the numbers.**
 
 > **THE ROSTER SCAN HAS THE LOAD NUMBERS — settled, never asked.** The scheduled path is list
 > discovery: the load roster (35833) gives every load's number, id, name, driver, status and stop
-> count per day (`nuvizz_load_roster`, free to read); the stop list gives the route NAME only. The
-> scan joins them by roster load number + one `/load/info` and writes `rosterLoadNbr` / `loadDay`
-> onto each routed order (v1.82.0, `lib/route-load-day.mts`). See CLAUDE.md.
+> count per day (`nuvizz_load_roster`, free to read); the stop list gives the route NAME only. Which
+> orders a load holds is one `/load/info` by the roster's number. See CLAUDE.md.
 
 - **`netlify/functions/nuvizz-refresh-stops-background.mts`**
   Scheduled BACKGROUND writer. **CRON: `*/15 * * * *`** (every 15 min, 24/7).

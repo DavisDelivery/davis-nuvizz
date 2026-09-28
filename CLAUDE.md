@@ -113,34 +113,9 @@ Project-level guidance for Claude Code in this repository.
   The only thing ever allowed to be open is whether ONE specific day's roster document was captured,
   and that is a free read (`nuvizz-loads-roster?date=…&cacheOnly=1`, or `?explain=1&from=…&days=…`),
   never a question for Chad and never a NuVizz call.
-- **Every part of the app uses it (v1.82.0, `lib/route-load-day.mts`).** The scan writes onto each
-  routed order the load that holds it, for the correct day: `rosterLoadNbr` (`DAVIS000204645`),
-  `rosterLoadId`, `rosterLoadVia` (`membership` = read by `/load/info` by that number;
-  `roster-name` = the one live load of that name on that day's roster, counts agreeing),
-  `rosterLoadRoute` (the route the stamp was written for) and `loadDay`. They ride the Map feed and
-  the open-order pool. Read them through `src/lib/route-load-stamp.js` — `stampedLoadOf(row)` /
-  `heldLoadOf(row)`, which honour a stamp only while the row still says what it said (a Save onto
-  another route since the scan voids it) — and never derive a load from a route name. The Stop
-  lookup card, stop-explain, Debug capture, the Claude shadow and the scan's own filing already do.
-- **Chad's day rule, which the scan applies:** an order ON a load is filed on THAT load's day;
-  anything the reads cannot settle keeps its old filing — nothing moves on a guess. An order still
-  on a PAST day's load and not delivered is shown UNPLANNED in the pool (`heldOn` names the load
-  that still holds it) **only while `NUVIZZ_ROUTE_LOAD_HELD=on` — it ships OFF**. That verdict shows
-  planned freight as unplanned when it is wrong (a second truck), and it rests on one NuVizz
-  behaviour the code cannot confirm: that an order's "Stop Updated" moves whenever it changes load.
-  The run summary's `movedWithoutStamp` counts every time a re-read catches it not moving; say so
-  when asked, never guess it either way.
-  "Shown unplanned" needs a known answer from EVERY live load under that name from today on plus
-  the past load — a later day's roster count is the morning's capture and never rules a load out.
-  `NUVIZZ_ROUTE_LOAD_DAY=off` puts the old filing back; `NUVIZZ_ROUTE_LOAD_DAY_READS` (default 4 per
-  run — up to 8 NuVizz calls with a retry) caps the `/load/info` reads. A stored read, or the last
-  scan's verdict, answers for an order only while NuVizz's "Stop Updated" on it and any Save on it
-  are older than the read, so nothing is re-read while nothing changes. An order whose plan or Save
-  lives on a later day's board is filed there (one board per order; the verify and the write grace
-  decide it there).
 - **Guarded in CI**: `test/roster-load-numbers-guard.test.mjs` fails if this rule leaves CLAUDE.md,
-  ORCHESTRATION.md, HANDOFF.md, the scan-schedule brief or the load-scan README, if the roster stops
-  returning `loadNbr`, if the stamps leave the Map feed, or if a banned sentence below appears in the code.
+  ORCHESTRATION.md, HANDOFF.md, the scan-schedule brief, the load-scan README or the review worklist,
+  if the roster stops returning `loadNbr`, or if a banned sentence below appears in the code or docs.
 
 - Chad, 2026-09-27: **"Why is it so hard to get this through to you that the roster scan
   produces the load numbers!!!!!! I've told you this 10 times and every time you find out
@@ -168,9 +143,9 @@ Project-level guidance for Claude Code in this repository.
      to DAVIS000204645 (Draft), so the verify can read that load's own membership."*
   3. The roster's `trips` against the rows we hold under that name on that day is the free
      trigger — for TODAY's load, whose roster is re-pulled hourly. A LATER day's roster is
-     captured once a day, so its count is the morning's: it decides which load to read FIRST,
-     and never rules a load out before an order is shown unplanned (the adversarial review of
-     2026-09-28 found planned freight shown unplanned that way).
+     captured once a day (`rosterFreezeApplies`), so its count is the morning's: it can say which
+     load to read FIRST, never that a load cannot hold an order planned onto it since (an
+     adversarial review on 2026-09-28 reproduced planned freight read as unplanned that way).
 - **Banned sentences**, because each one is this mistake again: "we don't know which load",
   "the load number isn't available", "the list doesn't carry the load, so it takes a
   per-order read", "match on route name". The load numbers come from the roster. Which
@@ -425,6 +400,24 @@ Project-level guidance for Claude Code in this repository.
   code again — the rollback commit is still needed after it.
 - **Never run `--execute` on Chad's behalf without him asking for that rollback in that
   request.** Showing him the dry run is always the right first move.
+
+## SMALL CHUNKS — one change per PR (Chad, Sep 2026)
+
+- Chad, 2026-09-28, after the load-day filing took three build rounds and three adversarial
+  reviews without shipping: **"yes let's do in smaller chunks next time."**
+- **Split before building, not after.** A rule/docs change, a change to what a screen SHOWS, and a
+  change to WHERE THE SCAN FILES AN ORDER are three PRs, each reviewed on its own. Ship the chunk
+  that is safe today; a chunk that waits on a decision or a NuVizz fact waits alone and holds
+  nothing else back.
+- **Filing changes are their own chunk, always.** Where an order lands is decided by boardDayFor,
+  the carry-forward, the frozen-day pass, the write grace, the demotion verify and the open-order
+  pool together. A change to any one of them is reviewed against all of them — that is where the
+  load-day work broke three times (an order on two boards, a Save undone, planned freight read as
+  unplanned).
+- **Ask for the missing fact before building around it.** If a design rests on something NuVizz
+  does that the code cannot show, ask Chad first (see *ASK FOR THE CALL*) — building and reviewing
+  around the unknown is what made the load-day work expensive.
+- **Size the review to the chunk.** A small change gets a small review of the paths it touches.
 
 ## Merge it — do not ask (Chad, Aug 2026)
 
