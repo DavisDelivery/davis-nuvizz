@@ -138,7 +138,7 @@ export function frozenCopyDays(ownDay: string, today: string, reachDays: number)
  *  never a pin, never `isTerminal` (which in this schema means "delivers to our own terminal"). */
 export const HEAL_FIELDS = [
   'status', 'normalizedStatus', 'isPlanned', 'isUnplanned',
-  'loadNbr', 'routeName', 'routeSeq', 'driverName', 'driverUserName', 'driverId',
+  'loadNbr', 'routeName', 'nuvizzLoadNbr', 'routeSeq', 'driverName', 'driverUserName', 'driverId',
   'listUpdatedDTTM', 'deliveredDTTM', 'shipmentNbr', 'isAttempt',
 ] as const;
 

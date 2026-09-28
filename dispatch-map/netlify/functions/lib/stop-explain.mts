@@ -62,7 +62,7 @@ export interface StopExplanation {
   date: string;
   /** what the Map feed would serve for `date`: the day's own copy, a carry-over, or nothing */
   served: { source: 'day-doc' | 'carry-over' | 'none'; day: string | null };
-  plan: { isPlanned: boolean | null; isUnplanned: boolean | null; route: string | null; seq: number | null; driver: string | null; status: string | null; normalizedStatus: string | null } | null;
+  plan: { isPlanned: boolean | null; isUnplanned: boolean | null; route: string | null; loadNumber: string | null; seq: number | null; driver: string | null; status: string | null; normalizedStatus: string | null } | null;
   stamps: Record<string, any> | null;
   copies: Array<{ day: string; planned: boolean | null; route: string | null; status: string | null; scannedAt: string | null; writeAt: string | null; verifiedAt: string | null; absentFromPull: boolean; heal: string | null; carryover: boolean }>;
   pool: { at: string; listed: boolean; day: string | null; planned: boolean | null; route: string | null; thin: boolean } | null;
@@ -127,7 +127,10 @@ export function explainStop(f: StopFacts): StopExplanation {
   const plan = row ? {
     isPlanned: row.isPlanned === true ? true : row.isPlanned === false ? false : null,
     isUnplanned: row.isUnplanned === true ? true : row.isUnplanned === false ? false : null,
-    route: routeOf(row), seq: typeof row.routeSeq === 'number' ? row.routeSeq : null,
+    route: routeOf(row),
+    // The load NUMBER the stop list gave with that route at the last scan (the Load Number column).
+    loadNumber: row.nuvizzLoadNbr ? String(row.nuvizzLoadNbr) : null,
+    seq: typeof row.routeSeq === 'number' ? row.routeSeq : null,
     driver: norm(row.driverName || row.driverUserName) || null,
     status: row.status != null ? String(row.status) : null, normalizedStatus: row.normalizedStatus ?? null,
   } : null;
@@ -257,7 +260,7 @@ export function describe(row: any): string {
   if (!row) return 'nothing';
   const st = row.normalizedStatus ?? (row.status != null ? `status ${row.status}` : 'no status');
   if (isFinished(row)) return `${st}${routeOf(row) ? ` on ${routeOf(row)}` : ''}`;
-  if (row.isPlanned === true) return `PLANNED on ${routeOf(row) ?? '?'}${typeof row.routeSeq === 'number' ? ` (stop ${row.routeSeq})` : ''}${row.driverName ? `, ${row.driverName}` : ''}`;
+  if (row.isPlanned === true) return `PLANNED on ${routeOf(row) ?? '?'}${row.nuvizzLoadNbr ? ` (${row.nuvizzLoadNbr})` : ''}${typeof row.routeSeq === 'number' ? ` (stop ${row.routeSeq})` : ''}${row.driverName ? `, ${row.driverName}` : ''}`;
   if (row.isUnplanned === true) return `UN-PLANNED (${st})${routeOf(row) ? ` — yet it still carries the route name ${routeOf(row)}` : ''}`;
   return `${st}${routeOf(row) ? ` on ${routeOf(row)}` : ''} (neither planned nor un-planned)`;
 }
