@@ -10,7 +10,7 @@
 // the hours came from, and nothing invented for an edge the dock never stated.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { timeMarkChip, unreachableHoursMark, compareUnreachableHoursEnabled } from '../src/lib/time-marks.js';
+import { timeMarkChip, unreachableHoursMark, compareUnreachableHoursEnabled, compareFullWindowEnabled } from '../src/lib/time-marks.js';
 
 // The stored hours for the two stops, read 2026-09-28 from time-restricted-pros (zero NuVizz calls).
 const MCKESSON = { receiving_hours: { mon: { open: '7:00', close: '11:00' } }, manual_overrides: { receiving_hours: true } };   // dispatcher-entered
@@ -43,4 +43,27 @@ test('VITE_COMPARE_UNREACHABLE_HOURS: default on, an off-word turns it off, a ty
   assert.equal(compareUnreachableHoursEnabled(undefined), true);
   for (const off of ['off', '0', 'false', 'no', ' OFF ']) assert.equal(compareUnreachableHoursEnabled({ VITE_COMPARE_UNREACHABLE_HOURS: off }), false, off);
   assert.equal(compareUnreachableHoursEnabled({ VITE_COMPARE_UNREACHABLE_HOURS: 'of' }), true);
+});
+
+// Chad, 2026-09-29, on CHRIS HEAD's rows reading "closes 2:30p · auto": "i dont' want just the closing
+// time i want opening too." Every Compare row with both edges on file now prints the whole window.
+test('the Compare row prints OPENING and closing: 7:00a–2:30p, not "closes 2:30p"', () => {
+  const dock = { receiving_hours: { mon: { open: '7:00', close: '14:30' } } };   // SIMS / EAST POINT MFG shape
+  const chip = timeMarkChip(dock, 'mon', { autoHours: true, fullWindow: true });
+  assert.equal(chip.text, '7:00a–2:30p');
+  assert.equal(chip.auto, true, 'still marked · auto when read from the order');
+  assert.equal(timeMarkChip(dock, 'mon', { autoHours: true }).text, 'closes 2:30p', 'switch off: the one binding edge, as before');
+  // A late opener with a close on file says both edges too.
+  assert.equal(timeMarkChip({ receiving_hours: { mon: { open: '10:00', close: '18:00' } } }, 'mon', { autoHours: true, fullWindow: true }).text, '10:00a–6:00p');
+});
+
+test('only an edge that is on file is printed — no invented half-window', () => {
+  assert.equal(timeMarkChip({ receiving_hours: { mon: { open: '', close: '14:30' } } }, 'mon', { autoHours: true, fullWindow: true }).text, 'closes 2:30p');
+  assert.equal(timeMarkChip({ receiving_hours: { mon: { open: '10:00', close: '' } } }, 'mon', { autoHours: true, fullWindow: true }).text, 'opens 10:00a');
+});
+
+test('VITE_COMPARE_FULL_WINDOW: default on, an off-word turns it off, a typo leaves it on', () => {
+  assert.equal(compareFullWindowEnabled({}), true);
+  for (const off of ['off', '0', 'false', 'no']) assert.equal(compareFullWindowEnabled({ VITE_COMPARE_FULL_WINDOW: off }), false, off);
+  assert.equal(compareFullWindowEnabled({ VITE_COMPARE_FULL_WINDOW: 'of' }), true);
 });
