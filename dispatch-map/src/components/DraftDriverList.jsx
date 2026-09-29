@@ -12,8 +12,10 @@
 // inside the scrolling Build Panel, so it caps its own height and scrolls, and what is below it
 // moves when it grows. TWO VIEWS: on a phone every row and chip is a full thumb target (44px),
 // and the box is 16px text so iOS does not zoom the page when it takes focus; on a desktop the
-// rows are compact to match the rest of the panel.
-import { useMemo, useState } from 'react';
+// rows are compact to match the rest of the panel. The phone list is capped at 30vh: at 45vh it
+// was taller than the sheet's visible area on every phone measured, so a finger on the list
+// scrolled the list and there was no surface left to drag the sheet by.
+import { useMemo, useRef, useState } from 'react';
 import { filterDraftDrivers, DRAFT_MAX_DRIVERS, draftDriverClassLabel } from '../lib/draft-driver-list.js';
 
 function shortDay(ymd) {
@@ -36,6 +38,7 @@ export default function DraftDriverList({
   dateLabel = '',
 }) {
   const [query, setQuery] = useState('');
+  const searchRef = useRef(null);
   const list = Array.isArray(drivers) ? drivers : [];
   const shown = useMemo(() => filterDraftDrivers(list, query), [list, query]);
   const byKey = useMemo(() => new Map(list.map((d) => [d.key, d])), [list]);
@@ -51,7 +54,7 @@ export default function DraftDriverList({
           {picked.map((k) => {
             const d = byKey.get(k);
             return (
-              <button key={k} type="button" disabled={disabled} onClick={() => onToggle?.(k)}
+              <button key={k} type="button" disabled={disabled} onClick={() => { onToggle?.(k); if (!isMobile) searchRef.current?.focus(); }}
                 title={`Take ${d?.name || k} off the draft`} aria-label={`Remove ${d?.name || k}`}
                 className={`inline-flex items-center gap-1 rounded-full bg-slate-800 text-white font-semibold disabled:opacity-50 ${chipCls}`}
                 data-draft-driver-chip={k}>
@@ -63,7 +66,7 @@ export default function DraftDriverList({
         </div>
       )}
 
-      <input type="search" value={query} onChange={(e) => setQuery(e.target.value)}
+      <input ref={searchRef} type="search" value={query} onChange={(e) => setQuery(e.target.value)}
         disabled={disabled || drivers === null}
         placeholder="Find a driver or a route…" aria-label="Find a driver or a route"
         className={`w-full border rounded ${isMobile ? 'p-2 text-[16px]' : 'p-1.5 text-[12px]'}`}
@@ -92,14 +95,15 @@ export default function DraftDriverList({
       {list.length > 0 && (
         <>
           <ul aria-label="Drivers to draft"
-            className={`border rounded bg-white divide-y divide-slate-100 overflow-y-auto ${isMobile ? 'max-h-[45vh]' : 'max-h-56'}`}>
+            className={`border rounded bg-white divide-y divide-slate-100 overflow-y-auto ${isMobile ? 'max-h-[30vh]' : 'max-h-56'}`}>
             {shown.map((d) => {
               const on = picked.includes(d.key);
               const blocked = !on && full;
               return (
                 <li key={d.key}>
                   <button type="button" aria-pressed={on} disabled={disabled || blocked} onClick={() => onToggle?.(d.key)}
-                    title={blocked ? `A draft takes up to ${DRAFT_MAX_DRIVERS} drivers — take one off to add ${d.name}` : undefined}
+                    title={blocked ? `A draft takes up to ${DRAFT_MAX_DRIVERS} drivers — take one off to add ${d.name}`
+                      : [d.name, d.userName && d.userName !== d.name ? d.userName : null, d.routes?.length ? `runs ${d.routes.join(' · ')}` : null].filter(Boolean).join(' — ')}
                     className={`w-full text-left flex items-start gap-2 disabled:opacity-40 ${rowCls} ${on ? 'bg-emerald-50' : 'hover:bg-slate-50'}`}
                     data-draft-driver-row={d.key} data-draft-driver-on={on ? '1' : '0'}>
                     <span aria-hidden="true"

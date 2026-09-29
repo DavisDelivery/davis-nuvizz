@@ -59,7 +59,7 @@ import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from '
 import { authEnabled } from './lib/auth.js';
 import LoginScreen from './components/LoginScreen.jsx';
 import DraftDriverList from './components/DraftDriverList.jsx';
-import { togglePick, keepListedPicks, DRAFT_MAX_DRIVERS } from './lib/draft-driver-list.js';
+import { togglePick, keepListedPicks, sendablePicks, DRAFT_MAX_DRIVERS } from './lib/draft-driver-list.js';
 import { ChangePasswordScreen, ResetPasswordScreen } from './components/PasswordScreens.jsx';
 // ONE place a session token gets onto a request (see lib/api.js). Every call to our own
 // functions goes through apiFetch; nothing else may build an Authorization header.
@@ -27306,8 +27306,16 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   // other than type in to find the name or route to select"). The list is the server's own cast
   // for the day (routing-draft GET — every row a driver the draft accepts), loaded when the By
   // driver tab is showing, and the picks are exact driver keys. Firestore only, zero NuVizz calls.
-  const [draftPicked, setDraftPicked] = useState([]);
+  const [draftPickedRaw, setDraftPicked] = useState([]);
   const [draftDrivers, setDraftDrivers] = useState({ date: null, list: null, windowDays: 30, loading: false, error: null });
+  // WHAT THE BUTTON SENDS is the picks that are on a list loaded FOR THIS DATE — nothing else. After
+  // a date change the old picks sat in state, the button stayed enabled, and a click POSTed a key
+  // the new day's list had not vouched for (or, if that list failed to load, never would). While
+  // the list is loading, failed, or for another date, nothing is pickable and nothing is sent.
+  const draftPicked = useMemo(
+    () => sendablePicks(draftPickedRaw, draftDrivers.list, draftDrivers.date, selectedDate),
+    [draftPickedRaw, draftDrivers.date, draftDrivers.list, selectedDate],
+  );
   const draftListRunRef = useRef(0);
   const loadDraftDrivers = useCallback(async (date) => {
     const run = ++draftListRunRef.current;   // the newest date asked owns the list

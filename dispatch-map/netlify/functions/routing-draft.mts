@@ -30,6 +30,13 @@ import { runDraft, listDraftableDrivers, ROSTER_WINDOW_DAYS } from './lib/routin
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// A real calendar day, not just the right shape: 2026-13-45 threw a RangeError (a 500), and
+// 2026-02-30 quietly rolled over into a window for a different day.
+function isRealDate(d: string): boolean {
+  if (!DATE_RE.test(d)) return false;
+  const t = new Date(`${d}T12:00:00Z`);
+  return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === d;
+}
 
 export default async (req: Request): Promise<Response> => {
   const headers = { 'Content-Type': 'application/json' };
@@ -45,15 +52,17 @@ export default async (req: Request): Promise<Response> => {
 
   if (req.method === 'GET') {
     const date = String(new URL(req.url).searchParams.get('date') || '');
-    if (!DATE_RE.test(date)) {
+    if (!isRealDate(date)) {
       return new Response(JSON.stringify({ ok: false, error: 'bad or missing date (YYYY-MM-DD)' }), { status: 400, headers });
     }
     try {
       const { from, drivers } = await listDraftableDrivers(TENANT, date);
       return new Response(JSON.stringify({ ok: true, date, from, windowDays: ROSTER_WINDOW_DAYS, drivers }), { status: 200, headers });
     } catch (e: any) {
+      // The detail (a Firestore index message, a project name) stays in the log; the dispatcher's
+      // screen gets a sentence they can act on.
       console.error('[routing-draft] list failed:', e?.message || e);
-      return new Response(JSON.stringify({ ok: false, error: e?.message || 'driver list failed' }), { status: 500, headers });
+      return new Response(JSON.stringify({ ok: false, error: 'the driver list could not be read — try again in a moment' }), { status: 500, headers });
     }
   }
 
@@ -62,7 +71,7 @@ export default async (req: Request): Promise<Response> => {
   const date = String(body?.date || '');
   const keys = Array.isArray(body?.driver_keys) ? body.driver_keys.slice(0, 10).map((d: any) => String(d)) : null;
   const drivers = Array.isArray(body?.drivers) ? body.drivers.map((d: any) => String(d)) : null;
-  if (!DATE_RE.test(date)) {
+  if (!isRealDate(date)) {
     return new Response(JSON.stringify({ ok: false, error: 'bad or missing date (YYYY-MM-DD)' }), { status: 400, headers });
   }
   if (!keys?.length && !drivers?.length) {
@@ -77,6 +86,6 @@ export default async (req: Request): Promise<Response> => {
     return new Response(JSON.stringify(res.draft), { status: 200, headers });
   } catch (e: any) {
     console.error('[routing-draft] failed:', e?.message || e);
-    return new Response(JSON.stringify({ ok: false, error: e?.message || 'draft failed' }), { status: 500, headers });
+    return new Response(JSON.stringify({ ok: false, error: 'the draft could not be built — try again in a moment' }), { status: 500, headers });
   }
 };
