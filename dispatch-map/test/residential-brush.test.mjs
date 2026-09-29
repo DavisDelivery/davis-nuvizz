@@ -1,4 +1,4 @@
-// test/residential-brush.test.mjs — the Residential paint brush in the Routing gear (v1.88.2).
+// test/residential-brush.test.mjs — the Residential paint brush in the Routing gear (v1.90.0).
 //
 // Chad, 2026-09-28, with the gear open on "Mark vehicle eligibility": "the way i can paint tractor
 // freindly or not i want to be able to paint residentials". The brush must write what the stop

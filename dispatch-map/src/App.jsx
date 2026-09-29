@@ -107,7 +107,7 @@ import {
   resolvePlaceMark, placeNoTractor, placeNoTractorLine, shiplifyPinCandidate, shiplifyPinKind,
   shiplifyRecordFor, buildShiplifyLookup, tractorPlaceKeys, tractorSeenAt, limeAsOf, shiplifyPanelRows,
   limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
-  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS, nextResidentialPaint, residentialBrushEnabled,
+  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS, FORKLIFT_RED_RING_ON, nextResidentialPaint, residentialBrushEnabled,
 } from './lib/place-mark.js';
 import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, buildingTypePayload, undoWrite, BOX_ONLY_BUILDING_TYPES, noTractorWrite, noTractorTickFields, restrictionSnapshot, TICKED, canMoveTowardTractor, tractorOkWrite, ulineUntickFields, afterUlineOff } from './lib/uline-review.js';
 import {
@@ -147,7 +147,7 @@ import { planSendSelection, selectionSendTargets } from './lib/send-selection.js
 import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
 import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
 import { dropSide, dropSideClass, dropRight } from './lib/drop-side.js';
-import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
+import { rosterFreshness, ageLabel, routingRosterRereadEnabled, rosterRereadApplies } from './lib/roster-freshness.js';
 import { PARSE_SCHEDULE_LABEL, parsePollOverdue } from './lib/manifest-schedule.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // w-40. Named once so the measurement and the Tailwind class can never disagree about how
@@ -193,7 +193,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.88.2';
+const APP_VERSION = '1.90.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -247,7 +247,9 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.88.2', 'A RESIDENTIAL PAINT BRUSH, BESIDE THE TRACTOR AND BOX BRUSHES. Chad, with the Routing gear open on “Mark vehicle eligibility”: “the way i can paint tractor freindly or not i want to be able to paint residentials.” The gear gains “Mark building type: Off / Residential”. Armed, a click on a stop marks the location residential and the house mark appears on its pin; a second click puts it back to Auto, where Shiplify decides again. It writes exactly what the stop panel’s Building type picker writes (the type, who and when, merged onto the location’s notes), so a house painted on the map and a house picked in the panel are the same fact, and it sticks for every future stop there. It does NOT touch the vehicle mark, the same as the picker: the Tractor and Box brushes paint that. One brush at a time across both groups (arming one disarms the other, and Ninja, Box and Lasso); “Off” in one group never disarms the other’s brush; the on-map reminder names the brush and has a Stop button. The phone gear and both desktop gears carry it. THE WAY BACK: VITE_MAP_RESIDENTIAL_BRUSH=off (a redeploy) takes the group out of the gear; marks already painted stay, because they are the panel’s own field. 5 new tests.'],
+  ['1.90.0', 'A RESIDENTIAL PAINT BRUSH, BESIDE THE TRACTOR AND BOX BRUSHES. Chad, with the Routing gear open on “Mark vehicle eligibility”: “the way i can paint tractor freindly or not i want to be able to paint residentials.” The gear gains “Mark building type: Off / Residential”. Armed, a click on a stop marks the location residential and the house mark appears on its pin; a second click puts it back to Auto, where Shiplify decides again. It writes exactly what the stop panel’s Building type picker writes (the type, who and when, merged onto the location’s notes), so a house painted on the map and a house picked in the panel are the same fact, and it sticks for every future stop there. It does NOT touch the vehicle mark, the same as the picker: the Tractor and Box brushes paint that. One brush at a time across both groups (arming one disarms the other, and Ninja, Box and Lasso); “Off” in one group never disarms the other’s brush; the on-map reminder names the brush and has a Stop button. The phone gear and both desktop gears carry it. THE WAY BACK: VITE_MAP_RESIDENTIAL_BRUSH=off (a redeploy) takes the group out of the gear; marks already painted stay, because they are the panel’s own field. 5 new tests.'],
+  ['1.87.5', 'A LOAD BUILT IN THE PORTAL NOW OPENS IN COMPARE WITHOUT CHANGING THE DATE, AND A CARD THAT CANNOT OPEN SAYS WHY. Chad: “tony will not pull up in the compare panel even though its a fresh scan. It was built in nuvizz not our system but should still pull up in our system unless when i hit refresh it doesn’t load the roster scan?” He was right, read off the code: the Routing screen read the day’s loads roster once, when the date was picked, and neither Refresh nor the two-minute auto-refresh read it again. TONY 1 was built in the portal and captured by the 9:36 PM scan, after the screen had opened 9/29; its stops carry no load id, so the card needs the roster to know which NuVizz load it is, found nothing there, and refused. The refusal was written to the Setup panel, which is hidden whenever the map has the full width, so nothing on screen said why. NOW every newer scan makes the screen re-read the STORED roster for the date (never a NuVizz call) and use it when it is a newer capture with loads in it; a failed, missing or empty read keeps the roster already on screen, because could-not-read is not no-loads. And a card that cannot open says why on the map as well. THE WAY BACK: VITE_ROUTING_ROSTER_REREAD=off (a redeploy) puts both back. 6 new tests.'],
+  ['1.87.4', 'A FORKLIFT STOP YOU MARK NO TRACTOR TRAILER NOW WEARS A RED RING INSTEAD OF DISAPPEARING. Chad: “on a stop that i mark no tractor trailer but the shiplfy data says they have a forklift just make the green ring red instead.” Until now the mark made the Shiplify forklift pin vanish: a stated no vetoes the lime, and the stop drew its no-trailer icon instead, so the map stopped saying there is a forklift at exactly the stop where a box truck is now the plan and the forklift is how the freight comes off. The same forklift pin now draws in the Box-only red. WHAT COUNTS AS YOUR MARK is the map’s own rule for a stated no: Box truck only, or a confirmed “No tractor trailer”. An advisory no, read off order text and never checked, keeps its split icon. IT REPLACES THE NO-TRAILER MARK AND NOTHING ELSE: a stop that also draws a clock, a liftgate or any other restriction keeps its cluster, so nothing is hidden; a selection, a search hit, a flag, do-not-send, an open route, a live status, a school / church / government mark, the amber address tint and the Estes ring all still win, exactly as they do over the green ring. Only the forklift pin changes; a Shiplify dock is untouched. On a pickup the PU keeps the middle and the forklift rides a red corner badge, never a lime one. The Legend has its own row, “Shiplify: forklift, marked no tractor trailer”, counted from what the map drew, and a red-ring stop is no longer counted under the no-trailer icon it replaced. THE WAY BACK: VITE_MAP_FORKLIFT_RED_RING=off (a redeploy) puts every such stop back to exactly what it drew before, byte for byte. 11 new tests, and the Legend-equals-map test widened to cover it.'],
   ['1.87.3', 'THE WRITE JOURNAL NOW KEEPS WHICH STOPS EACH SAVE SENT. Chad, after BRIAN was refused at 8:38 and 8:39 PM with “load has a non-DO stop in a delivery slot that this card is not sequencing”: “maybe the journal should save this information.” The journal could say the 8:37 Save of BRIAN worked and the next two were refused, and could NOT say which stops any of the three carried, because it kept each Save’s RESULT and never what the card sent. That the 8:37 Save carried the LOCKHEED MARTIN pickup and the 8:38 card no longer listed it had to be worked out from a board stamp and the guard’s own rule instead of read. EVERY SAVE’S ROW NOW CARRIES, per load, the stop numbers in the order the card sent them and the ones it struck off, with the load, the board day and which screen built it; the board write-through that follows a Save names its stops too, not just how many. READ BACK FOR FREE: the write log takes ?stop= (the Saves that carried a stop) and ?load= (every Save of a load, the refused ones included), and the stop explain now lists every Save of the stop’s route that day and says of each “sent 16 stops — NOT this one” or “sent 17 stops, this one #17”, so “when did the card lose it” is a lookup. BOUNDED so the journal row can never outgrow itself: 300 stops a load and 12 loads a Save, and a cut says it cut. Nothing on screen changes and nothing a Save sends to NuVizz changes: zero NuVizz calls. Rows written before this release have no list and read exactly as they did. PUTTING IT BACK IS ONE REVERT. 17 new tests.'],
   ['1.87.2', 'THE COMPARE CARD NOW SAYS WHAT TRUCK EACH STOP CAN TAKE. Chad, with BRIAN open in Compare: \u201cI want the compare panel to have a faint green or red highlight if they are tractor friendly or not.\u201d The Selected window has painted a stop green (a 53-footer can go here) since v0.46.5 and red (somebody here said it cannot) since v1.37.1, but once the stop was sent to a card the card said neither \u2014 and the card is where the router decides what truck the load needs. Each stop row on a Compare card now wears a faint green for tractor-trailer friendly and a faint red for a Box-only mark or a confirmed \u201cNo tractor trailer\u201d, on the phone and the desktop alike. ONE RULE: the rows ask the same two helpers the Selected window asks, fed the same notes and the same lime-paint-aware tractor history, so a stop cannot be green in the selection and plain on the card it was sent to. A stop nobody has checked stays uncoloured, exactly as in the Selected window \u2014 red is the stated no, not the unknown. FAINTER THAN THE SELECTED WINDOW, AND MEASURED: at that window\u2019s shade a red row swallowed the card\u2019s own red \u201c30M LATE\u201d badge, so the card uses the lighter shade and the badge still reads. Dragging a stop across a coloured row keeps the colour and still draws the blue drop line; a plain row\u2019s drag cue is unchanged. Hovering a coloured row names why it is coloured. Nothing else on the card changes: counts, Send / Save, the map, the selection tools and closing a card are untouched. PUTTING IT BACK IS ONE REVERT \u2014 this adds a mark and is one commit. 10 new tests.'],
   ['1.87.1', 'EVERY COMPARE ROW WITH HOURS NOW SHOWS WHEN THE DOCK OPENS AS WELL AS WHEN IT CLOSES — AND A “CAN’T MAKE” STOP SAYS HOW LATE IT WOULD BE. Chad, 2026-09-29, on CHRIS HEAD’s rows reading “closes 2:30p · auto”: “i dont’ want just the closing time i want opening too.” The row printed only the edge that binds; it now prints the whole window on file (SIMS RECYCLING 7:00a–2:30p · auto), and a dock that states only one edge still says just that edge, never an invented half. VITE_COMPARE_FULL_WINDOW=off puts back “closes 2:30p”. AND: Chad, 2026-09-28, once those rows carried their hours on their own line: “If there’s not enough room on the can’t make 12 p.m. line to put the amount of time it would be late, then I think I’d rather have the amount of time the system’s going to think it’s going to be late than the can’t make it tag.” So on a Compare row that shows its hours (GENESIS BIOSCIENCES: 8:00a–12:00p · auto), the line under it now reads “2H 4M LATE” instead of “CAN’T MAKE 12:00P” — the close is already on the line above. It keeps the no-entry glyph and its hover (“Unreachable in any order …”), so it still reads as a stop no re-ordering will save. A row with no hours on file keeps “can’t make 12:00p”, because there the close would be printed nowhere. Merely-late rows are unchanged. VITE_COMPARE_UNREACHABLE_LATE=off puts “can’t make” back (build-time, so a redeploy). Zero NuVizz calls. 7 new tests.'],
@@ -1335,6 +1337,8 @@ const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 // The Compare row prints the whole window ("7:00a–2:30p"), not just the binding edge, when both are on
 // file (lib/time-marks.js timeMarkChip). VITE_COMPARE_FULL_WINDOW=off puts back "closes 2:30p". Build-time.
 const COMPARE_FULL_WINDOW_ON = compareFullWindowEnabled(import.meta.env);
+// The Routing screen re-reads the stored roster when a newer scan lands (lib/roster-freshness.js).
+const ROUTING_ROSTER_REREAD_ON = routingRosterRereadEnabled(import.meta.env);
 // The Residential paint brush in the Routing gear (lib/place-mark.js).
 const RESIDENTIAL_BRUSH_ON = residentialBrushEnabled(import.meta.env);
 // A "can't make" row keeps its hours, on their own line above the verdict (lib/time-marks.js
@@ -3833,6 +3837,9 @@ function circleMarkerSvg(color, opts = {}) {
     //                 first), else a badge bottom left, the one free corner.
     //   placeMuted  — the planned-muted ring: the place mark in slate in place of the centre dot.
     strokeWidth = null, ink = null, placeMark = null, forklift = false, placeMuted = false,
+    //   forkliftFill — the forklift CORNER badge's colour: the lime by default, the red ring's red
+    //                  on a no-trailer stop, so the badge never argues with its own ring.
+    forkliftFill = null,
   } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
   // `ring` — an IDENTITY ring (the Estes yellow, lib/carrier-mark.js) takes the disc's edge
@@ -3894,7 +3901,7 @@ function circleMarkerSvg(color, opts = {}) {
   }
   if (forklift) {
     if (center == null) center = glyphCenter('forklift', glyphInk, bodyFill);
-    else forkliftBadge = glyphBadge('forklift', { corner: 'bl', fill: FORKLIFT_BADGE_LIME });
+    else forkliftBadge = glyphBadge('forklift', { corner: 'bl', fill: forkliftFill || FORKLIFT_BADGE_LIME });
   }
   if (center == null) center = `<circle cx="14" cy="14" r="4.5" fill="${hollow ? color : 'white'}"/>`;
   const svg = `
@@ -4359,6 +4366,10 @@ function stopShiplifyMarks(s, note, opts = {}) {
     addressOff: addressLooksOff(s, note),
     estes: isEstesOrder(s?.stopNbr),
     restrictionCount: restrictions.length,
+    // THE RED RING (v1.87.4): every mark this stop draws is a trailer blocker, so a forklift pin
+    // with a red ring can say the whole of it. Resolved, like blockerKeys in stopMarkerIcon.
+    onlyBlockers: restrictions.length > 0 && restrictions.every((k) => TRAILER_BLOCKER_KEYS.has(resolveRestrictionKey(k))),
+    redRing: FORKLIFT_RED_RING_ON,
   });
   return { placeMark: mark, pin };
 }
@@ -4452,7 +4463,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   const addrOff = addressLooksOff(s, note);
   // THE PLACE MARK AND THE HOLLOW LIME SHIPLIFY PIN — decided once, in stopShiplifyMarks, which
   // the Legend also reads. `placeMarkKind` rides every disc (centre, corner badge, muted slate,
-  // cluster badge); `shiplifyPin` is 'dock' | 'forklift' | null.
+  // cluster badge); `shiplifyPin` is 'dock' | 'forklift' | 'forklift_blocked' (the red ring) | null.
   const { placeMark: placeMarkKind, pin: shiplifyPin } = stopShiplifyMarks(s, note, opts);
   // Signature of EVERY input that changes the rendered icon (restrictions already folds in
   // selectedDayKey plus the AM/PM + tractor filters applied above). This MUST track the
@@ -4526,7 +4537,11 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
     const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (estesFill || meta.color || flagColor(note)));
     result = { url: circleMarkerSvg(color, { label: String(seq), count, ring, pickup, placeMark: placeMarkKind }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
-  } else if (restrictions.length === 0) {
+  } else if (restrictions.length === 0 || shiplifyPin === 'forklift_blocked') {
+    // THE RED RING TAKES STATE A (v1.87.4, Chad: "on a stop that i mark no tractor trailer but
+    // the shiplfy data says they have a forklift just make the green ring red instead"). Its
+    // only restrictions are trailer blockers (stopShiplifyMarks), and the red ring says exactly
+    // that, so it draws the forklift disc in place of the no-trailer mark.
     // State A — status drives the pin; matched stops pop orange; a priority flag,
     // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
@@ -4579,15 +4594,20 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     const defaultArm = !matched && !searchMatched && !noTractorOverride && !tractorDelivered
       && !eligColor && !pinFlagHue && !addressOff && !estesFill;
     const limePin = defaultArm ? shiplifyPin : null;
-    const pinColor = limePin ? TRACTOR_DELIVERED_COLOR : color;
-    // Anything drawn ON a hollow lime pin is #1f2937: lime on white is too faint for a shape.
-    const limeInk = limePin ? { strokeWidth: 3, ink: GLYPH_INK_ON_LIME } : {};
+    // THE RED RING: the same hollow forklift pin in the Box-only red. stopShiplifyMarks refuses a
+    // selection and a search hit — the two colours above the stated no in this chain — and it
+    // is re-checked against them here, the way the lime pin is against its own arm.
+    const redPin = shiplifyPin === 'forklift_blocked' && !matched && !searchMatched;
+    const pinColor = limePin ? TRACTOR_DELIVERED_COLOR : (redPin ? ELIG_BOX_COLOR : color);
+    // Anything drawn ON a hollow lime or red pin is #1f2937: the ring's colour on white is too
+    // faint for a shape.
+    const limeInk = (limePin || redPin) ? { strokeWidth: 3, ink: GLYPH_INK_ON_LIME } : {};
     // UNPLANNED resting pins (not highlighted, no AM/PM tag) render as a white-circle-wrapped DOT
     // instead of the washed-out small teardrop — same ≤16px footprint, so it never grows. A
     // co-located count sits inside the dot. Highlighted/tagged unplanned keep the pop pin.
     // A place mark or a forklift needs the room a tag needs, so it leaves the 16px dot the same
     // way PU does. The DOCK pin keeps the dot: a lime ring around a white core.
-    if (statusKind === 'UNPLANNED' && !hi && !tag && !placeMarkKind && limePin !== 'forklift') {
+    if (statusKind === 'UNPLANNED' && !hi && !tag && !placeMarkKind && limePin !== 'forklift' && !redPin) {
       result = {
         url: limePin === 'dock'
           ? unplannedDotSvg('#ffffff', { glyph, count, ring: TRACTOR_DELIVERED_COLOR })
@@ -4620,12 +4640,13 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       const timeTag = tag === 'AM' || tag === 'PM';
       // A place mark and a forklift pin take the PU tier (22) for the same reason PU does: the
       // mark has to be readable, and it is a kind of place, not a deadline.
-      const size = hi ? 22 : (timeTag ? 28 : ((tag || placeMarkKind || limePin === 'forklift') ? 22 : 16));
+      const size = hi ? 22 : (timeTag ? 28 : ((tag || placeMarkKind || limePin === 'forklift' || redPin) ? 22 : 16));
       const half = size / 2;
       result = {
         url: circleMarkerSvg(pinColor, {
-          hollow: limePin ? true : (hi ? false : meta.hollow), glyph, tag, count, ring, pickup,
-          ...limeInk, placeMark: placeMarkKind, forklift: limePin === 'forklift',
+          hollow: (limePin || redPin) ? true : (hi ? false : meta.hollow), glyph, tag, count, ring, pickup,
+          ...limeInk, placeMark: placeMarkKind, forklift: limePin === 'forklift' || redPin,
+          ...(redPin ? { forkliftFill: ELIG_BOX_COLOR } : {}),
         }),
         scaledSize: new google.maps.Size(size, size),
         anchor: new google.maps.Point(half, half),
@@ -6088,9 +6109,12 @@ function useLegendInventory({
         tractorDelivered,
         ...(shiplify ? shiplify.markerOpts(s) : {}),
       });
+      // THE RED RING takes the stop's no-trailer mark over (v1.87.4) — the marker draws the
+      // forklift disc and no restriction icon, so the icon rows must not count that mark either.
+      const pinHides = marks.pin === 'forklift_blocked';
       entries.push({
         note,
-        hidden,
+        hidden: hidden || pinHides,
         dns,
         pickup,
         estes: isEstesOrder(s.stopNbr),
@@ -6100,7 +6124,7 @@ function useLegendInventory({
         icons: drawnRestrictionKeys(getRestrictionBadgeKeys(note, { day: dayKey }), {
           deliveryWindow: note?.delivery_window,
           eligibility: note?.vehicle_eligibility,
-          hidden,
+          hidden: hidden || pinHides,
           resolve: resolveRestrictionKey,
         }),
       });
@@ -6276,6 +6300,8 @@ const SHIPLIFY_DOCK_SWATCH = circleMarkerSvg(TRACTOR_DELIVERED_COLOR, { hollow: 
 // resting dot (a lime ring round a white core), a scheduled one the hollow ring with its dot.
 const SHIPLIFY_DOCK_REST_SWATCH = unplannedDotSvg('#ffffff', { ring: TRACTOR_DELIVERED_COLOR });
 const SHIPLIFY_FORKLIFT_SWATCH = circleMarkerSvg(TRACTOR_DELIVERED_COLOR, { hollow: true, strokeWidth: 3, ink: GLYPH_INK_ON_LIME, forklift: true });
+// The red ring (v1.87.4): the forklift pin on a stop a dispatcher has marked no tractor trailer.
+const SHIPLIFY_FORKLIFT_BLOCKED_SWATCH = circleMarkerSvg(ELIG_BOX_COLOR, { hollow: true, strokeWidth: 3, ink: GLYPH_INK_ON_LIME, forklift: true });
 
 // "Shiplify data" for one tab — the switch, and a status line that says whether anything is
 // actually loaded, so an empty trial layer can never be mistaken for a switched-off one.
@@ -6471,7 +6497,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true, t
           Map display, Routing's in the Routing map's Filters menu) and the two hollow lime pins:
           "Shiplify says a trailer could work here, and no tractor has delivered yet". */}
       {shiplifySwitch && <ShiplifySwitchControl tab={tab} />}
-      {shiplifyOn && (has(inv && inv.shiplifyDock) || has(inv && inv.shiplifyForklift)) && (
+      {shiplifyOn && (has(inv && inv.shiplifyDock) || has(inv && inv.shiplifyForklift) || has(inv && inv.shiplifyForkliftBlocked)) && (
         <div data-legend-shiplify>
           <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Shiplify</div>
           <div className="space-y-1">
@@ -6488,6 +6514,13 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true, t
                 <img src={SHIPLIFY_FORKLIFT_SWATCH} width={18} height={18} alt="" className="flex-shrink-0" />
                 <span>Shiplify: forklift, no dock, no tractor yet</span>
                 <LegendCount n={!all && inv.shiplifyForklift} />
+              </div>
+            )}
+            {has(inv && inv.shiplifyForkliftBlocked) && (
+              <div className="flex items-center gap-2" data-legend-row="shiplify-forklift-blocked">
+                <img src={SHIPLIFY_FORKLIFT_BLOCKED_SWATCH} width={18} height={18} alt="" className="flex-shrink-0" />
+                <span>Shiplify: forklift, marked no tractor trailer</span>
+                <LegendCount n={!all && inv.shiplifyForkliftBlocked} />
               </div>
             )}
           </div>
@@ -24297,7 +24330,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   const [dayShells, setDayShells] = useState(null);
   // Everything the roster response feeds, in one place so the cache path and the live refresh
   // can never diverge — the status map, the identity index, the raw rows and the envelope.
-  const applyDayRoster = useCallback((j) => {
+  // Which stored capture is on screen (the envelope's `at`), so a re-read of the same copy is a no-op.
+  const dayRosterAtRef = useRef(null);
+  const applyDayRoster = useCallback((j, { keepShells = false } = {}) => {
     // Status map via the shared builder: it writes the by-id keys AND the '#amb:' markers
     // that stop a name shared by two loads from deciding either one's status (§S).
     const rosterLoads = (j && j.ok) ? (j.loads || []) : [];
@@ -24337,7 +24372,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     setLoadDriverByName(drivers);
     setLoadRosterList(j && j.ok ? (j.loads || []) : []);
     setDayRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count, pull: j.pull || null, date: j.date || null } : { ok: false });
-    setDayShells(j && j.ok && j.shells && Array.isArray(j.shells.names) ? j.shells : null);
+    dayRosterAtRef.current = j && j.ok ? (j.at || null) : null;
+    // A stored-copy re-read carries no shells (the endpoint offers them only on the open read), so
+    // it must not blank the ones already on screen.
+    if (!keepShells) setDayShells(j && j.ok && j.shells && Array.isArray(j.shells.names) ? j.shells : null);
   }, []);
   const clearDayRoster = useCallback(() => {
     loadRosterRef.current = new Map();
@@ -24366,6 +24404,33 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // shouldServeCachedRoster). Two bugs, one symptom Chad counted: "each refresh is causing
     // like 14 calls when it should only be 3 or 4."
   }, [selectedDate, applyDayRoster, clearDayRoster]);
+  // RE-READ THE STORED ROSTER WHEN A NEWER SCAN LANDS (v1.87.5). Chad, 2026-09-28: "tony will not
+  // pull up in the compare panel even though its a fresh scan. It was built in nuvizz not our system
+  // but should still pull up in our system unless when i hit refresh it doesn't load the roster
+  // scan?" It did not. The roster above is read once per DATE, and neither Refresh nor the silent
+  // poll read it again — so a load built in the portal after this screen opened (TONY 1,
+  // DAVIS000205073, captured 9:36 PM) had no identity here: its stops carry no load id, the card
+  // needs the roster to know which load to open, and it refused. The scan is what writes the
+  // roster, so a newer scan stamp is exactly when there can be a newer one to read.
+  //   · cacheOnly=1 — the stored copy or nothing, NEVER a NuVizz call;
+  //   · only a stored copy is applied, and only a different capture: a failed or empty read keeps
+  //     the roster already on screen, because "we could not read it" is not "there are no loads";
+  //   · the first stamp seen for a date is skipped — the open-date read above already covers it.
+  // The switch: VITE_ROUTING_ROSTER_REREAD=off puts it back to one read per date.
+  const rosterScanSeenRef = useRef({ date: null, at: null });
+  useEffect(() => {
+    if (!ROUTING_ROSTER_REREAD_ON || !selectedDate || !lastScannedAt) return;
+    const seen = rosterScanSeenRef.current;
+    if (seen.date !== selectedDate) { rosterScanSeenRef.current = { date: selectedDate, at: lastScannedAt }; return; }
+    if (seen.at === lastScannedAt) return;
+    rosterScanSeenRef.current = { date: selectedDate, at: lastScannedAt };
+    let cancelled = false;
+    apiFetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate) + '&cacheOnly=1', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => { if (!cancelled && rosterRereadApplies(j, dayRosterAtRef.current)) applyDayRoster(j, { keepShells: true }); })
+      .catch(() => { /* keep the roster on screen — a failed re-read is not an empty roster */ });
+    return () => { cancelled = true; };
+  }, [selectedDate, lastScannedAt, applyDayRoster]);
 
   // Board Flags on Routing too — Chad, staring at a driverless LVILLE with a 2:00p LUND
   // close on THIS screen: the chip only existed on the dispatch Map, so Routing could never
@@ -24862,7 +24927,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     const openNow = () => setWbRoutes((prev) => {
       const r = buildWbCard(key, prev);
       if (r.already) return prev;
-      if (r.refusal) { setLastAction(r.refusal); return prev; }
+      // SAID WHERE IT CAN BE SEEN (v1.87.5). The refusal went to lastAction alone, which renders in
+      // the Setup panel — hidden whenever the map has the full width, which is exactly when a
+      // route is tapped from the rail. So TONY 1 "would not pull up" and nothing said why.
+      if (r.refusal) { setLastAction(r.refusal); if (ROUTING_ROSTER_REREAD_ON) showMapToast(r.refusal); return prev; }
       // Say which load it opened on, and why that is not today's — a card saving to a load dated
       // yesterday must never look like an ordinary one.
       if (r.ownDayLoad) setLastAction(`Opened "${loadDisplayName(r.card.name, key) || key}" on NuVizz load ${r.ownDayLoad.loadNbr || r.ownDayLoad.loadId} — NuVizz still dates this load and its stops ${r.ownDay}.`);
@@ -25422,7 +25490,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     if (!brush) return;
     const mk = s.matchKey;
     if (!mk) { setLastAction(`${s.stopNbr}: no location key to mark`); return; }
-    // THE RESIDENTIAL BRUSH (v1.88.2). Chad: "the way i can paint tractor freindly or not i want
+    // THE RESIDENTIAL BRUSH (v1.90.0). Chad: "the way i can paint tractor freindly or not i want
     // to be able to paint residentials". The same write the stop panel's Building type picker
     // makes (buildingTypePayload: the type, who, when) — a click marks the location residential,
     // a second click puts it back to Auto. The vehicle mark is left alone: painting that is the
@@ -27438,7 +27506,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       { value: 'box', label: <span className="font-semibold" style={{ color: ELIG_BOX_COLOR }}>● Box truck only</span> },
     ],
   };
-  // THE RESIDENTIAL BRUSH (v1.88.2) — its own group beside the vehicle brushes, one brush armed at
+  // THE RESIDENTIAL BRUSH (v1.90.0) — its own group beside the vehicle brushes, one brush armed at
   // a time across both (they share the paint mode, so arming one disarms the other).
   const buildingView = {
     key: 'building',

@@ -292,26 +292,63 @@ const PIN_STATUSES = new Set(['UNPLANNED', 'SCHEDULED']);
  * the stop would otherwise wear its plain default status colour — so every fact that earns a
  * colour, a mark or a cluster of its own suppresses it. Each suppression is its own test.
  *
- * → 'dock' | 'forklift' | null
+ * 'forklift_blocked' — THE SAME FORKLIFT PIN WITH A RED RING, where a dispatcher has said no
+ * tractor trailer. Chad, 2026-09-28: "on a stop that i mark no tractor trailer but the shiplfy
+ * data says they have a forklift just make the green ring red instead." Until then his mark made
+ * the pin vanish — the stated no vetoes the lime and becomes the stop's no-trailer mark — so the
+ * map stopped saying the one thing Shiplify knew, that there is a forklift, at exactly the stop
+ * where a box truck is now the plan and the forklift is how it comes off. The red ring answers
+ * only the trailer question, so it takes over only the marks that ARE that question:
+ *   · `paintAllowed` false is the map's own stated no (tractorPaintAllowed: Box truck only, or
+ *     a CONFIRMED trailer blocker). An advisory blocker leaves it true and keeps its split icon.
+ *   · `onlyBlockers` — every restriction the stop draws is a trailer blocker, so the ring
+ *     replaces the no-trailer mark and nothing else. A stop that also draws a clock or a
+ *     liftgate keeps its cluster.
+ *   · a tractor that once delivered here does not hide it: the stated no already outranks the
+ *     lime history everywhere on the map (noTractorOverride).
+ * Every other suppression — a place mark, a live status, a selection, a flag, the amber and
+ * Estes paint — still wins. `redRing` is the switch (VITE_MAP_FORKLIFT_RED_RING); off, a
+ * no-trailer stop draws exactly what it drew before.
+ *
+ * → 'dock' | 'forklift' | 'forklift_blocked' | null
  */
 export function shiplifyPinKind({
   candidate = null, shiplifyOn = false,
   tractorSeen = false, eligibility = null, paintAllowed = true, placeMark = null,
   statusKind = null, dns = false, matched = false, searchMatched = false, inRoute = false,
   plannedMuted = false, priorityFlag = null, addressOff = false, estes = false, restrictionCount = 0,
+  onlyBlockers = false, redRing = false,
 } = {}) {
   if (!shiplifyOn || (candidate !== 'dock' && candidate !== 'forklift')) return null;
-  if (tractorSeen) return null;                           // lime by key or by street + ZIP
-  if (eligibility) return null;                           // Tractor-trailer OK or Box truck only
-  if (!paintAllowed) return null;                         // a confirmed trailer blocker
   if (NO_TRACTOR_PLACE_MARKS.has(placeMark)) return null; // school / church / government
   if (!PIN_STATUSES.has(statusKind)) return null;         // live statuses keep their colours
   if (dns || matched || searchMatched || inRoute || plannedMuted) return null;
   if (priorityFlag) return null;                          // any flag, the ? flag included
   if (addressOff || estes) return null;                   // amber tint / the Estes ring
+  if (!paintAllowed) {                                    // a dispatcher's stated no trailer
+    const onlyTrailer = Number(restrictionCount) === 0 || onlyBlockers === true;
+    return redRing && candidate === 'forklift' && eligibility !== 'tractor' && onlyTrailer ? 'forklift_blocked' : null;
+  }
+  if (tractorSeen) return null;                           // lime by key or by street + ZIP
+  if (eligibility) return null;                           // Tractor-trailer OK or Box truck only
   if (Number(restrictionCount) > 0) return null;          // a restriction cluster
   return candidate;
 }
+
+/** VITE_MAP_FORKLIFT_RED_RING — house shape: default on, an off-word (off/0/false/no) turns it
+ *  off, anything malformed leaves it on. Off puts a no-trailer stop back to what it drew before
+ *  v1.87.4: no forklift pin, its no-trailer mark instead. Build-time, so flipping it is a
+ *  redeploy. */
+export function forkliftRedRingEnabled(env) {
+  const v = String(env?.VITE_MAP_FORKLIFT_RED_RING ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** The switch as this build reads it. Vite injects import.meta.env at build time; in Node (the
+ *  unit suite) it is absent and the switch reads on, as the house shape says. */
+export const FORKLIFT_RED_RING_ON = (() => {
+  try { return forkliftRedRingEnabled(import.meta.env); } catch { return true; }
+})();
 
 // ── the stop panel's Shiplify block ─────────────────────────────────────────
 
@@ -360,7 +397,7 @@ export function buildingTypeChanged(draft, existing) {
   return normalizeBuildingType(draft?.building_type) !== normalizeBuildingType(existing?.building_type);
 }
 
-// ── THE RESIDENTIAL BRUSH (v1.88.2) ─────────────────────────────────────────
+// ── THE RESIDENTIAL BRUSH (v1.90.0) ─────────────────────────────────────────
 //
 // Chad, 2026-09-28, with the Routing gear open on "Mark vehicle eligibility": "the way i can paint
 // tractor freindly or not i want to be able to paint residentials". The brush writes exactly what
