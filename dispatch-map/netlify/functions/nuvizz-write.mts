@@ -45,6 +45,7 @@ import { getUser, patchUser } from './lib/auth-store.mts';
 import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, dailyCeilingKnown, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
+import { saveSent } from './lib/save-sent.mts';
 import { outboundAllowed, outboundRefusal } from './lib/mirror-guard.mts';
 
 function writeEnabled(): boolean {
@@ -384,9 +385,12 @@ export default async (req: Request): Promise<Response> => {
   // 7) Journal (best-effort) + idempotency ledger. `by` is the signed-in PERSON (null for the
   //    pre-login caller) and `nuvizzAs` the NuVizz login the write actually went out under — so
   //    "who changed this route" has an answer in our own ledger as well as in NuVizz's history.
+  //    `sent` is WHICH STOPS the Save carried, per load (lib/save-sent.mts) — the result alone
+  //    could say BRIAN's 8:38 Save was refused but not that its card no longer listed the pickup.
   if (MUTATING_OPS.has(op)) {
     await journal(op, payload, result, tenant, clientOpId, createdBy, who);
-    if (clientOpId) await putOpRecord({ clientOpId, op, status: result?.ok ? 'succeeded' : 'failed', result, tenant, at: new Date().toISOString(), by: who, nuvizzAs: identity.kind === 'personal' ? identity.nuvizzUser : 'shared' });
+    const sent = saveSent(payload, { createdBy });
+    if (clientOpId) await putOpRecord({ clientOpId, op, status: result?.ok ? 'succeeded' : 'failed', result, tenant, at: new Date().toISOString(), by: who, nuvizzAs: identity.kind === 'personal' ? identity.nuvizzUser : 'shared', ...(sent ? { sent } : {}) });
   }
 
   // 8) Answer. A failure MUST carry its reason at the top level — the executors always build

@@ -37,6 +37,9 @@ export interface OpRecord {
   by?: string | null;
   /** The NuVizz login the write went out under: a person's NuVizz username, or 'shared'. */
   nuvizzAs?: string | null;
+  /** WHICH STOPS the write carried (lib/save-sent.mts): a Save's per-load order and removals,
+   *  or a board write-through's planned / un-planned lists. Bounded; absent on older rows. */
+  sent?: any;
 }
 
 // ── Idempotency ledger ───────────────────────────────────────────────────────

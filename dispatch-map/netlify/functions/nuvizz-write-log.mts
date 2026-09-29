@@ -6,7 +6,9 @@
 //     &op=setStopDate      only this op        (case-insensitive)
 //     &status=failed       only this outcome   (case-insensitive)
 //     &since=2026-08-01    only rows at/after this instant
-//   → { ok, count, matched, truncated, ops: [{ clientOpId, op, status, at, result }...] }
+//     &stop=RA58610778-1-1 only rows that carried or name this stop
+//     &load=BRIAN          every Save of this load (route name, load number or load id)
+//   → { ok, count, matched, truncated, ops: [{ clientOpId, op, status, at, result, sent }...] }
 //     newest first. `matched` is how many rows matched BEFORE the limit cut, so a
 //     caller can tell "5 of 5" from "5 of 60" and know to widen.
 //
@@ -14,6 +16,12 @@
 // including each import's sentHeader/sentStopNbrs, NuVizz's verbatim ack, and every
 // convergence read-back). This is how a "Save said SUCCESS but nothing landed" gets
 // diagnosed without guessing.
+//
+// `sent` (v1.87.3, lib/save-sent.mts) is WHICH STOPS each Save carried, per load, in the order
+// sent, plus the ones it struck off. Before it, a row kept the RESULT only: BRIAN's 8:38 PM
+// Save on 2026-09-28 was journaled as refused, and nothing could say its card no longer listed
+// the pickup the 8:37 Save had carried. `?load=BRIAN` now lists every Save of the load with
+// what each one sent; `?stop=` finds the ones that carried a stop.
 //
 // FILTERING EARNED ITS PLACE ON 2026-08-17. A setStopDate bug rewrote two orders'
 // delivery addresses to our own terminal, and the ledger could not size the damage:
@@ -50,6 +58,8 @@ export default async (req: Request): Promise<Response> => {
     op: url.searchParams.get('op'),
     status: url.searchParams.get('status'),
     since: url.searchParams.get('since'),
+    stop: url.searchParams.get('stop'),
+    load: url.searchParams.get('load'),
   };
   try {
     const all = ((await listDocs('nuvizz_write_ops')) as any[]) || [];
