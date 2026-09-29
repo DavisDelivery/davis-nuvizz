@@ -34,6 +34,7 @@ import { selectAddressChanges } from './lib/address-history.mts';
 import { getStop as getHistoryStop } from './lib/history-store.mts';
 import { requireUser } from './lib/require-user.mts';
 import { explainStop, sameNbr } from './lib/stop-explain.mts';
+import { sentPlace } from './lib/save-sent.mts';
 import { pastOverrideClampEnabled } from './lib/nuvizz-list.mts';
 import type { StopCopy, StopFacts } from './lib/stop-explain.mts';
 
@@ -57,33 +58,80 @@ export function stopIdCandidates(raw: string): string[] {
   return [...new Set(out)];
 }
 
-/** One write-journal row → one line. The journal stores the RESULT of a Save, not its
- *  payload, so a stop number appears only where the result names it; the board-sync rows are
- *  matched by route + day instead. */
-export function summarizeWriteOp(rec: any): string {
+/** What a row's `sent` says about THIS stop (lib/save-sent.mts): carried it and where, struck it
+ *  off, or went out without it. `candidates` empty → just how many stops it carried. */
+function sentNote(sent: any, candidates: string[] = [], listKey: 'removed' | 'unplanned' = 'removed'): string {
+  if (!sent) return '';
+  const ordered = Array.isArray(sent.ordered) ? sent.ordered : null;
+  const n = sent.orderedTotal ?? (ordered ? ordered.length : 0);
+  const p = candidates.length ? sentPlace(sent, candidates) : { at: null, of: null, removed: false };
+  const struck = listKey === 'unplanned' ? 'un-planned this one' : 'struck this one off';
+  if (!ordered) return p.removed ? ` · ${struck}` : ' · sent no stop order';
+  const carried = ` · sent ${n} stop${n === 1 ? '' : 's'}`;
+  if (!candidates.length) return carried;
+  if (p.at != null) return `${carried}, this one #${p.at}`;
+  if (p.removed) return `${carried} and ${struck}`;
+  // Past the cap the list is cut, so an absence there is not proof the Save left it out.
+  return sent.orderedTotal ? `${carried} (list cut at ${ordered.length}; this one not in it)` : `${carried} — NOT this one`;
+}
+
+/** A board write-through's `sent` (planned / un-planned lists) against THIS stop. The counts
+ *  are already on the line, so this says only where the stop was. */
+function boardSyncNote(sent: any, candidates: string[]): string {
+  if (!sent || !candidates.length) return '';
+  const p = sentPlace({ ordered: Array.isArray(sent.ordered) ? sent.ordered : [], removed: sent.unplanned }, candidates);
+  if (p.at != null) return ` · this one #${p.at}`;
+  if (p.removed) return ' · un-planned this one';
+  return sent.orderedTotal ? ` · list cut at ${sent.ordered.length}; this one not in it` : ' · NOT this one';
+}
+
+/** The `sent` entry for one result load — joined by the load number / id the Save ASKED for,
+ *  because a retargeted result carries the twin's identity (see keyOf in the client). */
+function sentForResult(l: any, sent: any): any {
+  const loads = Array.isArray(sent?.loads) ? sent.loads : [];
+  const hit = loads.find((x: any) => (x?.loadNbr && [l?.requestedLoadNbr, l?.loadNbr].map(String).includes(String(x.loadNbr)))
+    || (x?.loadId && [l?.requestedLoadId, l?.loadId].map(String).includes(String(x.loadId))));
+  return hit ?? null;
+}
+
+/** One write-journal row → one line. A row names the stops a Save SENT only since v1.87.3
+ *  (`sent`); older rows keep the RESULT alone, so a stop number appears in them only where the
+ *  result names it, and board-sync rows are matched by route + day. `candidates` — the stop's
+ *  numbers — lets the line say whether the Save carried THIS stop. */
+export function summarizeWriteOp(rec: any, candidates: string[] = []): string {
   const r = rec?.result ?? {};
   // "left finished N" — stops a stamp skipped because the board already held them finished
   // (lib/finished-guard.mts). Shown wherever the counts are, so a skip is never a silent no-op.
   const finished = (b: any) => (b?.skippedFinished ? `, left finished ${b.skippedFinished}${Array.isArray(b.skippedFinishedNbrs) && b.skippedFinishedNbrs.length ? ` (${b.skippedFinishedNbrs.slice(0, 5).join(', ')})` : ''}` : '');
-  if (rec?.op === 'boardSync') return `${r.routeName ?? '?'} on ${r.date ?? '?'}: ${r.ordered ?? 0} planned, ${r.unplanned ?? 0} un-planned → patched ${r.patched ?? 0}, rescued ${r.rescued ?? 0}, missing ${r.missing ?? 0}${Array.isArray(r.missingNbrs) && r.missingNbrs.length ? ` (${r.missingNbrs.slice(0, 5).join(', ')})` : ''}${finished(r)}${r.error ? ` — ${r.error}` : ''}`;
+  if (rec?.op === 'boardSync') return `${r.routeName ?? '?'} on ${r.date ?? '?'}: ${r.ordered ?? 0} planned, ${r.unplanned ?? 0} un-planned → patched ${r.patched ?? 0}, rescued ${r.rescued ?? 0}, missing ${r.missing ?? 0}${Array.isArray(r.missingNbrs) && r.missingNbrs.length ? ` (${r.missingNbrs.slice(0, 5).join(', ')})` : ''}${finished(r)}${r.error ? ` — ${r.error}` : ''}${boardSyncNote(rec?.sent, candidates)}`;
   if (Array.isArray(r.loads)) {
-    return r.loads.map((l: any) => `${l?.loadNbr ?? '?'}: ${l?.ok ? 'ok' : `FAILED — ${String(l?.error ?? 'no reason').slice(0, 160)}`}${l?.boardSync ? ` (board patched ${l.boardSync.patched ?? 0}, rescued ${l.boardSync.rescued ?? 0}, missing ${l.boardSync.missing ?? 0}${finished(l.boardSync)})` : ''}${l?.finishedRecorded ? ` [record read ${l.finishedRecorded.normalizedStatus}: ${l.finishedRecorded.patched ? 'recorded on the board' : (l.finishedRecorded.reason || 'not recorded')}]` : ''}`).join('; ');
+    const single = Array.isArray(rec?.sent?.loads) && rec.sent.loads.length === 1 && r.loads.length === 1 ? rec.sent.loads[0] : null;
+    return r.loads.map((l: any) => {
+      const s = sentForResult(l, rec?.sent) ?? single;
+      const name = s?.routeName && s.routeName !== l?.loadNbr ? ` (${s.routeName})` : '';
+      return `${l?.loadNbr ?? '?'}${name}: ${l?.ok ? 'ok' : `FAILED — ${String(l?.error ?? 'no reason').slice(0, 160)}`}${l?.boardSync ? ` (board patched ${l.boardSync.patched ?? 0}, rescued ${l.boardSync.rescued ?? 0}, missing ${l.boardSync.missing ?? 0}${finished(l.boardSync)})` : ''}${l?.finishedRecorded ? ` [record read ${l.finishedRecorded.normalizedStatus}: ${l.finishedRecorded.patched ? 'recorded on the board' : (l.finishedRecorded.reason || 'not recorded')}]` : ''}${sentNote(s, candidates)}`;
+    }).join('; ');
   }
   return r?.error ? String(r.error).slice(0, 200) : (r?.ok === false ? 'failed' : 'ok');
 }
 
-/** PURE: which journal rows belong beside this stop — rows whose result names the number, and
- *  board-sync rows for one of its routes on the day in question. Newest first, capped. */
+/** PURE: which journal rows belong beside this stop — rows that name the number (in the result,
+ *  or in what a Save sent), board-sync rows for one of its routes on the day in question, and —
+ *  since `sent` exists — every Save of one of its routes made against that day, INCLUDING the
+ *  ones that went out without it. Those are the rows that answer "when did the card lose it".
+ *  Newest first, capped. */
 export function selectWriteRows(all: any[], opts: { candidates: string[]; routes: string[]; date: string; max?: number }): Array<{ at: string; op: string; status: string; summary: string }> {
   const max = opts.max ?? WRITES_MAX;
   const routes = new Set(opts.routes.map((r) => String(r).trim().toLowerCase()).filter(Boolean));
   const mentions = (rec: any) => { const j = JSON.stringify(rec ?? {}); return opts.candidates.some((c) => c && j.includes(`"${c}"`) || (c && new RegExp(`[^A-Za-z0-9]${c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^A-Za-z0-9]`).test(j))); };
   const forRoute = (rec: any) => rec?.op === 'boardSync' && String(rec?.result?.date ?? '') === opts.date && routes.has(String(rec?.result?.routeName ?? '').trim().toLowerCase());
+  const savedRoute = (rec: any) => rec?.op !== 'boardSync' && String(rec?.sent?.date ?? '') === opts.date
+    && Array.isArray(rec?.sent?.loads) && rec.sent.loads.some((l: any) => routes.has(String(l?.routeName ?? '').trim().toLowerCase()));
   return (all || [])
-    .filter((rec) => rec && (mentions(rec) || forRoute(rec)))
+    .filter((rec) => rec && (mentions(rec) || forRoute(rec) || savedRoute(rec)))
     .sort((a, b) => String(b?.at ?? '').localeCompare(String(a?.at ?? '')))
     .slice(0, max)
-    .map((rec) => ({ at: String(rec.at ?? ''), op: String(rec.op ?? '?'), status: String(rec.status ?? '?'), summary: summarizeWriteOp(rec) }));
+    .map((rec) => ({ at: String(rec.at ?? ''), op: String(rec.op ?? '?'), status: String(rec.status ?? '?'), summary: summarizeWriteOp(rec, opts.candidates) }));
 }
 
 export default async (req: Request): Promise<Response> => {

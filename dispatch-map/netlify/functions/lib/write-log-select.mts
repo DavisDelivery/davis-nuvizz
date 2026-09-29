@@ -12,6 +12,8 @@
 // answers the question that actually gets asked during an incident: how many
 // orders did this touch?
 
+import { sentNamesStop, rowIsForLoad } from './save-sent.mts';
+
 export interface WriteLogQuery {
   /** Exact op name, e.g. 'setStopDate'. Case-insensitive. Omit for all ops. */
   op?: string | null;
@@ -19,11 +21,28 @@ export interface WriteLogQuery {
   status?: string | null;
   /** ISO instant; keep rows at or after it. Omit for no lower bound. */
   since?: string | null;
+  /** A stop number: rows whose `sent` carried it (ordered or struck off), or that name it
+   *  anywhere in the row. Case-insensitive. */
+  stop?: string | null;
+  /** A load: route name, load number or load id. Every Save OF that load — the ones that did
+   *  not carry a given stop are the point (BRIAN, 2026-09-28: 8:37 carried the pickup, 8:38 did
+   *  not). Case-insensitive. */
+  load?: string | null;
   /** Rows to return after filtering. */
   limit: number;
 }
 
 const eq = (a: any, b: any) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
+
+/** The row names this stop as a whole value somewhere — a result's missingNbrs, an error that
+ *  quotes it, a single-stop op's own stopNbr. How rows written before `sent` existed are found. */
+function rowNamesStop(rec: any, stop: string): boolean {
+  if (sentNamesStop(rec, [stop])) return true;
+  let json = '';
+  try { json = JSON.stringify(rec ?? {}).toUpperCase(); } catch { return false; }
+  const s = stop.toUpperCase();
+  return json.includes(`"${s}"`) || new RegExp(`[^A-Z0-9]${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^A-Z0-9]`).test(json);
+}
 
 /**
  * Newest-first, filtered, then cut. Rows without a timestamp are dropped — they
@@ -36,6 +55,10 @@ export function selectWriteOps(all: any[], q: WriteLogQuery): any[] {
     if (q.op && !eq(o.op, q.op)) return false;
     if (q.status && !eq(o.status, q.status)) return false;
     if (q.since && String(o.at) < String(q.since)) return false;
+    const stop = String(q.stop ?? '').trim();
+    if (stop && !rowNamesStop(o, stop)) return false;
+    const load = String(q.load ?? '').trim();
+    if (load && !rowIsForLoad(o, load)) return false;
     return true;
   });
   filtered.sort((a, b) => String(b.at).localeCompare(String(a.at)));

@@ -19,6 +19,7 @@
 import { patchBoardPlan, isFirestoreEnabled } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
 import { putOpRecord } from './lib/write-registries.mts';
+import { boardSyncSent } from './lib/save-sent.mts';
 import { getCreds } from './lib/nuvizz-scan.mts';
 
 export default async (req: Request): Promise<Response> => {
@@ -47,10 +48,13 @@ export default async (req: Request): Promise<Response> => {
   // Every call — success or failure — lands in the write-op ledger (nuvizz-write-log reads
   // it), because the CLIENT swallows a failed sync silently (MONE, Jul 10: a green save left
   // zero board stamps and nothing anywhere said why). Best-effort; never blocks the patch.
+  // `sent` names the stops themselves (the result keeps only the counts), so "did the write-
+  // through carry this stop" is a read, not an inference (lib/save-sent.mts).
   const logIt = (status: 'succeeded' | 'failed', result: any) => putOpRecord({
     clientOpId: `bsync_${Date.now()}_${routeName.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40) || 'unnamed'}`,
     op: 'boardSync', status, tenant,
     result: { date, routeName, ordered: ordered.length, unplanned: unplanned.length, ...result },
+    sent: boardSyncSent(ordered, unplanned),
     at: new Date().toISOString(),
   }).catch(() => { /* ledger is best-effort */ });
   try {
