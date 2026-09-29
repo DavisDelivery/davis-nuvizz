@@ -10,30 +10,31 @@
 // on the whole name so CHADWICK and CHATTANOOGA still count, and any APPT / APPOINTMENT
 // route (ULINE APPT). A second copy of that list here is how two screens come to disagree.
 //
-// PLANNED ONLY, the same rule the day report uses: a stop on no route is on nobody's truck
-// today, so counting it as "not done yet" would hold the percentage down with work nobody
-// is running. Planned = isPlanned true, or (when the record does not say) it has a route.
+// PLANNED ONLY, as the day report does: an unplanned stop is on nobody's truck today, so
+// counting it as "not done yet" would hold the percentage down with work nobody is running.
+// "Unplanned" means exactly what the phone's own stop badge says it means, so the card and
+// the list under it cannot disagree about which stops those are.
 //
 // PER BOARD ROW, like the "Showing N of M stops" line beside it and like the report — a
 // customer with three orders is three rows and three completions.
 //
-// `isDelivered` is passed in so the phone counts exactly what its own stop badges say
-// DELIVERED (classifyStopStatus in App.jsx); this module stays pure and testable.
+// `statusOf` is passed in — classifyStopStatus in App.jsx, the function that paints the
+// badges — so DELIVERED and UNPLANNED here are the badges' words; this module stays pure.
 import { isSetAsideRoute } from './board-flags.js';
 
 const str = (v) => String(v ?? '').trim();
 
-export function computeStopProgress(stops, { isDelivered }) {
+export function computeStopProgress(stops, { statusOf }) {
   let total = 0;
   let completed = 0;
   let setAside = 0;
   for (const s of stops || []) {
+    const status = statusOf(s);
+    if (status === 'UNPLANNED') continue;
     const route = str(s?.loadNbr || s?.routeName);
-    const planned = s?.isPlanned === false ? false : (s?.isPlanned === true || !!route);
-    if (!planned) continue;
     if (isSetAsideRoute(route) || isSetAsideRoute(s?.routeName)) { setAside += 1; continue; }
     total += 1;
-    if (isDelivered(s)) completed += 1;
+    if (status === 'DELIVERED') completed += 1;
   }
   if (!total) return null;
   return { total, completed, setAside, pct: Math.round((completed / total) * 100) };
