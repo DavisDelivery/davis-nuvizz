@@ -14,6 +14,7 @@
 //          exclude_stop_nbrs: ['123', ...],   // stops already staged on open cards
 //          // Read only under the Build rules (FILL_MY_LOADS_BUILD_RULES, default on):
 //          tractor_only_green: bool, window_mode: 'strict'|'advisory',   // step 3's toggles
+//          green_stop_nbrs: ['123', ...],   // the stops the Selected panel paints green
 //          trucks[].capabilities: { tractor, liftgate, lengthClassFt, overheadClearance },
 //          trucks[].existing_stop_nbrs: ['123', ...],    // what the load already carries, in order
 //          trucks[].existing_stops: [{ stopNbr, cartons, volume, pallets, weight, lat, lng, ... }] }
@@ -100,6 +101,8 @@ export default async (req: Request): Promise<Response> => {
   try {
     const res = await runCleanup(TENANT, date, trucks, exclude, {
       tractorOnlyGreen: body?.tractor_only_green === true,
+      // The stops the Selected panel paints green (bounded like every list here).
+      panelGreenStopNbrs: Array.isArray(body?.green_stop_nbrs) ? body.green_stop_nbrs.slice(0, 2000).map((x: any) => String(x)) : null,
       windowMode: body?.window_mode === 'strict' ? 'strict' : 'advisory',
     });
     if (!res.ok) {
