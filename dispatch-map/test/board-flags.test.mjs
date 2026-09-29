@@ -22,6 +22,15 @@ const stop = (over = {}) => ({
   ...over,
 });
 const note = (over = {}) => ({ ...over });
+// The STORED-closed-day rule these tests were written against now lives behind
+// CLOSED_DAYS_FROM_ORDER=off (lib/closed-days.js — Chad, 2026-09-28: closed days are "read live every
+// time an order comes in. and not stored"). withStoredClosedDays runs a block under the old rule, so
+// the way back stays pinned; the new rule is asserted beside it.
+const withStoredClosedDays = (fn) => {
+  const prev = process.env.CLOSED_DAYS_FROM_ORDER;
+  process.env.CLOSED_DAYS_FROM_ORDER = 'off';
+  try { return fn(); } finally { if (prev === undefined) delete process.env.CLOSED_DAYS_FROM_ORDER; else process.env.CLOSED_DAYS_FROM_ORDER = prev; }
+};
 const run = (stops, notesObj = {}, extra = {}) => computeBoardFlags({
   stops, notes: new Map(Object.entries(notesObj)), servedDate: '2026-08-10', dayKey: 'mon',
   rosterRows: extra.rosterRows ?? [], opts: OPTS, ...extra,
@@ -63,9 +72,15 @@ test('a scanner-invented closed day stays AMBER even after a human ticks a diffe
     manual_overrides: { closed_days: true },
     auto_matches: { closed_days: [{ source: 'orderInstructions', text: 'CLOSED FRIDAYS', pattern: 'closed_fri' }] },
   });
-  assert.equal(closedDayTier(n, 'fri'), 'auto');   // scanner fingerprint exists for fri
-  assert.equal(closedDayTier(n, 'mon'), 'typed');  // no fingerprint → the human set it
-  assert.equal(closedDayTier(n, 'tue'), null);     // not closed at all
+  const OLD = { CLOSED_DAYS_FROM_ORDER: 'off' };
+  assert.equal(closedDayTier(n, 'fri', null, OLD), 'auto');   // scanner fingerprint exists for fri
+  assert.equal(closedDayTier(n, 'mon', null, OLD), 'typed');  // no fingerprint → the human set it
+  assert.equal(closedDayTier(n, 'tue', null, OLD), null);     // not closed at all
+  // NOW: the scanner's stored Friday counts for nothing; the human's Monday still does.
+  assert.equal(closedDayTier(n, 'fri', null, {}), null);
+  assert.equal(closedDayTier(n, 'mon', null, {}), 'typed');
+  // …and a Friday THIS order states is read straight off the order.
+  assert.equal(closedDayTier(n, 'fri', { orderInstructions: 'SPL-INSTR-TEXT: CLOSED ON FRIDAYS' }, {}), 'order');
 });
 
 test('closed-day rows: typed goes red, scanner goes amber with the matched text shown', () => {
@@ -76,13 +91,25 @@ test('closed-day rows: typed goes red, scanner goes amber with the matched text 
       auto_matches: { closed_days: [{ text: 'CLOSED MONDAYS', pattern: 'closed_mon' }] },
     }),
   };
-  const out = run([stop({ matchKey: 'a|k', stopNbr: '1' }), stop({ matchKey: 'b|k', stopNbr: '2' })], notesObj);
-  const closed = out.rows.filter((r) => r.rule === 'closed_today');
-  assert.equal(closed.length, 2);
-  assert.equal(closed.find((r) => r.stopNbr === '1').tier, 'red');
-  const amber = closed.find((r) => r.stopNbr === '2');
-  assert.equal(amber.tier, 'amber');
-  assert.ok(amber.detail.includes('CLOSED MONDAYS'), 'the scanner row must show its evidence');
+  const stops = [stop({ matchKey: 'a|k', stopNbr: '1' }), stop({ matchKey: 'b|k', stopNbr: '2' })];
+  withStoredClosedDays(() => {
+    const out = run(stops, notesObj);
+    const closed = out.rows.filter((r) => r.rule === 'closed_today');
+    assert.equal(closed.length, 2);
+    assert.equal(closed.find((r) => r.stopNbr === '1').tier, 'red');
+    const amber = closed.find((r) => r.stopNbr === '2');
+    assert.equal(amber.tier, 'amber');
+    assert.ok(amber.detail.includes('CLOSED MONDAYS'), 'the scanner row must show its evidence');
+  });
+  // NOW (SANTA FE TORTILLAS, 2026-09-28): the scanner's stored Monday flags nothing — only the
+  // dispatcher's does — and an order whose OWN text says it goes red, quoting that text.
+  const now = run(stops, notesObj).rows.filter((r) => r.rule === 'closed_today');
+  assert.deepEqual(now.map((r) => [r.stopNbr, r.tier]), [['1', 'red']]);
+  const said = run([stop({ stopNbr: '3', orderInstructions: 'SPL-INSTR-TEXT: RECEIVING HOURS 7-230PM; SPL-INSTR-TEXT: CLOSED ON MONDAYS' })])
+    .rows.filter((r) => r.rule === 'closed_today');
+  assert.equal(said.length, 1);
+  assert.equal(said[0].tier, 'red');
+  assert.ok(said[0].detail.includes('CLOSED ON MONDAYS'), 'the order row must quote the order');
 });
 
 // ── the pin-override trap (design review: fatal #1) ──────────────────────────
@@ -520,8 +547,9 @@ test('the checked tally proves what a quiet board actually looked at', () => {
 });
 
 test('red sorts before amber, and the counts split by tier', () => {
+  // The amber here is a scanner-stored closed day, which counts only under the old rule.
   const notesObj = { 'b|k': note({ closed_days: ['mon'], auto_matches: { closed_days: [{ text: 'x', pattern: 'closed_mon' }] } }) };
-  const out = run([stop({ dupNbr: true }), stop({ stopNbr: '2', matchKey: 'b|k' })], notesObj);
+  const out = withStoredClosedDays(() => run([stop({ dupNbr: true }), stop({ stopNbr: '2', matchKey: 'b|k' })], notesObj));
   assert.equal(out.rows[0].tier, 'red');
   assert.equal(out.redCount, 1);
   assert.equal(out.amberCount, 1);

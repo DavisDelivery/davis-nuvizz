@@ -530,7 +530,8 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
     // a closed door. closedDayTier is the same pure function the map draws its
     // closed marks from, so the engine and the screen cannot disagree.
     const note = as.matchKey ? (inputs.noteByKey?.get(as.matchKey) ?? null) : null;
-    if (dayKey && note && closedDayTier(note, dayKey)) {
+    // The ORDER's own text counts even with no customer note on file (lib/closed-days.js).
+    if (dayKey && closedDayTier(note, dayKey, s)) {
       closedToday++;
       left.push({
         stopNbr: id, businessName: s?.businessName ?? null, city: s?.city ?? null,
