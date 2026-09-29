@@ -164,6 +164,7 @@ import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // wide the panel being placed actually is.
 const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
+import { computeStopProgress } from './lib/stop-progress.js';
 import { editorClosedDay, toggleClosedPatch, dropClosedPrints, unusedStoredClosedDays, closedDaysFromOrderEnabled } from './lib/closed-days.js';
 import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, travelForServedDate } from './lib/route-preflight.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
@@ -207,7 +208,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.93.0';
+const APP_VERSION = '1.94.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -261,6 +262,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.94.0', 'STOPS COMPLETED ON THE PHONE. Chad: “on the mobile version of the app, I want a stops completed percentage … so I can kind of follow along mobilely from my phone … Don’t include any stops that are on a [Chad] route or a Uline appointment route.” The phone’s Stops tab now opens with a Stops completed card: completed of total, the percentage, and a bar. CHAD and ULINE APPT (any APPT / APPOINTMENT route) are left out of both numbers, using the same rule the flag list and the nightly 6:30 report already use, so the three agree; CHADWICK and CHATTANOOGA still count. Unplanned stops are left out too, as in the nightly report, because they are on nobody’s truck yet — “unplanned” meaning exactly the stops whose badge says Unplanned. The small “% delivered” beside “Showing N of M stops” on the phone is gone: it counted CHAD and ULINE APPT, so it would have shown a second, different percentage right under the card. The desktop’s % completed is unchanged. The card reads the whole day’s board, so it does not move while you search or filter. Phone only; the desktop and the Route Workbench are untouched. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.93.0', 'BY DRIVER, TAKEN APART BY TWO INDEPENDENT REVIEWERS (ONE ON THE SERVER, ONE IN REAL BROWSERS AT SEVEN WIDTHS) AND FIXED WHERE THEY WERE RIGHT. Chad asked whether the recent work actually works. WRONG, NOW FIXED: (1) A search for a route found no one \u2014 the list read only load NUMBERS, but the board stores the route NAME where it keeps the load key, so every driver whose days were filed by name showed no routes; names are now read as names (a number the roster lacks is still unknown, never guessed). (2) After a date change the old picks stayed and the Draft button stayed enabled while the new day\u2019s list loaded or failed, so a click could send a driver the new day had never vouched for; the button now sends only picks on a list loaded for the selected date (real browser, 1440 and 390: 0 sends, button disabled during a 3-second reload and after a failed load). (3) On a phone the list was taller than the sheet\u2019s visible area at every size, so a finger on it scrolled the list and the sheet could not be dragged; it is capped at 30vh (list 170\u2013280 px against a sheet of 206\u2013388 px). (4) \u201cunknown\u201d (a planned load with no driver) was a pickable driver; a stray document (a numeric driver key, a roster that is not a list) took the whole list down with a 500; an impossible date such as 2026-13-45 was a 500; a Firestore failure showed an index error naming the project; accented names could not be searched (\u201cjose\u201d did not find Jos\u00e9) and unreadable text looked like an empty box; removing a chip dropped keyboard focus. All handled. SAID PLAINLY: this does not touch what the draft engine drafts. By driver still puts a box-only stop and a liftgate stop onto a tractor driver\u2019s route and drafts customers closed on the day \u2014 confirmed by the same review and left for its own change, because it alters the draft and needs your decision. PUT IT BACK: no switch; this is one commit, and reverting it restores the earlier list. The typed-name POST and the engine\u2019s roster are unchanged. The Build Panel only; the Compare cards, staging, Save and the map are untouched.'],
   ['1.92.0', 'THE LEAVE-OFF-THE-ENDS BUILD, CHECKED BY TEN INDEPENDENT REVIEWERS AND FIXED WHERE THEY WERE RIGHT. Chad asked whether the recent work actually works, so ten reviewers, each on boards and yardsticks of their own, ran 2,800 real builds on it. WHAT HELD: no stop lost or doubled, no truck over, nothing box-only on a tractor, and with the switch off the Build is identical to the old one on 1,400 of 1,400 runs. Stops a truck drives straight past fell 5,517 \u2192 601 and total route miles fell 22.8%. WHAT WAS WRONG, AND IS FIXED: (1) 1,690 left-off stops carried a BLANK reason \u2014 the Result tab printed an empty red line under them. Every listed stop now says why, and the reason is checked true on all 1,400 runs: a stop that fits a truck\u2019s spare room says how many miles out of its way that truck would have to go, a stop that fits nowhere says capacity, and a stop held off a tractor by \u201conly green\u201d also names the tractor that has room. (2) With STRICT appointment windows, the room a closed or too-late customer freed was never refilled, so a truck ran light while stops that fit read \u201cover skid capacity\u201d (7.3% of routed skids on the reviewer\u2019s boards); repair now offers that room to the solver\u2019s leftovers when they are on the truck\u2019s way, and to nothing across town. (3) A load that was already FULL read \u201cno selected stop is allowed on this truck\u201d; it now says it already carries all its truck can hold. (4) A stop on a picked load that the browser could not read counted 0 skids, so a full load was offered all its room; it now takes one position. (5) A selected stop that was not on the day\u2019s board, or had no map pin, vanished from the result \u2014 not routed, not listed; it is now listed with why. ALSO: a first-draft rule (place box-only freight first) was measured against placing by ground alone and taken out \u2014 7% fewer neighbours left off and 5% fewer pairs of stops under 2 km apart on different trucks, for 0.2% fewer skids. The far-leftover bound is 30 km (nearer bounds broke a road between two trucks into interleaved runs). The job now records which assignment ran (result.meta.assignment). SAID PLAINLY \u2014 THIS IS NOT A PROMISE THAT A TRUCK FINISHES FULL: on 204 of 1,400 runs (15%) a truck ended a skid or two light because the only stops left were 15+ miles away, skids routed are 0.7% below the old Build\u2019s, and where one dense town holds more freight than one truck can carry, two trucks share it (pairs of stops under 2 km apart on different trucks: 4,916 \u2192 4,991). The 1.91.0 note\u2019s \u201cskids routed never fell\u201d and \u201c10 of 11 breaks caught\u201d were wrong. PUT IT BACK: ROUTING_BUILD_LEAVE_OFF_ENDS=off still puts the whole assignment back; the new reasons and the listing of unseen stops are additions. The Build Panel\u2019s server path only; the Compare cards, staging, Save and the map are untouched.'],
   ['1.91.0', 'WHEN THE TRUCKS ARE FULL, WHAT COMES OFF IS THE BEGINNING OR END OF A RUN \u2014 NEVER A STOP A TRUCK DRIVES PAST. Chad: \u201chas to be logic to both tractor and box truck being full can\u2019t just take random stops till it\u2019s full has to be route of some kind. Can\u2019t have the middle of the selection not being routed to where 2 trucks may end up next door because the system thought the one was full so it just left a neighbor off. Basically the routes need to be optimized and things left off the beginning or end.\u201d MEASURED ON THE REAL PIPELINE FIRST: any stop with an equipment rule \u2014 with \u201conly green on a 53\u2032\u201d ticked, every stop that is not green \u2014 was placed BIGGEST FIRST on whichever truck had room, with no regard to where it was, so on the CHE/SCOTT board SCOTT took the 2- and 3-skid stops and 4 of the 6 left off were stops it drove right past; two box trucks both ran both towns; and whatever the solver had not reached when the trucks filled was left off, often between two trucks. NOW: every stop is placed by where it is (box-only freight first, as a preference); overflow goes to a truck with room before anything comes off; a truck that still has too much gives up the FIRST or LAST stop of its run, whichever costs it more driving, one at a time \u2014 a far outlier before a town it drives through, never a stop in between; where two trucks meet they swap stops so one does not reach back past the other; room left over is filled only with stops that cost no more than the truck\u2019s average stop (a box does not drive 25 km into the other box\u2019s town for one skid); and a stop left off that a truck drives past goes on that truck in exchange for its end stops, never for fewer skids. The repair pass no longer stuffs the solver\u2019s left-off stops into whichever truck in the list has a skid spare. RESULTS: CHE/SCOTT 4 stops driven past \u2192 0, and 94 fewer km; a road with two boxes now splits into two unbroken stretches with the far end left off; two towns, one box each. On 400 random overloaded boards (1\u20134 trucks, green rule on and off, both strategies): stops left off that a truck drives past 2,380 \u2192 384, total miles \u221219%, skids routed 16,556 \u2192 16,530 (the 26 are single skids the old code reached by crossing town), no truck over, nothing box-only on a tractor, nothing lost. SAID PLAINLY: where a town holds more than its truck, the seam between what stays and what comes off can still leave a stop beside the route (384 across 400 boards), and a truck can finish a skid or two light rather than cross town. PUT IT BACK: ROUTING_BUILD_LEAVE_OFF_ENDS=off \u2014 the old assignment and the old repair, exactly; every build says which ran (result.buildRules.leaveOffEnds). The Build Panel\u2019s server path only; the Compare cards, staging, Save and the map are untouched. 15 new tests; 10 of 11 deliberate breaks each turn one red (the eleventh, box-only first, is a preference whose effect only shows across many boards).'],
@@ -12118,7 +12120,7 @@ function LookupStopModal({ stop, note, onClose }) {
 
 function MobileStopsTab({
   stops, notes, drivers, searchInput, setSearchInput,
-  resultCount, totalCount, completedPct, onPickStop,
+  resultCount, totalCount, progress = null, onPickStop,
   aiAvailable, onAskAi, aiBusy, aiSummary, aiError, onClearAi,
 }) {
   const [histOpen, setHistOpen] = useState(false);
@@ -12138,6 +12140,7 @@ function MobileStopsTab({
   if (histOpen) return <PastProSearch notes={notes} initialQuery={searchInput} onPickCustomer={onPickStop} onClose={() => setHistOpen(false)} />;
   return (
     <div className="flex flex-col">
+      {progress && <MobileStopProgress progress={progress} />}
       <div className="p-3 border-b border-slate-100">
         <div className="flex items-center gap-2">
           <div className="relative flex-1 min-w-0">
@@ -12182,7 +12185,6 @@ function MobileStopsTab({
         ) : (
           <div className="text-[11px] text-slate-500 mt-1.5 px-0.5">
             Showing <span className="font-semibold text-slate-700">{resultCount}</span> of {totalCount} stops
-            {completedPct != null && <> · <span className="font-semibold text-green-700">{completedPct}% delivered</span></>}
           </div>
         )}
         {aiError && <div className="mt-1 text-[11px] text-amber-700">{aiError}</div>}
@@ -12229,6 +12231,30 @@ function MobileStopsTab({
             onPick={() => onPickStop(s)}
           />
         ))}
+      </div>
+    </div>
+  );
+}
+
+// Chad's "follow along from my phone" card. Whole-day board, CHAD and appointment routes left
+// out — see src/lib/stop-progress.js for which stops count and why.
+function MobileStopProgress({ progress }) {
+  const { total, completed, pct, setAside } = progress;
+  return (
+    <div className="px-3 pt-3 pb-2 border-b border-slate-100" data-testid="mobile-stop-progress">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="text-xs font-semibold text-slate-600">Stops completed</div>
+        <div className="text-2xl font-bold text-green-700 leading-none">{pct}%</div>
+      </div>
+      <div className="text-sm text-slate-800 mt-0.5">
+        <span className="font-semibold">{completed}</span> of <span className="font-semibold">{total}</span> stops
+        <span className="text-slate-500"> · {total - completed} to go</span>
+      </div>
+      <div className="mt-1.5 h-2 rounded-full bg-slate-200 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label="Stops completed">
+        <div className="h-full bg-green-600" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="text-[10px] text-slate-400 mt-1">
+        Planned stops, whole day{setAside > 0 ? ` · ${setAside} on Chad / Uline appt routes not counted` : ''}
       </div>
     </div>
   );
@@ -14472,6 +14498,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return { delivered, total, pct: Math.round((delivered / total) * 100) };
   }, [stops]);
 
+  // The phone's Stops completed card (v1.94.0). Whole board, like boardCompletion above, but
+  // with CHAD and appointment routes and unplanned stops left out — see lib/stop-progress.js.
+  const mobileStopProgress = useMemo(
+    () => (isMobile ? computeStopProgress(stops, { statusOf: classifyStopStatus }) : null),
+    [stops, isMobile],
+  );
+
   // M6 — AI search/chat handlers. runAiSearch parses the NL query and applies the
   // returned spec locally; runChat builds the trimmed context and asks the model.
   const runAiSearch = useCallback(async (q) => {
@@ -16121,7 +16154,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               totalCount={filteredStops.length}
               hiddenByFilters={searchHiddenByFilters}
               onClearFilters={clearAllStopFilters}
-              completedPct={boardCompletion?.pct ?? null}
+              progress={mobileStopProgress}
               onPickStop={pickStopFromMobile}
               aiAvailable={aiAvailable}
               onAskAi={runAiSearch}
