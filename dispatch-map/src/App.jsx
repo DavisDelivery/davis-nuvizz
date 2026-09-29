@@ -107,11 +107,11 @@ import {
   resolvePlaceMark, placeNoTractor, placeNoTractorLine, shiplifyPinCandidate, shiplifyPinKind,
   shiplifyRecordFor, buildShiplifyLookup, tractorPlaceKeys, tractorSeenAt, limeAsOf, shiplifyPanelRows,
   limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
-  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS, FORKLIFT_RED_RING_ON,
+  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS, FORKLIFT_RED_RING_ON, FORKLIFT_WITH_CLOCK_ON,
 } from './lib/place-mark.js';
 import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES, noTractorWrite, noTractorTickFields, restrictionSnapshot, TICKED, canMoveTowardTractor, tractorOkWrite, ulineUntickFields, afterUlineOff } from './lib/uline-review.js';
 import {
-  glyphCenter, glyphBadge, glyphMuted, glyphClusterBadge, GLYPH_INK_ON_LIME, FORKLIFT_BADGE_LIME,
+  glyphCenter, glyphBadge, glyphMuted, glyphClusterBadge, glyphMarkup, GLYPH_INK_ON_LIME, FORKLIFT_BADGE_LIME,
 } from './lib/place-glyphs.js';
 import {
   rowsFromAoa, summarizeShiplify, shiplifyBatchId, chunkRowsBySize, decodeIndexLine, SHIPLIFY_SHEET,
@@ -193,7 +193,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.87.5';
+const APP_VERSION = '1.90.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -247,6 +247,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.90.1', 'A STOP WITH A RECEIVING CLOCK AND A SHIPLIFY FORKLIFT NOW SHOWS BOTH: TWO ICONS. Chad, on PRO 007183542 (EXPRESS CONTAINER SERVICES): “this stop should have a double icons one for time and one for forklift.” It showed the clock alone. A restriction cluster used to veto the Shiplify forklift outright, because the forklift pin exists only where a stop would otherwise wear its plain colour; so a stop that had BOTH lost the forklift, which is how the freight comes off the truck. THE FORKLIFT NOW RIDES THE CLUSTER AS A DISC OF ITS OWN, after the clock: the pin’s lime ring, the same dark forklift, on a white ground, drawn from the same artwork as the pin and its Legend swatch. It goes after however many restrictions the stop has (a clock, a liftgate, an appointment), so nothing is hidden and nothing moves but the marker growing one slot wider. Where a dispatcher has confirmed no tractor trailer beside the clock, the disc wears the Box-only RED ring, on the same rule as the red-ring pin; an unconfirmed no does not turn it red. Every other rule is unchanged: a Shiplify dock still draws no pin beside a clock, and a selection, a search hit, a flag, do-not-send, an open route, a live status, a school / church / government mark, the amber address tint and the Estes ring all still win over the forklift. A house or school badge rides the clock’s disc, never on top of the forklift. The Legend counts the disc under the same forklift rows as the pin. THE WAY BACK: VITE_MAP_FORKLIFT_WITH_CLOCK=off (a redeploy) puts a clustered stop back to no forklift, byte for byte. 12 new tests.'],
   ['1.87.5', 'A LOAD BUILT IN THE PORTAL NOW OPENS IN COMPARE WITHOUT CHANGING THE DATE, AND A CARD THAT CANNOT OPEN SAYS WHY. Chad: “tony will not pull up in the compare panel even though its a fresh scan. It was built in nuvizz not our system but should still pull up in our system unless when i hit refresh it doesn’t load the roster scan?” He was right, read off the code: the Routing screen read the day’s loads roster once, when the date was picked, and neither Refresh nor the two-minute auto-refresh read it again. TONY 1 was built in the portal and captured by the 9:36 PM scan, after the screen had opened 9/29; its stops carry no load id, so the card needs the roster to know which NuVizz load it is, found nothing there, and refused. The refusal was written to the Setup panel, which is hidden whenever the map has the full width, so nothing on screen said why. NOW every newer scan makes the screen re-read the STORED roster for the date (never a NuVizz call) and use it when it is a newer capture with loads in it; a failed, missing or empty read keeps the roster already on screen, because could-not-read is not no-loads. And a card that cannot open says why on the map as well. THE WAY BACK: VITE_ROUTING_ROSTER_REREAD=off (a redeploy) puts both back. 6 new tests.'],
   ['1.87.4', 'A FORKLIFT STOP YOU MARK NO TRACTOR TRAILER NOW WEARS A RED RING INSTEAD OF DISAPPEARING. Chad: “on a stop that i mark no tractor trailer but the shiplfy data says they have a forklift just make the green ring red instead.” Until now the mark made the Shiplify forklift pin vanish: a stated no vetoes the lime, and the stop drew its no-trailer icon instead, so the map stopped saying there is a forklift at exactly the stop where a box truck is now the plan and the forklift is how the freight comes off. The same forklift pin now draws in the Box-only red. WHAT COUNTS AS YOUR MARK is the map’s own rule for a stated no: Box truck only, or a confirmed “No tractor trailer”. An advisory no, read off order text and never checked, keeps its split icon. IT REPLACES THE NO-TRAILER MARK AND NOTHING ELSE: a stop that also draws a clock, a liftgate or any other restriction keeps its cluster, so nothing is hidden; a selection, a search hit, a flag, do-not-send, an open route, a live status, a school / church / government mark, the amber address tint and the Estes ring all still win, exactly as they do over the green ring. Only the forklift pin changes; a Shiplify dock is untouched. On a pickup the PU keeps the middle and the forklift rides a red corner badge, never a lime one. The Legend has its own row, “Shiplify: forklift, marked no tractor trailer”, counted from what the map drew, and a red-ring stop is no longer counted under the no-trailer icon it replaced. THE WAY BACK: VITE_MAP_FORKLIFT_RED_RING=off (a redeploy) puts every such stop back to exactly what it drew before, byte for byte. 11 new tests, and the Legend-equals-map test widened to cover it.'],
   ['1.87.3', 'THE WRITE JOURNAL NOW KEEPS WHICH STOPS EACH SAVE SENT. Chad, after BRIAN was refused at 8:38 and 8:39 PM with “load has a non-DO stop in a delivery slot that this card is not sequencing”: “maybe the journal should save this information.” The journal could say the 8:37 Save of BRIAN worked and the next two were refused, and could NOT say which stops any of the three carried, because it kept each Save’s RESULT and never what the card sent. That the 8:37 Save carried the LOCKHEED MARTIN pickup and the 8:38 card no longer listed it had to be worked out from a board stamp and the guard’s own rule instead of read. EVERY SAVE’S ROW NOW CARRIES, per load, the stop numbers in the order the card sent them and the ones it struck off, with the load, the board day and which screen built it; the board write-through that follows a Save names its stops too, not just how many. READ BACK FOR FREE: the write log takes ?stop= (the Saves that carried a stop) and ?load= (every Save of a load, the refused ones included), and the stop explain now lists every Save of the stop’s route that day and says of each “sent 16 stops — NOT this one” or “sent 17 stops, this one #17”, so “when did the card lose it” is a lookup. BOUNDED so the journal row can never outgrow itself: 300 stops a load and 12 loads a Save, and a cut says it cut. Nothing on screen changes and nothing a Save sends to NuVizz changes: zero NuVizz calls. Rows written before this release have no list and read exactly as they did. PUTTING IT BACK IS ONE REVERT. 17 new tests.'],
@@ -4161,8 +4162,17 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
   // right of the LAST disc, so a school with a receiving clock still says it is a school.
   const placeMark = opts.placeMark || null;
 
-  // State B: single 36-diameter circle.
-  if (restrictions.length === 1) {
+  // THE FORKLIFT BESIDE THE CLOCK (v1.90.1). Chad, on a stop with a receiving clock and a Shiplify
+  // forklift: "this stop should have a double icons one for time and one for forklift." The forklift
+  // is a disc of its own in the cluster — the pin's ring (lime, or the Box-only red where a
+  // dispatcher has confirmed no tractor trailer), the dark forklift, white ground — drawn from the
+  // same artwork as the pin and its Legend swatch. The ring colour arrives as `opts.forkliftRing`
+  // (a colour string, or null for no forklift) so this function needs no colour constants.
+  const forkliftRing = typeof opts.forkliftRing === 'string' && opts.forkliftRing ? opts.forkliftRing : null;
+
+  // State B: single 36-diameter circle. A single restriction PLUS a forklift is two icons, so it
+  // takes the cluster layout below instead.
+  if (restrictions.length === 1 && !forkliftRing) {
     const r = restrictions[0];
     const def = RESTRICTION_ICONS[resolveRestrictionKey(r)] || UNKNOWN_RESTRICTION;
     const accent = tint || def.accent || def.bg || '#6b7280';
@@ -4200,9 +4210,11 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
 
   // State C: side-by-side 32-diameter circles. 2 or 3 raw restrictions
   // render as-is; 4+ collapses to first 2 + "+N" overflow.
-  const elements = restrictions.length <= 3
+  const restrictionElements = restrictions.length <= 3
     ? restrictions.slice()
     : [restrictions[0], restrictions[1], { __overflow: restrictions.length - 2 }];
+  // The forklift rides LAST, after the clock — "one for time and one for forklift".
+  const elements = forkliftRing ? [...restrictionElements, { __forklift: true }] : restrictionElements;
   const n = elements.length;
   const slotW = 32;
   const gap = 2;
@@ -4218,6 +4230,13 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
       elementsMarkup += `
         <circle cx="${cx}" cy="${cy}" r="15" fill="white" fill-opacity="0.95" stroke="${tint || '#6b7280'}" stroke-width="2"/>
         <text x="${cx}" y="${cy + 4}" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="${tint || '#374151'}" text-anchor="middle">+${el.__overflow}</text>
+      `;
+    } else if (el && typeof el === 'object' && '__forklift' in el) {
+      elementsMarkup += `
+        <g data-glyph="forklift" data-form="slot">
+          <circle cx="${cx}" cy="${cy}" r="14" fill="white" fill-opacity="0.95" stroke="${forkliftRing}" stroke-width="3"/>
+          <g transform="translate(${cx - 14} ${cy - 14})">${glyphMarkup('forklift', GLYPH_INK_ON_LIME, '#ffffff')}</g>
+        </g>
       `;
     } else if (isTimeMarkKey(el)) {
       // Same rule inside a cluster, so a clock looks like itself wherever it appears. The
@@ -4245,7 +4264,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
     <svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}">
       <ellipse cx="${totalW / 2}" cy="36" rx="${shadowRx}" ry="1.8" fill="black" opacity="0.15"/>
       ${elementsMarkup}
-      ${puBadge}${placeMark ? glyphClusterBadge(placeMark, (n - 1) * (slotW + gap) + slotW / 2, 18, 15) : ''}
+      ${puBadge}${placeMark ? glyphClusterBadge(placeMark, (forkliftRing ? n - 2 : n - 1) * (slotW + gap) + slotW / 2, 18, 15) : ''}
     </svg>`;
   return scaleMarkerSpec({
     url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
@@ -4366,6 +4385,8 @@ function stopShiplifyMarks(s, note, opts = {}) {
     // with a red ring can say the whole of it. Resolved, like blockerKeys in stopMarkerIcon.
     onlyBlockers: restrictions.length > 0 && restrictions.every((k) => TRAILER_BLOCKER_KEYS.has(resolveRestrictionKey(k))),
     redRing: FORKLIFT_RED_RING_ON,
+    // THE FORKLIFT BESIDE THE CLOCK (v1.90.1): a restriction cluster no longer vetoes it (lib/place-mark.js).
+    withClock: FORKLIFT_WITH_CLOCK_ON,
   });
   return { placeMark: mark, pin };
 }
@@ -4659,7 +4680,11 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       // a blocker the glyph is white and can no longer carry the tractor-delivered lime, so
       // the "a trailer fits" half wears it instead. Passing the tint here would let a priority
       // flag's hue become that half.
-      { advisoryKeys, blockerKeys, tractorProven: tractorDelivered && !noTractorOverride, pickup, placeMark: placeMarkKind },
+      {
+        advisoryKeys, blockerKeys, tractorProven: tractorDelivered && !noTractorOverride, pickup, placeMark: placeMarkKind,
+        // THE FORKLIFT BESIDE THE CLOCK: the ring's colour, or null when this stop draws no forklift disc.
+        forkliftRing: shiplifyPin === 'forklift_slot' ? TRACTOR_DELIVERED_COLOR : shiplifyPin === 'forklift_slot_blocked' ? ELIG_BOX_COLOR : null,
+      },
     );
     result = { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
   }

@@ -126,11 +126,20 @@ test('every suppression, one at a time, for both pins', () => {
   // forklift just make the green ring red instead." A stated no over a FORKLIFT keeps the forklift
   // in the Box-only red ring (test/forklift-red-ring.test.mjs); the LIME pin is still suppressed.
   const RED_RING = new Set(['Vehicle: Box truck only', 'confirmed no-trailer blocker']);
+  // v1.90.1 — Chad, on a stop with a receiving clock and a forklift: "one for time and one for
+  // forklift." A restriction cluster no longer vetoes the FORKLIFT: it rides beside the clock as a disc
+  // of its own (test/forklift-with-clock.test.mjs). The dock is still vetoed, and no State A pin draws.
+  const CLUSTER_SLOT = new Set(['restriction cluster']);
   for (const rec of [DOCK, FORKLIFT]) {
     // Sanity: the same stop WITHOUT the suppression does draw the pin.
     assert.ok(anyShiplifyPin(svgOf(stop(), null, on(rec))), 'baseline draws');
     for (const [why, [s, note, extra]] of Object.entries(cases)) {
       const svg = svgOf(s, note, on(rec, extra));
+      if (rec === FORKLIFT && CLUSTER_SLOT.has(why)) {
+        assert.ok(!hollowLime(svg) && !dockRestingDot(svg) && !glyphGroup(svg, 'forklift', 'center') && !glyphGroup(svg, 'forklift', 'badge'), `no State A forklift pin: ${why}`);
+        assert.match(svg, /data-glyph="forklift" data-form="slot"/, `the forklift disc rides the cluster: ${why}`);
+        continue;
+      }
       if (rec === FORKLIFT && RED_RING.has(why)) {
         assert.ok(!hollowLime(svg) && !dockRestingDot(svg), `the lime forklift pin must not draw: ${why}`);
         assert.ok(/stroke="#dc2626" stroke-width="3"/.test(svg) && glyphGroup(svg, 'forklift', 'center'), `the red-ring forklift draws instead: ${why}`);
