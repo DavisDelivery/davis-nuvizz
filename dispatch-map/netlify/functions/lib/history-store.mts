@@ -134,8 +134,33 @@ export async function listDrivers(tenant: string, date: string): Promise<any[]> 
 // (0.5 s, 1 s, 2 s, 4 s, 8 s, ±25%), and after the first push-back the writers drop from twelve to
 // four so the retry is not the same storm. A 4xx that is not 429 (a bad path, no permission) is
 // still thrown at once: retrying a refusal is not persistence, it is noise.
+//
+// Every write retried here is a whole-document PATCH of the same bytes to the same path, so a
+// retry of a write that DID land (its answer was lost) writes the same document again — safe.
 export const WRITE_RETRIES = 5;
 export const WRITE_BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
+/** Writers still at work once Firestore has pushed back in this run. */
+export const PUSHED_BACK_WRITERS = 4;
+
+// THE WAY BACK: HISTORY_WRITE_RETRY. House shape — on unless it says off/0/false/no, and anything
+// malformed leaves it ON (a typo must never quietly put the Sep 24 failure back). Off puts back
+// the capture's writes exactly as they were before #1030: one attempt per document, twelve writers
+// the whole way, every driver-day pointer fired at once, one attempt at the manifest and one at the
+// failure record, and no retry counts on the manifest, the lineage or the failure text. It covers
+// EVERY side of the retry at once — upsertAll, the pointers, the seal, the lineage and the failure
+// record all read the same budget, and the budget reads the switch.
+export function historyWriteRetryEnabled(env: any = process.env): boolean {
+  const v = String(env?.HISTORY_WRITE_RETRY ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+// ONE CLASSIFIER for every retried history write: upsertAll's writers, the seal and the lineage
+// (withWriteRetry below) and the failure record all ask this one function, and nothing else in
+// the app calls it. (The post-seal derivations, their outcome field and the failure-record clear
+// are not retried at all — see history-core.) The stall rule (a request that hit fsFetch's 20 s
+// deadline) is #1043's (firestore-history-address-5, v1.81.2), kept exactly as it landed. It only
+// ever acts through the retry loop that asks it, so HISTORY_WRITE_RETRY=off (one attempt, no
+// loop) turns it off with the rest of the retry.
 export function transientWriteError(e: any): boolean {
   const msg = String(e?.message || e || '');
   const m = msg.match(/failed: (\d{3})\b/);
@@ -149,50 +174,172 @@ export function backoffMs(attempt: number, rnd = Math.random()): number {
   const base = WRITE_BACKOFF_MS[Math.min(attempt, WRITE_BACKOFF_MS.length - 1)];
   return Math.round(base * (0.75 + rnd * 0.5));
 }
-export interface UpsertDeps { setDoc: (path: string, data: any) => Promise<any>; sleep: (ms: number) => Promise<void> }
-const LIVE_DEPS: UpsertDeps = { setDoc, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
 
-export async function upsertAll<T>(items: T[], pathFn: (item: T) => string, conc = 12, deps: UpsertDeps = LIVE_DEPS): Promise<{ written: number; retries: number; pushedBack: boolean }> {
-  let i = 0, retries = 0, pushedBack = false, written = 0;
-  const writeOne = async (path: string, item: T) => {
-    for (let attempt = 0; ; attempt++) {
-      try { await deps.setDoc(path, item as any); written++; return; }
-      catch (e: any) {
-        if (!transientWriteError(e) || attempt >= WRITE_RETRIES) throw e;
-        pushedBack = true; retries++;
-        await deps.sleep(backoffMs(attempt));
+// A RUN-WIDE DEADLINE ON RETRYING. Each document gets up to five retries and the backoff starts
+// again for every document, so on a night Firestore keeps pushing back the sleeps add up with no
+// ceiling: in the audit's simulator (900 stops, 80 ms per answer) every stop refused three times
+// is ~14 minutes of waiting across four writers, four times ~29. The function's own header
+// (nuvizz-history-snapshot-background.mts) says Netlify gives a -background function 15 minutes;
+// the site's real limit cannot be read from this code. A process the platform kills never
+// reaches the catch that writes the failure record — the day would show "missing" with no
+// reason, a quieter version of the Sep 10/11/24 loss. So retrying stops at TEN minutes from the
+// start of the run, the capture throws an error that says how many retries it spent, and
+// whatever time the function has left goes to the failure record (which retries on its own,
+// bounded, past this line). A first attempt is never refused by the deadline — only a retry is.
+export const WRITE_RETRY_DEADLINE_MS = 10 * 60 * 1000;
+
+/** One run's retry state, shared by every write the run retries: the stops, routes, drivers and
+ *  driver-day pointers, the seal and the capture lineage (the failure record keeps a budget of its
+ *  own; the post-seal derivations are not retried). */
+export interface WriteBudget {
+  enabled: boolean;      // HISTORY_WRITE_RETRY, read once for the run
+  deadlineAt: number;    // epoch ms; a retry whose wait would cross it is not taken
+  retries: number;       // retries taken so far this run, across every writer
+  pushedBack: boolean;   // Firestore pushed back at least once this run
+}
+export function newWriteBudget(opts: { deadlineAt?: number; startedAt?: number; deadlineMs?: number; env?: any } = {}): WriteBudget {
+  const ms = Number(opts.deadlineMs) > 0 ? Number(opts.deadlineMs) : WRITE_RETRY_DEADLINE_MS;
+  const start = typeof opts.startedAt === 'number' && Number.isFinite(opts.startedAt) ? opts.startedAt : Date.now();
+  const deadlineAt = typeof opts.deadlineAt === 'number' && Number.isFinite(opts.deadlineAt) ? opts.deadlineAt : start + ms;
+  return { enabled: historyWriteRetryEnabled(opts.env ?? process.env), deadlineAt, retries: 0, pushedBack: false };
+}
+/** The sentence that goes at the FRONT of a failure text, so the 500-character cap on the
+ *  failure record can never cut it off. */
+export function retryNote(b: WriteBudget): string {
+  return `write retries this run: ${b.retries}${b.pushedBack ? ' (Firestore pushed back)' : ''}`;
+}
+
+export interface RetryDeps { sleep: (ms: number) => Promise<void>; now: () => number }
+const LIVE_SLEEP = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * One write, retried on push-back inside the run's budget. With HISTORY_WRITE_RETRY off it is
+ * exactly one attempt. `ignoreDeadline` is for the failure record alone: it must still land
+ * after the run's retry deadline has passed, and it is bounded by WRITE_RETRIES regardless.
+ * The error thrown on giving up leads with the retry count and keeps the original text after it
+ * (so "…/stops/2 failed: 429" is still in the message), with the original as `cause`.
+ */
+export async function withWriteRetry<T>(
+  write: () => Promise<T>, budget: WriteBudget, deps: Partial<RetryDeps> = {},
+  opts: { ignoreDeadline?: boolean } = {},
+): Promise<T> {
+  if (!budget.enabled) return write();
+  const sleep = deps.sleep ?? LIVE_SLEEP;
+  const now = deps.now ?? Date.now;
+  for (let attempt = 0; ; attempt++) {
+    try { return await write(); }
+    catch (e: any) {
+      if (!transientWriteError(e)) throw e;
+      const original = String(e?.message || e || 'write failed');
+      if (attempt >= WRITE_RETRIES) {
+        throw gaveUp(`gave up after ${attempt} retries on this document; ${retryNote(budget)} — ${original}`, e);
       }
+      const wait = backoffMs(attempt);
+      if (!opts.ignoreDeadline && now() + wait > budget.deadlineAt) {
+        throw gaveUp(`stopped retrying at the run's ${Math.round(WRITE_RETRY_DEADLINE_MS / 60000)}-minute retry deadline; ${retryNote(budget)} — ${original}`, e);
+      }
+      budget.retries++; budget.pushedBack = true;
+      await sleep(wait);
+    }
+  }
+}
+function gaveUp(message: string, cause: any): Error {
+  const err: any = new Error(message);
+  err.cause = cause;
+  err.historyWriteGaveUp = true;
+  return err;
+}
+
+export interface UpsertDeps { setDoc: (path: string, data: any) => Promise<any>; sleep: (ms: number) => Promise<void>; now?: () => number }
+const LIVE_DEPS: UpsertDeps = { setDoc, sleep: LIVE_SLEEP, now: () => Date.now() };
+
+// HISTORY_WRITE_RETRY=off — the writer exactly as it was before #1030: twelve at a time, one
+// attempt each; the first error reaches the caller and the other writers write on.
+async function legacyUpsertAll<T>(items: T[], pathFn: (item: T) => string, conc: number, deps: UpsertDeps) {
+  let i = 0, written = 0;
+  const worker = async () => {
+    while (i < items.length) {
+      const item = items[i++];
+      await deps.setDoc(pathFn(item), item as any);
+      written++;
     }
   };
+  await Promise.all(Array.from({ length: Math.min(conc, items.length || 1) }, worker));
+  return { written, retries: 0, pushedBack: false };
+}
+
+/**
+ * Write every item, `conc` at a time, retrying push-back inside `budget`. The budget is the
+ * run's: pass the same one to every call in a capture so the retry deadline and the drop to
+ * four writers carry from the stops to the routes, drivers and pointers (a database that pushed
+ * back on the stops is not asked for twelve at once again a second later). `retries` and
+ * `pushedBack` in the result are THIS call's; the run's totals are on the budget.
+ */
+export async function upsertAll<T>(
+  items: T[], pathFn: (item: T) => string, conc = 12, deps: UpsertDeps = LIVE_DEPS,
+  budget: WriteBudget = newWriteBudget(),
+): Promise<{ written: number; retries: number; pushedBack: boolean }> {
+  if (!budget.enabled) return legacyUpsertAll(items, pathFn, conc, deps);
+  const before = budget.retries;
+  let i = 0, written = 0;
+  // FOUR IN FLIGHT MEANS FOUR IN FLIGHT. Retiring the writers above slot four (below) is not
+  // enough on its own: a writer in slot five that was the one pushed back keeps retrying its own
+  // document beside the four that stay, so five or more were in flight after the push-back — it
+  // was measured. Once the budget says pushed back, every attempt (first or retry) waits for one
+  // of four places, and the ones still in flight from before count against them.
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  const gatedSetDoc = async (path: string, item: T) => {
+    while (budget.pushedBack && active >= PUSHED_BACK_WRITERS) await new Promise<void>((r) => waiting.push(r));
+    active++;
+    try { return await deps.setDoc(path, item as any); }
+    finally { active--; const next = waiting.shift(); if (next) next(); }
+  };
+  const writeOne = async (item: T) => {
+    const path = pathFn(item);
+    await withWriteRetry(() => gatedSetDoc(path, item), budget, deps);
+    written++;
+  };
+  // ONE DOCUMENT FAILING FOR GOOD DOES NOT CALL THE OTHER WRITERS OFF. The first error still
+  // reaches the caller at once (Promise.all), and the capture records the failure. Promise.all
+  // cancels nothing, so the writers already at work go on with their documents, exactly as #1030
+  // and the loop before it did — but nothing awaits them any more, so they keep writing only while
+  // the function is still running. Whether Netlify keeps the process alive after the handler
+  // returns cannot be told from this code. Any stop they do save at nightly time is one a later
+  // re-capture does not have to fill in (lib/history-recapture.mts). The retrying stays bounded
+  // without an early stop: past the run's deadline each writer ends at its own first push-back.
   const worker = async (slot: number) => {
     while (i < items.length) {
       // After a push-back, only the first four workers keep going; the rest step out at the next item.
-      if (pushedBack && slot >= 4) return;
+      if (budget.pushedBack && slot >= PUSHED_BACK_WRITERS) return;
       const item = items[i++];
-      await writeOne(pathFn(item), item);
+      await writeOne(item);
     }
   };
   await Promise.all(Array.from({ length: Math.min(conc, items.length || 1) }, (_, slot) => worker(slot)));
   // Anything the retired workers left behind is finished by the four that stayed.
-  while (i < items.length) { const item = items[i++]; await writeOne(pathFn(item), item); }
-  return { written, retries, pushedBack };
+  while (i < items.length) { const item = items[i++]; await writeOne(item); }
+  const retries = budget.retries - before;
+  return { written, retries, pushedBack: retries > 0 };
 }
 
-export async function upsertStops(tenant: string, date: string, records: any[]): Promise<void> {
+export type UpsertResult = { written: number; retries: number; pushedBack: boolean };
+
+export async function upsertStops(tenant: string, date: string, records: any[], budget?: WriteBudget): Promise<UpsertResult> {
   const base = dayPath(tenant, date);
   // stopNbr is normally numeric (path-safe), but it flows straight from the vendor
   // payload — a non-numeric/slashed value would throw here and abort the WHOLE
   // night before the seal (the last pre-seal id #450 left raw). histDocId is a
   // no-op for numeric ids, so existing stop docs keep their exact key.
-  await upsertAll(records, (r) => `${base}/stops/${histDocId(String(r.stopNbr))}`);
+  return upsertAll(records, (r) => `${base}/stops/${histDocId(String(r.stopNbr))}`, 12, LIVE_DEPS, budget ?? newWriteBudget());
 }
-export async function upsertRoutes(tenant: string, date: string, records: any[]): Promise<void> {
+export async function upsertRoutes(tenant: string, date: string, records: any[], budget?: WriteBudget): Promise<UpsertResult> {
   const base = dayPath(tenant, date);
-  await upsertAll(records, (r) => `${base}/routes/${histDocId(r.loadNbr)}`);
+  return upsertAll(records, (r) => `${base}/routes/${histDocId(r.loadNbr)}`, 12, LIVE_DEPS, budget ?? newWriteBudget());
 }
-export async function upsertDrivers(tenant: string, date: string, records: any[]): Promise<void> {
+export async function upsertDrivers(tenant: string, date: string, records: any[], budget?: WriteBudget): Promise<UpsertResult> {
   const base = dayPath(tenant, date);
-  await upsertAll(records, (r) => `${base}/drivers/${histDocId(r.driverKey)}`);
+  return upsertAll(records, (r) => `${base}/drivers/${histDocId(r.driverKey)}`, 12, LIVE_DEPS, budget ?? newWriteBudget());
 }
 
 // Cross-day driver index — listing history_driver_days/{tenant}__{driverKey}/days
@@ -200,8 +347,28 @@ export async function upsertDrivers(tenant: string, date: string, records: any[]
 // driverKey rides a PATH SEGMENT here, so it gets the same sanitization (a userName
 // with a '/' would break this doc path exactly like the route ids). Write + read use
 // histDocId so they stay consistent.
+export function driverDayPointerPath(tenant: string, driverKey: string, date: string): string {
+  return `${DRIVER_DAYS_COLLECTION}/${tenant}__${histDocId(driverKey)}/days/${date}`;
+}
 export async function upsertDriverDayPointer(tenant: string, driverKey: string, date: string, ptr: any): Promise<void> {
-  await setDoc(`${DRIVER_DAYS_COLLECTION}/${tenant}__${histDocId(driverKey)}/days/${date}`, ptr);
+  await setDoc(driverDayPointerPath(tenant, driverKey, date), ptr);
+}
+/**
+ * Every driver-day pointer for one captured day. These used to go out all at once — ~52 bare
+ * PATCHes with no retry, fired a moment after the database had been pushing back on the stops —
+ * so a 429 here failed the night at stage 'upsert' one step after the retried writes. They now
+ * go through the same bounded, retried writer as the stops. Each pointer doc carries its own
+ * driverKey, which names its path. HISTORY_WRITE_RETRY=off: all at once, one attempt, as before.
+ */
+export async function upsertDriverDayPointers(
+  tenant: string, date: string, ptrs: any[], budget: WriteBudget = newWriteBudget(), deps: UpsertDeps = LIVE_DEPS,
+): Promise<UpsertResult> {
+  const pathOf = (p: any) => driverDayPointerPath(tenant, p?.driverKey, date);
+  if (!budget.enabled) {
+    await Promise.all(ptrs.map((p) => deps.setDoc(pathOf(p), p)));
+    return { written: ptrs.length, retries: 0, pushedBack: false };
+  }
+  return upsertAll(ptrs, pathOf, 12, deps, budget);
 }
 export async function listDriverDays(tenant: string, driverKey: string): Promise<any[]> {
   return listDocs(`${DRIVER_DAYS_COLLECTION}/${tenant}__${histDocId(driverKey)}/days`);

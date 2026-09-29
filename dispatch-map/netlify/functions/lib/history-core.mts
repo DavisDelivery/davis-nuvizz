@@ -8,11 +8,18 @@
 // cache is never touched.
 //
 // Per-date capture flow (captureDate):
+//   0. Runs that NAME their day only (?date= / ?from=&to=): the re-capture guard
+//      (history-recapture.mts) — Firestore reads; refuses, writing nothing, when the day's index
+//      holds rows changed after its last scan or the archive holds stops the run would replace.
+//      HISTORY_RECAPTURE_GUARD. A request with no query string is the cron as far as this code
+//      can tell (isManualCapture), whoever sends it, and skips this step.
 //   1. scanDate(date) — one NuVizz read.
 //   2. Derive stop / route / driver records + a content checksum (pure).
 //   3. Allocate capture_version = max(existing) + 1 for that date.
 //   4. UPSERT stops, routes, drivers (NEVER prune — immutability of the past).
-//   5. Upsert cross-day driver-day pointers.
+//   5. Upsert cross-day driver-day pointers. 4–8 share one write budget (history-store): a
+//      push-back is retried, at most four writers after it, retrying stops ten minutes into the
+//      run. HISTORY_WRITE_RETRY=off puts back single attempts.
 //   6. VERIFY-BY-READBACK: list each subcollection and assert every intended doc
 //      landed. Manifest counts come from the readback, never an in-memory counter.
 //   7. Append the captures/v{n} audit doc (lineage — written even on mismatch).
@@ -28,9 +35,14 @@ import {
 } from './history-derive.mts';
 import {
   listCaptures, appendCapture, listStops,
-  upsertStops, upsertRoutes, upsertDrivers, upsertDriverDayPointer,
+  upsertStops, upsertRoutes, upsertDrivers, upsertDriverDayPointers,
+  newWriteBudget, withWriteRetry, retryNote, WRITE_RETRY_DEADLINE_MS, type WriteBudget,
 } from './history-store.mts';
 import { finalizeCaptureSeal, recordCaptureFailure, type CaptureStage } from './history-seal.mts';
+import {
+  leanHistoryOn, indexUsable, patchedForCapture, archivedOverwrites, recaptureVerdict,
+  recaptureGuardEnabled, planRecapture, assessRecapture,
+} from './history-recapture.mts';
 import { runPostSealHooks, recordPostSealOutcome } from './history-postseal.mts';
 
 const TENANT = 'davis';
@@ -104,9 +116,49 @@ export function resolveDates(req: Request): string[] {
 // NuVizz calls to ~0. The index is the source of truth the scans maintain (with
 // four-layer preservation), so the snapshot is "as of the last scan"; Phase 5's
 // 7-day straggler watch reconciles any late (post-snapshot) deliveries.
-const LEAN_HISTORY = (process.env.NUVIZZ_LEAN_DISCOVERY || '').toLowerCase() === 'on';
+const LEAN_HISTORY = leanHistoryOn(process.env);
 
-export async function captureDate(date: string): Promise<any> {
+/**
+ * `manual` — a run that named its day (?date= / ?from=&to=). Only those go through the re-capture
+ * guard (lib/history-recapture.mts); the scheduled nightly run is unchanged by it, and so is a
+ * hand POST with no query string, which isManualCapture cannot tell from the cron.
+ * `deadlineAt` — the RUN's retry deadline (history-store WRITE_RETRY_DEADLINE_MS from the start of
+ * the invocation, shared by every date in a range). Absent: ten minutes from now.
+ */
+export async function captureDate(date: string, opts: { manual?: boolean; deadlineAt?: number } = {}): Promise<any> {
+  // THE RE-CAPTURE GUARD, BEFORE ANYTHING IS SPENT OR WRITTEN. A hand-driven re-capture of a past
+  // day would seal rows the board changed after that day's last scan, and replace archived stops
+  // with them (see history-recapture.mts). For a run that named its day (isManualCapture — a
+  // no-query POST is not one) this asks first — Firestore reads only — so a refused
+  // run costs no NuVizz call and writes nothing, not even a failure record: nothing failed, the
+  // run was told no. It sits OUTSIDE the try below for the same reason: a guard that cannot read
+  // is a refusal, not a capture failure to be recorded.
+  const guard = !!opts.manual && recaptureGuardEnabled();
+  if (guard) {
+    let plan: any, verdict: any;
+    try {
+      ({ plan, verdict } = await assessRecapture(date, { tenant: TENANT, manual: true, firestoreOn: isFirestoreEnabled() }));
+    } catch (e: any) {
+      const reason = `re-capture guard could not read what this run would overwrite (${e?.message || e}) — refusing, nothing written`;
+      console.error(`[history] date=${date} ${reason}`);
+      return { date, ok: false, verified: false, sealed: false, refused: 'recapture-guard', reason };
+    }
+    // The REAL refusal's text (verdict.message) — not the dry run's forecast (plan.verdict).
+    if (plan.would_refuse) {
+      console.warn(`[history] date=${date} ${verdict.message}`);
+      return {
+        date, ok: false, verified: false, sealed: false, refused: 'recapture-guard', reason: verdict.message,
+        patched_after_last_scan: plan.index.patched_after_last_scan, archived_stops: plan.archive.stops_archived,
+        would_overwrite: plan.archive.would_overwrite, path: plan.path,
+        patched_already_archived: plan.index.patched_already_archived, patched_not_archived: plan.index.patched_not_archived,
+      };
+    }
+  }
+  // One budget for every write this capture retries (history-store): the stops, routes, drivers
+  // and driver-day pointers, the seal and the lineage. It carries the retry deadline, the drop to
+  // four writers after a push-back, the retry count — and the HISTORY_WRITE_RETRY switch. The
+  // post-seal derivations below write once, with no retry (see there).
+  const budget: WriteBudget = newWriteBudget({ deadlineAt: opts.deadlineAt });
   // Track how far we got so an unexpected throw lands a LOUD, correctly-staged
   // failure record instead of a silent swallow by the background wrapper.
   let stage: CaptureStage = 'scan';
@@ -124,7 +176,7 @@ export async function captureDate(date: string): Promise<any> {
     // (ceiling/kill switch). A halted day's index is known-incomplete, so capturing it
     // verbatim would mint a complete:true manifest over a partial snapshot — fall back
     // to a fresh scan to fill the gap instead.
-    if (idx.stops.length && idx.meta?.last_scanned_at && !idx.meta?.scanState?.halted) {
+    if (indexUsable(idx)) {
       stops = idx.stops;
       sourceScannedAt = idx.meta.last_scanned_at;
       source = 'firestore-index';
@@ -194,17 +246,38 @@ export async function captureDate(date: string): Promise<any> {
     .map((d) => String(d._id))
     .filter((id) => !newIds.has(id));
 
-  // UPSERT — never prune.
+  // How many of the rows being sealed were changed on the index AFTER the day's last scan. On the
+  // index path that is the frozen-day heal / board-write count; the nightly run records it on the
+  // manifest so a later reader can see how "as of the last scan" this seal really is. On the scan
+  // path the index was not the source, so it is null (the question does not apply) — never 0.
+  // The rule is the pure patchedForCapture (history-recapture), pinned by a test.
+  const { patched, count: patchedAfterScan } = patchedForCapture(source, stops, sourceScannedAt);
+
+  // THE GUARD AGAIN, WITH THE DATA IN HAND, immediately before the first write — the pre-flight
+  // above read a moment ago, and the heal runs on every scan. Nothing has been written yet.
+  if (guard) {
+    const v = recaptureVerdict(date, {
+      path: source, patched, archivedStops: existingStops.length,
+      wouldOverwrite: archivedOverwrites(stops.filter((s) => s && s.stopNbr), existingStops.map((d) => String(d._id))),
+    });
+    if (v.refuse) {
+      console.warn(`[history] date=${date} ${v.message}`);
+      return { date, ok: false, verified: false, sealed: false, refused: 'recapture-guard', reason: v.message, path: source };
+    }
+  }
+
+  // UPSERT — never prune. Every writer shares the run's budget.
   stage = 'upsert';
-  await upsertStops(TENANT, date, stopRecords);
-  await upsertRoutes(TENANT, date, routeRecords);
-  await upsertDrivers(TENANT, date, driverRecords);
-  await Promise.all(driverRecords.map((d) =>
-    upsertDriverDayPointer(TENANT, d.driverKey, date, {
-      tenant: TENANT, driverKey: d.driverKey, driverUserName: d.driverUserName ?? null,
-      driverName: d.driverName ?? null, date, loadNbrs: d.loadNbrs, stopCount: d.stopCount,
-      capture_version: version, captured_at: capture.captured_at,
-    })));
+  await upsertStops(TENANT, date, stopRecords, budget);
+  await upsertRoutes(TENANT, date, routeRecords, budget);
+  await upsertDrivers(TENANT, date, driverRecords, budget);
+  // Driver-day pointers through the same bounded, retried writer (they used to fire all at once
+  // with no retry, one step after the database had been pushing back).
+  await upsertDriverDayPointers(TENANT, date, driverRecords.map((d) => ({
+    tenant: TENANT, driverKey: d.driverKey, driverUserName: d.driverUserName ?? null,
+    driverName: d.driverName ?? null, date, loadNbrs: d.loadNbrs, stopCount: d.stopCount,
+    capture_version: version, captured_at: capture.captured_at,
+  })), budget);
 
   const intended = {
     stops: stopRecords.length, planned: plannedCount, unplanned: unplannedCount,
@@ -222,6 +295,7 @@ export async function captureDate(date: string): Promise<any> {
     stopsForChecksum: stops,
     stopRecords, routeRecords, driverRecords,
     capture, absentKeptCount: absentFromThisCapture.length,
+    writeBudget: budget, patchedAfterLastScan: patchedAfterScan,
   });
   const { verified, sealed, counts, checksum } = sealRes;
 
@@ -237,6 +311,12 @@ export async function captureDate(date: string): Promise<any> {
   // anywhere a person looks. Everything here IS re-derivable — that is why a hook failure
   // is allowed to be non-fatal — but nobody re-derives what nobody knows is missing, and an
   // unpainted, unmined day just goes quietly absent from the engine's training set.
+  //
+  // NOT RETRIED. The hooks write through their own modules with one attempt each, and so does the
+  // outcome patch below (and the seal's failure-record clear): HISTORY_WRITE_RETRY's budget stops
+  // at the seal and the lineage. A push-back here leaves the day sealed; the hook that threw is
+  // named in post_seal on the lineage and, when that one patch lands, in post_seal_failed on the
+  // manifest — and every hook is re-derivable from the warehouse (history-postseal.mts).
   const postSeal = (verified && sealed) ? await runPostSealHooks(TENANT, date, stopRecords) : null;
   // ...and on the manifest too, field-masked, because the capture-health strip reads
   // manifests and would otherwise need a per-day capture scan to see this.
@@ -247,8 +327,13 @@ export async function captureDate(date: string): Promise<any> {
   // GUARDED: this is audit lineage, not the source of truth. If it throws it must
   // NOT fall through to the outer catch, which would recordCaptureFailure and mark
   // an already-SEALED night as failed (and skip the paint/miner hooks below).
+  // The run's retry totals ride the lineage (they include the seal's own write), only with
+  // HISTORY_WRITE_RETRY on — off, the lineage is exactly the pre-#1030 shape. Read at EACH attempt
+  // of the lineage write, so a lineage that was itself pushed back counts that retry too: it is the
+  // one record that carries the night's final total.
+  const retryFields = () => (budget.enabled ? { write_retries: budget.retries, write_pushed_back: budget.pushedBack } : {});
   try {
-    await appendCapture(TENANT, date, version, {
+    const audit = {
       tenant: TENANT, date, capture_version: version,
       captured_at: capture.captured_at, app_version: APP_VERSION, source_scanned_at: sourceScannedAt,
       checksum, intended, persisted: counts, verified, sealed,
@@ -257,7 +342,9 @@ export async function captureDate(date: string): Promise<any> {
       verify_detail: sealRes.detail,
       absent_from_this_capture: absentFromThisCapture,
       absent_kept_count: absentFromThisCapture.length,
-    });
+      patched_after_last_scan: patchedAfterScan,
+    };
+    await withWriteRetry(() => appendCapture(TENANT, date, version, { ...audit, ...retryFields() }), budget);
   } catch (e: any) {
     console.error(`appendCapture (lineage) failed for ${date} v${version}:`, e?.message);
   }
@@ -267,12 +354,14 @@ export async function captureDate(date: string): Promise<any> {
     // 'verify' or 'seal'); surface it in the run result too.
     console.error(`history capture DID NOT SEAL ${date} v${version}: ` +
       JSON.stringify({ verified, sealed, detail: sealRes.detail, persisted: counts }));
-    return { date, ok: false, verified, sealed, capture_version: version, intended, persisted: counts };
+    return { date, ok: false, verified, sealed, capture_version: version, intended, persisted: counts, ...retryFields() };
   }
 
   return {
     date, ok: true, verified: true, sealed: true, capture_version: version, counts,
     absent_kept: absentFromThisCapture.length,
+    patched_after_last_scan: patchedAfterScan,
+    ...retryFields(),
     // ok is about the CAPTURE, which sealed. post_seal_ok is a separate claim and it is
     // reported separately rather than folded in — a derivation that has to be re-run is not
     // the same event as a night that did not seal, and collapsing them would either cry wolf
@@ -283,7 +372,11 @@ export async function captureDate(date: string): Promise<any> {
     // Any unexpected throw (scan/derive/upsert/append) — the day did NOT seal, so
     // leave a LOUD, correctly-staged failure record before propagating. The seal
     // step (stage 'verify'/'seal') records its own; this covers everything before it.
-    await recordCaptureFailure(TENANT, date, stage, e?.message || 'capture threw', countsSoFar);
+    // With HISTORY_WRITE_RETRY on the text LEADS with the run's retry count (a writer that gave
+    // up already put it there), so a night that fought the database and lost says so.
+    const msg = e?.message || 'capture threw';
+    const text = !budget.enabled || e?.historyWriteGaveUp ? msg : `${retryNote(budget)} — ${msg}`;
+    await recordCaptureFailure(TENANT, date, stage, text, countsSoFar);
     throw e;
   }
 }
@@ -311,6 +404,55 @@ export function scanHealthComplaint(scan: { loadsComplete?: boolean; descentComp
   return bits.length ? bits.join('; ') : null;
 }
 
+/** PURE. Does this request NAME its day (?date= / ?from=&to=)? Only such a run goes through the
+ *  re-capture guard. The same params the admin gate treats as overrides.
+ *
+ *  A REQUEST WITH NO QUERY STRING READS AS THE 2 AM CRON, WHOEVER SENDS IT. Netlify's cron sends
+ *  none (background-gate.mts), and nothing in this code reads anything else that could tell a
+ *  person's no-query POST from it. So that POST re-captures ET-yesterday unchecked and overwrites
+ *  every archived stop it writes again, exactly as the 2 AM run does — sent the morning after a
+ *  failed night, on the index path it seals that morning's heals into the failed day. A person
+ *  re-running a failed night, last night included, must name it with ?date=. Whether a no-query
+ *  run should be checked too is Chad's call (it would apply to the real 2 AM run as well). */
+export function isManualCapture(req: Request): boolean {
+  try {
+    const q = new URL(req.url).searchParams;
+    return q.has('date') || q.has('from') || q.has('to');
+  } catch { return false; }
+}
+
+/** PURE. ?dryRun — present and not an explicit off-word means DRY. A malformed value must never
+ *  turn a look into a write, so only 0/false/no/off runs for real. A MISTYPED NAME must not
+ *  either: ?dryrun=1, ?dry_run=1, ?DryRun=1 or ?dry=1 used to run the capture for real — on the
+ *  scan path that is the ~690-call NuVizz scan somebody asked only to look at. The name is read
+ *  without case, '_' or '-' (isDryRunName). The admin gate in
+ *  nuvizz-history-snapshot-background.mts asks the SAME matcher (dryRunParamNames), so every
+ *  spelling read here is an override there too — none of them slips past the gate once
+ *  AUTH_REQUIRED=true. (A request with no override param at all is the cron path, ungated.) */
+const DRY_RUN_NAMES = new Set(['dryrun', 'dry']);
+export function isDryRunName(name: string): boolean {
+  return DRY_RUN_NAMES.has(String(name ?? '').toLowerCase().replace(/[_-]/g, ''));
+}
+/** PURE. The name of every dry-run param this request carries, spelled as the request spells it,
+ *  whatever its value — what the admin gate must treat as an override. */
+export function dryRunParamNames(req: Request): string[] {
+  try {
+    const names = new Set<string>();
+    for (const name of new URL(req.url).searchParams.keys()) if (isDryRunName(name)) names.add(name);
+    return [...names];
+  } catch { return []; }
+}
+export function isDryRun(req: Request): boolean {
+  try {
+    const q = new URL(req.url).searchParams;
+    for (const [name, value] of q) {
+      if (!isDryRunName(name)) continue;
+      if (!['0', 'false', 'no', 'off'].includes(String(value ?? '').trim().toLowerCase())) return true;
+    }
+    return false;
+  } catch { return false; }
+}
+
 export async function runHistorySnapshot(req: Request): Promise<Response> {
   const startedAt = Date.now();
   setCallTrigger('history-snapshot'); // attribute the nightly history capture's NuVizz calls
@@ -320,6 +462,25 @@ export async function runHistorySnapshot(req: Request): Promise<Response> {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), {
       status: 200, headers: { 'Content-Type': 'application/json' },
     });
+  }
+
+  // ?dryRun=1 — WHAT THIS RUN WOULD DO, WITH ZERO WRITES AND ZERO NUVIZZ CALLS: which path each
+  // day takes (the Firestore index, or a NuVizz scan and the call estimate this file states for
+  // it), how many index rows were changed after the day's last scan, how many archived stops it
+  // would overwrite, and whether the re-capture guard would refuse it. Firestore reads only.
+  // This is a -background function, so Netlify answers 202 and discards this body: the report is
+  // in the function log. The same report comes back as JSON, synchronously, from
+  // history-capture-health?recapture=YYYY-MM-DD.
+  if (isDryRun(req)) {
+    const manual = isManualCapture(req);
+    const plans: any[] = [];
+    for (const date of resolveDates(req)) {
+      try { plans.push(await planRecapture(date, { tenant: TENANT, manual, firestoreOn: true, scansOn: scansEnabled() })); }
+      catch (e: any) { plans.push({ date, dry_run: true, writes: 0, nuvizz_calls: 0, error: e?.message || String(e) }); }
+    }
+    const report = { ok: true, dry_run: true, tenant: TENANT, manual, dates: plans };
+    console.log('history-snapshot DRY RUN:', JSON.stringify(report));
+    return new Response(JSON.stringify(report), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }
 
   // THE MASTER SWITCH, WHICH THIS JOB DID NOT HONOUR. It is the most expensive scheduled
@@ -345,11 +506,16 @@ export async function runHistorySnapshot(req: Request): Promise<Response> {
     });
   }
   const results: any[] = [];
+  const manual = isManualCapture(req);
+  // The retry deadline is the RUN's, not each day's: the platform's time limit (15 minutes, by
+  // the function's own header) covers the whole invocation, so a range's later days get what is
+  // left, never a fresh ten minutes.
+  const deadlineAt = startedAt + WRITE_RETRY_DEADLINE_MS;
   // Sequential per date — keeps NuVizz load light and bounds memory (same as refresh).
   for (const date of dates) {
     const t0 = Date.now();
     try {
-      const r = await captureDate(date);
+      const r = await captureDate(date, { manual, deadlineAt });
       results.push({ ...r, ms: Date.now() - t0 });
     } catch (e: any) {
       console.error(`history capture ERROR ${date}:`, e?.message);
