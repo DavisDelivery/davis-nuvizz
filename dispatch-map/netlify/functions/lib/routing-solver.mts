@@ -23,6 +23,7 @@ import { DEFAULT_SERVICE_MIN } from './routing-types.mts';
 import {
   truckCanCarry, capacityFits, loadFraction, emptyLoad, addLoad, computeLoad, REASON, serviceStartSec,
 } from './routing-constraints.mts';
+import { assignLeavingOffEnds } from './routing-assign-ends.mts';
 
 const DEPOT_ID = 'DEPOT';
 
@@ -521,7 +522,16 @@ export function solveRouting(input: SolverInput): SolverOutput {
   const indexById = buildIndex(stops);
   const departEpochSec = input.departEpochSec ?? 0;
 
-  const { byTruck, unassigned } = assign(stops, trucks, input.depot);
+  // input.leaveOffEnds: full trucks give up the end of their run, never a stop in the middle
+  // (lib/routing-assign-ends.mts, ROUTING_BUILD_LEAVE_OFF_ENDS). Absent → the assignment above.
+  // runOrder is this solver's own sequencing, so "the end of the run" is the end of the run the
+  // truck would actually drive.
+  const { byTruck, unassigned } = input.leaveOffEnds
+    ? assignLeavingOffEnds(stops, trucks, input.depot, (list) => {
+      const byIdx = new Map(list.map((x) => [indexById.get(x.id)!, x] as const));
+      return sequence([...byIdx.keys()], strategy, matrix).map((n) => byIdx.get(n)!);
+    })
+    : assign(stops, trucks, input.depot);
 
   const routes: BuiltRoute[] = [];
   // A TRUCK THAT GOT NOTHING IS AN ANSWER, NOT AN ABSENCE. It used to be dropped here and the

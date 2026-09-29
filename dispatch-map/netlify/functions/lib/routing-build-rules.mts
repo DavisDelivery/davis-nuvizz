@@ -24,6 +24,9 @@
 //   ROUTING_BUILD_COUNT_SKIDS=off          the Build counts skids as before (pallet lines only)
 //   ROUTING_BUILD_GREEN_MATCHES_PANEL=off  "only green on a 53′" means the hand mark only again
 //   ROUTING_BUILD_COUNTS_EXISTING=off      a picked load is offered its whole profile again
+//   ROUTING_BUILD_LEAVE_OFF_ENDS=off       full trucks leave off whatever the old assignment left,
+//                                          not the costliest end of their run (v1.88.0,
+//                                          lib/routing-assign-ends.mts)
 // The job result carries `buildRules` saying which ran, so the position of each switch can be
 // read off any build rather than remembered.
 //
@@ -36,13 +39,14 @@ function switchOn(env: Record<string, any> | undefined, name: string): boolean {
   return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
 }
 
-export interface BuildRules { countSkids: boolean; greenMatchesPanel: boolean; countsExisting: boolean }
+export interface BuildRules { countSkids: boolean; greenMatchesPanel: boolean; countsExisting: boolean; leaveOffEnds: boolean }
 
 export function buildRules(env: Record<string, any> = process.env): BuildRules {
   return {
     countSkids: switchOn(env, 'ROUTING_BUILD_COUNT_SKIDS'),
     greenMatchesPanel: switchOn(env, 'ROUTING_BUILD_GREEN_MATCHES_PANEL'),
     countsExisting: switchOn(env, 'ROUTING_BUILD_COUNTS_EXISTING'),
+    leaveOffEnds: switchOn(env, 'ROUTING_BUILD_LEAVE_OFF_ENDS'),
   };
 }
 

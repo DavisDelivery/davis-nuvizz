@@ -140,6 +140,10 @@ export interface SolverInput {
   constraints?: Record<string, unknown>;
   departEpochSec?: number; // depot departure; defaults applied by pipeline
   windowMode?: WindowMode; // 'advisory' (default) flags window misses; 'strict' spills them
+  // When the trucks cannot take everything, what comes off is the end of a route, never a
+  // hole in the middle (lib/routing-assign-ends.mts). The Build sets it from
+  // ROUTING_BUILD_LEAVE_OFF_ENDS; absent → the original assignment.
+  leaveOffEnds?: boolean;
 }
 
 export interface SolverOutput {

@@ -188,6 +188,9 @@ export default async function handler(req: Request): Promise<Response> {
       objectiveWeights: r.objectiveWeights,
       date, departHHMM: r.departHHMM, serviceMin: r.serviceMin,
       matrixMode, windowMode,
+      // Full trucks give up the end of their run, never a stop in the middle
+      // (ROUTING_BUILD_LEAVE_OFF_ENDS, lib/routing-assign-ends.mts).
+      leaveOffEnds: rules.leaveOffEnds,
     };
     // P4 FIX: overall watchdog. If the pipeline somehow overruns, reject with a
     // clear, client-actionable message so the UI stops polling.
