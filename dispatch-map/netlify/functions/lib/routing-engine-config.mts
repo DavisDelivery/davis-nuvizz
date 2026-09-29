@@ -434,6 +434,11 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     // per-driver signal for everyone else.
     skid_cap_driver_min: num('SKID_CAP_DRIVER_MIN', 10),
     skid_cap_driver_headroom: num('SKID_CAP_DRIVER_HEADROOM', 0),
+    // (Corrected Sep 27) "taken from the SAME truck profiles" below means the same
+    // NUMBERS, copied — nothing here reads a profile. test/truck-weight-limits.test.mjs
+    // fails if these two defaults and the three other default copies drift apart. At
+    // RUNTIME nothing keeps them in step: the live truck cards are edited on the Build
+    // panel and this cap in ⚙ Tuning, each on its own.
     // Phase 2.11 — per-trip payload ratings, taken from the SAME truck profiles
     // the live route builder already gates on (truck-profiles.mts: box_26 =
     // 10,000 lb, tractor_53 = 30,000 lb) so the two systems can't drift apart on
