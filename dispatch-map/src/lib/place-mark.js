@@ -396,3 +396,24 @@ export function limeNoDockLine(rec, tractorSeen) {
 export function buildingTypeChanged(draft, existing) {
   return normalizeBuildingType(draft?.building_type) !== normalizeBuildingType(existing?.building_type);
 }
+
+// ── THE RESIDENTIAL BRUSH (v1.90.0) ─────────────────────────────────────────
+//
+// Chad, 2026-09-28, with the Routing gear open on "Mark vehicle eligibility": "the way i can paint
+// tractor freindly or not i want to be able to paint residentials". The brush writes exactly what
+// the stop panel's Building type picker writes — building_type on the location's notes, with who
+// and when — so a house painted on the map and a house picked in the panel are the same fact.
+
+/** PURE: what one click of the Residential brush paints. A location already marked residential
+ *  goes back to Auto (Shiplify decides again); anything else becomes residential. */
+export function nextResidentialPaint(current) {
+  return normalizeBuildingType(current) === 'residential' ? null : 'residential';
+}
+
+/** VITE_MAP_RESIDENTIAL_BRUSH — house shape: default on, an off-word (off/0/false/no) turns it
+ *  off, anything malformed leaves it on. Off takes "Mark building type" out of the gear; every
+ *  mark already painted stays, because it is the same field the stop panel sets. Build-time. */
+export function residentialBrushEnabled(env) {
+  const v = String(env?.VITE_MAP_RESIDENTIAL_BRUSH ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
