@@ -60,6 +60,7 @@ export interface PipelineRequest {
   serviceMin?: number;
   matrixMode?: MatrixMode;  // 'haversine' (default, free) | 'google' (paid opt-in)
   windowMode?: WindowMode;  // 'advisory' (default, flag) | 'strict' (spill on unmet window)
+  leaveOffEnds?: boolean;   // full trucks give up the end of their run, not the middle (routing-assign-ends)
 }
 
 export interface PipelineDeps {
@@ -247,6 +248,7 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
     constraints: intent.extraConstraints,
     departEpochSec,
     windowMode: req.windowMode === 'strict' ? 'strict' : DEFAULT_WINDOW_MODE,
+    leaveOffEnds: req.leaveOffEnds === true,
   };
 
   // ── P3 solve + P4 repair (deterministic) ──

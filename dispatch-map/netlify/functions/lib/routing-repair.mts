@@ -256,6 +256,12 @@ export function repair(input: SolverInput, output: SolverOutput, opts?: { origin
   for (const u of unassigned) {
     const stop = stopById.get(u.stopId);
     if (!stop) { stillUnassigned.push(u); continue; }
+    // ROUTING_BUILD_LEAVE_OFF_ENDS: the solver already chose which stops come off a full truck
+    // (the end of a run, never a stop it drives past — lib/routing-assign-ends.mts) and already
+    // gave room to overflow first. Re-inserting those here, into whichever truck in list order
+    // has a skid spare, undid that — measured: a box sent 25 km into the other box's town for one
+    // skid. So only stops THIS loop took off (Phase A) are re-tried; the solver's choice stands.
+    if (input.leaveOffEnds && !spilledFrom.has(stop.id)) { stillUnassigned.push(u); continue; }
     let placed = false;
     const own = originFirst ? input.trucks.find((t) => t.id === spilledFrom.get(stop.id)) : undefined;
     const tryOrder = own ? [own, ...input.trucks.filter((t) => t !== own)] : input.trucks;
