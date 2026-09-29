@@ -148,13 +148,15 @@ import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
 import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
 import { dropSide, dropSideClass, dropRight } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
+// Time windows on the Compare card's Re-sequence menu (v1.88.0) — scored by the card's own preflight.
+import { timeWindowSequence, timeWindowSummary, compareTimeWindowsEnabled } from './lib/time-window-sequence.js';
 import { PARSE_SCHEDULE_LABEL, parsePollOverdue } from './lib/manifest-schedule.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // w-40. Named once so the measurement and the Tailwind class can never disagree about how
 // wide the panel being placed actually is.
 const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
-import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled } from './lib/route-preflight.js';
+import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, travelForServedDate } from './lib/route-preflight.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
@@ -193,7 +195,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.87.3';
+const APP_VERSION = '1.88.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -247,6 +249,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.88.0', 'TIME WINDOWS: A RE-SEQUENCE THAT ROUTES AROUND THE RECEIVING HOURS. Chad, with the Re-sequence menu open on TRAILER 1: “i need an optimization that uses the time restrictions and trys to make the best route considering those so this type of optimization may need a quick claude sonnett 5.5 call.” Every choice in that menu measured distance and nothing else, so a far stop that closes at 9:30 went wherever the miles put it. THE NEW CHOICE, “Time windows — fewest late”, orders the card so the fewest stops reach a dock after it closes, then so none reaches a dock before a dispatcher-typed opening, then so the fewest minutes are late in all, then so the day finishes earliest. NO MODEL CALL, ON PURPOSE: the question is drive-time arithmetic and the card already holds the exact arithmetic, the check behind every late and can’t-make badge on it. Every candidate order is scored by THAT check with the card’s own route, departure, drive calibration and day, so the order it lands and the badges it then shows cannot disagree. It costs nothing, answers in well under a second (0.12 ms a scoring on an 18-stop card, measured) and gives the same order twice; a model would need the same drive times handed to it and could get the sums wrong. It starts from the card as it stands, from the shortest-distance order and from closes-first, improves each a stop at a time, and never returns a worse order than the card: when nothing beats it the card keeps its order and the line says so. The line after it says what changed, before and after (“1 late (50m in all) → 0 late”), never an intent. SAID PLAINLY: an AUTO opening is not chased, because auto hours can invent one (“DELIVER BY 2PM” reads as 6:00a–2:00p); and the card’s clock does not wait at a dock that has not opened, so an early arrival is avoided rather than modelled as a wait. A stop with no map location rides at the end, in its order. THE WAY BACK: VITE_COMPARE_TIME_WINDOWS=off (a redeploy) takes the choice out of the menu; nothing else about the menu or the card changes. 13 new tests.'],
   ['1.87.3', 'THE WRITE JOURNAL NOW KEEPS WHICH STOPS EACH SAVE SENT. Chad, after BRIAN was refused at 8:38 and 8:39 PM with “load has a non-DO stop in a delivery slot that this card is not sequencing”: “maybe the journal should save this information.” The journal could say the 8:37 Save of BRIAN worked and the next two were refused, and could NOT say which stops any of the three carried, because it kept each Save’s RESULT and never what the card sent. That the 8:37 Save carried the LOCKHEED MARTIN pickup and the 8:38 card no longer listed it had to be worked out from a board stamp and the guard’s own rule instead of read. EVERY SAVE’S ROW NOW CARRIES, per load, the stop numbers in the order the card sent them and the ones it struck off, with the load, the board day and which screen built it; the board write-through that follows a Save names its stops too, not just how many. READ BACK FOR FREE: the write log takes ?stop= (the Saves that carried a stop) and ?load= (every Save of a load, the refused ones included), and the stop explain now lists every Save of the stop’s route that day and says of each “sent 16 stops — NOT this one” or “sent 17 stops, this one #17”, so “when did the card lose it” is a lookup. BOUNDED so the journal row can never outgrow itself: 300 stops a load and 12 loads a Save, and a cut says it cut. Nothing on screen changes and nothing a Save sends to NuVizz changes: zero NuVizz calls. Rows written before this release have no list and read exactly as they did. PUTTING IT BACK IS ONE REVERT. 17 new tests.'],
   ['1.87.2', 'THE COMPARE CARD NOW SAYS WHAT TRUCK EACH STOP CAN TAKE. Chad, with BRIAN open in Compare: \u201cI want the compare panel to have a faint green or red highlight if they are tractor friendly or not.\u201d The Selected window has painted a stop green (a 53-footer can go here) since v0.46.5 and red (somebody here said it cannot) since v1.37.1, but once the stop was sent to a card the card said neither \u2014 and the card is where the router decides what truck the load needs. Each stop row on a Compare card now wears a faint green for tractor-trailer friendly and a faint red for a Box-only mark or a confirmed \u201cNo tractor trailer\u201d, on the phone and the desktop alike. ONE RULE: the rows ask the same two helpers the Selected window asks, fed the same notes and the same lime-paint-aware tractor history, so a stop cannot be green in the selection and plain on the card it was sent to. A stop nobody has checked stays uncoloured, exactly as in the Selected window \u2014 red is the stated no, not the unknown. FAINTER THAN THE SELECTED WINDOW, AND MEASURED: at that window\u2019s shade a red row swallowed the card\u2019s own red \u201c30M LATE\u201d badge, so the card uses the lighter shade and the badge still reads. Dragging a stop across a coloured row keeps the colour and still draws the blue drop line; a plain row\u2019s drag cue is unchanged. Hovering a coloured row names why it is coloured. Nothing else on the card changes: counts, Send / Save, the map, the selection tools and closing a card are untouched. PUTTING IT BACK IS ONE REVERT \u2014 this adds a mark and is one commit. 10 new tests.'],
   ['1.87.1', 'EVERY COMPARE ROW WITH HOURS NOW SHOWS WHEN THE DOCK OPENS AS WELL AS WHEN IT CLOSES — AND A “CAN’T MAKE” STOP SAYS HOW LATE IT WOULD BE. Chad, 2026-09-29, on CHRIS HEAD’s rows reading “closes 2:30p · auto”: “i dont’ want just the closing time i want opening too.” The row printed only the edge that binds; it now prints the whole window on file (SIMS RECYCLING 7:00a–2:30p · auto), and a dock that states only one edge still says just that edge, never an invented half. VITE_COMPARE_FULL_WINDOW=off puts back “closes 2:30p”. AND: Chad, 2026-09-28, once those rows carried their hours on their own line: “If there’s not enough room on the can’t make 12 p.m. line to put the amount of time it would be late, then I think I’d rather have the amount of time the system’s going to think it’s going to be late than the can’t make it tag.” So on a Compare row that shows its hours (GENESIS BIOSCIENCES: 8:00a–12:00p · auto), the line under it now reads “2H 4M LATE” instead of “CAN’T MAKE 12:00P” — the close is already on the line above. It keeps the no-entry glyph and its hover (“Unreachable in any order …”), so it still reads as a stop no re-ordering will save. A row with no hours on file keeps “can’t make 12:00p”, because there the close would be printed nowhere. Merely-late rows are unchanged. VITE_COMPARE_UNREACHABLE_LATE=off puts “can’t make” back (build-time, so a redeploy). Zero NuVizz calls. 7 new tests.'],
@@ -1333,6 +1336,8 @@ const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 // The Compare row prints the whole window ("7:00a–2:30p"), not just the binding edge, when both are on
 // file (lib/time-marks.js timeMarkChip). VITE_COMPARE_FULL_WINDOW=off puts back "closes 2:30p". Build-time.
 const COMPARE_FULL_WINDOW_ON = compareFullWindowEnabled(import.meta.env);
+// "Time windows" in the Compare card's Re-sequence menu (lib/time-window-sequence.js).
+const COMPARE_TIME_WINDOWS_ON = compareTimeWindowsEnabled(import.meta.env);
 // A "can't make" row keeps its hours, on their own line above the verdict (lib/time-marks.js
 // unreachableHoursMark). VITE_COMPARE_UNREACHABLE_HOURS=off puts back the verdict alone. Build-time.
 const COMPARE_UNREACHABLE_HOURS_ON = compareUnreachableHoursEnabled(import.meta.env);
@@ -21403,7 +21408,7 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
 // state; this is a planning overlay (it does not mutate the board).
 // Human labels for the re-sequence strategies (shared by the card's applied-strategy line and the
 // "Re-sequenced …" toast).
-const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse', manual: 'Manual order' };
+const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse', windows: 'Time windows — fewest late', manual: 'Manual order' };
 
 // ── Live dispatch (beta) ─────────────────────────────────────────────────────
 // The routes-panel write surface: assign a driver to a load + dispatch it to NuVizz.
@@ -21786,6 +21791,10 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
             <option value="closest">Closest first</option>
             <option value="reverse">Reverse</option>
             <option value="loop">Loop — down one side &amp; back (no crossings)</option>
+            {/* Chad, 2026-09-28: "i need an optimization that uses the time restrictions and trys to
+                make the best route considering those". Orders the card by the receiving hours,
+                scored by the same check as the card's late badges (lib/time-window-sequence.js). */}
+            {COMPARE_TIME_WINDOWS_ON && <option value="windows">Time windows — fewest late</option>}
           </select>
         )}
         {/* REAL ROADS, OPT-IN. Every strategy above measures straight lines, which cannot see a
@@ -24900,6 +24909,23 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       setLastAction(`Can't re-sequence ${loadDisplayName(key) || 'load'} — ${missing > 0 ? `${missing} stop(s) have no map location (still geocoding, or the address needs fixing — see the card)` : 'it needs at least 2 stops'}.`);
       return;
     }
+    // TIME WINDOWS (v1.88.0): ordered by the receiving hours and scored by the card's OWN
+    // preflight — the same route key, departure, travel calibration, notes and day the badges
+    // use — so the order it lands and the badges it then shows cannot disagree. Straight from
+    // the card's order, every id kept; no road matrix (the preflight has its own drive model).
+    if (strategy === 'windows') {
+      const routeKey = r.name || r.loadNbr || r.key;
+      const measured = departureFor(departTable, routeKey);
+      const res = timeWindowSequence({
+        order: r.order, stopById, notes, routeKey,
+        servedDate: selectedDate, dayKey: weekdayKeyFromDate(selectedDate),
+        depot: ROUTING_DEPOT, travel: travelForServedDate(travelInputs, selectedDate),
+        ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
+      });
+      setWbRoutes((prev) => prev.map((x) => (x.key !== key ? x : { ...x, order: res.order, strategy, roadSequenced: false })));
+      setLastAction(timeWindowSummary(res, loadDisplayName(key) || 'load'));
+      return;
+    }
     const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
     const resolved = new Set(newOrder);
     const applyOrder = (ids, suffix) => setWbRoutes((prev) => prev.map((x) => {
@@ -24947,7 +24973,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances failed (${String(e?.message || e).slice(0, 60)}), straight-line order kept`);
       }
     })();
-  }, [wbRoutes, stopById, roadMatrixOn]);
+  }, [wbRoutes, stopById, roadMatrixOn, notes, selectedDate, travelInputs, departTable]);
   const wbMoveStop = useCallback((fromKey, stopNbr, toKey) => {
     if (!toKey || fromKey === toKey) return;
     const id = String(stopNbr);
@@ -25704,11 +25730,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // driverless draft makes the engine restart the walk from noon and replace every
     // receiving-hours row with one "no driver" card, so a route with two stops going to miss
     // renders as a clean build. Measured, not assumed.
-    const travel = travelInputs
-      ? (travelInputs.routeClasses && travelInputs.routeClassesDate !== selectedDate
-        ? { ...travelInputs, routeClasses: undefined }
-        : travelInputs)
-      : null;
+    const travel = travelForServedDate(travelInputs, selectedDate);
     for (const r of wbRoutes) {
       // The REAL load name, because the engine reads it for the truck-class curve and for the
       // appointment / owner / set-aside route rules. A placeholder would opt the draft out of
