@@ -122,11 +122,20 @@ test('every suppression, one at a time, for both pins', () => {
     'switch off': [stop(), null, { shiplifyOn: false }],
     'tractor record not loaded': [stop(), null, { tractorKnown: false }],
   };
+  // v1.87.4 — Chad: "on a stop that i mark no tractor trailer but the shiplfy data says they have a
+  // forklift just make the green ring red instead." A stated no over a FORKLIFT keeps the forklift
+  // in the Box-only red ring (test/forklift-red-ring.test.mjs); the LIME pin is still suppressed.
+  const RED_RING = new Set(['Vehicle: Box truck only', 'confirmed no-trailer blocker']);
   for (const rec of [DOCK, FORKLIFT]) {
     // Sanity: the same stop WITHOUT the suppression does draw the pin.
     assert.ok(anyShiplifyPin(svgOf(stop(), null, on(rec))), 'baseline draws');
     for (const [why, [s, note, extra]] of Object.entries(cases)) {
       const svg = svgOf(s, note, on(rec, extra));
+      if (rec === FORKLIFT && RED_RING.has(why)) {
+        assert.ok(!hollowLime(svg) && !dockRestingDot(svg), `the lime forklift pin must not draw: ${why}`);
+        assert.ok(/stroke="#dc2626" stroke-width="3"/.test(svg) && glyphGroup(svg, 'forklift', 'center'), `the red-ring forklift draws instead: ${why}`);
+        continue;
+      }
       assert.ok(!hollowLime(svg) && !dockRestingDot(svg) && !glyphGroup(svg, 'forklift', 'center') && !glyphGroup(svg, 'forklift', 'badge'),
         `${rec === DOCK ? 'dock' : 'forklift'} pin must not draw: ${why}`);
     }

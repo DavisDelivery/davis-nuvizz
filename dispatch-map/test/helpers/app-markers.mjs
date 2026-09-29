@@ -126,6 +126,20 @@ export const googleStub = {
 let cachedIcon = null;
 export async function loadStopMarkerIcon() {
   if (cachedIcon) return cachedIcon;
+  cachedIcon = await buildStopMarkerIcon();
+  return cachedIcon;
+}
+
+/**
+ * The same pipeline with some of its injected names REPLACED — how a test builds the pins a
+ * build with a VITE_ switch set the other way would draw (FORKLIFT_RED_RING_ON: false, say).
+ * Not cached: each call is its own evaluation with its own icon cache.
+ */
+export async function loadStopMarkerIconWith(overrides = {}) {
+  return buildStopMarkerIcon(overrides);
+}
+
+async function buildStopMarkerIcon(overrides = {}) {
   const mods = await Promise.all([
     import('../../src/lib/map-legend.js'),
     import('../../src/lib/time-marks.js'),
@@ -136,6 +150,10 @@ export async function loadStopMarkerIcon() {
   ]);
   const injected = {};
   for (const m of mods) for (const [k, v] of Object.entries(m)) if (!ICON_NEEDED.includes(k)) injected[k] = v;
+  for (const [k, v] of Object.entries(overrides)) {
+    if (!(k in injected)) throw new Error(`app-markers: override '${k}' names nothing the pipeline imports`);
+    injected[k] = v;
+  }
   const lines = readFileSync(APP_PATH, 'utf8').split('\n');
   const body = ICON_NEEDED
     .map((n) => ({ n, at: declarationLine(lines, n), src: declarationSource(lines, n) }))
@@ -151,12 +169,12 @@ export async function loadStopMarkerIcon() {
   const built = build(...names.map((k) => injected[k]));
   // The icon cache is keyed by the visual inputs; a test that changes App.jsx between runs in
   // one process would otherwise read a stale icon. Hand callers a fresh-cache wrapper.
-  cachedIcon = (stop, note, opts = {}) => built.stopMarkerIcon(googleStub, stop, note, opts);
+  const icon = (stop, note, opts = {}) => built.stopMarkerIcon(googleStub, stop, note, opts);
   // The raw function and the wall display's stand-in geometry, so a test can build a pin the
   // way the TELEVISION does — with no google.maps in the page at all — and compare.
-  cachedIcon.raw = built.stopMarkerIcon;
-  cachedIcon.plainGeometry = built.PLAIN_GEOMETRY;
-  return cachedIcon;
+  icon.raw = built.stopMarkerIcon;
+  icon.plainGeometry = built.PLAIN_GEOMETRY;
+  return icon;
 }
 
 /** The plain-disc builders — what the status pins, the numbered route pins and the unplanned
