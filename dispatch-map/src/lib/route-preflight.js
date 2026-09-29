@@ -51,6 +51,19 @@ import { haversineMeters } from './routing-select.js';
 /** The house departure, and the same one board-flags falls back to. */
 export const DEFAULT_DEPART_MIN = 8 * 60;
 
+/**
+ * PURE. The travel calibration a draft is judged with on `servedDate`: the per-day route classes
+ * only when they were measured for THAT day, the rest of the calibration either way. One helper,
+ * because the card's badges and the Time windows re-sequence must read the same clock — two
+ * copies of this rule is how the order a strategy picks and the badges it then shows disagree.
+ */
+export function travelForServedDate(travelInputs, servedDate) {
+  if (!travelInputs) return null;
+  return travelInputs.routeClasses && travelInputs.routeClassesDate !== servedDate
+    ? { ...travelInputs, routeClasses: undefined }
+    : travelInputs;
+}
+
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const hasCoords = (s) => Number.isFinite(s?.lat) && Number.isFinite(s?.lng);
 

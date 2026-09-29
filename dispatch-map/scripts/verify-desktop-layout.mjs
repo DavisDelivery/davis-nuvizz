@@ -25,6 +25,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
+import { TAB_LOAD_FAILURE_TAIL } from '../src/lib/load-failure.js';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { accountAnswer, ADMIN_SESSION, SESSION_KEY } from './lib/account-fixture.mjs';
 
@@ -156,10 +157,17 @@ for (const device of DESKTOPS) {
           return true;
         }, screen.sub.source);
         if (!sub) return false;
+        // The Shadow's code is LAZY — its own file, fetched on the click. WAIT (up to 15s) for the
+        // screen's own label FIRST, then give it the same 1100ms it always had before the proof and
+        // the measurement: a slow file must neither read as a screen that never arrived nor be
+        // measured half-drawn.
+        await page.waitForFunction((label) => document.body.innerText.includes(label), screen.label, { timeout: 15000 }).catch(() => {});
         await page.waitForTimeout(1100);
       }
-      // Proof of arrival: the screen's own heading is on the page.
-      return page.evaluate((label) => document.body.innerText.includes(label), screen.label);
+      // Proof of arrival: the screen's own heading is on the page — and NOT the tab-load failure
+      // line, which names the tab too (TabLoadFailure.jsx): a tab whose code did not load is a
+      // screen that did not arrive.
+      return page.evaluate(([label, tail]) => document.body.innerText.includes(label) && !document.body.innerText.includes(tail), [screen.label, TAB_LOAD_FAILURE_TAIL]);
     })();
 
     if (!opened) {

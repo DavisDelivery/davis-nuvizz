@@ -183,9 +183,11 @@ export function buildLegendInventory(entries) {
     // pin and the muted ring too. The pin kinds are stopShiplifyMarks' own answer, which already
     // refuses every stop a pin or a colour takes over.
     if (e.placeMark && e.placeMark in inv.placeMarks) inv.placeMarks[e.placeMark] += 1;
+    // 'forklift_slot' is the same forklift as the pin, drawn as a disc beside a stop's clock
+    // (v1.90.1), so the same Legend rows count it; the red ring is 'forklift_blocked' either way.
     if (e.shiplifyPin === 'dock') inv.shiplifyDock += 1;
-    else if (e.shiplifyPin === 'forklift') inv.shiplifyForklift += 1;
-    else if (e.shiplifyPin === 'forklift_blocked') inv.shiplifyForkliftBlocked += 1;
+    else if (e.shiplifyPin === 'forklift' || e.shiplifyPin === 'forklift_slot') inv.shiplifyForklift += 1;
+    else if (e.shiplifyPin === 'forklift_blocked' || e.shiplifyPin === 'forklift_slot_blocked') inv.shiplifyForkliftBlocked += 1;
     if (e.hidden) { inv.hiddenByPin += 1; continue; }
     if (!icons.length) continue;
     inv.withIcons += 1;

@@ -18,7 +18,28 @@
 //   POST /.netlify/functions/nuvizz-history-snapshot-background
 //     ?date=YYYY-MM-DD                      → single day
 //     ?from=YYYY-MM-DD&to=YYYY-MM-DD        → inclusive range, ≤31 days (backfill)
-//   No query string → captures ET-yesterday (the scheduled default).
+//     &dryRun=1                             → with either of the above: WRITE NOTHING and call
+//                                             NuVizz for nothing; log what the run would do
+//                                             (dryrun / dry_run / dry count too; only
+//                                             0/false/no/off runs for real). Every spelling
+//                                             is behind the same admin gate as ?date=.
+//   No query string → captures ET-yesterday (the scheduled default). THIS IS THE 2 AM RUN AS FAR
+//     AS THE CODE CAN TELL: the cron sends no query string, and nothing here can tell a person's
+//     no-query POST from it. So it is NOT checked by the re-capture guard below — it captures the
+//     day exactly as the 2 AM run does (from the day's index as it stands, or where the capture
+//     would scan, from a NuVizz scan) and overwrites every archived stop it writes again. Sent
+//     the morning after a failed night, on the index path that seals the morning's heals into
+//     the failed day. To re-run a failed night by hand, last night included, name it:
+//     ?date=YYYY-MM-DD.
+//
+// A RE-CAPTURE THAT NAMES ITS DAY (?date= / ?from=&to=) CAN REFUSE. When the day's board index
+// holds rows the frozen-day heal or a dispatcher Save changed after that day's last scan, or the
+// archive already holds stops the run would replace, it writes nothing and logs the counts — what
+// to do with those rows is Chad's decision (lib/history-recapture.mts; HISTORY_RECAPTURE_GUARD=off
+// removes the refusal). A POST with no query string is not checked (above). Ask first,
+// synchronously and for Firestore reads only:
+//   GET /.netlify/functions/history-capture-health?recapture=YYYY-MM-DD
+// (a -background function's own response is discarded by Netlify — ?dryRun=1 here only logs).
 //
 // ── Schedule: 06:00 UTC nightly ──────────────────────────────────────────────
 //   0 6 * * *
@@ -32,12 +53,14 @@
 // v1 = one nightly capture of the just-closed day. A future "settle pass"
 // re-capturing day-2 (to absorb late POD) is out of scope — TODO v1.1.
 
-import { runHistorySnapshot } from './lib/history-core.mts';
+import { runHistorySnapshot, dryRunParamNames } from './lib/history-core.mts';
 import { gateScheduledOverride } from './lib/background-gate.mts';
 
 // ?date= / ?from=&to= is the backfill branch: each day costs a full scanDate() — the planned
 // load-range probe plus the unplanned number-space descent — and ?from=&to= takes up to 31 of
-// them in one POST. The scheduled run takes no params and captures ET-yesterday.
+// them in one POST. The scheduled run takes no params and captures ET-yesterday — and so does a
+// hand POST with no query string, which neither this gate nor the re-capture guard can tell from
+// it (the gate asks only when an override param is present).
 //
 // The gate is ADMIN-only and, like every other gate in this change set, SHIPS INERT: with
 // AUTH_REQUIRED unset the hand-driven override runs exactly as it always has, and the door
@@ -48,10 +71,21 @@ import { gateScheduledOverride } from './lib/background-gate.mts';
 // function Netlify answers 202 and throws that 401 away: a documented runbook that silently
 // does nothing. It runs BEFORE the core is entered, so a refused override reaches no
 // Firestore read and no vendor call.
-export const OVERRIDE_PARAMS = ['date', 'from', 'to'] as const;
+export const OVERRIDE_PARAMS = ['date', 'from', 'to', 'dryRun'] as const;
+
+/**
+ * The overrides this request is gated on: the list above, plus EVERY spelling of the dry-run flag
+ * that isDryRun reads (?dry, ?dryrun, ?dry_run, ?DryRun, ?dry-run…), whatever its value — read
+ * with the same matcher (history-core dryRunParamNames), so the gate and the dry run cannot
+ * disagree about what counts. A fixed list could only ever name some of them, and ?dry=1 alone
+ * would have walked past the gate once AUTH_REQUIRED=true.
+ */
+export function gatedParams(req: Request): string[] {
+  return [...new Set<string>([...OVERRIDE_PARAMS, ...dryRunParamNames(req)])];
+}
 
 export default async (req: Request): Promise<Response> => {
-  const refused = await gateScheduledOverride(req, 'nuvizz-history-snapshot-background', OVERRIDE_PARAMS);
+  const refused = await gateScheduledOverride(req, 'nuvizz-history-snapshot-background', gatedParams(req));
   if (refused) return refused;
   return runHistorySnapshot(req);
 };

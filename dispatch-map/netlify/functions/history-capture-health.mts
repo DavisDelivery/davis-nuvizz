@@ -25,6 +25,17 @@
 //          day's stops (an explicit stop scan, not part of the cheap strip) and
 //          reports the eligibility breakdown + the miner's skip reasons. This is
 //          the Phase-4 tool for the 2026-07-03 zero-mine question.
+//
+//   GET  ?recapture=YYYY-MM-DD
+//        → the DRY RUN of a hand-driven re-capture of that day
+//          (nuvizz-history-snapshot-background?date=), answered here because a
+//          -background function's response is thrown away. Which path it would take
+//          (the Firestore index at 0 NuVizz calls, or a scan and its estimate), how
+//          many index rows the board changed after the day's last scan, how many
+//          archived stops it would overwrite, and whether it would be refused.
+//          Firestore reads only (index meta + masked index rows + masked archived
+//          stop ids + manifest); zero writes, zero NuVizz calls. lib/history-recapture.mts.
+//          Its `verdict` is a FORECAST ("DRY RUN — … WOULD BE REFUSED"): nothing ran.
 import { isFirestoreEnabled, listDocs, getDoc } from './lib/firestore.mts';
 import { HISTORY_COLLECTION, listStops } from './lib/history-store.mts';
 import { listCaptureFailures, classifyCaptureDay, summarizeCoverage } from './lib/history-seal.mts';
@@ -32,6 +43,13 @@ import { BACKFILL_PROGRESS_PATH, shapeBackfill } from './lib/customer-history-ba
 import { loadKeyForStop, extractReferenceRoutes } from './lib/routing-reference.mts';
 import { loadEngineConfig } from './lib/routing-engine-config.mts';
 import { requireUser } from './lib/require-user.mts';
+import { planRecapture } from './lib/history-recapture.mts';
+// The scans switch only — an env read (NUVIZZ_SCANS_ENABLED, or a mirror deploy), so the
+// re-capture forecast can say a run would be skipped. Read from lib/mirror-guard.mts, which
+// imports nothing: scanBlockReason() is null exactly when nuvizz-scan's scansEnabled() — the
+// check the run itself makes — is true (pinned by a test). Importing nuvizz-scan.mts for it put
+// the NuVizz requester in the bundle of a function that never calls NuVizz.
+import { scanBlockReason } from './lib/mirror-guard.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -178,6 +196,14 @@ export default async (req: Request): Promise<Response> => {
         return new Response(JSON.stringify({ ok: false, error: 'bad ?diagnose date' }), { status: 400, headers });
       }
       return new Response(JSON.stringify({ ok: true, ...(await diagnoseDate(diagnose)) }), { status: 200, headers });
+    }
+    const recapture = url.searchParams.get('recapture');
+    if (recapture !== null) {
+      if (!DATE_RE.test(recapture)) {
+        return new Response(JSON.stringify({ ok: false, error: 'bad ?recapture date (YYYY-MM-DD)' }), { status: 400, headers });
+      }
+      const plan = await planRecapture(recapture, { tenant: TENANT, manual: true, firestoreOn: true, scansOn: scanBlockReason() === null });
+      return new Response(JSON.stringify({ ok: true, ...plan }), { status: 200, headers });
     }
     return new Response(JSON.stringify(await captureHealth()), { status: 200, headers });
   } catch (e: any) {

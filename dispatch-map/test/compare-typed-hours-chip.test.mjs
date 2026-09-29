@@ -101,8 +101,17 @@ test('hoursTypedByDispatcher reads ownership, not the presence of hours', () => 
 // said "11M LATE" with no window beside it.
 import { compareAutoHoursEnabled } from '../src/lib/time-marks.js';
 
-const TITAN = { receiving_hours: { fri: { open: '07:00', close: '15:30' } } };                 // auto
-const WINSTED = { receiving_hours: { fri: { open: '06:00', close: '15:00' } } };               // auto, classified
+// TITAN carries the scanner's trail, as its real record does (v1.74.2's own words: "read from
+// Uline's order text ("RH 7AM-3 30PM", provenance auto)"). Until 2026-09-28 this fixture had NO
+// trail — a note the stop card calls "Source not recorded" — and the test below pinned "read from
+// the order text" onto it, which is the exact mislabel Chad asked to have fixed. Each source's own
+// wording is pinned in compare-chip-says-where-hours-came-from.test.mjs.
+const TITAN = {
+  receiving_hours: { fri: { open: '07:00', close: '15:30' } },
+  auto_sources: { receiving_hours: ['orderInstructions'] },
+  auto_matches: { receiving_hours: [{ source: 'orderInstructions', text: 'RH 7AM-3 30PM', pattern: 'hours_range' }] },
+};                                                                                            // auto
+const WINSTED = { receiving_hours: { fri: { open: '06:00', close: '15:00' } } };               // not typed, classified
 const TITAN_TYPED = { ...TITAN, manual_overrides: { receiving_hours: true } };
 
 test('TITAN ELECTRIC: auto hours get a chip on the Compare row, marked auto', () => {

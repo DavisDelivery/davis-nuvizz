@@ -212,6 +212,13 @@ jobs:
       # reads the classes out of src and asks the built stylesheet whether each one exists.
       # Needs the build above; needs no browser, so it runs before the slow guards.
       - run: npm run verify:classes
+      # THE SHADOW'S CODE STAYS OUT OF THE START-UP FILES. Chad, 2026-09-27, "12 yes" to loading the
+      # Claude Shadow's code only when its tab opens: about 200 KB left the start-up file. The unit
+      # test pins the lazy import in App.jsx, but a vite.config change (inlineDynamicImports, a
+      # manualChunks rule) puts it back with every test green and the app working, only heavier.
+      # This reads the build: the files dist/index.html loads at start-up must not carry a string
+      # only the Shadow's code has, and some built file must (so it cannot pass blind). No browser.
+      - run: npm run verify:shadow-chunk
       - run: npm run smoke
       # THE PHONE GUARD. It walks every screen at 390 and 360, opens the sheets and
       # drawers, and fails on content wider than the screen, controls clipped out of their

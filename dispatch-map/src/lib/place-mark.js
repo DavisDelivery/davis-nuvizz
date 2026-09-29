@@ -310,14 +310,24 @@ const PIN_STATUSES = new Set(['UNPLANNED', 'SCHEDULED']);
  * Estes paint — still wins. `redRing` is the switch (VITE_MAP_FORKLIFT_RED_RING); off, a
  * no-trailer stop draws exactly what it drew before.
  *
- * → 'dock' | 'forklift' | 'forklift_blocked' | null
+ * 'forklift_slot' / 'forklift_slot_blocked' — THE FORKLIFT BESIDE THE CLOCK (v1.90.1). Chad, on PRO
+ * 007183542, a stop with a receiving clock and a Shiplify forklift: "this stop should have a double
+ * icons one for time and one for forklift." A restriction cluster used to veto the forklift pin
+ * outright (the pin exists only where the stop would otherwise wear its plain colour), so a stop
+ * that had BOTH showed only the clock — and the forklift, which is how the freight comes off, was
+ * the fact that vanished. `withClock` (the switch, VITE_MAP_FORKLIFT_WITH_CLOCK) lets the forklift
+ * ride the cluster as a disc of its own, in the pin's lime ring, or in the Box-only red ring where a
+ * dispatcher has confirmed no tractor trailer (the same ring, on the same rule, as 'forklift_blocked').
+ * Every OTHER suppression still wins first. Off, a cluster vetoes the pin exactly as it did.
+ *
+ * → 'dock' | 'forklift' | 'forklift_blocked' | 'forklift_slot' | 'forklift_slot_blocked' | null
  */
 export function shiplifyPinKind({
   candidate = null, shiplifyOn = false,
   tractorSeen = false, eligibility = null, paintAllowed = true, placeMark = null,
   statusKind = null, dns = false, matched = false, searchMatched = false, inRoute = false,
   plannedMuted = false, priorityFlag = null, addressOff = false, estes = false, restrictionCount = 0,
-  onlyBlockers = false, redRing = false,
+  onlyBlockers = false, redRing = false, withClock = false,
 } = {}) {
   if (!shiplifyOn || (candidate !== 'dock' && candidate !== 'forklift')) return null;
   if (NO_TRACTOR_PLACE_MARKS.has(placeMark)) return null; // school / church / government
@@ -325,13 +335,15 @@ export function shiplifyPinKind({
   if (dns || matched || searchMatched || inRoute || plannedMuted) return null;
   if (priorityFlag) return null;                          // any flag, the ? flag included
   if (addressOff || estes) return null;                   // amber tint / the Estes ring
+  const clock = Number(restrictionCount) > 0;             // the stop draws a restriction cluster
   if (!paintAllowed) {                                    // a dispatcher's stated no trailer
-    const onlyTrailer = Number(restrictionCount) === 0 || onlyBlockers === true;
-    return redRing && candidate === 'forklift' && eligibility !== 'tractor' && onlyTrailer ? 'forklift_blocked' : null;
+    if (!redRing || candidate !== 'forklift' || eligibility === 'tractor') return null;
+    if (!clock || onlyBlockers === true) return 'forklift_blocked';
+    return withClock ? 'forklift_slot_blocked' : null;    // a clock or liftgate beside the no-trailer mark
   }
   if (tractorSeen) return null;                           // lime by key or by street + ZIP
   if (eligibility) return null;                           // Tractor-trailer OK or Box truck only
-  if (Number(restrictionCount) > 0) return null;          // a restriction cluster
+  if (clock) return withClock && candidate === 'forklift' ? 'forklift_slot' : null;   // a restriction cluster
   return candidate;
 }
 
@@ -341,6 +353,14 @@ export function shiplifyPinKind({
  *  redeploy. */
 export function forkliftRedRingEnabled(env) {
   const v = String(env?.VITE_MAP_FORKLIFT_RED_RING ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** VITE_MAP_FORKLIFT_WITH_CLOCK — house shape: default on, an off-word (off/0/false/no) turns it
+ *  off, anything malformed leaves it on. Off puts a stop with a restriction cluster back to no
+ *  forklift at all. Build-time, so flipping it is a redeploy. */
+export function forkliftWithClockEnabled(env) {
+  const v = String(env?.VITE_MAP_FORKLIFT_WITH_CLOCK ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
 }
 
@@ -395,4 +415,30 @@ export function limeNoDockLine(rec, tractorSeen) {
  */
 export function buildingTypeChanged(draft, existing) {
   return normalizeBuildingType(draft?.building_type) !== normalizeBuildingType(existing?.building_type);
+}
+
+/** The forklift-beside-the-clock switch as this build reads it (see forkliftWithClockEnabled). */
+export const FORKLIFT_WITH_CLOCK_ON = (() => {
+  try { return forkliftWithClockEnabled(import.meta.env); } catch { return true; }
+})();
+
+// ── THE RESIDENTIAL BRUSH (v1.90.0) ─────────────────────────────────────────
+//
+// Chad, 2026-09-28, with the Routing gear open on "Mark vehicle eligibility": "the way i can paint
+// tractor freindly or not i want to be able to paint residentials". The brush writes exactly what
+// the stop panel's Building type picker writes — building_type on the location's notes, with who
+// and when — so a house painted on the map and a house picked in the panel are the same fact.
+
+/** PURE: what one click of the Residential brush paints. A location already marked residential
+ *  goes back to Auto (Shiplify decides again); anything else becomes residential. */
+export function nextResidentialPaint(current) {
+  return normalizeBuildingType(current) === 'residential' ? null : 'residential';
+}
+
+/** VITE_MAP_RESIDENTIAL_BRUSH — house shape: default on, an off-word (off/0/false/no) turns it
+ *  off, anything malformed leaves it on. Off takes "Mark building type" out of the gear; every
+ *  mark already painted stays, because it is the same field the stop panel sets. Build-time. */
+export function residentialBrushEnabled(env) {
+  const v = String(env?.VITE_MAP_RESIDENTIAL_BRUSH ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
 }
