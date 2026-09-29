@@ -107,7 +107,7 @@ import {
   resolvePlaceMark, placeNoTractor, placeNoTractorLine, shiplifyPinCandidate, shiplifyPinKind,
   shiplifyRecordFor, buildShiplifyLookup, tractorPlaceKeys, tractorSeenAt, limeAsOf, shiplifyPanelRows,
   limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
-  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS,
+  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS, FORKLIFT_RED_RING_ON,
 } from './lib/place-mark.js';
 import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES, noTractorWrite, noTractorTickFields, restrictionSnapshot, TICKED, canMoveTowardTractor, tractorOkWrite, ulineUntickFields, afterUlineOff } from './lib/uline-review.js';
 import {
@@ -193,7 +193,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.87.3';
+const APP_VERSION = '1.87.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -247,6 +247,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.87.4', 'A FORKLIFT STOP YOU MARK NO TRACTOR TRAILER NOW WEARS A RED RING INSTEAD OF DISAPPEARING. Chad: “on a stop that i mark no tractor trailer but the shiplfy data says they have a forklift just make the green ring red instead.” Until now the mark made the Shiplify forklift pin vanish: a stated no vetoes the lime, and the stop drew its no-trailer icon instead, so the map stopped saying there is a forklift at exactly the stop where a box truck is now the plan and the forklift is how the freight comes off. The same forklift pin now draws in the Box-only red. WHAT COUNTS AS YOUR MARK is the map’s own rule for a stated no: Box truck only, or a confirmed “No tractor trailer”. An advisory no, read off order text and never checked, keeps its split icon. IT REPLACES THE NO-TRAILER MARK AND NOTHING ELSE: a stop that also draws a clock, a liftgate or any other restriction keeps its cluster, so nothing is hidden; a selection, a search hit, a flag, do-not-send, an open route, a live status, a school / church / government mark, the amber address tint and the Estes ring all still win, exactly as they do over the green ring. Only the forklift pin changes; a Shiplify dock is untouched. On a pickup the PU keeps the middle and the forklift rides a red corner badge, never a lime one. The Legend has its own row, “Shiplify: forklift, marked no tractor trailer”, counted from what the map drew, and a red-ring stop is no longer counted under the no-trailer icon it replaced. THE WAY BACK: VITE_MAP_FORKLIFT_RED_RING=off (a redeploy) puts every such stop back to exactly what it drew before, byte for byte. 11 new tests, and the Legend-equals-map test widened to cover it.'],
   ['1.87.3', 'THE WRITE JOURNAL NOW KEEPS WHICH STOPS EACH SAVE SENT. Chad, after BRIAN was refused at 8:38 and 8:39 PM with “load has a non-DO stop in a delivery slot that this card is not sequencing”: “maybe the journal should save this information.” The journal could say the 8:37 Save of BRIAN worked and the next two were refused, and could NOT say which stops any of the three carried, because it kept each Save’s RESULT and never what the card sent. That the 8:37 Save carried the LOCKHEED MARTIN pickup and the 8:38 card no longer listed it had to be worked out from a board stamp and the guard’s own rule instead of read. EVERY SAVE’S ROW NOW CARRIES, per load, the stop numbers in the order the card sent them and the ones it struck off, with the load, the board day and which screen built it; the board write-through that follows a Save names its stops too, not just how many. READ BACK FOR FREE: the write log takes ?stop= (the Saves that carried a stop) and ?load= (every Save of a load, the refused ones included), and the stop explain now lists every Save of the stop’s route that day and says of each “sent 16 stops — NOT this one” or “sent 17 stops, this one #17”, so “when did the card lose it” is a lookup. BOUNDED so the journal row can never outgrow itself: 300 stops a load and 12 loads a Save, and a cut says it cut. Nothing on screen changes and nothing a Save sends to NuVizz changes: zero NuVizz calls. Rows written before this release have no list and read exactly as they did. PUTTING IT BACK IS ONE REVERT. 17 new tests.'],
   ['1.87.2', 'THE COMPARE CARD NOW SAYS WHAT TRUCK EACH STOP CAN TAKE. Chad, with BRIAN open in Compare: \u201cI want the compare panel to have a faint green or red highlight if they are tractor friendly or not.\u201d The Selected window has painted a stop green (a 53-footer can go here) since v0.46.5 and red (somebody here said it cannot) since v1.37.1, but once the stop was sent to a card the card said neither \u2014 and the card is where the router decides what truck the load needs. Each stop row on a Compare card now wears a faint green for tractor-trailer friendly and a faint red for a Box-only mark or a confirmed \u201cNo tractor trailer\u201d, on the phone and the desktop alike. ONE RULE: the rows ask the same two helpers the Selected window asks, fed the same notes and the same lime-paint-aware tractor history, so a stop cannot be green in the selection and plain on the card it was sent to. A stop nobody has checked stays uncoloured, exactly as in the Selected window \u2014 red is the stated no, not the unknown. FAINTER THAN THE SELECTED WINDOW, AND MEASURED: at that window\u2019s shade a red row swallowed the card\u2019s own red \u201c30M LATE\u201d badge, so the card uses the lighter shade and the badge still reads. Dragging a stop across a coloured row keeps the colour and still draws the blue drop line; a plain row\u2019s drag cue is unchanged. Hovering a coloured row names why it is coloured. Nothing else on the card changes: counts, Send / Save, the map, the selection tools and closing a card are untouched. PUTTING IT BACK IS ONE REVERT \u2014 this adds a mark and is one commit. 10 new tests.'],
   ['1.87.1', 'EVERY COMPARE ROW WITH HOURS NOW SHOWS WHEN THE DOCK OPENS AS WELL AS WHEN IT CLOSES — AND A “CAN’T MAKE” STOP SAYS HOW LATE IT WOULD BE. Chad, 2026-09-29, on CHRIS HEAD’s rows reading “closes 2:30p · auto”: “i dont’ want just the closing time i want opening too.” The row printed only the edge that binds; it now prints the whole window on file (SIMS RECYCLING 7:00a–2:30p · auto), and a dock that states only one edge still says just that edge, never an invented half. VITE_COMPARE_FULL_WINDOW=off puts back “closes 2:30p”. AND: Chad, 2026-09-28, once those rows carried their hours on their own line: “If there’s not enough room on the can’t make 12 p.m. line to put the amount of time it would be late, then I think I’d rather have the amount of time the system’s going to think it’s going to be late than the can’t make it tag.” So on a Compare row that shows its hours (GENESIS BIOSCIENCES: 8:00a–12:00p · auto), the line under it now reads “2H 4M LATE” instead of “CAN’T MAKE 12:00P” — the close is already on the line above. It keeps the no-entry glyph and its hover (“Unreachable in any order …”), so it still reads as a stop no re-ordering will save. A row with no hours on file keeps “can’t make 12:00p”, because there the close would be printed nowhere. Merely-late rows are unchanged. VITE_COMPARE_UNREACHABLE_LATE=off puts “can’t make” back (build-time, so a redeploy). Zero NuVizz calls. 7 new tests.'],
@@ -3829,6 +3830,9 @@ function circleMarkerSvg(color, opts = {}) {
     //                 first), else a badge bottom left, the one free corner.
     //   placeMuted  — the planned-muted ring: the place mark in slate in place of the centre dot.
     strokeWidth = null, ink = null, placeMark = null, forklift = false, placeMuted = false,
+    //   forkliftFill — the forklift CORNER badge's colour: the lime by default, the red ring's red
+    //                  on a no-trailer stop, so the badge never argues with its own ring.
+    forkliftFill = null,
   } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
   // `ring` — an IDENTITY ring (the Estes yellow, lib/carrier-mark.js) takes the disc's edge
@@ -3890,7 +3894,7 @@ function circleMarkerSvg(color, opts = {}) {
   }
   if (forklift) {
     if (center == null) center = glyphCenter('forklift', glyphInk, bodyFill);
-    else forkliftBadge = glyphBadge('forklift', { corner: 'bl', fill: FORKLIFT_BADGE_LIME });
+    else forkliftBadge = glyphBadge('forklift', { corner: 'bl', fill: forkliftFill || FORKLIFT_BADGE_LIME });
   }
   if (center == null) center = `<circle cx="14" cy="14" r="4.5" fill="${hollow ? color : 'white'}"/>`;
   const svg = `
@@ -4355,6 +4359,10 @@ function stopShiplifyMarks(s, note, opts = {}) {
     addressOff: addressLooksOff(s, note),
     estes: isEstesOrder(s?.stopNbr),
     restrictionCount: restrictions.length,
+    // THE RED RING (v1.87.4): every mark this stop draws is a trailer blocker, so a forklift pin
+    // with a red ring can say the whole of it. Resolved, like blockerKeys in stopMarkerIcon.
+    onlyBlockers: restrictions.length > 0 && restrictions.every((k) => TRAILER_BLOCKER_KEYS.has(resolveRestrictionKey(k))),
+    redRing: FORKLIFT_RED_RING_ON,
   });
   return { placeMark: mark, pin };
 }
@@ -4448,7 +4456,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   const addrOff = addressLooksOff(s, note);
   // THE PLACE MARK AND THE HOLLOW LIME SHIPLIFY PIN — decided once, in stopShiplifyMarks, which
   // the Legend also reads. `placeMarkKind` rides every disc (centre, corner badge, muted slate,
-  // cluster badge); `shiplifyPin` is 'dock' | 'forklift' | null.
+  // cluster badge); `shiplifyPin` is 'dock' | 'forklift' | 'forklift_blocked' (the red ring) | null.
   const { placeMark: placeMarkKind, pin: shiplifyPin } = stopShiplifyMarks(s, note, opts);
   // Signature of EVERY input that changes the rendered icon (restrictions already folds in
   // selectedDayKey plus the AM/PM + tractor filters applied above). This MUST track the
@@ -4522,7 +4530,11 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
     const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (estesFill || meta.color || flagColor(note)));
     result = { url: circleMarkerSvg(color, { label: String(seq), count, ring, pickup, placeMark: placeMarkKind }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
-  } else if (restrictions.length === 0) {
+  } else if (restrictions.length === 0 || shiplifyPin === 'forklift_blocked') {
+    // THE RED RING TAKES STATE A (v1.87.4, Chad: "on a stop that i mark no tractor trailer but
+    // the shiplfy data says they have a forklift just make the green ring red instead"). Its
+    // only restrictions are trailer blockers (stopShiplifyMarks), and the red ring says exactly
+    // that, so it draws the forklift disc in place of the no-trailer mark.
     // State A — status drives the pin; matched stops pop orange; a priority flag,
     // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
@@ -4575,15 +4587,20 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     const defaultArm = !matched && !searchMatched && !noTractorOverride && !tractorDelivered
       && !eligColor && !pinFlagHue && !addressOff && !estesFill;
     const limePin = defaultArm ? shiplifyPin : null;
-    const pinColor = limePin ? TRACTOR_DELIVERED_COLOR : color;
-    // Anything drawn ON a hollow lime pin is #1f2937: lime on white is too faint for a shape.
-    const limeInk = limePin ? { strokeWidth: 3, ink: GLYPH_INK_ON_LIME } : {};
+    // THE RED RING: the same hollow forklift pin in the Box-only red. stopShiplifyMarks refuses a
+    // selection and a search hit — the two colours above the stated no in this chain — and it
+    // is re-checked against them here, the way the lime pin is against its own arm.
+    const redPin = shiplifyPin === 'forklift_blocked' && !matched && !searchMatched;
+    const pinColor = limePin ? TRACTOR_DELIVERED_COLOR : (redPin ? ELIG_BOX_COLOR : color);
+    // Anything drawn ON a hollow lime or red pin is #1f2937: the ring's colour on white is too
+    // faint for a shape.
+    const limeInk = (limePin || redPin) ? { strokeWidth: 3, ink: GLYPH_INK_ON_LIME } : {};
     // UNPLANNED resting pins (not highlighted, no AM/PM tag) render as a white-circle-wrapped DOT
     // instead of the washed-out small teardrop — same ≤16px footprint, so it never grows. A
     // co-located count sits inside the dot. Highlighted/tagged unplanned keep the pop pin.
     // A place mark or a forklift needs the room a tag needs, so it leaves the 16px dot the same
     // way PU does. The DOCK pin keeps the dot: a lime ring around a white core.
-    if (statusKind === 'UNPLANNED' && !hi && !tag && !placeMarkKind && limePin !== 'forklift') {
+    if (statusKind === 'UNPLANNED' && !hi && !tag && !placeMarkKind && limePin !== 'forklift' && !redPin) {
       result = {
         url: limePin === 'dock'
           ? unplannedDotSvg('#ffffff', { glyph, count, ring: TRACTOR_DELIVERED_COLOR })
@@ -4616,12 +4633,13 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       const timeTag = tag === 'AM' || tag === 'PM';
       // A place mark and a forklift pin take the PU tier (22) for the same reason PU does: the
       // mark has to be readable, and it is a kind of place, not a deadline.
-      const size = hi ? 22 : (timeTag ? 28 : ((tag || placeMarkKind || limePin === 'forklift') ? 22 : 16));
+      const size = hi ? 22 : (timeTag ? 28 : ((tag || placeMarkKind || limePin === 'forklift' || redPin) ? 22 : 16));
       const half = size / 2;
       result = {
         url: circleMarkerSvg(pinColor, {
-          hollow: limePin ? true : (hi ? false : meta.hollow), glyph, tag, count, ring, pickup,
-          ...limeInk, placeMark: placeMarkKind, forklift: limePin === 'forklift',
+          hollow: (limePin || redPin) ? true : (hi ? false : meta.hollow), glyph, tag, count, ring, pickup,
+          ...limeInk, placeMark: placeMarkKind, forklift: limePin === 'forklift' || redPin,
+          ...(redPin ? { forkliftFill: ELIG_BOX_COLOR } : {}),
         }),
         scaledSize: new google.maps.Size(size, size),
         anchor: new google.maps.Point(half, half),
@@ -6084,9 +6102,12 @@ function useLegendInventory({
         tractorDelivered,
         ...(shiplify ? shiplify.markerOpts(s) : {}),
       });
+      // THE RED RING takes the stop's no-trailer mark over (v1.87.4) — the marker draws the
+      // forklift disc and no restriction icon, so the icon rows must not count that mark either.
+      const pinHides = marks.pin === 'forklift_blocked';
       entries.push({
         note,
-        hidden,
+        hidden: hidden || pinHides,
         dns,
         pickup,
         estes: isEstesOrder(s.stopNbr),
@@ -6096,7 +6117,7 @@ function useLegendInventory({
         icons: drawnRestrictionKeys(getRestrictionBadgeKeys(note, { day: dayKey }), {
           deliveryWindow: note?.delivery_window,
           eligibility: note?.vehicle_eligibility,
-          hidden,
+          hidden: hidden || pinHides,
           resolve: resolveRestrictionKey,
         }),
       });
@@ -6272,6 +6293,8 @@ const SHIPLIFY_DOCK_SWATCH = circleMarkerSvg(TRACTOR_DELIVERED_COLOR, { hollow: 
 // resting dot (a lime ring round a white core), a scheduled one the hollow ring with its dot.
 const SHIPLIFY_DOCK_REST_SWATCH = unplannedDotSvg('#ffffff', { ring: TRACTOR_DELIVERED_COLOR });
 const SHIPLIFY_FORKLIFT_SWATCH = circleMarkerSvg(TRACTOR_DELIVERED_COLOR, { hollow: true, strokeWidth: 3, ink: GLYPH_INK_ON_LIME, forklift: true });
+// The red ring (v1.87.4): the forklift pin on a stop a dispatcher has marked no tractor trailer.
+const SHIPLIFY_FORKLIFT_BLOCKED_SWATCH = circleMarkerSvg(ELIG_BOX_COLOR, { hollow: true, strokeWidth: 3, ink: GLYPH_INK_ON_LIME, forklift: true });
 
 // "Shiplify data" for one tab — the switch, and a status line that says whether anything is
 // actually loaded, so an empty trial layer can never be mistaken for a switched-off one.
@@ -6467,7 +6490,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true, t
           Map display, Routing's in the Routing map's Filters menu) and the two hollow lime pins:
           "Shiplify says a trailer could work here, and no tractor has delivered yet". */}
       {shiplifySwitch && <ShiplifySwitchControl tab={tab} />}
-      {shiplifyOn && (has(inv && inv.shiplifyDock) || has(inv && inv.shiplifyForklift)) && (
+      {shiplifyOn && (has(inv && inv.shiplifyDock) || has(inv && inv.shiplifyForklift) || has(inv && inv.shiplifyForkliftBlocked)) && (
         <div data-legend-shiplify>
           <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Shiplify</div>
           <div className="space-y-1">
@@ -6484,6 +6507,13 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true, t
                 <img src={SHIPLIFY_FORKLIFT_SWATCH} width={18} height={18} alt="" className="flex-shrink-0" />
                 <span>Shiplify: forklift, no dock, no tractor yet</span>
                 <LegendCount n={!all && inv.shiplifyForklift} />
+              </div>
+            )}
+            {has(inv && inv.shiplifyForkliftBlocked) && (
+              <div className="flex items-center gap-2" data-legend-row="shiplify-forklift-blocked">
+                <img src={SHIPLIFY_FORKLIFT_BLOCKED_SWATCH} width={18} height={18} alt="" className="flex-shrink-0" />
+                <span>Shiplify: forklift, marked no tractor trailer</span>
+                <LegendCount n={!all && inv.shiplifyForkliftBlocked} />
               </div>
             )}
           </div>
