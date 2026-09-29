@@ -120,10 +120,16 @@ test('what does NOT turn red: a dock, a second mark, an advisory no, and a stop 
   const icon = await loadStopMarkerIcon();
   const dock = markerSvg(icon(stop(), NO_TRAILER, shiplify(DOCK)));
   assert.equal(hasForklift(dock), false, 'a dock pin is not asked about — unchanged: no pin');
+  // A liftgate beside the no-trailer mark keeps the CLUSTER, so the liftgate is not lost — and since
+  // v1.90.1 the forklift rides it as a disc of its own, in the red ring (test/forklift-with-clock.test.mjs).
   const withLiftgate = markerSvg(icon(stop(), { ...NO_TRAILER, liftgate_required: true }, shiplify(FORK)));
-  assert.equal(hasForklift(withLiftgate), false, 'a liftgate beside it keeps the cluster, so the liftgate is not lost');
+  assert.doesNotMatch(withLiftgate, /data-form="center"/, 'no State A pin: the cluster stays');
+  assert.match(withLiftgate, /data-glyph="forklift" data-form="slot"/, 'the forklift is beside the cluster, not instead of it');
   const advisory = markerSvg(icon(stop(), { equipment_restrictions: ['no_tractor_trailer'], auto_sources: { no_tractor_trailer: ['orderInstructions'] } }, shiplify(FORK)));
-  assert.equal(hasForklift(advisory), false, 'nobody has checked an advisory no — it keeps its split icon');
+  // Nobody has checked an advisory no, so it is NOT the red ring: it keeps its split icon, and since
+  // v1.90.1 the forklift rides beside it as a LIME disc (an unconfirmed no does not turn the ring red).
+  assert.match(advisory, /data-glyph="forklift" data-form="slot">\s*<circle [^>]*stroke="#32CD32"/, 'lime forklift disc beside the split icon');
+  assert.doesNotMatch(advisory, /data-form="slot">\s*<circle [^>]*stroke="#dc2626"/, 'never the red ring on an unconfirmed no');
   const noRecord = markerSvg(icon(stop(), NO_TRAILER, shiplify(null)));
   assert.equal(hasForklift(noRecord), false);
 });

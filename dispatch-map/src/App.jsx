@@ -107,11 +107,11 @@ import {
   resolvePlaceMark, placeNoTractor, placeNoTractorLine, shiplifyPinCandidate, shiplifyPinKind,
   shiplifyRecordFor, buildShiplifyLookup, tractorPlaceKeys, tractorSeenAt, limeAsOf, shiplifyPanelRows,
   limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
-  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS, FORKLIFT_RED_RING_ON, nextResidentialPaint, residentialBrushEnabled,
+  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS, FORKLIFT_RED_RING_ON, FORKLIFT_WITH_CLOCK_ON, nextResidentialPaint, residentialBrushEnabled,
 } from './lib/place-mark.js';
 import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, buildingTypePayload, undoWrite, BOX_ONLY_BUILDING_TYPES, noTractorWrite, noTractorTickFields, restrictionSnapshot, TICKED, canMoveTowardTractor, tractorOkWrite, ulineUntickFields, afterUlineOff } from './lib/uline-review.js';
 import {
-  glyphCenter, glyphBadge, glyphMuted, glyphClusterBadge, GLYPH_INK_ON_LIME, FORKLIFT_BADGE_LIME,
+  glyphCenter, glyphBadge, glyphMuted, glyphClusterBadge, glyphMarkup, GLYPH_INK_ON_LIME, FORKLIFT_BADGE_LIME,
 } from './lib/place-glyphs.js';
 import {
   rowsFromAoa, summarizeShiplify, shiplifyBatchId, chunkRowsBySize, decodeIndexLine, SHIPLIFY_SHEET,
@@ -197,7 +197,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.90.1';
+const APP_VERSION = '1.90.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -251,6 +251,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.90.2', 'A STOP WITH A RECEIVING CLOCK AND A SHIPLIFY FORKLIFT NOW SHOWS BOTH: TWO ICONS. Chad, on PRO 007183542 (EXPRESS CONTAINER SERVICES): “this stop should have a double icons one for time and one for forklift.” It showed the clock alone. A restriction cluster used to veto the Shiplify forklift outright, because the forklift pin exists only where a stop would otherwise wear its plain colour; so a stop that had BOTH lost the forklift, which is how the freight comes off the truck. THE FORKLIFT NOW RIDES THE CLUSTER AS A DISC OF ITS OWN, after the clock: the pin’s lime ring, the same dark forklift, on a white ground, drawn from the same artwork as the pin and its Legend swatch. It goes after however many restrictions the stop has (a clock, a liftgate, an appointment), so nothing is hidden and nothing moves but the marker growing one slot wider. Where a dispatcher has confirmed no tractor trailer beside the clock, the disc wears the Box-only RED ring, on the same rule as the red-ring pin; an unconfirmed no does not turn it red. Every other rule is unchanged: a Shiplify dock still draws no pin beside a clock, and a selection, a search hit, a flag, do-not-send, an open route, a live status, a school / church / government mark, the amber address tint and the Estes ring all still win over the forklift. A house or school badge rides the clock’s disc, never on top of the forklift. The Legend counts the disc under the same forklift rows as the pin. THE WAY BACK: VITE_MAP_FORKLIFT_WITH_CLOCK=off (a redeploy) puts a clustered stop back to no forklift, byte for byte. 12 new tests.'],
   ['1.90.1', 'THE ROLLBACK TOOL GOES BY THE VERSION EACH BUILD ACTUALLY SHOWED, MAIN’S MERGE TITLES MATCH THEIR PR, AND OLD CHANGELOG ROWS THAT PROMISED THE WRONG WAY BACK ARE CORRECTED. npm run rollback now reads each build’s version from that build’s own code, not from its merge title: #1027 merged under the title v1.74.3 while it shipped v1.75.1, so asking for v1.74.3 used to land on the wrong build. A drop that cannot really be undone (a true merge commit, or a revert git refuses outright) now stops and says so instead of reading “comes out cleanly”. Auto-merge now writes each PR’s own title as its commit title on main. Old rows corrected, each with a dated note: the switches in v1.56.0, v1.65.0 and v1.76.0 take effect after a redeploy, not without one; rows that promised “revert this commit” now say how many conflicts that revert hits and point at rolling back to a time instead; and v1.75.1, v1.76.0 and v1.77.1 described their feature wrongly. The Version history list no longer scrolls sideways on a phone. Nothing on the board, the map or the Route Workbench changes, and 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.90.0', 'A RESIDENTIAL PAINT BRUSH, BESIDE THE TRACTOR AND BOX BRUSHES. Chad, with the Routing gear open on “Mark vehicle eligibility”: “the way i can paint tractor freindly or not i want to be able to paint residentials.” The gear gains “Mark building type: Off / Residential”. Armed, a click on a stop marks the location residential and the house mark appears on its pin; a second click puts it back to Auto, where Shiplify decides again. It writes exactly what the stop panel’s Building type picker writes (the type, who and when, merged onto the location’s notes), so a house painted on the map and a house picked in the panel are the same fact, and it sticks for every future stop there. It does NOT touch the vehicle mark, the same as the picker: the Tractor and Box brushes paint that. One brush at a time across both groups (arming one disarms the other, and Ninja, Box and Lasso); “Off” in one group never disarms the other’s brush; the on-map reminder names the brush and has a Stop button. The phone gear and both desktop gears carry it. THE WAY BACK: VITE_MAP_RESIDENTIAL_BRUSH=off (a redeploy) takes the group out of the gear; marks already painted stay, because they are the panel’s own field. 5 new tests.'],
   ['1.89.0', 'TIME WINDOWS: A RE-SEQUENCE THAT ROUTES AROUND THE RECEIVING HOURS. Chad, with the Re-sequence menu open on TRAILER 1: “i need an optimization that uses the time restrictions and trys to make the best route considering those so this type of optimization may need a quick claude sonnett 5.5 call.” Every choice in that menu measured distance and nothing else, so a far stop that closes at 9:30 went wherever the miles put it. THE NEW CHOICE, “Time windows — fewest late”, orders the card so the fewest stops reach a dock after it closes, then so none reaches a dock before a dispatcher-typed opening, then so the fewest minutes are late in all, then so the day finishes earliest. NO MODEL CALL, ON PURPOSE: the question is drive-time arithmetic and the card already holds the exact arithmetic, the check behind every late and can’t-make badge on it. Every candidate order is scored with the card’s own route, departure, drive calibration and day, on each stop’s whole clock: the same merged rule the route builder reads (the order’s own booked window or appointment, the customer’s receiving hours, and a closed day, tightest wins), plus every stop the card’s own late badges flag, so nothing the badges show is ignored. The vendor’s default creation slot is not treated as an appointment. It costs nothing, answers in well under a second (0.12 ms a scoring on an 18-stop card, measured) and gives the same order twice; a model would need the same drive times handed to it and could get the sums wrong. It starts from the card as it stands, from the shortest-distance order and from closes-first, improves each a stop at a time, and never returns a worse order than the card: when nothing beats it the card keeps its order and the line says so. The line after it says what changed, before and after (“1 late (50m in all) → 0 late”), never an intent. SAID PLAINLY: an AUTO opening is not chased, because auto hours can invent one (“DELIVER BY 2PM” reads as 6:00a–2:00p); and the card’s clock does not wait at a dock that has not opened, so an early arrival is avoided rather than modelled as a wait. A stop with no map location rides at the end, in its order; a stop whose customer is shut that day cannot be served by any order and is left out of the ranking. The line after it also says what it cost: “last stop 10:20a → 10:44a” when the order that makes the windows ends the day later. THE WAY BACK: VITE_COMPARE_TIME_WINDOWS=off (a redeploy) takes the choice out of the menu; nothing else about the menu or the card changes. 17 new tests. ALSO IN THIS RELEASE, two fixes to my own v1.88.1: the closed-days switch was copying the whole environment on every call, which made the Compare card’s own late check 33 times slower (0.12 ms to 3.96 ms a scoring, profiled), fixed and pinned by a test; and a stray node_modules link from that build had been swept into the repository, which replaced a developer’s installed packages when main was merged in, removed, with a CI guard so no symlink or node_modules path can be committed again.'],
@@ -4175,8 +4176,17 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
   // right of the LAST disc, so a school with a receiving clock still says it is a school.
   const placeMark = opts.placeMark || null;
 
-  // State B: single 36-diameter circle.
-  if (restrictions.length === 1) {
+  // THE FORKLIFT BESIDE THE CLOCK (v1.90.1). Chad, on a stop with a receiving clock and a Shiplify
+  // forklift: "this stop should have a double icons one for time and one for forklift." The forklift
+  // is a disc of its own in the cluster — the pin's ring (lime, or the Box-only red where a
+  // dispatcher has confirmed no tractor trailer), the dark forklift, white ground — drawn from the
+  // same artwork as the pin and its Legend swatch. The ring colour arrives as `opts.forkliftRing`
+  // (a colour string, or null for no forklift) so this function needs no colour constants.
+  const forkliftRing = typeof opts.forkliftRing === 'string' && opts.forkliftRing ? opts.forkliftRing : null;
+
+  // State B: single 36-diameter circle. A single restriction PLUS a forklift is two icons, so it
+  // takes the cluster layout below instead.
+  if (restrictions.length === 1 && !forkliftRing) {
     const r = restrictions[0];
     const def = RESTRICTION_ICONS[resolveRestrictionKey(r)] || UNKNOWN_RESTRICTION;
     const accent = tint || def.accent || def.bg || '#6b7280';
@@ -4214,9 +4224,11 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
 
   // State C: side-by-side 32-diameter circles. 2 or 3 raw restrictions
   // render as-is; 4+ collapses to first 2 + "+N" overflow.
-  const elements = restrictions.length <= 3
+  const restrictionElements = restrictions.length <= 3
     ? restrictions.slice()
     : [restrictions[0], restrictions[1], { __overflow: restrictions.length - 2 }];
+  // The forklift rides LAST, after the clock — "one for time and one for forklift".
+  const elements = forkliftRing ? [...restrictionElements, { __forklift: true }] : restrictionElements;
   const n = elements.length;
   const slotW = 32;
   const gap = 2;
@@ -4232,6 +4244,13 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
       elementsMarkup += `
         <circle cx="${cx}" cy="${cy}" r="15" fill="white" fill-opacity="0.95" stroke="${tint || '#6b7280'}" stroke-width="2"/>
         <text x="${cx}" y="${cy + 4}" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="${tint || '#374151'}" text-anchor="middle">+${el.__overflow}</text>
+      `;
+    } else if (el && typeof el === 'object' && '__forklift' in el) {
+      elementsMarkup += `
+        <g data-glyph="forklift" data-form="slot">
+          <circle cx="${cx}" cy="${cy}" r="14" fill="white" fill-opacity="0.95" stroke="${forkliftRing}" stroke-width="3"/>
+          <g transform="translate(${cx - 14} ${cy - 14})">${glyphMarkup('forklift', GLYPH_INK_ON_LIME, '#ffffff')}</g>
+        </g>
       `;
     } else if (isTimeMarkKey(el)) {
       // Same rule inside a cluster, so a clock looks like itself wherever it appears. The
@@ -4259,7 +4278,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
     <svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}">
       <ellipse cx="${totalW / 2}" cy="36" rx="${shadowRx}" ry="1.8" fill="black" opacity="0.15"/>
       ${elementsMarkup}
-      ${puBadge}${placeMark ? glyphClusterBadge(placeMark, (n - 1) * (slotW + gap) + slotW / 2, 18, 15) : ''}
+      ${puBadge}${placeMark ? glyphClusterBadge(placeMark, (forkliftRing ? n - 2 : n - 1) * (slotW + gap) + slotW / 2, 18, 15) : ''}
     </svg>`;
   return scaleMarkerSpec({
     url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
@@ -4380,6 +4399,8 @@ function stopShiplifyMarks(s, note, opts = {}) {
     // with a red ring can say the whole of it. Resolved, like blockerKeys in stopMarkerIcon.
     onlyBlockers: restrictions.length > 0 && restrictions.every((k) => TRAILER_BLOCKER_KEYS.has(resolveRestrictionKey(k))),
     redRing: FORKLIFT_RED_RING_ON,
+    // THE FORKLIFT BESIDE THE CLOCK (v1.90.1): a restriction cluster no longer vetoes it (lib/place-mark.js).
+    withClock: FORKLIFT_WITH_CLOCK_ON,
   });
   return { placeMark: mark, pin };
 }
@@ -4673,7 +4694,11 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       // a blocker the glyph is white and can no longer carry the tractor-delivered lime, so
       // the "a trailer fits" half wears it instead. Passing the tint here would let a priority
       // flag's hue become that half.
-      { advisoryKeys, blockerKeys, tractorProven: tractorDelivered && !noTractorOverride, pickup, placeMark: placeMarkKind },
+      {
+        advisoryKeys, blockerKeys, tractorProven: tractorDelivered && !noTractorOverride, pickup, placeMark: placeMarkKind,
+        // THE FORKLIFT BESIDE THE CLOCK: the ring's colour, or null when this stop draws no forklift disc.
+        forkliftRing: shiplifyPin === 'forklift_slot' ? TRACTOR_DELIVERED_COLOR : shiplifyPin === 'forklift_slot_blocked' ? ELIG_BOX_COLOR : null,
+      },
     );
     result = { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
   }
