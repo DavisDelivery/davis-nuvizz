@@ -23,7 +23,7 @@ import { requireUser } from './lib/require-user.mts';
 import { readBackgroundRefusals } from './lib/background-gate.mts';
 import { isMirrorDeploy, scanBlockReason, firestoreDatabaseName } from './lib/mirror-guard.mts';
 import { clampScanConfig, effectiveScanConfig, scanConfigDefaults, SCAN_CONFIG_BOUNDS, scanDecision } from './lib/scan-schedule.mts';
-import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './lib/scan-plan.mts';
+import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath, pinnedDueKinds, scanPinsEnabled, PINNED_SCANS } from './lib/scan-plan.mts';
 import { attributeSpend } from './lib/scan-attribution.mts';
 import { breakerMode, reportedDailyCeiling, circuitStillBinding, CEILING_ADVISORY } from './lib/nuvizz-request.mts';
 
@@ -95,9 +95,17 @@ async function explain(): Promise<any> {
   const lastLoadScanAt = meta?.lastLoadScanAt ?? meta?.last_scanned_at ?? null;
   const legacy = scanDecision(now, false, lastLoadScanAt, cfg);
   const due = dueKinds(legacy.weekday, legacy.etHour, rules, kindStamps as any, now.getTime());
-  const decision = overrideCadenceSkip(legacy, due.planned.due, due.completed.due, due.roster.due);
+  // The same pins the scanner applies (refresh-stops-core), so this dry run and the real fire
+  // cannot disagree about 5:25p / 6:20p.
+  const pinsOn = scanPinsEnabled();
+  const pinned = pinsOn
+    ? pinnedDueKinds(legacy.weekday, legacy.etHour, legacy.etMin, kindStamps as any, now.getTime())
+    : { planned: false, completed: false, roster: false, pin: null };
+  const plannedDue = due.planned.due || pinned.planned;
+  const completedDue = due.completed.due || pinned.completed;
+  const decision = overrideCadenceSkip(legacy, plannedDue, completedDue, due.roster.due);
   const path = scanPath(decision.act, {
-    plannedDue: due.planned.due, completedDue: due.completed.due, rosterDue: due.roster.due,
+    plannedDue, completedDue, rosterDue: due.roster.due,
   });
 
   const ageMin = (iso: any) => {
@@ -123,6 +131,7 @@ async function explain(): Promise<any> {
       reason: decision.reason,
       legacyGate: { intervalMin: legacy.intervalMin, elapsedMin: legacy.elapsedMin === Infinity ? null : Math.round(legacy.elapsedMin), skip: legacy.skip, reason: legacy.reason },
       due,
+      pins: { enabled: pinsOn, switch: 'SCAN_PINS', firing: pinned, schedule: PINNED_SCANS },
     },
     // What the BOARD is serving — the three rows on the status card, in one place, with ages.
     // These move only when a board write lands, which is exactly what makes them the right

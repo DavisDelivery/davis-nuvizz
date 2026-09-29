@@ -39,7 +39,7 @@ import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
-import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './scan-plan.mts';
+import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath, pinnedDueKinds, scanPinsEnabled } from './scan-plan.mts';
 import { acceptRosterWrite } from './roster-write.mts';
 import { planCompletions } from './scan-completions.mts';
 
@@ -750,8 +750,15 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   })();
   const kindStamps = fsOn ? await readScanKindStamps().catch(() => ({})) : {};
   const due = dueKinds(decision.weekday, decision.etHour, planRules, kindStamps, now.getTime());
-  const plannedDue = isManual || due.planned.due;
-  const completedDue = isManual || due.completed.due;
+  // PINNED SCANS (scan-plan.mts, PINNED_SCANS): a normal scan at 5:25p and 6:20p on weekdays,
+  // so the 5:30p open-orders email and the 6:30p report read a fresh board. A pin only makes
+  // the kind DUE; every gate below (blackout, floor, ceiling) still applies. SCAN_PINS=off removes it.
+  const pinned = scanPinsEnabled()
+    ? pinnedDueKinds(decision.weekday, decision.etHour, decision.etMin, kindStamps, now.getTime())
+    : { planned: false, completed: false, roster: false, pin: null };
+  if (pinned.pin) console.log(`[scan] pin=${pinned.pin} planned=${pinned.planned} completed=${pinned.completed}`);
+  const plannedDue = isManual || due.planned.due || pinned.planned;
+  const completedDue = isManual || due.completed.due || pinned.completed;
   const rosterDue = isManual || due.roster.due;
 
   // THE PLAN CAN OVERRULE THE LEGACY GATE. `decision` above comes from the single global

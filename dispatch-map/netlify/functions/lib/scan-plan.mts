@@ -389,6 +389,85 @@ export function dueKinds(
  * written; a manual scan already bypasses this function entirely via `isManual`, so it is
  * untouched here too.
  */
+// ── PINNED SCANS — a normal scan at a set time, before an email reads the board ─────────
+//
+// Chad, 2026-09-29: "at 5:25, I want to run a refresh scan so that everything and all the
+// data is fresh. And then five minutes after that, I want to send the email to customer
+// service of every planned delivery that's undelivered still." And: "make sure that before
+// 630 is sent a normal scan is done at 620. No forced scans here just the normal scans where
+// it's just a few nuvizz calls."
+//
+// A PIN IS NOT A NEW KIND OF SCAN. It only makes `planned` and `completed` DUE at that time,
+// so the fire goes down the same scheduled list path as every other one — a full scan with
+// list discovery is the 77128 + 77131 pulls, two calls, and stamps both kinds. Everything
+// that guards a scheduled fire still guards this one: the weekend blackout, the 10-minute
+// anti-thrash floor, the daily ceiling and the breaker. The manual / explicit number-probe
+// path is not reachable from here.
+//
+// WHY A WINDOW AND NOT A MINUTE. The cron lands every five minutes and rarely on the minute,
+// and the floor can hold a fire back (a routine scan at 5:18 blocks 5:25 until 5:28). So a
+// pin stays due from its minute until PIN_WINDOW_MIN after it, and stops being due the moment
+// the kind has been stamped. A scan in the few minutes BEFORE the pin already satisfies it
+// (PIN_FRESH_MIN) — data from 5:22 is as fresh as the email needs, and re-pulling it at 5:25
+// would spend a call to learn nothing.
+//
+// COST: at most two calls per pin per weekday, and usually less — a pin that lands where the
+// plan was about to scan anyway replaces that scan rather than adding one.
+//
+// PUT IT BACK: SCAN_PINS=off (see scanPinsEnabled). The scan plan is then exactly what it was.
+export interface ScanPin {
+  id: string;
+  /** ET weekdays. 0=Sun … 6=Sat. */
+  days: number[];
+  hour: number;
+  minute: number;
+  kinds: ScanKind[];
+  note: string;
+}
+
+export const PINNED_SCANS: ScanPin[] = [
+  { id: 'pre-open-orders', days: [1, 2, 3, 4, 5], hour: 17, minute: 25, kinds: ['planned', 'completed'], note: 'Fresh board for the 5:30p open-orders email to customer service.' },
+  { id: 'pre-day-report', days: [1, 2, 3, 4, 5], hour: 18, minute: 20, kinds: ['planned', 'completed'], note: 'Fresh board for the 6:30p end-of-day report.' },
+];
+export const PIN_WINDOW_MIN = 20;
+export const PIN_FRESH_MIN = 5;
+
+/** House switch shape: on by default, an explicit off-word turns it off, anything else leaves it on. */
+export function scanPinsEnabled(env: any = process.env): boolean {
+  const v = String(env?.SCAN_PINS ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/**
+ * PURE. Which kinds a pin makes due on this fire, and which pin it was (for the log line).
+ * `nowMs` is the real instant; weekday/hour/minute are the same instant on the ET clock.
+ */
+export function pinnedDueKinds(
+  weekday: number,
+  hour: number,
+  minute: number,
+  lastByKind: Partial<Record<ScanKind, string | null>> = {},
+  nowMs: number,
+  pins: ScanPin[] = PINNED_SCANS,
+): { planned: boolean; completed: boolean; roster: boolean; pin: string | null } {
+  const out = { planned: false, completed: false, roster: false, pin: null as string | null };
+  const nowMin = hour * 60 + minute;
+  for (const p of pins || []) {
+    if (!p.days.includes(weekday)) continue;
+    const pinMin = p.hour * 60 + p.minute;
+    const since = nowMin - pinMin;
+    if (since < 0 || since >= PIN_WINDOW_MIN) continue;
+    // The pin's own instant, on the real clock: back `since` whole minutes, then to the top of the minute.
+    const pinMs = nowMs - since * 60000 - (((nowMs % 60000) + 60000) % 60000);
+    const freshFrom = pinMs - PIN_FRESH_MIN * 60000;
+    for (const k of p.kinds) {
+      const last = lastByKind?.[k] ? Date.parse(String(lastByKind[k])) : NaN;
+      if (!Number.isFinite(last) || last < freshFrom) { out[k] = true; out.pin = p.id; }
+    }
+  }
+  return out;
+}
+
 /** The four things a cron fire can turn into. */
 export type ScanPath = 'skip' | 'roster-only' | 'completed-overlay' | 'full';
 
