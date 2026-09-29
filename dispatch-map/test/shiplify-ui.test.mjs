@@ -95,6 +95,10 @@ const { useLegendInventory: legendInventoryOf } = liftFromApp({
     const shiplify = { markerOpts: () => ({ shiplifyRec: { dock_access: 'yes' }, shiplifyOn: true, tractorSeen: false, tractorKnown: true }) };
     l.useLegendInventory({ stops: SAMPLE_STOPS, notes: new Map([['a', { building_type: 'school' }]]), dayKey: 'tue', tractorLocs: new Map(), shiplify });
     l.useLegendInventory({ stops: SAMPLE_STOPS, notes: new Map(), dayKey: 'tue', tractorLocs: new Map(), plannedMuted: true, isPlanned: (x) => x.isPlanned, shiplify });
+    // A no-trailer stop under a Shiplify forklift: reaches the red ring's rule (v1.87.4) and the
+    // restriction alias table it resolves through — the lifter only finds what is exercised.
+    const fork = { markerOpts: () => ({ shiplifyRec: { dock_access: 'no', forklift: 'yes' }, shiplifyOn: true, tractorSeen: false, tractorKnown: true }) };
+    l.useLegendInventory({ stops: SAMPLE_STOPS, notes: new Map([['a', { equipment_restrictions: ['no_tractor_trailer'] }], ['b', { vehicle_eligibility: 'box_only' }]]), dayKey: 'tue', tractorLocs: new Map(), shiplify: fork });
   },
 });
 
@@ -245,7 +249,9 @@ test('LEGEND COUNTS EQUAL WHAT THE MAP DREW — Map and Routing semantics, every
   const recOf = new Map();
   let i = 0;
   for (const [rk, rec] of Object.entries(recs)) {
-    for (const note of [null, { building_type: 'government' }, { building_type: 'none' }, { priority_flag: 'red' }, { liftgate_required: true }, { do_not_send: true }, { vehicle_eligibility: 'tractor' }]) {
+    for (const note of [null, { building_type: 'government' }, { building_type: 'none' }, { priority_flag: 'red' }, { liftgate_required: true }, { do_not_send: true }, { vehicle_eligibility: 'tractor' },
+      // The red ring (v1.87.4): Box-only, a confirmed No tractor trailer, and one with a liftgate beside it.
+      { vehicle_eligibility: 'box_only' }, { equipment_restrictions: ['no_tractor_trailer'] }, { equipment_restrictions: ['no_tractor_trailer'], liftgate_required: true }]) {
       for (const planned of [false, true]) {
         for (const stopType of ['DO', 'PU']) {
           i += 1;
@@ -261,17 +267,18 @@ test('LEGEND COUNTS EQUAL WHAT THE MAP DREW — Map and Routing semantics, every
   const drew = (svg) => {
     const hollow = /stroke="#32CD32" stroke-width="3"/.test(svg) || /<circle cx="12" cy="12" r="11" fill="#32CD32"/.test(svg);
     const fork = hollow && /data-glyph="forklift"/.test(svg);
+    const forkRed = /stroke="#dc2626" stroke-width="3"/.test(svg) && /data-glyph="forklift"/.test(svg);
     const place = /data-glyph="(residential|school|church|government)"/.exec(svg)?.[1] || null;
-    return { dock: hollow && !fork, fork, place };
+    return { dock: hollow && !fork, fork, forkRed, place };
   };
   const tally = (entries) => {
-    const t = { dock: 0, fork: 0, residential: 0, school: 0, church: 0, government: 0 };
-    for (const d of entries) { if (d.dock) t.dock += 1; if (d.fork) t.fork += 1; if (d.place) t[d.place] += 1; }
+    const t = { dock: 0, fork: 0, forkRed: 0, residential: 0, school: 0, church: 0, government: 0 };
+    for (const d of entries) { if (d.dock) t.dock += 1; if (d.fork) t.fork += 1; if (d.forkRed) t.forkRed += 1; if (d.place) t[d.place] += 1; }
     return t;
   };
   const selected = new Set(stops.filter((_, k) => k % 11 === 0).map((s) => s.stopNbr));
   const routed = new Set(stops.filter((_, k) => k % 13 === 0).map((s) => s.stopNbr));
-  const expectFrom = (inv) => ({ dock: inv.shiplifyDock, fork: inv.shiplifyForklift, ...inv.placeMarks });
+  const expectFrom = (inv) => ({ dock: inv.shiplifyDock, fork: inv.shiplifyForklift, forkRed: inv.shiplifyForkliftBlocked, ...inv.placeMarks });
 
   // THE MAP: a selected stop is amber, a stop on the open route a numbered pin.
   const mapDrawn = tally(stops.map((s) => drew(markerSvg(icon(s, notes.get(s.matchKey) || null, {
@@ -279,7 +286,7 @@ test('LEGEND COUNTS EQUAL WHAT THE MAP DREW — Map and Routing semantics, every
   })))));
   const mapInv = legendInventoryOf({ stops, notes, dayKey: 'tue', tractorLocs: new Map(), routeStopNbrs: routed, selectedIds: selected, shiplify });
   assert.deepEqual(expectFrom(mapInv), mapDrawn);
-  assert.ok(mapDrawn.dock > 0 && mapDrawn.fork > 0 && mapDrawn.school > 0 && mapDrawn.government > 0, 'the board exercises every row');
+  assert.ok(mapDrawn.dock > 0 && mapDrawn.fork > 0 && mapDrawn.forkRed > 0 && mapDrawn.school > 0 && mapDrawn.government > 0, 'the board exercises every row');
 
   // ROUTING: planned stops without an open card are muted; a search hit is burnt orange.
   const isPlanned = (s) => !!s.isPlanned;
@@ -294,6 +301,25 @@ test('LEGEND COUNTS EQUAL WHAT THE MAP DREW — Map and Routing semantics, every
     selectedIds: selected, searchMatchIds: search, shiplify,
   });
   assert.deepEqual(expectFrom(routingInv), routingDrawn);
+});
+
+// ── the red ring: its no-trailer mark is under the ring, so no icon row may claim it ──
+test('the Legend counts the red ring once, and does NOT count the no-trailer icon it replaced', () => {
+  const noTrailer = { equipment_restrictions: ['no_tractor_trailer'] };
+  const stops = [
+    { stopNbr: '9200001', stopType: 'DO', lat: 34, lng: -84, addr1: '1 Fake St', zip: '30000', matchKey: 'red1', status: '' },   // Shiplify forklift → red ring
+    { stopNbr: '9200002', stopType: 'DO', lat: 34, lng: -84, addr1: '2 Fake St', zip: '30000', matchKey: 'plain1', status: '' },  // no Shiplify record → its no-trailer icon
+  ];
+  const recs = new Map([['red1', { dock_access: 'no', forklift: 'yes', location_types: [], tariff_items: [] }]]);
+  const shiplify = { markerOpts: (s) => ({ shiplifyRec: recs.get(s.matchKey) || null, shiplifyOn: true, tractorSeen: false, tractorKnown: true }) };
+  const inv = legendInventoryOf({ stops, notes: new Map([['red1', noTrailer], ['plain1', noTrailer]]), dayKey: 'tue', tractorLocs: new Map(), shiplify });
+  assert.equal(inv.shiplifyForkliftBlocked, 1);
+  assert.equal(inv.shiplifyForklift, 0, 'never counted as a lime forklift');
+  assert.equal(inv.iconCounts.no_tractor_trailer, 1, 'only the stop that actually draws the icon');
+  assert.equal(inv.hiddenByPin, 1, 'the ring took the other one over');
+  const html = renderToStaticMarkup(React.createElement(L.MapLegendBody, { inventory: inv, showAll: false, onShowAll: () => {}, tab: 'map', shiplifySwitch: false, limeAsOfSwitch: false }));
+  assert.match(html, /data-legend-row="shiplify-forklift-blocked"/);
+  assert.match(html, /Shiplify: forklift, marked no tractor trailer/);
 });
 
 // ── the Shiplify box reads LAST (Chad, 2026-09-24: "move this to the very bottom of an order profile") ──

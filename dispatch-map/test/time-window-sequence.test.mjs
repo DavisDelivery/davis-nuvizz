@@ -1,4 +1,4 @@
-// test/time-window-sequence.test.mjs — "Time windows" on the Compare card's Re-sequence menu (v1.88.0).
+// test/time-window-sequence.test.mjs — "Time windows" on the Compare card's Re-sequence menu (v1.89.0).
 //
 // Chad, 2026-09-28: "i need an optimization that uses the time restrictions and trys to make the
 // best route considering those". These run the REAL routePreflight — the check behind every late

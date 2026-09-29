@@ -1,6 +1,6 @@
 // src/lib/time-window-sequence.js
 //
-// ── RE-SEQUENCE A COMPARE CARD AROUND RECEIVING HOURS (v1.88.0) ──────────────
+// ── RE-SEQUENCE A COMPARE CARD AROUND RECEIVING HOURS (v1.89.0) ──────────────
 //
 // Chad, 2026-09-28, with the Re-sequence menu open on TRAILER 1: "i need an optimization that
 // uses the time restrictions and trys to make the best route considering those so this type of

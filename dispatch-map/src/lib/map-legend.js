@@ -146,6 +146,7 @@ export function emptyLegendInventory() {
     // cluster badge), so every stop that has one is a stop the Legend row can account for.
     shiplifyDock: 0,
     shiplifyForklift: 0,
+    shiplifyForkliftBlocked: 0,   // the red ring: a forklift on a stop marked no tractor trailer
     placeMarks: { residential: 0, school: 0, church: 0, government: 0 },
   };
 }
@@ -184,6 +185,7 @@ export function buildLegendInventory(entries) {
     if (e.placeMark && e.placeMark in inv.placeMarks) inv.placeMarks[e.placeMark] += 1;
     if (e.shiplifyPin === 'dock') inv.shiplifyDock += 1;
     else if (e.shiplifyPin === 'forklift') inv.shiplifyForklift += 1;
+    else if (e.shiplifyPin === 'forklift_blocked') inv.shiplifyForkliftBlocked += 1;
     if (e.hidden) { inv.hiddenByPin += 1; continue; }
     if (!icons.length) continue;
     inv.withIcons += 1;
