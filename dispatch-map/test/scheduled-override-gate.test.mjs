@@ -44,7 +44,7 @@ import engineShadow, { OVERRIDE_PARAMS as SHADOW_PARAMS } from '../netlify/funct
 
 const WRITERS = [
   ['nuvizz-refresh-stops-background', refreshStops, REFRESH_PARAMS, ['date', 'days']],
-  ['nuvizz-history-snapshot-background', historySnapshot, HISTORY_PARAMS, ['date', 'from', 'to']],
+  ['nuvizz-history-snapshot-background', historySnapshot, HISTORY_PARAMS, ['date', 'from', 'to', 'dryRun']],
   ['nuvizz-att-plan-snapshot-background', attPlan, ATT_PLAN_PARAMS, ['date']],
   ['nuvizz-att-scan-background', attScan, ATT_SCAN_PARAMS, ['date']],
   ['eta-flag-alert-background', flagAlert, ALERT_PARAMS, ['dry', 'date', 'now']],
@@ -154,6 +154,44 @@ for (const [name, handler, declared, expected] of WRITERS) {
     } finally { delete process.env.AUTH_REQUIRED; }
   });
 }
+
+// ── the history writer's dry run: every spelling the capture reads is an override ──────────────
+// isDryRun reads the flag without case, '_' or '-' (?dry, ?dryrun, ?dry_run, ?DryRun…), so a
+// fixed list of names could only ever gate some of them: ?dry=1 alone walked past a gate that
+// listed 'dryRun'. The handler now gates every name the capture reads, with the same matcher.
+test('nuvizz-history-snapshot-background: EVERY spelling of the dry-run flag the capture reads is behind the same admin gate — ?dry=1 cannot walk past it', async () => {
+  const { isDryRun } = await import('../netlify/functions/lib/history-core.mts');
+  const name = 'nuvizz-history-snapshot-background';
+  const spellings = ['dry=1', 'dry', 'dryrun=1', 'dry_run=1', 'DryRun=1', 'DRY=1', 'dry-run=1', 'Dry_Run=yes', 'dryRun=1'];
+  for (const q of spellings) assert.equal(isDryRun(post(name, `?${q}`)), true, `?${q} is read as a dry run`);
+  // Today (AUTH_REQUIRED unset) the gate is inert, like every other gate here.
+  delete process.env.AUTH_REQUIRED;
+  await withNoNetwork(async () => {
+    for (const q of spellings) {
+      _resetThrottleForTests();
+      const r = await historySnapshot(post(name, `?${q}`));
+      assert.notEqual(r.status, 401, `?${q} is not refused while the gates are inert`);
+    }
+  });
+  process.env.AUTH_REQUIRED = 'true';
+  try {
+    await withNoNetwork(async (calls) => {
+      // Every spelling, and an explicit "not dry" too: the gate covers each name the capture reads,
+      // whatever its value, as it always has for ?dryRun.
+      for (const q of [...spellings, 'dry=0', 'dryrun=off']) {
+        _resetThrottleForTests();
+        const r = await historySnapshot(post(name, `?${q}`));
+        assert.equal(r.status, 401, `?${q} must not be reachable without an admin session`);
+      }
+      // A name the capture does not read is neither a dry run nor an override: the cron path runs.
+      _resetThrottleForTests();
+      assert.equal(isDryRun(post(name, '?dryer=1')), false);
+      const cron = await historySnapshot(post(name, '?dryer=1'));
+      assert.notEqual(cron.status, 401, 'an unrelated param is not an override');
+      assert.equal(calls(), 0, 'nothing reached the network');
+    });
+  } finally { delete process.env.AUTH_REQUIRED; }
+});
 
 // ── the one param that must NOT be gated ─────────────────────────────────────
 

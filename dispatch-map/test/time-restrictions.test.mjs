@@ -277,9 +277,15 @@ test('appointment_required on the customer note counts even with silent order te
 // ── closed days and AM/PM ─────────────────────────────────────────────────────
 
 test('a customer closed Wednesday is flagged on a Wednesday board and not on a Friday one', () => {
-  const note = { closed_days: ['wed'] };
+  // Dispatcher-typed (lib/closed-days.js, 2026-09-28: a scanner day stored from an old order no longer counts).
+  const note = { closed_days: ['wed'], manual_overrides: { closed_days: true } };
   assert.equal(classify({}, note, WED).tier, 'closed_day');
   assert.equal(classify({}, note, FRI), null);
+  // THIS order saying it closes the day with nothing on the customer…
+  const said = classify({ orderInstructions: 'SPL-INSTR-TEXT: CLOSED ON WEDNESDAYS' }, null, WED);
+  assert.equal(said?.tier, 'closed_day');
+  // …and a Wednesday the scanner stored from an earlier order does not.
+  assert.equal(classify({}, { closed_days: ['wed'], auto_matches: { closed_days: [{ pattern: 'closed_wed' }] } }, WED), null);
 });
 
 test('an AM tag means be there before noon; a PM tag means do not come before it', () => {
@@ -471,7 +477,7 @@ test('an appointment paired with a CLOSED DAY survives, though its tier is still
   // the tier instead of the whole kinds list would silently drop a stop that is shut today.
   const rows = buildTimeRestrictionRows(
     [{ ...stop({ primaryPro: 'SHUT', ...instr('NTFY OF DELIVERY-APPT REQD') }), matchKey: 'k' }],
-    new Map([['k', { closed_days: ['wed'] }]]), WED, { dropAppointmentOnly: true });
+    new Map([['k', { closed_days: ['wed'], manual_overrides: { closed_days: true } }]]), WED, { dropAppointmentOnly: true });
   assert.equal(rows.length, 1, 'a customer shut today is a clock fact, whatever else it carries');
   assert.equal(rows[0].tierLabel, 'Closed today', 'and being shut outranks everything');
 });

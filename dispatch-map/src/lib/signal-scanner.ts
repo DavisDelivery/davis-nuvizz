@@ -679,7 +679,7 @@ const CLOSED_DAY_PATTERNS: { day: DayCode; patterns: RegExp[] }[] = [
 // scanHours use — otherwise "CLOSED FRIDAYS @ 12PM" was a Friday noon close AND a closed Friday.
 const EARLY_CLOSE_TAIL = /^\s*(?:AT|@)\s*(?:NOON|[0-9])/i;
 
-function scanClosedDays(rawText: string | null | undefined, source: SignalSource): ClosedDayScanResult[] {
+export function scanClosedDays(rawText: string | null | undefined, source: SignalSource): ClosedDayScanResult[] {
   if (!rawText) return [];
   // The SAME normalisation the hours scanner has always done, and this side needed it just as
   // badly: NuVizz cuts a comment at ~25 characters, so DOUGLASVILLE's closure window arrived as

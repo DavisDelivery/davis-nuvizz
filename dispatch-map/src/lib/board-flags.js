@@ -59,6 +59,7 @@ const PLACE_NOUN = { school: 'school', church: 'church', government: 'government
 // The 8am-5pm delivery day, and the reading of a meridiem-less range that matches it. Shared
 // with signal-scanner so a stored "1-5" and a freshly scanned "1-5" can never disagree.
 import { resolveDaytimeWindow } from './daytime-window.js';
+import { closedDaysFromOrderEnabled, orderClosedDays, typedClosedDay } from './closed-days.js';
 
 // ── time + hours parsing ──────────────────────────────────────────────────────
 
@@ -173,8 +174,20 @@ export const assumedWindow = () => ({ openMin: null, closeMin: ASSUMED_CLOSE_MIN
 // Per-day closed provenance. Red needs BOTH the field lock (a human has touched closed days)
 // AND the absence of a scanner fingerprint for THIS day — the lock alone is not per-day
 // evidence (it retroactively covers every day the scanner ever invented).
-export function closedDayTier(note, dayKey) {
-  if (!note || !dayKey) return null;
+export function closedDayTier(note, dayKey, row = null, env = undefined) {
+  if (!dayKey) return null;
+  // READ FROM THE ORDER, EVERY TIME (lib/closed-days.js). Chad, 2026-09-28, after SANTA FE
+  // TORTILLAS went undelivered on a Monday because a June order's "CLOSED ON MONDAYS" had been
+  // stored on the customer: "I want those to be read live every time an order comes in. and not
+  // stored." A closed day is what THIS order's own text says ('order'), or what a dispatcher typed
+  // ('typed'). A day the scanner stored from some earlier order counts for nothing.
+  // CLOSED_DAYS_FROM_ORDER=off / VITE_CLOSED_DAYS_FROM_ORDER=off → the stored-day rule below.
+  if (closedDaysFromOrderEnabled(env)) {
+    if (typedClosedDay(note, dayKey)) return 'typed';
+    if (row && orderClosedDays(row).some((d) => d.day === dayKey)) return 'order';
+    return null;
+  }
+  if (!note) return null;
   const days = Array.isArray(note.closed_days) ? note.closed_days : [];
   if (!days.includes(dayKey)) return null;
   const prints = note.auto_matches?.closed_days || [];
@@ -988,14 +1001,18 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // R4 — delivering to a customer recorded closed that weekday. Tier decides red vs amber.
   for (const s of scheduledJudged) {
     const note = noteOf(s);
-    const tier = closedDayTier(note, day);
+    const tier = closedDayTier(note, day, s);
     if (!tier) continue;
-    const prints = (note.auto_matches?.closed_days || []).filter((p) => String(p?.pattern ?? '') === `closed_${day}`);
-    rows.push(row(tier === 'typed' ? 'red' : 'amber', 'closed_today', s, {
+    const prints = (note?.auto_matches?.closed_days || []).filter((p) => String(p?.pattern ?? '') === `closed_${day}`);
+    // 'order' — THIS order's own text says it (red: the customer said so about this shipment).
+    const said = tier === 'order' ? (orderClosedDays(s).find((d) => d.day === day)?.text || null) : null;
+    rows.push(row(tier === 'auto' ? 'amber' : 'red', 'closed_today', s, {
       title: `Closed ${day?.toUpperCase()} — ${s.businessName || s.stopNbr}`,
       detail: tier === 'typed'
         ? 'This customer\'s notes say they are closed on this weekday (dispatcher-recorded). Move the date or call the customer.'
-        : `The text scanner recorded this closed day${prints[0]?.text ? ` from order text: "${prints[0].text}"` : ''} — judge the evidence, then confirm with the customer or dismiss.`,
+        : tier === 'order'
+          ? `This order's own instructions say the customer is closed on this weekday${said ? `: "${said}"` : ''}. Move the date or call the customer.`
+          : `The text scanner recorded this closed day${prints[0]?.text ? ` from order text: "${prints[0].text}"` : ''} — judge the evidence, then confirm with the customer or dismiss.`,
       scope: 'standing', servedDate, fingerprint: `closed|${s.matchKey || s.stopNbr}|${day}|${tier}`,
     }));
   }
