@@ -52,7 +52,7 @@ async function readNoteFor(stop: any): Promise<any | null> {
 async function resolveStops(
   tenant: string, date: string, selectedStopIds: string[],
   opts: { tractorOnlyGreen?: boolean; panelGreen?: Set<string>; rules: BuildRules },
-): Promise<{ stops: PipelineStopInput[]; boardById: Map<string, any> }> {
+): Promise<{ stops: PipelineStopInput[]; boardById: Map<string, any>; notPlaced: Array<{ stopId: string; reasons: string[] }> }> {
   const { stops } = await readStops(tenant, date);
   // TIME RESTRICTIONS (routing-time-windows.mts) — on unless ROUTING_TIME_RESTRICTIONS=off.
   // The vendor's default creation slot is detected over the WHOLE board, never the
@@ -63,9 +63,14 @@ async function resolveStops(
   const byId = new Map(stops.map((s: any) => [String(s.stopNbr), s]));
   const want = new Set(selectedStopIds.map(String));
   const out: PipelineStopInput[] = [];
+  // A selected stop the solver can never see is LISTED, not dropped: it used to vanish from the
+  // result entirely — not routed, not on the "Could not place" list — so a dispatcher who picked
+  // 40 stops and saw 37 routed had no way to know which 3 were missing, or why.
+  const notPlaced: Array<{ stopId: string; reasons: string[] }> = [];
   for (const id of want) {
     const s = byId.get(id);
-    if (!s || s.lat == null || s.lng == null) continue; // unmappable → skip (surfaced as missing)
+    if (!s) { notPlaced.push({ stopId: id, reasons: [`not on the ${date} board (moved, delivered or taken off since the list was made)`] }); continue; }
+    if (s.lat == null || s.lng == null) { notPlaced.push({ stopId: id, reasons: ['no map pin — the address has not been located, so it cannot be routed'] }); continue; }
     const note = await readNoteFor(s);
     out.push({
       stopNbr: s.stopNbr, lat: Number(s.lat), lng: Number(s.lng),
@@ -85,7 +90,7 @@ async function resolveStops(
       businessName: s.businessName || null,
     });
   }
-  return { stops: out, boardById: byId as Map<string, any> };
+  return { stops: out, boardById: byId as Map<string, any>, notPlaced };
 }
 
 async function resolveTrucks(profileIds: string[]): Promise<SolverTruck[]> {
@@ -147,8 +152,9 @@ export default async function handler(req: Request): Promise<Response> {
       ? new Set<string>(r.panelGreenStopIds.slice(0, 2000).map((x: any) => String(x))) : undefined;
     let boardById = new Map<string, any>();
     let stops: PipelineStopInput[];
+    let notPlaced: Array<{ stopId: string; reasons: string[] }> = [];
     if (Array.isArray(r.stops) && r.stops.length) stops = r.stops;
-    else ({ stops, boardById } = await resolveStops(tenant, date, r.selectedStopIds || [], { tractorOnlyGreen, panelGreen, rules }));
+    else ({ stops, boardById, notPlaced } = await resolveStops(tenant, date, r.selectedStopIds || [], { tractorOnlyGreen, panelGreen, rules }));
     let trucks = Array.isArray(r.trucks) && r.trucks.length ? r.trucks : await resolveTrucks(r.truckProfileIds || []);
     // A picked load that already carries stops is offered only the room it has LEFT.
     let existing: Record<string, any> = {};
@@ -156,7 +162,7 @@ export default async function handler(req: Request): Promise<Response> {
       ({ trucks, existing } = trucksWithRoomLeft(trucks, r.existingByTruck, boardById, rules, (r.selectedStopIds || []).map(String)));
     }
 
-    if (!stops.length) { await updateJob(jobId, { status: 'error', error: 'no mappable stops selected', finished_at: new Date().toISOString() }); return json({ ok: true, jobId, accepted: true }); }
+    if (!stops.length) { await updateJob(jobId, { status: 'error', error: notPlaced.length ? `no mappable stops selected (${notPlaced.length} not on the board or without a map pin)` : 'no mappable stops selected', finished_at: new Date().toISOString() }); return json({ ok: true, jobId, accepted: true }); }
     if (!trucks.length) { await updateJob(jobId, { status: 'error', error: 'no truck profiles selected', finished_at: new Date().toISOString() }); return json({ ok: true, jobId, accepted: true }); }
 
     await updateJob(jobId, { stage: 'build' });
@@ -213,7 +219,7 @@ export default async function handler(req: Request): Promise<Response> {
       // as the same "off".
       result: {
         // A load that already carried freight reports its true load against its whole profile.
-        ...withExistingFreight(plan, existing, trucks), aiConfigured: aiOn, aiRequested: r.aiAssist === true,
+        ...withExistingFreight({ ...plan, unassigned: [...(plan.unassigned || []), ...notPlaced] }, existing, trucks), aiConfigured: aiOn, aiRequested: r.aiAssist === true,
         // Which of the Build's rules ran, read back from the build itself — never from the switch
         // settings in someone's memory — and what each load already carried.
         buildRules: { ...rules, panelGreenStops: panelGreen ? panelGreen.size : null, existing },

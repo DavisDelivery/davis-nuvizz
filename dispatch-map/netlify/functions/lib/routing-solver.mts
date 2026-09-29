@@ -526,12 +526,13 @@ export function solveRouting(input: SolverInput): SolverOutput {
   // (lib/routing-assign-ends.mts, ROUTING_BUILD_LEAVE_OFF_ENDS). Absent → the assignment above.
   // runOrder is this solver's own sequencing, so "the end of the run" is the end of the run the
   // truck would actually drive.
-  const { byTruck, unassigned } = input.leaveOffEnds
+  const ends = input.leaveOffEnds
     ? assignLeavingOffEnds(stops, trucks, input.depot, (list) => {
       const byIdx = new Map(list.map((x) => [indexById.get(x.id)!, x] as const));
       return sequence([...byIdx.keys()], strategy, matrix).map((n) => byIdx.get(n)!);
     })
-    : assign(stops, trucks, input.depot);
+    : null;
+  const { byTruck, unassigned } = ends ?? assign(stops, trucks, input.depot);
 
   const routes: BuiltRoute[] = [];
   // A TRUCK THAT GOT NOTHING IS AN ANSWER, NOT AN ABSENCE. It used to be dropped here and the
@@ -547,12 +548,17 @@ export function solveRouting(input: SolverInput): SolverOutput {
       // Say WHY, from the freight itself rather than a guess: if no selected stop could ever
       // ride this truck, that is an equipment story and the dispatcher can act on it.
       const anyCapable = stops.some((s) => truckCanCarry(s, truck).ok);
+      // A load the Build was told is ALREADY FULL is offered a sliver of room, so nothing "fits"
+      // and the equipment line below would blame the freight ("no selected stop is allowed on
+      // this truck") for what is the load's own state.
       idleTrucks.push({
         truckId: truck.id,
         label: truck.label || truck.id,
-        reason: anyCapable
-          ? 'the other trucks covered every stop before this one was needed'
-          : 'no selected stop is allowed on this truck',
+        reason: truck.alreadyFull
+          ? 'this load already carries all its truck can hold, so nothing was added to it'
+          : anyCapable
+            ? 'the other trucks covered every stop before this one was needed'
+            : 'no selected stop is allowed on this truck',
       });
       continue;
     }
@@ -565,6 +571,12 @@ export function solveRouting(input: SolverInput): SolverOutput {
     routes,
     unassigned,
     idleTrucks,
-    meta: { engine: 'deterministic', strategy, truckCount: trucks.length, stopCount: stops.length },
+    // `assignment` says which rule chose who rides what, and `endsLeftOff` / `endsMovedToRoom` are
+    // what the ends rule did — readable off a finished job without re-running it.
+    meta: {
+      engine: 'deterministic', strategy, truckCount: trucks.length, stopCount: stops.length,
+      assignment: ends ? 'ends' : 'legacy',
+      ...(ends ? { endsLeftOff: ends.leftOffAtEnds.length, endsMovedToRoom: ends.movedToRoom.length } : {}),
+    },
   };
 }

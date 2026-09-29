@@ -28,6 +28,7 @@ import { buildFreightFields, buildRules } from '../netlify/functions/lib/routing
 import { assignLeavingOffEnds } from '../netlify/functions/lib/routing-assign-ends.mts';
 import { solveRouting } from '../netlify/functions/lib/routing-solver.mts';
 import { repair } from '../netlify/functions/lib/routing-repair.mts';
+import { trucksWithRoomLeft } from '../netlify/functions/lib/routing-build-rules.mts';
 import { normalizeMatchKey } from '../src/lib/matchKey.js';
 
 const D = '2026-09-30';
@@ -67,11 +68,12 @@ const skidsOf = (plan, rows, truckId) => {
 };
 const idsOf = (plan, truckId) => plan.routes.find((r) => r.truckId === truckId)?.orderedStopIds || [];
 
-async function plan(rows, trucks, { greenOnly = false, green = new Set(), leaveOffEnds = true, strategy = 'FARTHEST_FIRST' } = {}) {
+async function plan(rows, trucks, { greenOnly = false, green = new Set(), leaveOffEnds = true, strategy = 'FARTHEST_FIRST', windowMode = 'advisory' } = {}) {
   const stops = rows.map((s) => ({ stopNbr: s.stopNbr, lat: s.lat, lng: s.lng, ...buildFreightFields(s, { countSkids: true }),
-    equipmentReqs: equipmentReqsFrom(null, { tractorOnlyGreen: greenOnly, panelGreen: green.has(s.stopNbr) }) }));
+    equipmentReqs: equipmentReqsFrom(null, { tractorOnlyGreen: greenOnly, panelGreen: green.has(s.stopNbr) }),
+    ...(s.timeRestriction ? { timeRestriction: s.timeRestriction } : {}) }));
   const reqs = new Map(stops.map((s) => [s.stopNbr, s.equipmentReqs]));
-  const p = await runPipeline({ stops, trucks, depot: dock, strategy, date: D, matrixMode: 'haversine', windowMode: 'advisory', leaveOffEnds },
+  const p = await runPipeline({ stops, trucks, depot: dock, strategy, date: D, matrixMode: 'haversine', windowMode, leaveOffEnds },
     { buildMatrix: async (d, pts) => resolveMatrix(d, pts, 'haversine') });
   p.canCarry = (id, t) => !(reqs.get(id).includes('box_truck_only') && t.capabilities.tractor);
   return p;
@@ -225,7 +227,7 @@ test('A STOP THE TRACTOR CAN TAKE MOVES TO THE TRACTOR before box-only freight i
   assert.deepEqual(r.unassigned, []);
 });
 
-test('WHEN "BOX-ONLY FIRST" AND "NO HOLES" COLLIDE, NO HOLES WINS: the box keeps the green stop it drives past and the far box-only stop comes off the end', () => {
+test('A BOX-ONLY STOP AT THE END OF A RUN COMES OFF BEFORE A GREEN STOP THE BOX DRIVES PAST: the far box-only stop is what goes', () => {
   const S = (id, lat, skids, reqs) => ({ id, lat, lng: -83.96, skids, weightLbs: 300, linearFeetIn: 0, serviceMin: 15, equipmentReqs: reqs });
   // up the road from the dock: a box-only stop farthest out, two green ones just short of it, three box-only nearer in;
   // a 4-skid box and a 1-skid tractor — one stop has to come off, and the tractor is full.
@@ -327,4 +329,183 @@ test('THE WIRING: the Build passes the switch to the solver, the solver picks th
   const m = pts.map((a) => pts.map((b) => hav(a, b)));
   const input = { stops, trucks: [box('T1')], depot: dock, matrix: { distanceMeters: m, durationSec: m }, strategy: 'MIN_DISTANCE', objectiveWeights: { distance: 1, time: 1, balance: 0 } };
   assert.deepEqual(solveRouting(input).routes[0].orderedStopIds.sort(), ['A', 'B']);
+});
+
+
+// ═══ FOLLOW-UP (2026-09-29 verification): what ten independent verifiers found wrong with the above ═══
+//
+// 1. Left-off stops carried an EMPTY reason (1,690 of them on the verifier's 1,400 runs) — the
+//    Result tab printed a blank red line under the stop's name.
+// 2. With strict appointment windows the ends rule left trucks light: repair dropped a stop for its
+//    window, and the room that freed was never offered to the stops the solver had left off.
+// 3. A load that was already FULL was told "no selected stop is allowed on this truck".
+// 4. A stop the browser could not read on a picked load counted 0 skids, so a full load was offered
+//    all its room.
+// 5. A selected stop that was not on the board, or had no map pin, vanished — not routed, not listed.
+
+const reasonsTruthful = (p, rows, trucks, label) => {
+  const by = new Map(rows.map((r) => [r.stopNbr, r]));
+  const used = new Map(p.routes.map((r) => [r.truckId, skidsOf(p, rows, r.truckId)]));
+  for (const u of p.unassigned) {
+    assert.ok(Array.isArray(u.reasons) && u.reasons.length > 0 && u.reasons.every((x) => typeof x === 'string' && x.trim()), `${label}: ${u.stopId} has a reason`);
+    const s = by.get(u.stopId);
+    const roomy = trucks.some((t) => p.canCarry(u.stopId, t) && (used.get(t.id) || 0) + s.cartons <= t.maxSkids);
+    const cap = u.reasons.some((x) => /over (skid|weight) capacity/.test(x));
+    const far = u.reasons.some((x) => /^left off: the nearest truck with room \(.+\) would drive \d+ mi out of its way for it$/.test(x));
+    if (roomy) assert.ok(far && !cap, `${label}: ${u.stopId} fits a truck's spare room, so it is "left off … mi", not a capacity reason: ${u.reasons}`);
+    else if (!u.reasons.includes('no selected truck can carry this stop')) assert.ok(cap && !far, `${label}: ${u.stopId} fits no truck, so it says capacity: ${u.reasons}`);
+  }
+};
+
+test('EVERY STOP ON THE DIDN\'T-FIT LIST SAYS WHY, and the why is true: capacity when every truck that may carry it is full, "left off … mi" when one has room (60 random overloaded boards, both strategies)', async () => {
+  let seed = 90210; const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  let listed = 0, far = 0;
+  for (let b = 0; b < 60; b++) {
+    const trucks = Array.from({ length: 1 + Math.floor(rnd() * 3) }, (_, i) => (rnd() < 0.3 ? tractor(`T${i}`) : box(`B${i}`)));
+    const cap = trucks.reduce((a, t) => a + t.maxSkids, 0);
+    const centres = Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => [34.15 + (rnd() - 0.3) * 0.9, -83.96 + (rnd() - 0.6) * 1.2]);
+    const rows = []; let sk = 0;
+    while (sk < cap * (1.1 + rnd() * 0.9)) {
+      const [la, ln] = centres[Math.floor(rnd() * centres.length)];
+      const c = rnd() < 0.7 ? 1 : (rnd() < 0.7 ? 2 : 3);
+      rows.push({ stopNbr: `R${rows.length}`, lat: la + (rnd() - 0.5) * 0.12, lng: ln + (rnd() - 0.5) * 0.12, cartons: c, pallets: c, weight: 300, weightUOM: 'LB', stopDetails: [] });
+      sk += c;
+    }
+    const green = new Set(rows.filter(() => rnd() < 0.4).map((r) => r.stopNbr));
+    for (const strategy of ['FARTHEST_FIRST', 'MIN_DISTANCE']) {
+      const p = await plan(rows, trucks, { greenOnly: b % 2 === 0, green, strategy });
+      reasonsTruthful(p, rows, trucks, `board ${b} ${strategy}`);
+      listed += p.unassigned.length;
+      far += p.unassigned.filter((u) => u.reasons.some((x) => x.startsWith('left off'))).length;
+    }
+  }
+  assert.ok(listed > 100 && far > 0, `the boards exercise both kinds of reason (${listed} listed, ${far} "left off")`);
+});
+
+test('A STOP THAT ONLY FITS A TRUCK 15+ MILES AWAY STAYS OFF AND SAYS HOW FAR; a stop that fits nowhere says capacity', () => {
+  const S = (id, lat, lng, skids) => ({ id, lat, lng, skids, weightLbs: 300, linearFeetIn: 0, serviceMin: 15, equipmentReqs: [] });
+  // west town: 15 one-skid stops for a 14-skid box; east town: 12 one-skid stops and a 3-skid stop farther out, for the other
+  // 14-skid box — so one west stop comes off (it would fit the east box's 2 spare skids, 25 km away) and so does the 3-skid one (it fits nowhere).
+  const west = Array.from({ length: 15 }, (_, i) => S(`W${String(i).padStart(2, '0')}`, 34.30 + ((i * 37) % 11 - 5) * 0.004, -84.40 + ((i * 53) % 11 - 5) * 0.004, 1));
+  const east = Array.from({ length: 12 }, (_, i) => S(`E${String(i).padStart(2, '0')}`, 34.30 + ((i * 37) % 11 - 5) * 0.004, -84.10 + ((i * 53) % 11 - 5) * 0.004, 1));
+  const r = assignLeavingOffEnds([...west, ...east, S('EFAR', 34.42, -84.10, 3)], [box('BOXW', 14), box('BOXE', 14)], dock);
+  assert.equal(r.unassigned.length, 2);
+  const w = r.unassigned.find((u) => u.stopId.startsWith('W')), far = r.unassigned.find((u) => u.stopId === 'EFAR');
+  assert.match(w.reasons.join(';'), /^left off: the nearest truck with room \(BOXE\) would drive \d+ mi out of its way for it$/);
+  assert.ok(Number(/would drive (\d+) mi/.exec(w.reasons[0])[1]) >= 10, 'and the miles are real: ' + w.reasons[0]);
+  assert.deepEqual(far.reasons, ['over skid capacity'], 'a 3-skid stop fits neither box, so it is a capacity reason');
+});
+
+test('A TRUCK WITH ROOM THAT IS BARRED FROM THE STOP IS NAMED — "over skid capacity" alone reads as if the whole fleet were full', () => {
+  const S = (id, lat, reqs) => ({ id, lat, lng: -84.1, skids: 1, weightLbs: 300, linearFeetIn: 0, serviceMin: 15, equipmentReqs: reqs });
+  const stops = [S('B0', 34.30, ['box_truck_only']), S('B1', 34.31, ['box_truck_only']), S('B2', 34.32, ['box_truck_only'])];
+  const r = assignLeavingOffEnds(stops, [box('BOX', 2), tractor('TRL')], dock);
+  assert.equal(r.unassigned.length, 1);
+  assert.deepEqual(r.unassigned[0].reasons, ['over skid capacity', 'TRL has room but needs straight/box truck (no tractor-trailer)']);
+});
+
+// ── strict appointment windows ────────────────────────────────────────────────────────────────
+test('STRICT WINDOWS: the room a closed customer frees on a box is refilled with a stop on its way — the truck does not run light while stops that fit are listed "over skid capacity"', async () => {
+  // 18 one-skid stops in one town for a 14-skid box; two customers in the middle of it are closed on the day.
+  const rows = Array.from({ length: 18 }, (_, i) => ({
+    stopNbr: `W${String(i).padStart(2, '0')}`, lat: 34.30 + ((i * 37) % 11 - 5) * 0.004, lng: -84.40 + ((i * 53) % 11 - 5) * 0.004,
+    cartons: 1, pallets: 1, weight: 300, weightUOM: 'LB', stopDetails: [],
+    ...(i === 5 || i === 9 ? { timeRestriction: { closedToday: true, label: 'closed' } } : {}),
+  }));
+  for (const strategy of ['FARTHEST_FIRST', 'MIN_DISTANCE']) {
+    const p = await plan(rows, [box('BOX', 14)], { strategy, windowMode: 'strict' });
+    const closed = p.unassigned.filter((u) => u.reasons.includes('customer is closed on the delivery day')).map((u) => u.stopId).sort();
+    assert.deepEqual(closed, ['W05', 'W09'], `${strategy}: the two closed customers are off, for that reason`);
+    assert.equal(skidsOf(p, rows, 'BOX'), 14, `${strategy}: the box is still full — the room the closed stops freed went to stops on its way`);
+    for (const u of p.unassigned) assert.ok(!u.reasons.includes('over skid capacity') || skidsOf(p, rows, 'BOX') >= 14, `${strategy}: ${u.stopId} is not called over capacity on a truck with room`);
+  }
+});
+
+test('STRICT WINDOWS, THE OTHER HALF: a stop the solver left off a full truck is NOT pushed onto a truck across town just because repair found a skid spare', () => {
+  const st = (id, lat) => ({ id, lat, lng: -84.1, skids: 1, weightLbs: 100, linearFeetIn: 0, oversize: false, serviceMin: 0, timeWindow: null, timeConstraint: 'SOFT', equipmentReqs: [] });
+  const stops = [st('A', 34.3), st('B', 34.301), st('C', 34.9), st('D', 34.302)];
+  const pts = [dock, ...stops];
+  const m = pts.map((a) => pts.map((b) => hav(a, b)));
+  const base = { stops, trucks: [box('T1', 2), box('T2', 2)], depot: dock, matrix: { distanceMeters: m, durationSec: m }, strategy: 'MIN_DISTANCE', objectiveWeights: { distance: 1, time: 1, balance: 0 }, departEpochSec: 0, leaveOffEnds: true, windowMode: 'strict' };
+  // T2's only stop, C, is closed: Phase A frees T2. D (next to T1's town, ~66 km from T2's) was left off by the solver.
+  const closedC = stops.map((s) => (s.id === 'C' ? { ...s, closedToday: true } : s));
+  const out = repair({ ...base, stops: closedC }, { routes: [{ truckId: 'T1', orderedStopIds: ['A', 'B'] }, { truckId: 'T2', orderedStopIds: ['C'] }], unassigned: [{ stopId: 'D', reasons: ['over skid capacity'] }], meta: {} });
+  const d = out.unassigned.find((u) => u.stopId === 'D');
+  assert.ok(d, 'D stays off: T2 is 66 km from it');
+  assert.match(d.reasons.join(';'), /^left off: the nearest truck with room \(T[12]\) would drive \d+ mi out of its way for it$/, 'and it now says why, instead of "over skid capacity" on a truck that has room');
+});
+
+// ── a load that is already full, and a stop nobody can read ───────────────────────────────────
+test('A LOAD THAT IS ALREADY FULL IS REPORTED FULL — not "no selected stop is allowed on this truck"', async () => {
+  const board = new Map([['E1', { stopNbr: 'E1', cartons: 14, pallets: 14, weight: 3000, weightUOM: 'LB', stopDetails: [] }]]);
+  const { trucks, existing } = trucksWithRoomLeft([box('FULL', 14), box('OPEN', 14)], { FULL: { stopNbrs: ['E1'] } }, board, { countSkids: true });
+  assert.equal(existing.FULL.full, true);
+  assert.equal(trucks[0].alreadyFull, true);
+  assert.equal(trucks[1].alreadyFull, undefined);
+  const rows = Array.from({ length: 4 }, (_, i) => ({ stopNbr: `N${i}`, lat: 34.3 + i * 0.01, lng: -84.1, cartons: 1, pallets: 1, weight: 200, weightUOM: 'LB', stopDetails: [] }));
+  const p = await plan(rows, [trucks[0]]);
+  assert.equal(p.idleTrucks.length, 1);
+  assert.match(p.idleTrucks[0].reason, /already carries all its truck can hold/);
+  assert.doesNotMatch(p.idleTrucks[0].reason, /no selected stop is allowed/);
+});
+
+test('A STOP ON A PICKED LOAD THAT THE BROWSER COULD NOT READ TAKES ONE POSITION, not zero — whether it is absent or sent as a bare id', () => {
+  const t = [box('T', 14)];
+  for (const sent of [[{ stopNbr: 'GONE' }], [{ stopNbr: 'GONE', cartons: null, pallets: '', stopDetails: [] }], []]) {
+    const { trucks, existing } = trucksWithRoomLeft(t, { T: { stopNbrs: ['GONE'], stops: sent } }, new Map(), { countSkids: true });
+    assert.equal(existing.T.skids, 1, JSON.stringify(sent));
+    assert.equal(existing.T.unread, 1);
+    assert.equal(trucks[0].maxSkids, 13, 'so the load is offered 13, not 14');
+  }
+  const read = trucksWithRoomLeft(t, { T: { stopNbrs: ['OK'], stops: [{ stopNbr: 'OK', cartons: 3 }] } }, new Map(), { countSkids: true });
+  assert.equal(read.existing.T.skids, 3, 'a stop the browser CAN read is counted from its own freight');
+  assert.equal(read.existing.T.unread, 0);
+});
+
+// ── a selected stop the Build cannot see is listed ────────────────────────────────────────────
+test('A SELECTED STOP THAT IS NOT ON THE BOARD, OR HAS NO MAP PIN, IS LISTED WITH WHY — it does not vanish from the result', async () => {
+  const rows = [0, 1, 2, 3].map((i) => boardRow(i));
+  const noPin = { ...boardRow(4), lat: null, lng: null };
+  const request = {
+    tenant: 'davis', date: D, selectedStopIds: [...rows.map((r) => r.stopNbr), noPin.stopNbr, 'GHOST001'], trucks: [box('B1')], plannedLoads: [{ key: 'B1' }],
+    strategy: 'FARTHEST_FIRST', matrixMode: 'haversine', windowMode: 'advisory',
+  };
+  const seed = { [`nuvizz_stop_index/davis__${D}`]: { tenant: 'davis', date: D }, 'routing_jobs/job_ghost': { id: 'job_ghost', status: 'queued', request } };
+  for (const r of [...rows, noPin]) seed[`nuvizz_stop_index/davis__${D}/stops/${r.stopNbr}`] = r;
+  const fake = installFirestoreFake(seed);
+  try {
+    const res = await routingBuild(new Request('https://x.test/.netlify/functions/routing-build-background', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jobId: 'job_ghost' }) }));
+    assert.equal(res.status, 202);
+    const job = fake.store.get('routing_jobs/job_ghost');
+    assert.equal(job.status, 'done', job.error);
+    const r = job.result;
+    const placed = r.routes.flatMap((x) => x.orderedStopIds);
+    assert.equal(placed.length, 4, 'the four it can see are routed');
+    const by = new Map(r.unassigned.map((u) => [u.stopId, u.reasons.join(';')]));
+    assert.match(by.get('GHOST001'), /not on the 2026-09-30 board/);
+    assert.match(by.get(noPin.stopNbr), /no map pin/);
+    assert.equal(placed.length + r.unassigned.length, 6, 'every selected stop is either on a route or on the list');
+  } finally { fake.restore(); }
+});
+
+test('A BUILD WITH NOTHING IT CAN SEE SAYS HOW MANY WERE LEFT OUT', async () => {
+  const request = { tenant: 'davis', date: D, selectedStopIds: ['GHOST001', 'GHOST002'], trucks: [box('B1')], plannedLoads: [{ key: 'B1' }], strategy: 'FARTHEST_FIRST', matrixMode: 'haversine', windowMode: 'advisory' };
+  const fake = installFirestoreFake({ [`nuvizz_stop_index/davis__${D}`]: { tenant: 'davis', date: D }, 'routing_jobs/job_none': { id: 'job_none', status: 'queued', request } });
+  try {
+    await routingBuild(new Request('https://x.test/.netlify/functions/routing-build-background', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jobId: 'job_none' }) }));
+    const job = fake.store.get('routing_jobs/job_none');
+    assert.equal(job.status, 'error');
+    assert.match(job.error, /^no mappable stops selected \(2 not on the board or without a map pin\)$/);
+  } finally { fake.restore(); }
+});
+
+test('THE JOB SAYS WHICH ASSIGNMENT RAN, and what the ends rule did', async () => {
+  const rows = corridor.slice(0, 20);
+  const on = await plan(rows, [box('B1', 12)], { leaveOffEnds: true });
+  assert.equal(on.meta.assignment, 'ends');
+  assert.equal(on.meta.endsLeftOff, on.unassigned.length);
+  assert.equal(typeof on.meta.endsMovedToRoom, 'number');
+  const off = await plan(rows, [box('B1', 12)], { leaveOffEnds: false });
+  assert.equal(off.meta.assignment, 'legacy');
+  assert.equal('endsLeftOff' in off.meta, false);
 });
