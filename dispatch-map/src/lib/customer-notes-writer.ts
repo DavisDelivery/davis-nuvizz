@@ -30,6 +30,8 @@ import type {
 } from './signal-scanner';
 // Dependency-free and safe to import cold (see the no-npm-install note below).
 import { reportDenied, isPermissionDenied } from './permission-denied.js';
+// Dependency-free too: reads its switch from import.meta.env / process.env, imports only the scanner.
+import { closedDaysFromOrderEnabled } from './closed-days.js';
 
 // CI runs the unit suite with NO npm install — test files may import only local modules
 // and node: builtins, and decideWrite is unit-tested directly. So this module must be
@@ -207,11 +209,17 @@ export function decideWrite(
       return !e || typeof e === 'string' || e.open !== w.open || e.close !== w.close;
     });
 
+  // CLOSED DAYS ARE NO LONGER STORED FROM ORDER TEXT (lib/closed-days.js). Chad, 2026-09-28: "I
+  // want those to be read live every time an order comes in. and not stored" — a June order's
+  // "CLOSED ON MONDAYS" sat on SANTA FE TORTILLAS and kept a September Monday delivery off the
+  // trucks. Every reader now asks the order itself, so writing the day onto the customer would only
+  // grow a list nothing honours. CLOSED_DAYS_FROM_ORDER / VITE_CLOSED_DAYS_FROM_ORDER=off → stored again.
+  const storeClosedDays = !closedDaysFromOrderEnabled();
   // Closed days: same change rule — the union must actually ADD a day.
   const overrideClosed = existing?.manual_overrides?.closed_days === true;
   const existingClosed = new Set<string>((existing?.closed_days || []) as string[]);
   const daysWouldChange =
-    !overrideClosed &&
+    storeClosedDays && !overrideClosed &&
     !!stop.closedDaysResult && stop.closedDaysResult.some((r) => !existingClosed.has(r.day));
 
   // If everything detected this scan was dismissed AND no migration is needed AND neither
@@ -311,7 +319,7 @@ export function decideWrite(
 
   // Closed days: union with anything previously detected (don't drop days
   // the scanner found yesterday but missed today — text may have rotated).
-  if (stop.closedDaysResult && stop.closedDaysResult.length) {
+  if (storeClosedDays && stop.closedDaysResult && stop.closedDaysResult.length) {
     if (daysWouldChange) {
       const next = new Set<DayCode>((existing?.closed_days || []) as DayCode[]);
       for (const r of stop.closedDaysResult) next.add(r.day);

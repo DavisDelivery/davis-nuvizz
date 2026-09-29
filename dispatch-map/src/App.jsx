@@ -148,13 +148,17 @@ import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
 import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
 import { dropSide, dropSideClass, dropRight } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel, routingRosterRereadEnabled, rosterRereadApplies } from './lib/roster-freshness.js';
+// Time windows on the Compare card's Re-sequence menu (v1.89.0) — scored by the card's own preflight.
+import { timeWindowSequence, timeWindowSummary, compareTimeWindowsEnabled } from './lib/time-window-sequence.js';
+import { detectDefaultSlots } from './lib/time-restrictions.js';
 import { PARSE_SCHEDULE_LABEL, parsePollOverdue } from './lib/manifest-schedule.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // w-40. Named once so the measurement and the Tailwind class can never disagree about how
 // wide the panel being placed actually is.
 const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
-import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled } from './lib/route-preflight.js';
+import { editorClosedDay, toggleClosedPatch, dropClosedPrints, unusedStoredClosedDays, closedDaysFromOrderEnabled } from './lib/closed-days.js';
+import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, travelForServedDate } from './lib/route-preflight.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
@@ -248,6 +252,9 @@ function loadDisplayName(...vals) {
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
   ['1.90.0', 'A RESIDENTIAL PAINT BRUSH, BESIDE THE TRACTOR AND BOX BRUSHES. Chad, with the Routing gear open on “Mark vehicle eligibility”: “the way i can paint tractor freindly or not i want to be able to paint residentials.” The gear gains “Mark building type: Off / Residential”. Armed, a click on a stop marks the location residential and the house mark appears on its pin; a second click puts it back to Auto, where Shiplify decides again. It writes exactly what the stop panel’s Building type picker writes (the type, who and when, merged onto the location’s notes), so a house painted on the map and a house picked in the panel are the same fact, and it sticks for every future stop there. It does NOT touch the vehicle mark, the same as the picker: the Tractor and Box brushes paint that. One brush at a time across both groups (arming one disarms the other, and Ninja, Box and Lasso); “Off” in one group never disarms the other’s brush; the on-map reminder names the brush and has a Stop button. The phone gear and both desktop gears carry it. THE WAY BACK: VITE_MAP_RESIDENTIAL_BRUSH=off (a redeploy) takes the group out of the gear; marks already painted stay, because they are the panel’s own field. 5 new tests.'],
+  ['1.89.0', 'TIME WINDOWS: A RE-SEQUENCE THAT ROUTES AROUND THE RECEIVING HOURS. Chad, with the Re-sequence menu open on TRAILER 1: “i need an optimization that uses the time restrictions and trys to make the best route considering those so this type of optimization may need a quick claude sonnett 5.5 call.” Every choice in that menu measured distance and nothing else, so a far stop that closes at 9:30 went wherever the miles put it. THE NEW CHOICE, “Time windows — fewest late”, orders the card so the fewest stops reach a dock after it closes, then so none reaches a dock before a dispatcher-typed opening, then so the fewest minutes are late in all, then so the day finishes earliest. NO MODEL CALL, ON PURPOSE: the question is drive-time arithmetic and the card already holds the exact arithmetic, the check behind every late and can’t-make badge on it. Every candidate order is scored with the card’s own route, departure, drive calibration and day, on each stop’s whole clock: the same merged rule the route builder reads (the order’s own booked window or appointment, the customer’s receiving hours, and a closed day, tightest wins), plus every stop the card’s own late badges flag, so nothing the badges show is ignored. The vendor’s default creation slot is not treated as an appointment. It costs nothing, answers in well under a second (0.12 ms a scoring on an 18-stop card, measured) and gives the same order twice; a model would need the same drive times handed to it and could get the sums wrong. It starts from the card as it stands, from the shortest-distance order and from closes-first, improves each a stop at a time, and never returns a worse order than the card: when nothing beats it the card keeps its order and the line says so. The line after it says what changed, before and after (“1 late (50m in all) → 0 late”), never an intent. SAID PLAINLY: an AUTO opening is not chased, because auto hours can invent one (“DELIVER BY 2PM” reads as 6:00a–2:00p); and the card’s clock does not wait at a dock that has not opened, so an early arrival is avoided rather than modelled as a wait. A stop with no map location rides at the end, in its order; a stop whose customer is shut that day cannot be served by any order and is left out of the ranking. The line after it also says what it cost: “last stop 10:20a → 10:44a” when the order that makes the windows ends the day later. THE WAY BACK: VITE_COMPARE_TIME_WINDOWS=off (a redeploy) takes the choice out of the menu; nothing else about the menu or the card changes. 17 new tests. ALSO IN THIS RELEASE, two fixes to my own v1.88.1: the closed-days switch was copying the whole environment on every call, which made the Compare card’s own late check 33 times slower (0.12 ms to 3.96 ms a scoring, profiled), fixed and pinned by a test; and a stray node_modules link from that build had been swept into the repository, which replaced a developer’s installed packages when main was merged in, removed, with a CI guard so no symlink or node_modules path can be committed again.'],
+  ['1.88.2', 'THE 2 AM HISTORY CAPTURE’S RETRY HAS A CEILING AND COVERS EVERY WRITE, AND A HAND RE-CAPTURE THAT WOULD FILE NEXT-DAY DELIVERIES UNDER THE DAY BEFORE IS REFUSED. Retrying a Firestore push-back now stops ten minutes into the run, so the failure record still lands instead of the job being cut off with nothing written. The driver-day records, the seal and the capture and failure records now get the same retry as the stops (they had none), and the day’s manifest records how many retries the night needed. A re-capture that names its day (?date=) refuses and writes nothing when stops changed after that day’s last scan or are already saved; history-capture-health?recapture=DATE shows first what a re-run would do (Firestore reads only, 0 NuVizz calls). PUT IT BACK: HISTORY_WRITE_RETRY=off (the whole retry, v1.81.2’s stall retry included) and HISTORY_RECAPTURE_GUARD=off (the refusal), then redeploy.'],
+  ['1.88.1', 'CLOSED ON MONDAYS IS READ FROM THE ORDER IN FRONT OF US, EVERY TIME, NEVER STORED FROM AN OLD ONE. Chad: “the closed on Fridays and closed on Mondays. I want those to be read live every time an order comes in. and not stored because we had a situation where a delivery today was marked closed on Mondays, but the new orders do not signify that. And therefore we did not deliver it.” (PRO 007182580.) SANTA FE TORTILLAS: a June 19 order said “CLOSED ON MONDAYS”; the scanner stored Monday as closed on the customer and only ever added days, so Monday 9/28’s order, which says nothing about Mondays, was treated as a closed dock and left off the trucks. NOW a closed day counts only when THIS order’s own text says it (its instructions and address line, read off the list every scan) or a dispatcher typed it on the customer; a day the scanner stored from an older order counts for nothing, and the scanner no longer stores order-text closed days. Every place that decides reads the order it is looking at: the board flag (red, quoting the order), the time-restrictions report, the route builder’s closed-today exclusion and the route time windows. The notes editor shows a closed day ticked only when it counts, says which stored days are not used, and ticking one makes it the dispatcher’s. STILL READING THE OLD STORED DAYS, named rather than left to be found: the map pin’s closed badge, the Routing hours line, the stop panel’s hours display, the stop lookup summary and the AI search; a follow-up. THE WAY BACK: CLOSED_DAYS_FROM_ORDER=off with VITE_CLOSED_DAYS_FROM_ORDER=off (the server rule now, the screen after a redeploy) puts the stored-day rule back on both sides. Zero NuVizz calls.'],
   ['1.87.5', 'A LOAD BUILT IN THE PORTAL NOW OPENS IN COMPARE WITHOUT CHANGING THE DATE, AND A CARD THAT CANNOT OPEN SAYS WHY. Chad: “tony will not pull up in the compare panel even though its a fresh scan. It was built in nuvizz not our system but should still pull up in our system unless when i hit refresh it doesn’t load the roster scan?” He was right, read off the code: the Routing screen read the day’s loads roster once, when the date was picked, and neither Refresh nor the two-minute auto-refresh read it again. TONY 1 was built in the portal and captured by the 9:36 PM scan, after the screen had opened 9/29; its stops carry no load id, so the card needs the roster to know which NuVizz load it is, found nothing there, and refused. The refusal was written to the Setup panel, which is hidden whenever the map has the full width, so nothing on screen said why. NOW every newer scan makes the screen re-read the STORED roster for the date (never a NuVizz call) and use it when it is a newer capture with loads in it; a failed, missing or empty read keeps the roster already on screen, because could-not-read is not no-loads. And a card that cannot open says why on the map as well. THE WAY BACK: VITE_ROUTING_ROSTER_REREAD=off (a redeploy) puts both back. 6 new tests.'],
   ['1.87.4', 'A FORKLIFT STOP YOU MARK NO TRACTOR TRAILER NOW WEARS A RED RING INSTEAD OF DISAPPEARING. Chad: “on a stop that i mark no tractor trailer but the shiplfy data says they have a forklift just make the green ring red instead.” Until now the mark made the Shiplify forklift pin vanish: a stated no vetoes the lime, and the stop drew its no-trailer icon instead, so the map stopped saying there is a forklift at exactly the stop where a box truck is now the plan and the forklift is how the freight comes off. The same forklift pin now draws in the Box-only red. WHAT COUNTS AS YOUR MARK is the map’s own rule for a stated no: Box truck only, or a confirmed “No tractor trailer”. An advisory no, read off order text and never checked, keeps its split icon. IT REPLACES THE NO-TRAILER MARK AND NOTHING ELSE: a stop that also draws a clock, a liftgate or any other restriction keeps its cluster, so nothing is hidden; a selection, a search hit, a flag, do-not-send, an open route, a live status, a school / church / government mark, the amber address tint and the Estes ring all still win, exactly as they do over the green ring. Only the forklift pin changes; a Shiplify dock is untouched. On a pickup the PU keeps the middle and the forklift rides a red corner badge, never a lime one. The Legend has its own row, “Shiplify: forklift, marked no tractor trailer”, counted from what the map drew, and a red-ring stop is no longer counted under the no-trailer icon it replaced. THE WAY BACK: VITE_MAP_FORKLIFT_RED_RING=off (a redeploy) puts every such stop back to exactly what it drew before, byte for byte. 11 new tests, and the Legend-equals-map test widened to cover it.'],
   ['1.87.3', 'THE WRITE JOURNAL NOW KEEPS WHICH STOPS EACH SAVE SENT. Chad, after BRIAN was refused at 8:38 and 8:39 PM with “load has a non-DO stop in a delivery slot that this card is not sequencing”: “maybe the journal should save this information.” The journal could say the 8:37 Save of BRIAN worked and the next two were refused, and could NOT say which stops any of the three carried, because it kept each Save’s RESULT and never what the card sent. That the 8:37 Save carried the LOCKHEED MARTIN pickup and the 8:38 card no longer listed it had to be worked out from a board stamp and the guard’s own rule instead of read. EVERY SAVE’S ROW NOW CARRIES, per load, the stop numbers in the order the card sent them and the ones it struck off, with the load, the board day and which screen built it; the board write-through that follows a Save names its stops too, not just how many. READ BACK FOR FREE: the write log takes ?stop= (the Saves that carried a stop) and ?load= (every Save of a load, the refused ones included), and the stop explain now lists every Save of the stop’s route that day and says of each “sent 16 stops — NOT this one” or “sent 17 stops, this one #17”, so “when did the card lose it” is a lookup. BOUNDED so the journal row can never outgrow itself: 300 stops a load and 12 loads a Save, and a cut says it cut. Nothing on screen changes and nothing a Save sends to NuVizz changes: zero NuVizz calls. Rows written before this release have no list and read exactly as they did. PUTTING IT BACK IS ONE REVERT. 17 new tests.'],
@@ -1337,6 +1344,8 @@ const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 // The Compare row prints the whole window ("7:00a–2:30p"), not just the binding edge, when both are on
 // file (lib/time-marks.js timeMarkChip). VITE_COMPARE_FULL_WINDOW=off puts back "closes 2:30p". Build-time.
 const COMPARE_FULL_WINDOW_ON = compareFullWindowEnabled(import.meta.env);
+// "Time windows" in the Compare card's Re-sequence menu (lib/time-window-sequence.js).
+const COMPARE_TIME_WINDOWS_ON = compareTimeWindowsEnabled(import.meta.env);
 // The Routing screen re-reads the stored roster when a newer scan lands (lib/roster-freshness.js).
 const ROUTING_ROSTER_REREAD_ON = routingRosterRereadEnabled(import.meta.env);
 // The Residential paint brush in the Routing gear (lib/place-mark.js).
@@ -10125,12 +10134,10 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [], stop 
       manual_overrides: { ...(D.manual_overrides || {}), receiving_hours: true },
     });
   };
-  const toggleClosed = (day) => {
-    const current = Array.isArray(D.closed_days) ? D.closed_days : [];
-    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
-    setD({ closed_days: next, manual_overrides: { ...(D.manual_overrides || {}), closed_days: true } });
-  };
-  const isClosed = (day) => Array.isArray(D.closed_days) && D.closed_days.includes(day);
+  // Closed days come from each ORDER now, plus what a dispatcher types here (lib/closed-days.js):
+  // a day shows ticked only when it counts, and ticking one makes it the dispatcher's.
+  const toggleClosed = (day) => setD(toggleClosedPatch(D, day));
+  const isClosed = (day) => editorClosedDay(D, day);
   const copyMondayToWeekdays = () => {
     const monClosed = isClosed('mon');
     const monHours = D.receiving_hours?.mon;
@@ -10150,6 +10157,8 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [], stop 
         patch.receiving_hours[d] = typeof monHours === 'string' ? monHours : { open: monHours.open || '', close: monHours.close || '' };
       }
     }
+    // Days the dispatcher just set are theirs — drop the scanner's old fingerprints for them.
+    if (closedDaysFromOrderEnabled()) Object.assign(patch, dropClosedPrints(D, weekdays));
     setD(patch);
     setCopyToast(true);
     setTimeout(() => setCopyToast(false), 1500);
@@ -10302,6 +10311,11 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [], stop 
             );
           })}
         </div>
+        {unusedStoredClosedDays(D).length > 0 && (
+          <div className="text-[10px] text-slate-500 mb-2">
+            Not used: closed {unusedStoredClosedDays(D).map((x) => x.toUpperCase()).join(', ')} — read from an old order. Each order's own instructions decide now; tick a day to keep it closed.
+          </div>
+        )}
         <div className="flex items-center gap-2 mb-2">
           <button type="button" onClick={copyMondayToWeekdays}
             disabled={!isClosed('mon') && !(D.receiving_hours?.mon && (typeof D.receiving_hours.mon === 'string' ? D.receiving_hours.mon : (D.receiving_hours.mon.open || D.receiving_hours.mon.close)))}
@@ -21440,7 +21454,7 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
 // state; this is a planning overlay (it does not mutate the board).
 // Human labels for the re-sequence strategies (shared by the card's applied-strategy line and the
 // "Re-sequenced …" toast).
-const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse', manual: 'Manual order' };
+const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse', windows: 'Time windows — fewest late', manual: 'Manual order' };
 
 // ── Live dispatch (beta) ─────────────────────────────────────────────────────
 // The routes-panel write surface: assign a driver to a load + dispatch it to NuVizz.
@@ -21823,6 +21837,10 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
             <option value="closest">Closest first</option>
             <option value="reverse">Reverse</option>
             <option value="loop">Loop — down one side &amp; back (no crossings)</option>
+            {/* Chad, 2026-09-28: "i need an optimization that uses the time restrictions and trys to
+                make the best route considering those". Orders the card by the receiving hours,
+                scored by the same check as the card's late badges (lib/time-window-sequence.js). */}
+            {COMPARE_TIME_WINDOWS_ON && <option value="windows">Time windows — fewest late</option>}
           </select>
         )}
         {/* REAL ROADS, OPT-IN. Every strategy above measures straight lines, which cannot see a
@@ -24972,6 +24990,26 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       setLastAction(`Can't re-sequence ${loadDisplayName(key) || 'load'} — ${missing > 0 ? `${missing} stop(s) have no map location (still geocoding, or the address needs fixing — see the card)` : 'it needs at least 2 stops'}.`);
       return;
     }
+    // TIME WINDOWS (v1.89.0): ordered by the receiving hours and scored by the card's OWN
+    // preflight — the same route key, departure, travel calibration, notes and day the badges
+    // use — so the order it lands and the badges it then shows cannot disagree. Straight from
+    // the card's order, every id kept; no road matrix (the preflight has its own drive model).
+    if (strategy === 'windows') {
+      const routeKey = r.name || r.loadNbr || r.key;
+      const measured = departureFor(departTable, routeKey);
+      const res = timeWindowSequence({
+        order: r.order, stopById, notes, routeKey,
+        servedDate: selectedDate, dayKey: weekdayKeyFromDate(selectedDate),
+        depot: ROUTING_DEPOT, travel: travelForServedDate(travelInputs, selectedDate),
+        // The board's vendor-default creation slots, so a system-stamped 9:00–9:30 is not read as
+        // a booked appointment (the same suppression the time-restrictions report applies).
+        defaultSlots: detectDefaultSlots(stops),
+        ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
+      });
+      setWbRoutes((prev) => prev.map((x) => (x.key !== key ? x : { ...x, order: res.order, strategy, roadSequenced: false })));
+      setLastAction(timeWindowSummary(res, loadDisplayName(key) || 'load'));
+      return;
+    }
     const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
     const resolved = new Set(newOrder);
     const applyOrder = (ids, suffix) => setWbRoutes((prev) => prev.map((x) => {
@@ -25019,7 +25057,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances failed (${String(e?.message || e).slice(0, 60)}), straight-line order kept`);
       }
     })();
-  }, [wbRoutes, stopById, roadMatrixOn]);
+  }, [wbRoutes, stopById, stops, roadMatrixOn, notes, selectedDate, travelInputs, departTable]);
   const wbMoveStop = useCallback((fromKey, stopNbr, toKey) => {
     if (!toKey || fromKey === toKey) return;
     const id = String(stopNbr);
@@ -25797,11 +25835,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // driverless draft makes the engine restart the walk from noon and replace every
     // receiving-hours row with one "no driver" card, so a route with two stops going to miss
     // renders as a clean build. Measured, not assumed.
-    const travel = travelInputs
-      ? (travelInputs.routeClasses && travelInputs.routeClassesDate !== selectedDate
-        ? { ...travelInputs, routeClasses: undefined }
-        : travelInputs)
-      : null;
+    const travel = travelForServedDate(travelInputs, selectedDate);
     for (const r of wbRoutes) {
       // The REAL load name, because the engine reads it for the truck-class curve and for the
       // appointment / owner / set-aside route rules. A placeholder would opt the draft out of

@@ -1,4 +1,9 @@
-node_modules/
+# node_modules is the BARE name on purpose: "node_modules/" only matches a directory, so a
+# `ln -s <main>/node_modules node_modules` made to share one install across a worktree was NOT
+# ignored — `git add -A` swept one into a commit, it merged to main (#1064), and the next merge
+# into a real checkout replaced that checkout's installed node_modules with the dangling link.
+# A bare name matches the directory and the symlink both.
+node_modules
 dist/
 # Any throwaway comparison build (dist-base, dist-old): build output is never
 # committed, and one that was swept in by `git add -A` tripped Netlify's secret
