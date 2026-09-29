@@ -73,6 +73,10 @@ async function toShadow(page, phone) {
     if (!(await s.isVisible().catch(() => false))) return false;
     await s.click();
   }
+  // The Shadow's code is LAZY — its own file, fetched on the tap. WAIT (up to 15s) for its heading
+  // FIRST, then give it the same 900ms it always had before the proof and the measurement: a slow
+  // file must neither read as a screen that never arrived nor be measured half-drawn.
+  await page.getByRole('heading', { name: 'Claude shadow' }).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
   await page.waitForTimeout(900);
   return page.getByRole('heading', { name: 'Claude shadow' }).first().isVisible().catch(() => false);
 }

@@ -21,6 +21,7 @@
 // without it exercises the MOUSE layout at iPad width and passes while the actual device
 // fails. That is not a hypothetical — it is what the desktop guard has always done.
 import { chromium } from 'playwright-core';
+import { TAB_LOAD_FAILURE_TAIL } from '../src/lib/load-failure.js';
 import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { ORDER_EVENTS } from './lib/customer-view-fixture.mjs';
@@ -388,9 +389,16 @@ async function gotoScreen(page, screen) {
     const tabBtn = page.getByRole('button', { name: screen.sub }).first();
     if (!(await tabBtn.isVisible().catch(() => false))) return false;
     await tabBtn.click();
+    // The Shadow's code is LAZY — its own file, fetched on the tap. WAIT (up to 15s) for its heading
+    // FIRST, then give it the same 900ms it always had before the proof and the measurement: a slow
+    // file must neither read as a screen that never arrived nor be measured half-drawn.
+    if (screen.arrive) await page.getByRole('heading', { name: screen.arrive }).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(900);
   }
   if (screen.arrive && !(await page.getByRole('heading', { name: screen.arrive }).first().isVisible().catch(() => false))) return false;
+  // A tab whose code did not load shows TabLoadFailure's line instead of the screen: that is a
+  // screen that did NOT arrive, never one to measure as working.
+  if (await page.evaluate((tail) => document.body.innerText.includes(tail), TAB_LOAD_FAILURE_TAIL).catch(() => false)) return false;
   return true;
 }
 
