@@ -107,9 +107,9 @@ import {
   resolvePlaceMark, placeNoTractor, placeNoTractorLine, shiplifyPinCandidate, shiplifyPinKind,
   shiplifyRecordFor, buildShiplifyLookup, tractorPlaceKeys, tractorSeenAt, limeAsOf, shiplifyPanelRows,
   limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
-  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS,
+  buildingTypeChanged, NO_TRACTOR_PLACE_MARKS, nextResidentialPaint, residentialBrushEnabled,
 } from './lib/place-mark.js';
-import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, undoWrite, BOX_ONLY_BUILDING_TYPES, noTractorWrite, noTractorTickFields, restrictionSnapshot, TICKED, canMoveTowardTractor, tractorOkWrite, ulineUntickFields, afterUlineOff } from './lib/uline-review.js';
+import { eligibilityPayload, decisionAfter, sortUlineRows, bearingDeg, buildingTypeWrite, buildingTypePayload, undoWrite, BOX_ONLY_BUILDING_TYPES, noTractorWrite, noTractorTickFields, restrictionSnapshot, TICKED, canMoveTowardTractor, tractorOkWrite, ulineUntickFields, afterUlineOff } from './lib/uline-review.js';
 import {
   glyphCenter, glyphBadge, glyphMuted, glyphClusterBadge, GLYPH_INK_ON_LIME, FORKLIFT_BADGE_LIME,
 } from './lib/place-glyphs.js';
@@ -193,7 +193,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.87.3';
+const APP_VERSION = '1.88.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -247,6 +247,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.88.2', 'A RESIDENTIAL PAINT BRUSH, BESIDE THE TRACTOR AND BOX BRUSHES. Chad, with the Routing gear open on “Mark vehicle eligibility”: “the way i can paint tractor freindly or not i want to be able to paint residentials.” The gear gains “Mark building type: Off / Residential”. Armed, a click on a stop marks the location residential and the house mark appears on its pin; a second click puts it back to Auto, where Shiplify decides again. It writes exactly what the stop panel’s Building type picker writes (the type, who and when, merged onto the location’s notes), so a house painted on the map and a house picked in the panel are the same fact, and it sticks for every future stop there. It does NOT touch the vehicle mark, the same as the picker: the Tractor and Box brushes paint that. One brush at a time across both groups (arming one disarms the other, and Ninja, Box and Lasso); “Off” in one group never disarms the other’s brush; the on-map reminder names the brush and has a Stop button. The phone gear and both desktop gears carry it. THE WAY BACK: VITE_MAP_RESIDENTIAL_BRUSH=off (a redeploy) takes the group out of the gear; marks already painted stay, because they are the panel’s own field. 5 new tests.'],
   ['1.87.3', 'THE WRITE JOURNAL NOW KEEPS WHICH STOPS EACH SAVE SENT. Chad, after BRIAN was refused at 8:38 and 8:39 PM with “load has a non-DO stop in a delivery slot that this card is not sequencing”: “maybe the journal should save this information.” The journal could say the 8:37 Save of BRIAN worked and the next two were refused, and could NOT say which stops any of the three carried, because it kept each Save’s RESULT and never what the card sent. That the 8:37 Save carried the LOCKHEED MARTIN pickup and the 8:38 card no longer listed it had to be worked out from a board stamp and the guard’s own rule instead of read. EVERY SAVE’S ROW NOW CARRIES, per load, the stop numbers in the order the card sent them and the ones it struck off, with the load, the board day and which screen built it; the board write-through that follows a Save names its stops too, not just how many. READ BACK FOR FREE: the write log takes ?stop= (the Saves that carried a stop) and ?load= (every Save of a load, the refused ones included), and the stop explain now lists every Save of the stop’s route that day and says of each “sent 16 stops — NOT this one” or “sent 17 stops, this one #17”, so “when did the card lose it” is a lookup. BOUNDED so the journal row can never outgrow itself: 300 stops a load and 12 loads a Save, and a cut says it cut. Nothing on screen changes and nothing a Save sends to NuVizz changes: zero NuVizz calls. Rows written before this release have no list and read exactly as they did. PUTTING IT BACK IS ONE REVERT. 17 new tests.'],
   ['1.87.2', 'THE COMPARE CARD NOW SAYS WHAT TRUCK EACH STOP CAN TAKE. Chad, with BRIAN open in Compare: \u201cI want the compare panel to have a faint green or red highlight if they are tractor friendly or not.\u201d The Selected window has painted a stop green (a 53-footer can go here) since v0.46.5 and red (somebody here said it cannot) since v1.37.1, but once the stop was sent to a card the card said neither \u2014 and the card is where the router decides what truck the load needs. Each stop row on a Compare card now wears a faint green for tractor-trailer friendly and a faint red for a Box-only mark or a confirmed \u201cNo tractor trailer\u201d, on the phone and the desktop alike. ONE RULE: the rows ask the same two helpers the Selected window asks, fed the same notes and the same lime-paint-aware tractor history, so a stop cannot be green in the selection and plain on the card it was sent to. A stop nobody has checked stays uncoloured, exactly as in the Selected window \u2014 red is the stated no, not the unknown. FAINTER THAN THE SELECTED WINDOW, AND MEASURED: at that window\u2019s shade a red row swallowed the card\u2019s own red \u201c30M LATE\u201d badge, so the card uses the lighter shade and the badge still reads. Dragging a stop across a coloured row keeps the colour and still draws the blue drop line; a plain row\u2019s drag cue is unchanged. Hovering a coloured row names why it is coloured. Nothing else on the card changes: counts, Send / Save, the map, the selection tools and closing a card are untouched. PUTTING IT BACK IS ONE REVERT \u2014 this adds a mark and is one commit. 10 new tests.'],
   ['1.87.1', 'EVERY COMPARE ROW WITH HOURS NOW SHOWS WHEN THE DOCK OPENS AS WELL AS WHEN IT CLOSES — AND A “CAN’T MAKE” STOP SAYS HOW LATE IT WOULD BE. Chad, 2026-09-29, on CHRIS HEAD’s rows reading “closes 2:30p · auto”: “i dont’ want just the closing time i want opening too.” The row printed only the edge that binds; it now prints the whole window on file (SIMS RECYCLING 7:00a–2:30p · auto), and a dock that states only one edge still says just that edge, never an invented half. VITE_COMPARE_FULL_WINDOW=off puts back “closes 2:30p”. AND: Chad, 2026-09-28, once those rows carried their hours on their own line: “If there’s not enough room on the can’t make 12 p.m. line to put the amount of time it would be late, then I think I’d rather have the amount of time the system’s going to think it’s going to be late than the can’t make it tag.” So on a Compare row that shows its hours (GENESIS BIOSCIENCES: 8:00a–12:00p · auto), the line under it now reads “2H 4M LATE” instead of “CAN’T MAKE 12:00P” — the close is already on the line above. It keeps the no-entry glyph and its hover (“Unreachable in any order …”), so it still reads as a stop no re-ordering will save. A row with no hours on file keeps “can’t make 12:00p”, because there the close would be printed nowhere. Merely-late rows are unchanged. VITE_COMPARE_UNREACHABLE_LATE=off puts “can’t make” back (build-time, so a redeploy). Zero NuVizz calls. 7 new tests.'],
@@ -1142,6 +1143,7 @@ const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 // customer_notes.vehicle_eligibility ('tractor' | 'box_only'); unset → normal pin.
 const ELIG_TRACTOR_COLOR = '#16a34a';  // green — a 53' trailer fits
 const ELIG_BOX_COLOR = '#dc2626';      // red — box truck only, no tractor-trailer
+const RESIDENTIAL_BRUSH_COLOR = '#334155'; // slate — the Residential paint brush (a place, not a truck colour)
 
 // The same three states the Routing brush cycles through, as a picker the stop card's
 // customer-notes editor can render. Order matches the brush's own cycle and the read-only
@@ -1333,6 +1335,8 @@ const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 // The Compare row prints the whole window ("7:00a–2:30p"), not just the binding edge, when both are on
 // file (lib/time-marks.js timeMarkChip). VITE_COMPARE_FULL_WINDOW=off puts back "closes 2:30p". Build-time.
 const COMPARE_FULL_WINDOW_ON = compareFullWindowEnabled(import.meta.env);
+// The Residential paint brush in the Routing gear (lib/place-mark.js).
+const RESIDENTIAL_BRUSH_ON = residentialBrushEnabled(import.meta.env);
 // A "can't make" row keeps its hours, on their own line above the verdict (lib/time-marks.js
 // unreachableHoursMark). VITE_COMPARE_UNREACHABLE_HOURS=off puts back the verdict alone. Build-time.
 const COMPARE_UNREACHABLE_HOURS_ON = compareUnreachableHoursEnabled(import.meta.env);
@@ -25414,10 +25418,29 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   // still clear. Mutually exclusive with Box/Lasso/Ninja so a click only ever does one thing.
   const markEligibility = useCallback(async (s) => {
     if (!db || !s) return;
-    const brush = eligPaintRef.current;            // 'tractor' | 'box' | null
+    const brush = eligPaintRef.current;            // 'tractor' | 'box' | 'residential' | null
     if (!brush) return;
     const mk = s.matchKey;
     if (!mk) { setLastAction(`${s.stopNbr}: no location key to mark`); return; }
+    // THE RESIDENTIAL BRUSH (v1.88.2). Chad: "the way i can paint tractor freindly or not i want
+    // to be able to paint residentials". The same write the stop panel's Building type picker
+    // makes (buildingTypePayload: the type, who, when) — a click marks the location residential,
+    // a second click puts it back to Auto. The vehicle mark is left alone: painting that is the
+    // Tractor / Box brushes' job, and the panel's picker does not move it either.
+    if (brush === 'residential') {
+      const nextType = nextResidentialPaint(notes.get(mk)?.building_type);
+      const whoR = s.businessName || s.stopNbr;
+      try {
+        await setDoc(doc(db, 'customer_notes', mk), {
+          ...buildingTypePayload(mk, nextType, serverTimestamp()),
+          raw_name: s.businessName || '',
+        }, { merge: true });
+        setLastAction(nextType ? `${whoR} → residential (house mark)` : `${whoR} → building type back to Auto`);
+      } catch (e) {
+        setLastAction(`Couldn't mark ${s.stopNbr}: ${e.message}`);
+      }
+      return;
+    }
     // The armed brush's own color is the FIRST state; a second click on the same stop
     // advances to the other color; a third clears — one brush, all three states.
     const primary = brush === 'box' ? 'box_only' : 'tractor';
@@ -25451,7 +25474,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       setNinjaMode(false); setSelectMode(null); selectModeRef.current = null;
       showMapToast(brush === 'tractor'
         ? 'Tractor brush on — click a stop for green (53′ fits); click it again for red (box only), again to clear. Off in ⚙ to stop.'
-        : 'Box brush on — click a stop for red (box only); click it again for green (53′ fits), again to clear. Off in ⚙ to stop.');
+        : brush === 'residential'
+          ? 'Residential brush on — click a stop to mark the location residential; click it again to put it back to Auto. Off in ⚙ to stop.'
+          : 'Box brush on — click a stop for red (box only); click it again for green (53′ fits), again to clear. Off in ⚙ to stop.');
     }
   }, [showMapToast]);
   useEffect(() => { eligPaintRef.current = eligPaint; }, [eligPaint]);
@@ -27399,20 +27424,36 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   // close the very header the gear lives in, leaving no way back).
   // Vehicle-eligibility brush lives in the gear: Off / Tractor OK (green) / Box only (red).
   // Picking a brush arms the paint mode; click stops on the map to mark them.
+  const eligBrushOn = eligPaint === 'tractor' || eligPaint === 'box';
   const eligView = {
     key: 'elig',
     label: 'Mark vehicle eligibility',
-    value: eligPaint || 'off',
-    setValue: (v) => setEligBrush(v === 'off' ? null : v),
+    // Only the two vehicle brushes are this group's; the Residential brush has its own group
+    // below, and "Off" here must not disarm it.
+    value: eligBrushOn ? eligPaint : 'off',
+    setValue: (v) => (v === 'off' ? (eligBrushOn ? setEligBrush(null) : null) : setEligBrush(v)),
     options: [
       { value: 'off', label: 'Off' },
       { value: 'tractor', label: <span className="font-semibold" style={{ color: ELIG_TRACTOR_COLOR }}>● Tractor OK (53′ fits)</span> },
       { value: 'box', label: <span className="font-semibold" style={{ color: ELIG_BOX_COLOR }}>● Box truck only</span> },
     ],
   };
+  // THE RESIDENTIAL BRUSH (v1.88.2) — its own group beside the vehicle brushes, one brush armed at
+  // a time across both (they share the paint mode, so arming one disarms the other).
+  const buildingView = {
+    key: 'building',
+    label: 'Mark building type',
+    value: eligPaint === 'residential' ? 'residential' : 'off',
+    setValue: (v) => (v === 'off' ? (eligPaint === 'residential' ? setEligBrush(null) : null) : setEligBrush('residential')),
+    options: [
+      { value: 'off', label: 'Off' },
+      { value: 'residential', label: <span className="font-semibold inline-flex items-center gap-1.5" style={{ color: RESIDENTIAL_BRUSH_COLOR }}><PlaceMarkIcon kind="residential" size={14} /> Residential</span> },
+    ],
+  };
   const routingSettingsViews = [
     { key: 'rightPanel', label: 'Right panel', value: rightPanelMode, setValue: setRightPanelMode, options: RIGHT_PANEL_MODES.map(({ value, label }) => ({ value, label })) },
     eligView,
+    ...(RESIDENTIAL_BRUSH_ON ? [buildingView] : []),
   ];
   const routingSettingsActions = [
     // PHONE ONLY (onOpenEngine is passed only there): the Engine view used to own a 59px row above
@@ -27567,20 +27608,21 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
 
       {/* Vehicle-eligibility marking lives in the ⚙ gear (Mark vehicle eligibility). When a
           brush is armed, show a slim reminder + quick Stop so the mode is never silently on. */}
-      {eligPaint && (
+      {eligPaint && (() => {
+        const brushColor = eligPaint === 'tractor' ? ELIG_TRACTOR_COLOR : eligPaint === 'residential' ? RESIDENTIAL_BRUSH_COLOR : ELIG_BOX_COLOR;
+        const brushName = eligPaint === 'tractor' ? 'Tractor' : eligPaint === 'residential' ? 'Residential' : 'Box';
+        return (
         <div
           className="rounded border p-2 text-[12px] flex items-center justify-between gap-2"
-          style={{
-            borderColor: eligPaint === 'tractor' ? ELIG_TRACTOR_COLOR : ELIG_BOX_COLOR,
-            background: (eligPaint === 'tractor' ? ELIG_TRACTOR_COLOR : ELIG_BOX_COLOR) + '14',
-          }}
+          style={{ borderColor: brushColor, background: brushColor + '14' }}
         >
-          <span className="font-semibold" style={{ color: eligPaint === 'tractor' ? ELIG_TRACTOR_COLOR : ELIG_BOX_COLOR }}>
-            ● {eligPaint === 'tractor' ? 'Tractor' : 'Box'} brush on — {isMobile ? 'tap' : 'click'} stops to mark; again to clear.
+          <span className="font-semibold" style={{ color: brushColor }}>
+            ● {brushName} brush on — {isMobile ? 'tap' : 'click'} stops to mark; again to clear.
           </span>
           <button onClick={() => setEligBrush(null)} className="px-2 py-1 text-[11px] rounded border bg-white hover:bg-slate-50 shrink-0">Stop</button>
         </div>
-      )}
+        );
+      })()}
 
       {/* Plan targets — REAL NuVizz loads from the day's roster (default), or the abstract
           truck profiles (the original build). Loads mode: one built route per picked load,
