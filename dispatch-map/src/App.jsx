@@ -147,7 +147,7 @@ import { planSendSelection, selectionSendTargets } from './lib/send-selection.js
 import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
 import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
 import { dropSide, dropSideClass, dropRight } from './lib/drop-side.js';
-import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
+import { rosterFreshness, ageLabel, routingRosterRereadEnabled, rosterRereadApplies } from './lib/roster-freshness.js';
 import { PARSE_SCHEDULE_LABEL, parsePollOverdue } from './lib/manifest-schedule.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // w-40. Named once so the measurement and the Tailwind class can never disagree about how
@@ -249,6 +249,7 @@ function loadDisplayName(...vals) {
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
   ['1.88.1', 'CLOSED ON MONDAYS IS READ FROM THE ORDER IN FRONT OF US, EVERY TIME, NEVER STORED FROM AN OLD ONE. Chad: “the closed on Fridays and closed on Mondays. I want those to be read live every time an order comes in. and not stored because we had a situation where a delivery today was marked closed on Mondays, but the new orders do not signify that. And therefore we did not deliver it.” (PRO 007182580.) SANTA FE TORTILLAS: a June 19 order said “CLOSED ON MONDAYS”; the scanner stored Monday as closed on the customer and only ever added days, so Monday 9/28’s order, which says nothing about Mondays, was treated as a closed dock and left off the trucks. NOW a closed day counts only when THIS order’s own text says it (its instructions and address line, read off the list every scan) or a dispatcher typed it on the customer; a day the scanner stored from an older order counts for nothing, and the scanner no longer stores order-text closed days. Every place that decides reads the order it is looking at: the board flag (red, quoting the order), the time-restrictions report, the route builder’s closed-today exclusion and the route time windows. The notes editor shows a closed day ticked only when it counts, says which stored days are not used, and ticking one makes it the dispatcher’s. STILL READING THE OLD STORED DAYS, named rather than left to be found: the map pin’s closed badge, the Routing hours line, the stop panel’s hours display, the stop lookup summary and the AI search; a follow-up. THE WAY BACK: CLOSED_DAYS_FROM_ORDER=off with VITE_CLOSED_DAYS_FROM_ORDER=off (the server rule now, the screen after a redeploy) puts the stored-day rule back on both sides. Zero NuVizz calls.'],
+  ['1.87.5', 'A LOAD BUILT IN THE PORTAL NOW OPENS IN COMPARE WITHOUT CHANGING THE DATE, AND A CARD THAT CANNOT OPEN SAYS WHY. Chad: “tony will not pull up in the compare panel even though its a fresh scan. It was built in nuvizz not our system but should still pull up in our system unless when i hit refresh it doesn’t load the roster scan?” He was right, read off the code: the Routing screen read the day’s loads roster once, when the date was picked, and neither Refresh nor the two-minute auto-refresh read it again. TONY 1 was built in the portal and captured by the 9:36 PM scan, after the screen had opened 9/29; its stops carry no load id, so the card needs the roster to know which NuVizz load it is, found nothing there, and refused. The refusal was written to the Setup panel, which is hidden whenever the map has the full width, so nothing on screen said why. NOW every newer scan makes the screen re-read the STORED roster for the date (never a NuVizz call) and use it when it is a newer capture with loads in it; a failed, missing or empty read keeps the roster already on screen, because could-not-read is not no-loads. And a card that cannot open says why on the map as well. THE WAY BACK: VITE_ROUTING_ROSTER_REREAD=off (a redeploy) puts both back. 6 new tests.'],
   ['1.87.4', 'A FORKLIFT STOP YOU MARK NO TRACTOR TRAILER NOW WEARS A RED RING INSTEAD OF DISAPPEARING. Chad: “on a stop that i mark no tractor trailer but the shiplfy data says they have a forklift just make the green ring red instead.” Until now the mark made the Shiplify forklift pin vanish: a stated no vetoes the lime, and the stop drew its no-trailer icon instead, so the map stopped saying there is a forklift at exactly the stop where a box truck is now the plan and the forklift is how the freight comes off. The same forklift pin now draws in the Box-only red. WHAT COUNTS AS YOUR MARK is the map’s own rule for a stated no: Box truck only, or a confirmed “No tractor trailer”. An advisory no, read off order text and never checked, keeps its split icon. IT REPLACES THE NO-TRAILER MARK AND NOTHING ELSE: a stop that also draws a clock, a liftgate or any other restriction keeps its cluster, so nothing is hidden; a selection, a search hit, a flag, do-not-send, an open route, a live status, a school / church / government mark, the amber address tint and the Estes ring all still win, exactly as they do over the green ring. Only the forklift pin changes; a Shiplify dock is untouched. On a pickup the PU keeps the middle and the forklift rides a red corner badge, never a lime one. The Legend has its own row, “Shiplify: forklift, marked no tractor trailer”, counted from what the map drew, and a red-ring stop is no longer counted under the no-trailer icon it replaced. THE WAY BACK: VITE_MAP_FORKLIFT_RED_RING=off (a redeploy) puts every such stop back to exactly what it drew before, byte for byte. 11 new tests, and the Legend-equals-map test widened to cover it.'],
   ['1.87.3', 'THE WRITE JOURNAL NOW KEEPS WHICH STOPS EACH SAVE SENT. Chad, after BRIAN was refused at 8:38 and 8:39 PM with “load has a non-DO stop in a delivery slot that this card is not sequencing”: “maybe the journal should save this information.” The journal could say the 8:37 Save of BRIAN worked and the next two were refused, and could NOT say which stops any of the three carried, because it kept each Save’s RESULT and never what the card sent. That the 8:37 Save carried the LOCKHEED MARTIN pickup and the 8:38 card no longer listed it had to be worked out from a board stamp and the guard’s own rule instead of read. EVERY SAVE’S ROW NOW CARRIES, per load, the stop numbers in the order the card sent them and the ones it struck off, with the load, the board day and which screen built it; the board write-through that follows a Save names its stops too, not just how many. READ BACK FOR FREE: the write log takes ?stop= (the Saves that carried a stop) and ?load= (every Save of a load, the refused ones included), and the stop explain now lists every Save of the stop’s route that day and says of each “sent 16 stops — NOT this one” or “sent 17 stops, this one #17”, so “when did the card lose it” is a lookup. BOUNDED so the journal row can never outgrow itself: 300 stops a load and 12 loads a Save, and a cut says it cut. Nothing on screen changes and nothing a Save sends to NuVizz changes: zero NuVizz calls. Rows written before this release have no list and read exactly as they did. PUTTING IT BACK IS ONE REVERT. 17 new tests.'],
   ['1.87.2', 'THE COMPARE CARD NOW SAYS WHAT TRUCK EACH STOP CAN TAKE. Chad, with BRIAN open in Compare: \u201cI want the compare panel to have a faint green or red highlight if they are tractor friendly or not.\u201d The Selected window has painted a stop green (a 53-footer can go here) since v0.46.5 and red (somebody here said it cannot) since v1.37.1, but once the stop was sent to a card the card said neither \u2014 and the card is where the router decides what truck the load needs. Each stop row on a Compare card now wears a faint green for tractor-trailer friendly and a faint red for a Box-only mark or a confirmed \u201cNo tractor trailer\u201d, on the phone and the desktop alike. ONE RULE: the rows ask the same two helpers the Selected window asks, fed the same notes and the same lime-paint-aware tractor history, so a stop cannot be green in the selection and plain on the card it was sent to. A stop nobody has checked stays uncoloured, exactly as in the Selected window \u2014 red is the stated no, not the unknown. FAINTER THAN THE SELECTED WINDOW, AND MEASURED: at that window\u2019s shade a red row swallowed the card\u2019s own red \u201c30M LATE\u201d badge, so the card uses the lighter shade and the badge still reads. Dragging a stop across a coloured row keeps the colour and still draws the blue drop line; a plain row\u2019s drag cue is unchanged. Hovering a coloured row names why it is coloured. Nothing else on the card changes: counts, Send / Save, the map, the selection tools and closing a card are untouched. PUTTING IT BACK IS ONE REVERT \u2014 this adds a mark and is one commit. 10 new tests.'],
@@ -1336,6 +1337,8 @@ const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 // The Compare row prints the whole window ("7:00a–2:30p"), not just the binding edge, when both are on
 // file (lib/time-marks.js timeMarkChip). VITE_COMPARE_FULL_WINDOW=off puts back "closes 2:30p". Build-time.
 const COMPARE_FULL_WINDOW_ON = compareFullWindowEnabled(import.meta.env);
+// The Routing screen re-reads the stored roster when a newer scan lands (lib/roster-freshness.js).
+const ROUTING_ROSTER_REREAD_ON = routingRosterRereadEnabled(import.meta.env);
 // A "can't make" row keeps its hours, on their own line above the verdict (lib/time-marks.js
 // unreachableHoursMark). VITE_COMPARE_UNREACHABLE_HOURS=off puts back the verdict alone. Build-time.
 const COMPARE_UNREACHABLE_HOURS_ON = compareUnreachableHoursEnabled(import.meta.env);
@@ -24330,7 +24333,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   const [dayShells, setDayShells] = useState(null);
   // Everything the roster response feeds, in one place so the cache path and the live refresh
   // can never diverge — the status map, the identity index, the raw rows and the envelope.
-  const applyDayRoster = useCallback((j) => {
+  // Which stored capture is on screen (the envelope's `at`), so a re-read of the same copy is a no-op.
+  const dayRosterAtRef = useRef(null);
+  const applyDayRoster = useCallback((j, { keepShells = false } = {}) => {
     // Status map via the shared builder: it writes the by-id keys AND the '#amb:' markers
     // that stop a name shared by two loads from deciding either one's status (§S).
     const rosterLoads = (j && j.ok) ? (j.loads || []) : [];
@@ -24370,7 +24375,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     setLoadDriverByName(drivers);
     setLoadRosterList(j && j.ok ? (j.loads || []) : []);
     setDayRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count, pull: j.pull || null, date: j.date || null } : { ok: false });
-    setDayShells(j && j.ok && j.shells && Array.isArray(j.shells.names) ? j.shells : null);
+    dayRosterAtRef.current = j && j.ok ? (j.at || null) : null;
+    // A stored-copy re-read carries no shells (the endpoint offers them only on the open read), so
+    // it must not blank the ones already on screen.
+    if (!keepShells) setDayShells(j && j.ok && j.shells && Array.isArray(j.shells.names) ? j.shells : null);
   }, []);
   const clearDayRoster = useCallback(() => {
     loadRosterRef.current = new Map();
@@ -24399,6 +24407,33 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // shouldServeCachedRoster). Two bugs, one symptom Chad counted: "each refresh is causing
     // like 14 calls when it should only be 3 or 4."
   }, [selectedDate, applyDayRoster, clearDayRoster]);
+  // RE-READ THE STORED ROSTER WHEN A NEWER SCAN LANDS (v1.87.5). Chad, 2026-09-28: "tony will not
+  // pull up in the compare panel even though its a fresh scan. It was built in nuvizz not our system
+  // but should still pull up in our system unless when i hit refresh it doesn't load the roster
+  // scan?" It did not. The roster above is read once per DATE, and neither Refresh nor the silent
+  // poll read it again — so a load built in the portal after this screen opened (TONY 1,
+  // DAVIS000205073, captured 9:36 PM) had no identity here: its stops carry no load id, the card
+  // needs the roster to know which load to open, and it refused. The scan is what writes the
+  // roster, so a newer scan stamp is exactly when there can be a newer one to read.
+  //   · cacheOnly=1 — the stored copy or nothing, NEVER a NuVizz call;
+  //   · only a stored copy is applied, and only a different capture: a failed or empty read keeps
+  //     the roster already on screen, because "we could not read it" is not "there are no loads";
+  //   · the first stamp seen for a date is skipped — the open-date read above already covers it.
+  // The switch: VITE_ROUTING_ROSTER_REREAD=off puts it back to one read per date.
+  const rosterScanSeenRef = useRef({ date: null, at: null });
+  useEffect(() => {
+    if (!ROUTING_ROSTER_REREAD_ON || !selectedDate || !lastScannedAt) return;
+    const seen = rosterScanSeenRef.current;
+    if (seen.date !== selectedDate) { rosterScanSeenRef.current = { date: selectedDate, at: lastScannedAt }; return; }
+    if (seen.at === lastScannedAt) return;
+    rosterScanSeenRef.current = { date: selectedDate, at: lastScannedAt };
+    let cancelled = false;
+    apiFetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate) + '&cacheOnly=1', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => { if (!cancelled && rosterRereadApplies(j, dayRosterAtRef.current)) applyDayRoster(j, { keepShells: true }); })
+      .catch(() => { /* keep the roster on screen — a failed re-read is not an empty roster */ });
+    return () => { cancelled = true; };
+  }, [selectedDate, lastScannedAt, applyDayRoster]);
 
   // Board Flags on Routing too — Chad, staring at a driverless LVILLE with a 2:00p LUND
   // close on THIS screen: the chip only existed on the dispatch Map, so Routing could never
@@ -24895,7 +24930,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     const openNow = () => setWbRoutes((prev) => {
       const r = buildWbCard(key, prev);
       if (r.already) return prev;
-      if (r.refusal) { setLastAction(r.refusal); return prev; }
+      // SAID WHERE IT CAN BE SEEN (v1.87.5). The refusal went to lastAction alone, which renders in
+      // the Setup panel — hidden whenever the map has the full width, which is exactly when a
+      // route is tapped from the rail. So TONY 1 "would not pull up" and nothing said why.
+      if (r.refusal) { setLastAction(r.refusal); if (ROUTING_ROSTER_REREAD_ON) showMapToast(r.refusal); return prev; }
       // Say which load it opened on, and why that is not today's — a card saving to a load dated
       // yesterday must never look like an ordinary one.
       if (r.ownDayLoad) setLastAction(`Opened "${loadDisplayName(r.card.name, key) || key}" on NuVizz load ${r.ownDayLoad.loadNbr || r.ownDayLoad.loadId} — NuVizz still dates this load and its stops ${r.ownDay}.`);

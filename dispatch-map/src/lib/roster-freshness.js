@@ -133,3 +133,34 @@ export function rosterFreshness(meta, now = new Date()) {
   return { known: true, live: false, stale, count, age, tone: stale ? 'stale' : 'cached',
     label: `${loads} · cached ${age}${stale ? ' (before today)' : ''}` };
 }
+
+// ── RE-READING THE STORED ROSTER ON THE ROUTING SCREEN (v1.87.5) ─────────────
+//
+// Chad, 2026-09-28: "tony will not pull up in the compare panel even though its a fresh scan. It
+// was built in nuvizz not our system but should still pull up in our system unless when i hit
+// refresh it doesn't load the roster scan?" The Routing screen read the day's roster once per
+// date, so a load built in the portal after the screen opened had no identity there and its card
+// refused to open. It now re-reads the STORED copy (cacheOnly=1 — never a NuVizz call) whenever a
+// newer scan lands; these two decide whether it may and whether the answer replaces the screen's.
+
+/** VITE_ROUTING_ROSTER_REREAD — house shape: default on, an off-word (off/0/false/no) turns it
+ *  off, anything malformed leaves it on. Off puts the screen back to one roster read per date and
+ *  a card's "cannot open" back to the Setup panel alone. Build-time, so flipping it is a redeploy. */
+export function routingRosterRereadEnabled(env) {
+  const v = String(env?.VITE_ROUTING_ROSTER_REREAD ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/**
+ * PURE: may a stored-copy re-read replace the roster on screen? Only a STORED copy (source
+ * 'cache') that has loads in it, and only a DIFFERENT capture from the one showing. A failed
+ * read, an absent copy and an empty one all keep what is there: "we could not read it" and "no
+ * load has been built yet" are not "there are no loads", and blanking a working Loads list on a
+ * blip is the absent-is-not-zero mistake this screen's freshness line exists to prevent.
+ */
+export function rosterRereadApplies(j, currentAt) {
+  if (!j || j.ok !== true || j.source !== 'cache') return false;
+  if (!Array.isArray(j.loads) || j.loads.length === 0) return false;
+  if (!j.at) return false;
+  return String(j.at) !== String(currentAt ?? '');
+}
