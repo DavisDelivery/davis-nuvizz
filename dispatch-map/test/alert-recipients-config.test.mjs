@@ -58,7 +58,7 @@ test('THE FLOORS ARE THE SAME ADDRESS THE SENDERS ALREADY USE — a second copy 
 
 test('every channel declares the five things the screen has to say about it', () => {
   // A box of addresses with no answer to "when does this fire" is a box nobody can judge.
-  assert.equal(RECIPIENT_CHANNELS.length, 5);
+  assert.equal(RECIPIENT_CHANNELS.length, 6);
   for (const c of RECIPIENT_CHANNELS) {
     assert.ok(c.key && c.envVar && c.label, `${c.key} needs a key, an env var and a label`);
     assert.ok(['sms', 'email'].includes(c.kind), `${c.key} kind`);
@@ -363,7 +363,7 @@ test('EVERY CHANNEL RESOLVES TO SOMETHING THE SCREEN CAN PRINT, on an empty docu
   // A blank panel would read as "nobody is alerted", which is a different claim from "nothing
   // is configured" and only one of them is true.
   const all = resolveAllChannels({}, {});
-  assert.equal(all.length, 5);
+  assert.equal(all.length, 6);
   for (const c of all) {
     assert.ok(Array.isArray(c.recipients) && Array.isArray(c.list));
     assert.ok(['saved', 'env', 'unset'].includes(c.source));

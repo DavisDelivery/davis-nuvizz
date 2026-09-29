@@ -68,7 +68,7 @@ test('THE GET ANSWERS "WHO GETS THIS" FOR EVERY CHANNEL, and costs nothing to as
     const j = await r.json();
     assert.equal(j.ok, true);
     assert.equal(j.persistent, true);
-    assert.equal(j.channels.length, 5);
+    assert.equal(j.channels.length, 6);
     for (const c of j.channels) {
       assert.ok(Array.isArray(c.recipients), `${c.key} must say who it reaches`);
       assert.ok(c.when && c.label && c.emptyNote, `${c.key} must be explainable on screen`);

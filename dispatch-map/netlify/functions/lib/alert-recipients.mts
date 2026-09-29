@@ -201,7 +201,7 @@ export interface ChannelSpec {
 }
 
 /**
- * THE FIVE LISTS, IN THE ORDER A DISPATCHER WOULD ASK ABOUT THEM: phones first, because a
+ * THE LISTS, IN THE ORDER A DISPATCHER WOULD ASK ABOUT THEM: phones first, because a
  * text reaches somebody who is not at a desk, and that is the one Chad asked about first.
  *
  * `when` is not decoration. A recipient list is only judgeable against the thing that fires
@@ -273,6 +273,20 @@ export const RECIPIENT_CHANNELS: ChannelSpec[] = [
     floorWhenEmpty: null,
     emptyNote: 'The report is still built and stored; nobody is mailed a copy.',
     envEnforcesAllowlist: false,    // DAY_REPORT_TO never validated; same reasoning
+  },
+  {
+    // Chad, 2026-09-29: the 5:30p list of planned orders still undelivered, to "customerservice@
+    // … and me". Customer service is fixed on it (alwaysAlso) — it is their work list, so it
+    // cannot be emptied away from them; this list is who ELSE gets a copy.
+    key: 'openOrdersTo',
+    kind: 'email',
+    envVar: 'OPEN_ORDERS_TO',
+    label: '5:30p open orders',
+    when: 'Weekdays 5:30p ET, after the 5:25p scan — every planned order not delivered yet.',
+    alwaysAlso: COMPANY_CS_ADDRESS,
+    floorWhenEmpty: null,
+    emptyNote: 'Customer service alone.',
+    envEnforcesAllowlist: true,     // new channel: nothing to grandfather
   },
 ];
 
