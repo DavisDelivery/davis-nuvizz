@@ -22,7 +22,7 @@ import {
   draftableDrivers, resolveDraftDriverKey, routeNameFromRoster, rosterWindowFrom, recentRosterKeys, ROSTER_WINDOW_DAYS,
 } from '../netlify/functions/lib/routing-draft-core.mts';
 import {
-  filterDraftDrivers, draftDriverMatches, togglePick, keepListedPicks, DRAFT_MAX_DRIVERS, draftDriverClassLabel,
+  filterDraftDrivers, draftDriverMatches, togglePick, keepListedPicks, sendablePicks, DRAFT_MAX_DRIVERS, draftDriverClassLabel,
 } from '../src/lib/draft-driver-list.js';
 
 const D = '2026-09-29';
@@ -41,21 +41,21 @@ const day = (key, date, loadKeys, extra = {}) => ({
   ...extra,
 });
 const DAYS = [
-  day('VICTOR_M', '2026-09-22', ['DAVIS0001']),
-  day('VICTOR_M', '2026-09-24', ['DAVIS0002']),
-  day('VICTOR_M', '2026-09-26', ['DAVIS0003', 'DAVIS0004']),
-  day('VICTOR', '2026-09-25', ['DAVIS0005'], { driver_name: 'Victor Reyes' }),
+  day('VICTOR_M', '2026-09-22', ['DAVIS000200001']),
+  day('VICTOR_M', '2026-09-24', ['DAVIS000200002']),
+  day('VICTOR_M', '2026-09-26', ['DAVIS000200003', 'DAVIS000200004']),
+  day('VICTOR', '2026-09-25', ['DAVIS000200005'], { driver_name: 'Victor Reyes' }),
   day('JALLEN', '2026-09-26', ['CANTON__JALLEN']),        // no load number: the name rides the key
-  day('CHAD_DAVIS', '2026-09-26', ['DAVIS0006']),          // the supervisor — never listed
-  day('OLDIE', '2026-08-01', ['DAVIS0007']),               // outside the window
-  day('TODAY_ONLY', D, ['DAVIS0008']),                     // the day being built is not history
-  day('OTHER_TENANT', '2026-09-26', ['DAVIS0009'], { tenant: 'elsewhere' }),
+  day('CHAD_DAVIS', '2026-09-26', ['DAVIS000200006']),          // the supervisor — never listed
+  day('OLDIE', '2026-08-01', ['DAVIS000200007']),               // outside the window
+  day('TODAY_ONLY', D, ['DAVIS000200008']),                     // the day being built is not history
+  day('OTHER_TENANT', '2026-09-26', ['DAVIS000200009'], { tenant: 'elsewhere' }),
 ];
 const ROSTERS = {
-  '2026-09-22': [{ loadNbr: 'DAVIS0001', name: 'SUW 2' }],
-  '2026-09-24': [{ loadNbr: 'DAVIS0002', name: 'SUW 2' }],
-  '2026-09-26': [{ loadNbr: 'DAVIS0003', name: 'CHE' }, { loadNbr: 'DAVIS0006', name: 'OFFICE' }],   // DAVIS0004 was never captured
-  '2026-09-25': [{ loadNbr: 'DAVIS0005', name: 'ALPH 1' }],
+  '2026-09-22': [{ loadNbr: 'DAVIS000200001', name: 'SUW 2' }],
+  '2026-09-24': [{ loadNbr: 'DAVIS000200002', name: 'SUW 2' }],
+  '2026-09-26': [{ loadNbr: 'DAVIS000200003', name: 'CHE' }, { loadNbr: 'DAVIS000200006', name: 'OFFICE' }],   // DAVIS000200004 was never captured
+  '2026-09-25': [{ loadNbr: 'DAVIS000200005', name: 'ALPH 1' }],
 };
 const routeNameFor = (date, loadKey) => routeNameFromRoster(loadKey, ROSTERS[date]);
 const inTenant = DAYS.filter((d) => d.tenant === 'davis');
@@ -72,7 +72,7 @@ test('each row says what the draft will use and what the driver runs — route n
   const vm = byKey.get('VICTOR_M');
   assert.equal(vm.name, 'Victor Martinez', 'the employee card gives the name');
   assert.equal(vm.truckClass, 'tractor', 'the class the draft will plan them on (the card says tractor)');
-  assert.deepEqual(vm.routes, ['SUW 2', 'CHE'], 'most-run first; DAVIS0004 was never captured, so it names nothing');
+  assert.deepEqual(vm.routes, ['SUW 2', 'CHE'], 'most-run first; DAVIS000200004 was never captured, so it names nothing');
   assert.equal(vm.days, 3);
   assert.equal(vm.lastDate, '2026-09-26');
   assert.deepEqual(byKey.get('JALLEN').routes, ['CANTON'], 'a load with no number carries its route name in the key');
@@ -102,15 +102,15 @@ test('A PICK IS THAT DRIVER: the card-less VICTOR is VICTOR, not the Victor with
   assert.match(old.error, new RegExp(`OLDIE has not run a route in the ${ROSTER_WINDOW_DAYS} days before ${D}`));
   assert.equal(resolveDraftDriverKey('  ', EMPLOYEES, inTenant, D).ok, false);
   // keys are matched EXACTLY — driverKeyFor's no-userName fallback is lower case and must stay so
-  const named = [day('name_pat_lee', '2026-09-20', ['DAVIS0010'])];
+  const named = [day('name_pat_lee', '2026-09-20', ['DAVIS000200010'])];
   assert.equal(resolveDraftDriverKey('name_pat_lee', [], named, D).ok, true);
   assert.equal(resolveDraftDriverKey('NAME_PAT_LEE', [], named, D).ok, false, 'a key is never folded into a different one');
 });
 
 test('route names: a load number is looked up exactly in that day\'s roster, or names nothing', () => {
-  assert.equal(routeNameFromRoster('DAVIS0003', ROSTERS['2026-09-26']), 'CHE');
-  assert.equal(routeNameFromRoster('DAVIS0004', ROSTERS['2026-09-26']), null);
-  assert.equal(routeNameFromRoster('DAVIS000', ROSTERS['2026-09-26']), null, 'no prefix match');
+  assert.equal(routeNameFromRoster('DAVIS000200003', ROSTERS['2026-09-26']), 'CHE');
+  assert.equal(routeNameFromRoster('DAVIS000200004', ROSTERS['2026-09-26']), null);
+  assert.equal(routeNameFromRoster('DAVIS00020000', ROSTERS['2026-09-26']), null, 'no prefix match');
   assert.equal(routeNameFromRoster('SUW 1__FRYE', null), 'SUW 1');
   assert.equal(routeNameFromRoster('', ROSTERS['2026-09-26']), null);
 });
@@ -264,4 +264,119 @@ test('THE BUILD PANEL SENDS PICKS, NOT TYPING — and the phone view is thumb-si
   const ui = readFileSync(new URL('../src/components/DraftDriverList.jsx', import.meta.url), 'utf8');
   assert.match(ui, /isMobile \? 'min-h-\[44px\]/, 'every phone row and chip is a full thumb target');
   assert.match(ui, /isMobile \? 'p-2 text-\[16px\]'/, 'a 16px box, so iOS does not zoom the page on focus');
+});
+
+
+// ═══ HARDENING (2026-09-29 verification): what independent reviewers found wrong with the above ═══
+
+test('ROUTE NAMES: a trip filed by route NAME (what a board row\'s loadNbr holds) names that route — the list found no one for "suw" before', () => {
+  // nuvizz-list toBoardStop: `loadNbr: hasRoute ? r.routeName : null` — and loadKeyForStop reads loadNbr.
+  const src = readFileSync(new URL('../netlify/functions/lib/nuvizz-list.mts', import.meta.url), 'utf8');
+  assert.match(src, /loadNbr: hasRoute \? r\.routeName : null/, 'a board row carries the route NAME in loadNbr');
+  assert.equal(routeNameFromRoster('SUW 2', ROSTERS['2026-09-22']), 'SUW 2');
+  assert.equal(routeNameFromRoster('CHE', undefined), 'CHE', 'no roster cached for that day: the name still stands');
+  assert.equal(routeNameFromRoster('DAVIS000200099', ROSTERS['2026-09-22']), null, 'a load NUMBER the roster does not have is unknown, never guessed');
+  assert.equal(routeNameFromRoster('DAVIS000200001', ROSTERS['2026-09-22']), 'SUW 2', 'a load number the roster has is its name');
+  assert.equal(routeNameFromRoster('64f0a1b2c3d4e5f6a7b8c9d0', ROSTERS['2026-09-22']), null, 'an opaque id is not a name');
+  for (const bad of [5, 'abc', {}, { loads: [] }, null, undefined]) assert.equal(routeNameFromRoster('DAVIS000200001', bad), null, `a roster that is not a list names nothing: ${JSON.stringify(bad)}`);
+  const byName = [day('MIKE_F', '2026-09-24', ['SUW 2', 'SUW 2', 'CHE']), day('MIKE_F', '2026-09-26', ['SUW 2'])];
+  const row = draftableDrivers(byName, [], D, (date, k) => routeNameFromRoster(k, undefined)).find((d) => d.key === 'MIKE_F');
+  assert.deepEqual(row.routes, ['SUW 2', 'CHE'], 'the routes this driver runs, most often first');
+  assert.equal(filterDraftDrivers([row], 'suw').length, 1, 'so "suw" finds them');
+});
+
+test('A PLANNED LOAD WITH NO DRIVER IS NOT A DRIVER: "unknown" is not listed and not draftable — the engine\'s own roster is unchanged', () => {
+  const days = [...inTenant, day('unknown', '2026-09-26', ['CHE'])];
+  assert.ok(recentRosterKeys(days, D).has('unknown'), 'the engine still counts it, as before');
+  assert.ok(!draftableDrivers(days, EMPLOYEES, D, routeNameFor).some((d) => d.key === 'unknown'));
+  const r = resolveDraftDriverKey('unknown', EMPLOYEES, days, D);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /no driver on it/);
+});
+
+test('A STRAY DOCUMENT COSTS A ROW, NOT THE LIST: a non-string driver key, and a roster that is not a list, do not take the endpoint down', async () => {
+  const seed = seedFor();
+  seed['routing_driver_days/davis__2026-09-27__odd1'] = { tenant: 'davis', date: '2026-09-27', driver_key: 12345, trips: [] };
+  seed['routing_driver_days/davis__2026-09-27__odd2'] = { tenant: 'davis', date: '2026-09-27', driver_key: true, trips: [] };
+  for (const [i, bad] of ['5', '"abc"', '{}', '{"loads":[]}', 'null'].entries()) {
+    seed[`nuvizz_load_roster/davis__2026-09-2${i}x`] = { loadsJson: bad, at: '2026-09-27T22:00:00Z' };
+  }
+  seed['nuvizz_load_roster/davis__2026-09-22'] = { loadsJson: '5', at: '2026-09-22T22:00:00Z' };   // a real day in the window, unreadable
+  const fake = installFirestoreFake(seed);
+  try {
+    const res = await get(`?date=${D}`);
+    const body = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(body));
+    assert.deepEqual(body.drivers.map((d) => d.key).sort(), ['JALLEN', 'VICTOR', 'VICTOR_M'], 'the stray keys are not rows');
+    assert.deepEqual(body.drivers.find((d) => d.key === 'VICTOR_M').routes, ['CHE', 'SUW 2'], 'the unreadable day (09-22) lost its own route name — SUW 2 is counted once (09-24) instead of twice, so CHE now leads — and nothing else');
+  } finally { fake.restore(); }
+});
+
+test('A DATE THAT IS NOT A REAL DAY IS REFUSED, not a 500 and not a window for a different day — GET and POST', async () => {
+  const fake = installFirestoreFake(seedFor());
+  try {
+    for (const bad of ['2026-13-45', '2026-00-00', '2026-02-30', '2026-02-29', '2026-04-31', '2026-9-9']) {
+      const g = await get(`?date=${bad}`);
+      assert.equal(g.status, 400, `GET ${bad}`);
+      assert.match((await g.json()).error, /bad or missing date/);
+      const p = await post({ date: bad, driver_keys: ['VICTOR'] });
+      assert.equal(p.status, 400, `POST ${bad}`);
+    }
+    const leap = await get('?date=2028-02-29');
+    assert.equal(leap.status, 200, 'a real leap day is a real day');
+    assert.equal((await leap.json()).from, '2028-01-30');
+  } finally { fake.restore(); }
+});
+
+test('A FIRESTORE FAILURE READS AS A SENTENCE, not as the upstream error — the index name and project stay in the log', async () => {
+  const seen = [];
+  const fake = installFirestoreFake(seedFor(), (url) => {
+    if (String(url).includes(':runQuery')) return new Response('{"error":{"message":"The query requires an index for project davismarginiq collection routing_driver_days field date"}}', { status: 503 });
+    throw new Error(`no network call is allowed here: ${url}`);
+  });
+  const log = console.error; console.error = (...a) => seen.push(a.join(' '));
+  try {
+    const res = await get(`?date=${D}`);
+    assert.equal(res.status, 500);
+    const text = await res.text();
+    assert.match(text, /the driver list could not be read/);
+    assert.doesNotMatch(text, /davismarginiq|index/i, 'nothing of the upstream body reaches the browser');
+    assert.ok(seen.some((l) => /davismarginiq/.test(l)), 'the detail is in the server log');
+  } finally { console.error = log; fake.restore(); }
+});
+
+// ── the box, and what the button may send ─────────────────────────────────────────────────────
+test('THE BOX FOLDS ACCENTS and never mistakes text it cannot read for an empty box', () => {
+  // the codes carry no "jose" — only the name does, so the match has to read "José" as jose
+  const list = [{ key: 'JPEREZ', name: 'José Pérez', userName: 'JPEREZ', routes: [] }, { key: 'JSMITH', name: 'Joseph Smith', userName: 'JSMITH', routes: [] }];
+  assert.deepEqual(filterDraftDrivers(list, 'jose').map((d) => d.key), ['JPEREZ', 'JSMITH'], '"jose" finds José');
+  assert.deepEqual(filterDraftDrivers(list, 'josé').map((d) => d.key), ['JPEREZ', 'JSMITH'], '"josé" is one word, not "jos"');
+  assert.deepEqual(filterDraftDrivers(list, 'josé p').map((d) => d.key), ['JPEREZ']);
+  assert.deepEqual(filterDraftDrivers(list, 'pérez').map((d) => d.key), ['JPEREZ'], 'an accented query finds the plain letters too');
+  assert.deepEqual(filterDraftDrivers(list, 'perez').map((d) => d.key), ['JPEREZ'], 'and a plain one finds the accented name');
+  for (const unreadable of ['ñ', '李', '🚚', '---']) assert.deepEqual(filterDraftDrivers(list, unreadable).map((d) => d.key), unreadable === 'ñ' ? [] : [], `"${unreadable}" shows no one, not everyone`);
+  assert.deepEqual(filterDraftDrivers(list, '   ').length, 2, 'a box of spaces is an empty box');
+});
+
+test('THE DRAFT BUTTON SENDS ONLY PICKS THAT A LIST LOADED FOR THIS DATE VOUCHES FOR — not while it loads, not after it fails, not for another day', () => {
+  const list = [{ key: 'VICTOR' }, { key: 'JALLEN' }];
+  const picks = ['VICTOR', 'AARON_BAKER_8'];
+  assert.deepEqual(sendablePicks(picks, list, D, D), ['VICTOR'], 'a loaded list for this day keeps what it carries');
+  assert.deepEqual(sendablePicks(picks, null, D, D), [], 'still loading, or failed: nothing');
+  assert.deepEqual(sendablePicks(picks, list, '2026-09-28', D), [], 'a list for another day vouches for nothing on this one');
+  assert.deepEqual(sendablePicks(picks, list, D, '2026-09-30'), [], 'the date moved on and the new list has not arrived');
+  assert.deepEqual(sendablePicks(picks, [], D, D), [], 'an empty list vouches for nobody');
+  assert.deepEqual(sendablePicks(picks, list, D, ''), []);
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(app, /const draftPicked = useMemo\(\s*\(\) => sendablePicks\(draftPickedRaw, draftDrivers\.list, draftDrivers\.date, selectedDate\)/, 'the button and the POST read the gated picks, not the raw ones');
+  assert.match(app, /disabled=\{draftBusy \|\| !draftPicked\.length \|\| !engineGate\.allowed\}/, 'and the button stays disabled on them');
+});
+
+test('THE PHONE LIST NEVER FILLS THE WHOLE SHEET (30vh), a removed chip keeps a keyboard user\'s place on a desktop, and a truncated row carries its full text', () => {
+  const ui = readFileSync(new URL('../src/components/DraftDriverList.jsx', import.meta.url), 'utf8');
+  assert.match(ui, /isMobile \? 'max-h-\[30vh\]' : 'max-h-56'/);
+  assert.doesNotMatch(ui, /max-h-\[45vh\]/);
+  assert.match(ui, /onToggle\?\.\(k\); if \(!isMobile\) searchRef\.current\?\.focus\(\);/, 'focus returns to the box on desktop; on a phone it would raise the keyboard');
+  assert.match(ui, /ref=\{searchRef\} type="search"/);
+  assert.match(ui, /runs \$\{d\.routes\.join\(' · '\)\}/, 'the row title says the routes in full');
 });

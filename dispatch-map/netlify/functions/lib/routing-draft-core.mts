@@ -47,6 +47,7 @@ import {
 import { solveRoute, type EngineStop } from './routing-engine-solver.mts';
 import { pickReferences } from './routing-reference.mts';
 import { serviceTimeAsOf } from './routing-service-times.mts';
+import { isHashLikeId, looksLikeLoadNbr } from './route-identity.mts';
 
 const fold = (s: any) => String(s || '').trim().toUpperCase().replace(/\s+/g, '_');
 
@@ -68,7 +69,8 @@ export function recentRosterKeys(driverDaysBefore: any[], asOfDate: string, wind
   const out = new Set<string>();
   for (const d of driverDaysBefore || []) {
     const dt = String(d?.date || '');
-    if (dt >= from && dt < asOfDate && d?.driver_key && !SUPERVISOR_KEYS.has(d.driver_key)) out.add(d.driver_key);
+    // A key that is not a string can match nothing (a stray document must not take the list down).
+    if (dt >= from && dt < asOfDate && typeof d?.driver_key === 'string' && d.driver_key && !SUPERVISOR_KEYS.has(d.driver_key)) out.add(d.driver_key);
   }
   return out;
 }
@@ -189,12 +191,20 @@ export function resolveDraftDriverKey(
   if (SUPERVISOR_KEYS.has(driver_key)) {
     return { ok: false, error: `${driver_key} is a supervisor — the engine never drafts routes for supervisors` };
   }
+  if (NOT_A_PERSON_KEYS.has(driver_key)) {
+    return { ok: false, error: `${driver_key} is a planned load with no driver on it, not a driver — pick a driver from the list` };
+  }
   const recent = recentRosterKeys(driverDaysBefore, asOfDate);
   if (!recent.has(driver_key)) {
     return { ok: false, error: `${driver_key} has not run a route in the ${ROSTER_WINDOW_DAYS} days before ${asOfDate} — pick a driver from the list` };
   }
   return { ok: true, driver: describeDraftDriver(driver_key, driver_key, employeeForKey(employees, driver_key), driverDaysBefore, asOfDate, recent) };
 }
+
+// driverKeyFor files a planned stop with NO driver on it under the key 'unknown' (history-derive).
+// The engine's roster still counts it (unchanged); it is not a person to draft routes for, so the
+// list never offers it and a pick of it is refused.
+const NOT_A_PERSON_KEYS = new Set(['unknown']);
 
 export interface DraftableDriver {
   key: string;               // the exact driver_key the draft is sent
@@ -225,6 +235,7 @@ export function draftableDrivers(
   const recent = recentRosterKeys(rows, asOfDate);
   const out: DraftableDriver[] = [];
   for (const key of recent) {
+    if (NOT_A_PERSON_KEYS.has(key)) continue;
     const d = describeDraftDriver(key, key, employeeForKey(employees, key), rows, asOfDate, recent);
     const mine = rows.filter((r) => r?.driver_key === key && String(r.date) < asOfDate);
     const seen = new Map<string, { n: number; last: string }>();
@@ -250,15 +261,23 @@ export function draftableDrivers(
   return out.sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
 }
 
-// A trip's route name: a load_key with no load number carries it (routeName__driverUser —
-// loadKeyForStop); a load number is looked up in that day's load roster, exactly, or not at all.
-export function routeNameFromRoster(loadKey: string, rosterLoads: any[] | null | undefined): string | null {
+// A TRIP'S ROUTE NAME. A driver-day trip's load_key is loadKeyForStop's: the stop's `loadNbr`,
+// else `routeName__driverUser`. And a board row's `loadNbr` holds the route NAME, not the load
+// number (nuvizz-list toBoardStop: `loadNbr: hasRoute ? r.routeName : null`, the number being
+// `nuvizzLoadNbr`). So, in order: a key with `__` carries its name; a key that is a load number is
+// looked up in that day's roster, exactly, or names nothing; and any other key — one that is
+// neither number-shaped nor an opaque id — IS the route name the board stored. (Reading only
+// numbers left every driver whose days were filed by name with no routes, so "suw" found no one.)
+export function routeNameFromRoster(loadKey: string, rosterLoads: any): string | null {
   const k = String(loadKey ?? '').trim();
   if (!k) return null;
   const cut = k.indexOf('__');
   if (cut > 0) return k.slice(0, cut);
-  const hit = (rosterLoads || []).find((l) => String(l?.loadNbr ?? '').trim() === k);
-  return hit ? (String(hit?.name ?? '').trim() || null) : null;
+  const loads = Array.isArray(rosterLoads) ? rosterLoads : [];   // a roster that is not a list names nothing
+  const hit = loads.find((l) => String(l?.loadNbr ?? '').trim() === k);
+  if (hit) return String(hit?.name ?? '').trim() || null;
+  if (looksLikeLoadNbr(k) || isHashLikeId(k)) return null;   // a number this day's roster does not have: unknown, never guessed
+  return k;
 }
 
 // Live board row → AssignStop, via the ONE shared mapping (routing-plan-core's
