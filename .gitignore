@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 # Any throwaway comparison build (dist-base, dist-old): build output is never
 # committed, and one that was swept in by `git add -A` tripped Netlify's secret
