@@ -25,8 +25,8 @@
 //   ROUTING_BUILD_GREEN_MATCHES_PANEL=off  "only green on a 53′" means the hand mark only again
 //   ROUTING_BUILD_COUNTS_EXISTING=off      a picked load is offered its whole profile again
 //   ROUTING_BUILD_LEAVE_OFF_ENDS=off       full trucks leave off whatever the old assignment left,
-//                                          not the costliest end of their run (v1.88.0,
-//                                          lib/routing-assign-ends.mts)
+//                                          not the costliest end of their run
+//                                          (lib/routing-assign-ends.mts)
 // The job result carries `buildRules` saying which ran, so the position of each switch can be
 // read off any build rather than remembered.
 //
@@ -65,6 +65,12 @@ export function buildFreightFields(s: any, rules: Pick<BuildRules, 'countSkids'>
 // (routing-constraints capLimited), so "full" is a sliver nothing fits in, never 0.
 export const LOAD_FULL_ROOM = 1e-6;
 
+// Does this board row say anything about its freight? Any of the fields the Build reads counts.
+function hasFreight(row: any): boolean {
+  const n = (v: any) => v != null && v !== '' && Number.isFinite(Number(v)) && Number(v) > 0;
+  return n(row?.cartons) || n(row?.pallets) || n(row?.weight) || (Array.isArray(row?.stopDetails) && row.stopDetails.length > 0);
+}
+
 export interface ExistingLoadFreight { stopNbrs?: string[]; stops?: any[] }
 
 // Each planned load's truck, offered the room it has LEFT: its profile less the freight on the
@@ -89,7 +95,10 @@ export function trucksWithRoomLeft(
     let skids = 0, weightLbs = 0, unread = 0;
     for (const id of ids) {
       const row = boardById.get(id) || sent.get(id);
-      if (!row) { unread++; skids += 1; continue; }   // a stop nobody can read still takes a position
+      // A stop nobody can read still takes a position. "Nobody can read it" is no row at all OR a
+      // row that carries no freight — the browser sends { stopNbr } alone for a stop it cannot
+      // see, and that used to count 0 skids, so a full load was offered all its room.
+      if (!row || !hasFreight(row)) { unread++; skids += 1; continue; }
       const g = deriveGeometryDeterministic({ stopNbr: id, ...buildFreightFields(row, rules) });
       skids += g.skids;
       weightLbs += g.weightLbs;
@@ -105,7 +114,7 @@ export function trucksWithRoomLeft(
       stops: ids.length, skids, weightLbs: Math.round(weightLbs), unread,
       full: maxSkids === LOAD_FULL_ROOM || maxWeightLbs === LOAD_FULL_ROOM,
     };
-    return { ...t, maxSkids, maxWeightLbs, fullMaxSkids: t.maxSkids, fullMaxWeightLbs: t.maxWeightLbs };
+    return { ...t, maxSkids, maxWeightLbs, fullMaxSkids: t.maxSkids, fullMaxWeightLbs: t.maxWeightLbs, alreadyFull: existing[String(t.id)].full };
   });
   return { trucks: out, existing };
 }

@@ -22,6 +22,7 @@ import {
   computeLoad, capacityFits, capacityBreaches, equipmentOk, windowOk, emptyLoad, REASON, serviceStartSec,
 } from './routing-constraints.mts';
 import { DEFAULT_SERVICE_MIN } from './routing-types.mts';
+import { onTheWayM, outOfWayReason } from './routing-assign-ends.mts';
 
 function serviceSec(s: SolverStop): number {
   return Math.max(0, Number.isFinite(s.serviceMin) ? s.serviceMin : DEFAULT_SERVICE_MIN) * 60;
@@ -253,15 +254,44 @@ export function repair(input: SolverInput, output: SolverOutput, opts?: { origin
 
   // ── Phase B: try to recover spilled stops into any truck where they're valid ──
   const stillUnassigned: UnassignedStop[] = [];
-  for (const u of unassigned) {
+  const freedTrucks = new Set(spilledFrom.values());   // trucks Phase A took a stop off
+  // With the ends rule on, stops Phase A took off are offered first (their own truck first), then
+  // the solver's leftovers, so the room a window-drop freed goes back to the stop that left it
+  // before anyone else's. With it off, the order is exactly what it always was.
+  const phaseB = input.leaveOffEnds
+    ? [...unassigned.filter((u) => spilledFrom.has(u.stopId)), ...unassigned.filter((u) => !spilledFrom.has(u.stopId))]
+    : unassigned;
+  for (const u of phaseB) {
     const stop = stopById.get(u.stopId);
     if (!stop) { stillUnassigned.push(u); continue; }
     // ROUTING_BUILD_LEAVE_OFF_ENDS: the solver already chose which stops come off a full truck
     // (the end of a run, never a stop it drives past — lib/routing-assign-ends.mts) and already
     // gave room to overflow first. Re-inserting those here, into whichever truck in list order
     // has a skid spare, undid that — measured: a box sent 25 km into the other box's town for one
-    // skid. So only stops THIS loop took off (Phase A) are re-tried; the solver's choice stands.
-    if (input.leaveOffEnds && !spilledFrom.has(stop.id)) { stillUnassigned.push(u); continue; }
+    // skid. So a stop the SOLVER left off is offered only room THIS loop just made — a truck that
+    // lost a stop for its window in Phase A — and only when it is on that truck's way (no more
+    // driving than its average stop). Without that, a strict-window build left trucks light while
+    // stops that fit were listed "over skid capacity" (measured: 7.3% of routed skids).
+    if (input.leaveOffEnds && !spilledFrom.has(stop.id)) {
+      const freed = input.trucks.filter((t) => freedTrucks.has(t.id));
+      let taken = false;
+      for (const truck of freed) {
+        const mine = sets.get(truck.id)!;
+        if (!canInsert(stop, mine, truck, input, indexById, enforceWindows)) continue;
+        if (!onTheWayM(stop, orderForTruck(mine, input, indexById), input.depot)) continue;
+        sets.set(truck.id, [...mine, stop]);
+        taken = true;
+        break;
+      }
+      if (taken) continue;
+      // Still off. If a freed truck could carry it by capacity alone, "over skid capacity" is no
+      // longer true — say how far out of the way it is instead.
+      const roomy = freed.filter((t) => equipmentOk(stop, t).ok && capacityFits(computeLoad(sets.get(t.id)!), stop, t).ok);
+      stillUnassigned.push(roomy.length
+        ? { stopId: u.stopId, reasons: [outOfWayReason(stop, roomy.map((t) => ({ label: t.label || t.id, run: orderForTruck(sets.get(t.id)!, input, indexById) })), input.depot)] }
+        : u);
+      continue;
+    }
     let placed = false;
     const own = originFirst ? input.trucks.find((t) => t.id === spilledFrom.get(stop.id)) : undefined;
     const tryOrder = own ? [own, ...input.trucks.filter((t) => t !== own)] : input.trucks;

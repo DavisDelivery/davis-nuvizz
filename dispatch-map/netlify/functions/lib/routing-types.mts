@@ -83,6 +83,9 @@ export interface SolverTruck {
   maxWeightLbs: number;
   deckLengthIn: number;
   capabilities: TruckCapabilities;
+  /** Set by the Build (routing-build-rules) when a picked load already carries all it can: its
+   *  caps here are a sliver, not its real ones, so nothing fits — and the result says why. */
+  alreadyFull?: boolean;
 }
 
 export interface TimeWindowSec { startSec: number; endSec: number }
