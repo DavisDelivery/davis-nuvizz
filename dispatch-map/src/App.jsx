@@ -207,7 +207,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.90.3';
+const APP_VERSION = '1.90.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -261,6 +261,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.90.4', 'THE COMPARE ROW’S HOURS CHIP SAYS WHERE ITS HOURS REALLY CAME FROM, AND THE AUTO-HOURS SWITCH NOW PUTS EVERY LABEL BACK. Chad, Sep 28: “Yes — fix #1026 labels.” v1.74.2 (#1026) put auto-detected receiving hours on the Compare rows, but two of its label changes sat outside its off switch, and every chip whose hours nobody typed said “read from the order text”, even when they came from the address line or from no recorded source. Each chip now names its source the way the stop card does: set by a dispatcher, read from the order text, read from the address line, auto-detected, or source not recorded. One limit, the same as the stop card’s: the source is the scanner’s latest hours match for that customer, so a week read from the address line with Friday later re-read from an order can call Monday’s hours “read from the order text”; recording the source per day is its own change. With VITE_COMPARE_AUTO_HOURS=off the Compare rows read exactly as they did before #1026 (checked on about 60,000 chips). Nothing else on the card, the map or Send/Save changes. PUT IT BACK: VITE_COMPARE_AUTO_HOURS=off (build-time, so a redeploy), or revert this commit.'],
   ['1.90.3', 'THE SHADOW TAB’S CODE LOADS ONLY WHEN YOU OPEN IT, AND A TAB WHOSE CODE WILL NOT LOAD NO LONGER TURNS THE WHOLE PAGE WHITE. Chad, Sep 27: “12 yes” to loading the Shadow’s code only when its tab opens. The app’s main file is about 200 KB smaller (55 KB gzipped), so every start-up and every update fetches less; the first Shadow open of a visit now fetches its own file (about 57 KB gzipped), with “Loading the Shadow tab…” while it arrives. If the Shadow’s or the Quote tab’s file cannot load, that tab says so with a Reload button and what the browser said, and the rest of the app stays put — until now a Quote file that failed to load turned the whole page white. A new CI check fails any build that puts the Shadow back into the start-up file, and the layout guards now fail a tab showing that failure line instead of passing it as a working screen. The Build Panel, the Route Workbench and the map make the same requests and draw the same screen. PUT IT BACK: revert this commit.'],
   ['1.90.2', 'A STOP WITH A RECEIVING CLOCK AND A SHIPLIFY FORKLIFT NOW SHOWS BOTH: TWO ICONS. Chad, on PRO 007183542 (EXPRESS CONTAINER SERVICES): “this stop should have a double icons one for time and one for forklift.” It showed the clock alone. A restriction cluster used to veto the Shiplify forklift outright, because the forklift pin exists only where a stop would otherwise wear its plain colour; so a stop that had BOTH lost the forklift, which is how the freight comes off the truck. THE FORKLIFT NOW RIDES THE CLUSTER AS A DISC OF ITS OWN, after the clock: the pin’s lime ring, the same dark forklift, on a white ground, drawn from the same artwork as the pin and its Legend swatch. It goes after however many restrictions the stop has (a clock, a liftgate, an appointment), so nothing is hidden and nothing moves but the marker growing one slot wider. Where a dispatcher has confirmed no tractor trailer beside the clock, the disc wears the Box-only RED ring, on the same rule as the red-ring pin; an unconfirmed no does not turn it red. Every other rule is unchanged: a Shiplify dock still draws no pin beside a clock, and a selection, a search hit, a flag, do-not-send, an open route, a live status, a school / church / government mark, the amber address tint and the Estes ring all still win over the forklift. A house or school badge rides the clock’s disc, never on top of the forklift. The Legend counts the disc under the same forklift rows as the pin. THE WAY BACK: VITE_MAP_FORKLIFT_WITH_CLOCK=off (a redeploy) puts a clustered stop back to no forklift, byte for byte. 12 new tests.'],
   ['1.90.1', 'THE ROLLBACK TOOL GOES BY THE VERSION EACH BUILD ACTUALLY SHOWED, MAIN’S MERGE TITLES MATCH THEIR PR, AND OLD CHANGELOG ROWS THAT PROMISED THE WRONG WAY BACK ARE CORRECTED. npm run rollback now reads each build’s version from that build’s own code, not from its merge title: #1027 merged under the title v1.74.3 while it shipped v1.75.1, so asking for v1.74.3 used to land on the wrong build. A drop that cannot really be undone (a true merge commit, or a revert git refuses outright) now stops and says so instead of reading “comes out cleanly”. Auto-merge now writes each PR’s own title as its commit title on main. Old rows corrected, each with a dated note: the switches in v1.56.0, v1.65.0 and v1.76.0 take effect after a redeploy, not without one; rows that promised “revert this commit” now say how many conflicts that revert hits and point at rolling back to a time instead; and v1.75.1, v1.76.0 and v1.77.1 described their feature wrongly. The Version history list no longer scrolls sideways on a phone. Nothing on the board, the map or the Route Workbench changes, and 0 NuVizz calls. PUT IT BACK: revert this commit.'],
@@ -1352,7 +1353,8 @@ const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 // VITE_WB_OWN_DAY_ROSTER=off puts back the old refusal. Build-time, so flipping it is a redeploy.
 const WB_OWN_DAY_ROSTER_ON = wbOwnDayRosterEnabled(import.meta.env);
 // Auto-detected receiving hours on the Compare row, marked "· auto" (lib/time-marks.js timeMarkChip).
-// VITE_COMPARE_AUTO_HOURS=off puts the row back to typed-only. Build-time, so flipping it is a redeploy.
+// VITE_COMPARE_AUTO_HOURS=off puts the row back to typed-only, icon labels included (TimeMarkChip and
+// RESTRICTION_ICONS.hours_on_file read it too). Build-time, so flipping it is a redeploy.
 const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 // The Compare row prints the whole window ("7:00a–2:30p"), not just the binding edge, when both are on
 // file (lib/time-marks.js timeMarkChip). VITE_COMPARE_FULL_WINDOW=off puts back "closes 2:30p". Build-time.
@@ -1868,7 +1870,9 @@ const RESTRICTION_ICONS = {
   // because this is a fact about the customer and not a warning about this build — the same
   // distinction the chip's own comment draws between the clock and the preflight badge.
   hours_on_file: {
-    label: 'Receiving hours on file',
+    // Read when DRAWN (a getter): building this table reads no switch, so the pin and legend tests
+    // can lift it as plain data. Switch off, only typed hours wear this key, and it says so again.
+    get label() { return COMPARE_AUTO_HOURS_ON ? 'Receiving hours on file' : 'Receiving hours on file — typed by a dispatcher'; },
     short: 'Hours on file',
     bg: '#475569',
     accent: '#475569',
@@ -21644,9 +21648,9 @@ function TimeMarkChip({ mark, isMobile }) {
       title={mark.title}
       className={`inline-flex items-center gap-0.5 shrink-0 font-semibold text-slate-600 ${isMobile ? 'text-[10px]' : 'text-[9px]'}`}
     >
-      <RestrictionIcon kind={mark.kind} size={isMobile ? 13 : 12} title={mark.title} />{mark.text}
-      {/* WHERE THE TIME CAME FROM, on the row: a window read from the order text says so, in
-          the quiet weight, so it is never mistaken for one a dispatcher typed. */}
+      <RestrictionIcon kind={mark.kind} size={isMobile ? 13 : 12} title={COMPARE_AUTO_HOURS_ON ? mark.title : undefined} />{mark.text}
+      {/* WHERE THE TIME CAME FROM, on the row: hours nobody typed say so, in the quiet weight,
+          so they are never mistaken for ones a dispatcher typed; the title names the source. */}
       {mark.auto && <span className="font-normal text-slate-400">&nbsp;· auto</span>}
     </span>
   );

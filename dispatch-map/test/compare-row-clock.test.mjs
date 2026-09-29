@@ -39,7 +39,8 @@ test('the row prints the TIME, never the icon alone', () => {
   // v0.54.83 found four values reachable only through a title= tooltip, which a touch
   // device never shows. A clock face with no clock on it is the fifth.
   // v1.68.3: the icon's hover title is now the chip's own (typed vs read from the order); the text still sits beside it.
-  assert.ok(/<RestrictionIcon kind=\{mark\.kind\} size=\{isMobile \? 13 : 12\} title=\{mark\.title\} \/>\{mark\.text\}/.test(src),
+  // 2026-09-28 (Chad: "Both label edits go behind VITE_COMPARE_AUTO_HOURS"): only while the switch is on.
+  assert.ok(/<RestrictionIcon kind=\{mark\.kind\} size=\{isMobile \? 13 : 12\} title=\{COMPARE_AUTO_HOURS_ON \? mark\.title : undefined\} \/>\{mark\.text\}/.test(src),
     'TimeMarkChip must render mark.text beside the glyph, at both view sizes.');
 });
 
