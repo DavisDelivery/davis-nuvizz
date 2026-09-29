@@ -15,7 +15,8 @@ test('the chip has a data source: notes + the BOARD day reach both workbench vie
   assert.equal(n, 2, `expected the mobile AND desktop RoutingWorkbench to pass notes+dayKey, found ${n}`);
   assert.ok(
     // v1.68.3 (Chad approved auto hours on the row) added the switch argument; the data source is unchanged.
-    /const chip = timeMarkChip\(notes\.get\(s\.matchKey\), dayKey, \{ autoHours: COMPARE_AUTO_HOURS_ON \}\);/.test(src),
+    // v1.87.1 (Chad: "i want opening too") added the full-window switch; the data source is unchanged.
+    /const chip = timeMarkChip\(notes\.get\(s\.matchKey\), dayKey, \{ autoHours: COMPARE_AUTO_HOURS_ON, fullWindow: COMPARE_FULL_WINDOW_ON \}\);/.test(src),
     'the card must resolve each row\'s note by matchKey — the same key the map draws from.',
   );
 });
@@ -44,7 +45,7 @@ test('the row prints the TIME, never the icon alone', () => {
 
 test('the mark is the MAP\'s mark — one rule, not a second one', () => {
   // v1.85.1 added the can't-make hours line's helper and switch to the same import.
-  assert.ok(src.includes("import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS, compareAutoHoursEnabled, unreachableHoursMark, compareUnreachableHoursEnabled } from './lib/time-marks.js';"),
+  assert.ok(src.includes("import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS, compareAutoHoursEnabled, unreachableHoursMark, compareUnreachableHoursEnabled, compareFullWindowEnabled } from './lib/time-marks.js';"),
     'the chip must come from time-marks.js; a locally-derived clock is a second rule that can drift.');
 });
 
@@ -66,6 +67,14 @@ test('a hopeless verdict gets the hours on their own line above it; switch off �
     + 'still suppressed only when the badge names the SAME minute — "30m late" beside "closes 2:00p" must survive.',
   );
   const hours = src.indexOf('<TimeMarkChip mark={hoursLine} isMobile={isMobile} />');
-  const badge = src.indexOf('<PreflightStopBadge v={pf} isMobile={isMobile} />');
+  const badge = src.indexOf('<PreflightStopBadge v={pf} isMobile={isMobile}');
   assert.ok(hours > 0 && badge > hours, 'two lines, in Chad\'s order: the hours first, then "can\'t make".');
+});
+
+// Chad, 2026-09-28: "I'd rather have the amount of time the system's going to think it's going to be
+// late than the can't make it tag." The badge words are executed in preflight-badge-words.test.mjs;
+// this pins that the row asks for them only when its hours line is showing.
+test('a row showing its hours line asks its badge for HOW LATE, behind its own switch', () => {
+  assert.ok(src.includes('<PreflightStopBadge v={pf} isMobile={isMobile} lateOverCantMake={COMPARE_UNREACHABLE_LATE_ON && !!hoursLine} />'));
+  assert.ok(src.includes('const text = preflightBadgeWords(v, { lateOverCantMake });'), 'one rule for the badge words — lib/route-preflight.js');
 });

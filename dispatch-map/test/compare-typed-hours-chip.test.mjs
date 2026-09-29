@@ -149,6 +149,7 @@ test('VITE_COMPARE_AUTO_HOURS: default on, an off-word turns it off, a typo leav
 
 test('the Compare row passes the switch, and draws the auto marker', () => {
   const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-  assert.match(src, /timeMarkChip\(notes\.get\(s\.matchKey\), dayKey, \{ autoHours: COMPARE_AUTO_HOURS_ON \}\)/);
+  // v1.87.1 added fullWindow beside it (Chad: "i want opening too"); the auto switch still rides the call.
+  assert.match(src, /timeMarkChip\(notes\.get\(s\.matchKey\), dayKey, \{ autoHours: COMPARE_AUTO_HOURS_ON, fullWindow: COMPARE_FULL_WINDOW_ON \}\)/);
   assert.match(src, /\{mark\.auto && <span className="font-normal text-slate-400">&nbsp;· auto<\/span>\}/);
 });

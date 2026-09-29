@@ -258,7 +258,12 @@ export function timeMarkChip(note, dayKey, opts = {}) {
   // early-close mark cannot be reached without a close, opens-late cannot be reached
   // without an open — so no branch here can print a clock for a time nobody stated.
   let text;
-  if (kind === 'hours_shuts_early' || kind === 'hours_early_close') text = `closes ${fmtMin(c)}`;
+  // THE WHOLE WINDOW WHEN BOTH EDGES ARE ON FILE (opts.fullWindow; the Compare row passes
+  // VITE_COMPARE_FULL_WINDOW). Chad, 2026-09-29, on CHRIS HEAD's rows reading "closes 2:30p · auto":
+  // "i dont' want just the closing time i want opening too." A dock that states only one edge still
+  // prints that edge alone — "closes 2:30p", never an invented "–2:30p".
+  if (opts.fullWindow === true && o != null && c != null) text = `${fmtMin(o)}–${fmtMin(c)}`;
+  else if (kind === 'hours_shuts_early' || kind === 'hours_early_close') text = `closes ${fmtMin(c)}`;
   // BOTH-EDGE MARKS PRINT BOTH EDGES. These two are the only kinds whose whole point is that
   // neither edge alone describes the stop, and the branches above guarantee both times exist
   // — each is reachable only with an open AND a close on file — so the chip can state the
@@ -313,6 +318,14 @@ export function unreachableHoursMark(mark) {
     : o != null ? `opens ${fmtMin(o)}`
       : `closes ${fmtMin(c)}`;
   return { ...mark, text };
+}
+
+/** VITE_COMPARE_FULL_WINDOW — house shape: default on, an off-word turns it off, anything
+ *  malformed leaves it on. Off puts the Compare row back to the one binding edge ("closes 2:30p").
+ *  Build-time, so flipping it is a redeploy. */
+export function compareFullWindowEnabled(env) {
+  const v = String(env?.VITE_COMPARE_FULL_WINDOW ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
 }
 
 /** VITE_COMPARE_UNREACHABLE_HOURS — house shape: default on, an off-word turns it off, anything

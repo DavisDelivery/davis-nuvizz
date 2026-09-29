@@ -44,7 +44,7 @@
 //
 // ZERO NETWORK. Pure: the stops, the notes and the travel calibration are already in the
 // browser. Measured at 2.9 ms for 60 stops across 6 routes, so it can run on every drag.
-import { computeBoardFlags } from './board-flags.js';
+import { computeBoardFlags, fmtMin } from './board-flags.js';
 import { resolveLegMinutes } from './travel-model.js';
 import { haversineMeters } from './routing-select.js';
 
@@ -222,4 +222,39 @@ export function routePreflight({
     judged: judgeable.length,
     routeKey: key,
   };
+}
+
+// ── THE WORDS ON A STOP'S BADGE ──────────────────────────────────────────────
+//
+// Chad, 2026-09-28, once a can't-make row carried its hours on their own line (v1.85.1): "If
+// there's not enough room on the can't make 12 p.m. line to put the amount of time it would be
+// late, then I think I'd rather have the amount of time the system's going to think it's going to
+// be late than the can't make it tag."
+//
+// So when the row already shows the hours (`lateOverCantMake` — the close is on the line above),
+// an unreachable stop's badge says HOW LATE instead of "can't make 12:00p". The badge keeps its
+// no-entry glyph and its "unreachable in any order" hover, so it still reads as unreachable. A row
+// with no hours line keeps "can't make 12:00p", because there the close would be printed nowhere.
+const durText = (m) => {
+  const v = Math.abs(Math.round(Number(m) || 0));
+  return v >= 60 ? `${Math.floor(v / 60)}h ${v % 60}m` : `${v}m`;
+};
+/**
+ * PURE. The text on a stop's preflight badge, or null for a stop that makes its window.
+ * @param v    one entry of routePreflight().stops
+ * @param opts.lateOverCantMake  the row shows the hours on their own line
+ */
+export function preflightBadgeWords(v, { lateOverCantMake = false } = {}) {
+  if (!v || !v.late) return null;
+  const hasLate = v.lateBy != null && Number.isFinite(Number(v.lateBy));
+  if (v.hopeless && !(lateOverCantMake && hasLate)) return `can’t make ${fmtMin(v.closeMin)}`;
+  return `${durText(v.lateBy)} late`;
+}
+
+/** VITE_COMPARE_UNREACHABLE_LATE — house shape: default on, an off-word turns it off, anything
+ *  malformed leaves it on. Off puts "can't make 12:00p" back on a row that shows its hours.
+ *  Build-time, so flipping it is a redeploy. */
+export function compareUnreachableLateEnabled(env) {
+  const v = String(env?.VITE_COMPARE_UNREACHABLE_LATE ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
 }

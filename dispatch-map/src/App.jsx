@@ -88,7 +88,7 @@ import { singleOrderOpId, singleOrderCreatedMsg } from './lib/single-order-op.js
 import { filterLabelRows, labelRowsForPick } from './lib/label-shippers.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
-import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS, compareAutoHoursEnabled, unreachableHoursMark, compareUnreachableHoursEnabled } from './lib/time-marks.js';
+import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS, compareAutoHoursEnabled, unreachableHoursMark, compareUnreachableHoursEnabled, compareFullWindowEnabled } from './lib/time-marks.js';
 import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUEUE_DAYS_AHEAD, addDays as rangeAddDays } from './lib/history-range.js';
 // ADDRESS / CITY SEARCH (v1.62.0) — the same module the endpoint and the nightly digest writer use,
 // so the screen can never build a query the server reads differently.
@@ -154,7 +154,7 @@ import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // wide the panel being placed actually is.
 const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
-import { routePreflight } from './lib/route-preflight.js';
+import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled } from './lib/route-preflight.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
@@ -193,7 +193,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.87.0';
+const APP_VERSION = '1.87.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -247,6 +247,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.87.1', 'EVERY COMPARE ROW WITH HOURS NOW SHOWS WHEN THE DOCK OPENS AS WELL AS WHEN IT CLOSES — AND A “CAN’T MAKE” STOP SAYS HOW LATE IT WOULD BE. Chad, 2026-09-29, on CHRIS HEAD’s rows reading “closes 2:30p · auto”: “i dont’ want just the closing time i want opening too.” The row printed only the edge that binds; it now prints the whole window on file (SIMS RECYCLING 7:00a–2:30p · auto), and a dock that states only one edge still says just that edge, never an invented half. VITE_COMPARE_FULL_WINDOW=off puts back “closes 2:30p”. AND: Chad, 2026-09-28, once those rows carried their hours on their own line: “If there’s not enough room on the can’t make 12 p.m. line to put the amount of time it would be late, then I think I’d rather have the amount of time the system’s going to think it’s going to be late than the can’t make it tag.” So on a Compare row that shows its hours (GENESIS BIOSCIENCES: 8:00a–12:00p · auto), the line under it now reads “2H 4M LATE” instead of “CAN’T MAKE 12:00P” — the close is already on the line above. It keeps the no-entry glyph and its hover (“Unreachable in any order …”), so it still reads as a stop no re-ordering will save. A row with no hours on file keeps “can’t make 12:00p”, because there the close would be printed nowhere. Merely-late rows are unchanged. VITE_COMPARE_UNREACHABLE_LATE=off puts “can’t make” back (build-time, so a redeploy). Zero NuVizz calls. 7 new tests.'],
   ['1.87.0', 'STEP 4\u2019S BY DRIVER IS A LIST YOU PICK FROM \u2014 TYPING ONLY NARROWS IT. Chad, on the box that read \u201cVictor, Scott\u201d: \u201cThis should be a list that i select from not a type in situation other than type in to find the name or route to select.\u201d NOW: step 4 \u00b7 Engine \u00b7 By driver lists every driver who ran a route in the 30 days before the day being built \u2014 the roster the engine computes every stop\u2019s candidates against, never the boss \u2014 A\u2192Z, each row saying the truck the draft will plan them on (Tractor / Box truck, the same rule the draft uses, pinned by test) and the routes they run most (\u201cRuns SUW 2 \u00b7 CHE\u201d, read exactly off each day\u2019s cached load roster, never guessed). Tap up to four; they show as chips you can tap off. The box above the list finds a driver by name, NuVizz code or route \u2014 \u201csuw\u201d finds whoever runs Suwanee \u2014 and only narrows the list; nothing typed is ever sent. The Draft button sends the picked drivers\u2019 exact keys, so the two typed-name faults the QA review found cannot happen from this screen: a code like VICTOR landing on the OTHER Victor (the one with an employee card), and \u201cAllen, John\u201d read as two people. SAID PLAINLY: the list is narrower than the old box in one case \u2014 a driver whose last route was more than 30 days ago. Typed, the box still drafted them with a \u201cterritory data may be stale\u201d warning; the list leaves them off, because the same rule would list every driver who has left. The 30 is ROSTER_WINDOW_DAYS, one number. TWO VIEWS: on a phone every row and chip is a 44px thumb target and the box is 16px so iOS does not zoom; on a desktop the rows are compact. The list opens in flow and scrolls itself, like the route card\u2019s driver search. WHAT IT READS: one windowed query of the driver days, the employees roster and the cached load rosters \u2014 Firestore only, zero NuVizz calls. Typed names are still accepted by the endpoint for anything else that sends them. PUT IT BACK: one commit \u2014 its revert puts the text box back. 14 new tests, including the real endpoint on an in-memory Firestore; 14 deliberate breaks of the rules each turn a test red. A role the engine refuses is not sent for the list at all \u2014 they see the reason under the button, as before.'],
   ['1.86.0', 'THE BUILD BUTTON STOPS A TRUCK AT WHAT IT CAN CARRY, AND ONLY GREEN ON A 53\u2032 MEANS THE GREEN THE PANEL PAINTS. Chad, after a Build onto CHE (a 53\u2032) and SCOTT (a 26\u2032 box) put 24 stops and 30 skids on the box and one stop on the trailer, with the Selected panel reading \u201cleaves 11 a tractor can run\u201d: \u201ca 14 skid box truck stops with 14 skids and if not enough green stops to fit on a tractor then it stops there too or at 30 skids either one. then lists everything that didn\u2019t fit.\u201d READ OFF THE CODE, THREE THINGS STOOD IN THE WAY, and the real Build pipeline reproduces the screen from them \u2014 on a 26-stop board of the same shape it put 1 stop on CHE and 25 stops, 33 real skids, on SCOTT, having counted 0: (1) SKIDS WERE NOT COUNTED \u2014 the Build was sent pallets, weight and line items but never cartons, the field NuVizz carries the skid count in, so a stop\u2019s skids came only from lines itemised in pallets and a box filled on weight alone; (2) \u201cGREEN\u201d WAS NARROWER THAN THE PANEL\u2019S \u2014 with \u201cOnly green on a 53\u2032\u201d ticked the Build held every stop without a HAND-PAINTED green to a box, while the panel paints green for the painted mark, the \u201cTractor trailer friendly\u201d badge and a tractor having delivered there; (3) WHAT A LOAD ALREADY CARRIES WAS NOT COUNTED \u2014 a load that already holds stops was handed its whole truck again. NOW, on the same board: CHE takes the 11 stops the panel paints green (16 skids), SCOTT stops at exactly 14 skids, and the 6 stops that fit nowhere are listed with the reason (\u201cover skid capacity\u201d). A tractor stops at its own profile\u2019s skids too \u2014 the shipped tractor profile says 28; if yours holds 30 that is one field in Profiles. The browser sends the panel\u2019s own answer (stopTractorFriendly, the rule the Selected rows, \u201cDrop N non-tractor\u201d and the bottom grid already share) and what each picked load carries; the server counts both with its own freight rule. The panel\u2019s green only answers what the tick asks \u2014 a red Box-only mark, a hand-ticked No tractor trailer or No 53ft, and a Uline advisory still keep a 53\u2032 away exactly as before. Fill my loads reads the same green under the same tick, so the two buttons still agree on the same stop. A load that already carried freight reports its true load against its whole truck in the result (not \u201c9 / 9\u201d). PUT IT BACK, one rule at a time, each a Netlify switch read only in lib/routing-build-rules.mts: ROUTING_BUILD_COUNT_SKIDS=off, ROUTING_BUILD_GREEN_MATCHES_PANEL=off (both buttons), ROUTING_BUILD_COUNTS_EXISTING=off; every build\u2019s result says which ran (result.buildRules). WHAT IT TOUCHES: the Build Panel \u2014 the Build button\u2019s request and the server build path, and Fill my loads\u2019 request; the Compare cards, staging, Save and the map are untouched. 13 new tests run the real Build handler on an in-memory Firestore with every other network call refused, including Chad\u2019s board as it was and as it is now; ten deliberate breaks of the rules each turn a test red. A stop already on a load that is selected again is counted once, as a stop being re-planned.'],
   ['1.85.1', 'A “CAN’T MAKE” STOP NOW SHOWS ITS HOURS, ON THEIR OWN LINE. Chad, 2026-09-28, with MCKESSON (“CAN’T MAKE 11:00A”) and GENESIS BIOSCIENCES (“CAN’T MAKE 12:00P”) on SUW and no hours anywhere on either row: “2 stops can’t meet receiving hours however the hours are not listed on the card why?” — then “make it 2 rows on the card one with the hours and 2 with can’t make 12 or whatever.” The card used to drop a stop’s hours whenever the verdict named the same close, which hid when the dock OPENS and where the hours came from. A can’t-make row now reads two lines under the name: the whole window on file first (MCKESSON 7:00a–11:00a; GENESIS 8:00a–12:00p · auto, because those were read from the order text), then the CAN’T MAKE verdict. Only the half on file is ever stated — a dock with no opening time reads “closes 11:00a”, never an invented window. Every other row is unchanged, on the phone and the desktop. VITE_COMPARE_UNREACHABLE_HOURS=off puts back the verdict alone (build-time, so a redeploy). Zero NuVizz calls. 4 new tests; the pinned suppression test rewritten to the new rule with Chad’s words on it.'],
@@ -1327,9 +1328,16 @@ const WB_OWN_DAY_ROSTER_ON = wbOwnDayRosterEnabled(import.meta.env);
 // Auto-detected receiving hours on the Compare row, marked "· auto" (lib/time-marks.js timeMarkChip).
 // VITE_COMPARE_AUTO_HOURS=off puts the row back to typed-only. Build-time, so flipping it is a redeploy.
 const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
+// The Compare row prints the whole window ("7:00a–2:30p"), not just the binding edge, when both are on
+// file (lib/time-marks.js timeMarkChip). VITE_COMPARE_FULL_WINDOW=off puts back "closes 2:30p". Build-time.
+const COMPARE_FULL_WINDOW_ON = compareFullWindowEnabled(import.meta.env);
 // A "can't make" row keeps its hours, on their own line above the verdict (lib/time-marks.js
 // unreachableHoursMark). VITE_COMPARE_UNREACHABLE_HOURS=off puts back the verdict alone. Build-time.
 const COMPARE_UNREACHABLE_HOURS_ON = compareUnreachableHoursEnabled(import.meta.env);
+// On such a row the verdict says HOW LATE ("2h 4m late") instead of "can't make 12:00p" — the close is
+// on the hours line above (lib/route-preflight.js preflightBadgeWords). VITE_COMPARE_UNREACHABLE_LATE=off
+// puts "can't make" back. Build-time.
+const COMPARE_UNREACHABLE_LATE_ON = compareUnreachableLateEnabled(import.meta.env);
 // A Stop lookup note save writes only the fields the rep changed (lib/customer-note-edit.js).
 // VITE_NOTE_SAVE_CHANGED_ONLY=off puts back the whole-draft write. Build-time, so flipping it is a redeploy.
 const NOTE_SAVE_CHANGED_ONLY_ON = noteSaveChangedOnlyEnabled(import.meta.env);
@@ -21505,12 +21513,10 @@ const durMin = (m) => {
 
 /** One stop's verdict, inline on its row. Renders NOTHING for a stop that makes its window —
  *  a green tick on every good row is a wall of ticks, and the eye stops seeing the red one. */
-function PreflightStopBadge({ v, isMobile }) {
+function PreflightStopBadge({ v, isMobile, lateOverCantMake = false }) {
   if (!v || !v.late) return null;
   const style = TIER_STYLE[v.tier] || TIER_STYLE.amber;
-  const text = v.hopeless
-    ? `can’t make ${fmtMin(v.closeMin)}`
-    : `${durMin(v.lateBy)} late`;
+  const text = preflightBadgeWords(v, { lateOverCantMake });
   const title = v.hopeless
     ? `Unreachable in any order: the earliest we could be there from the yard is ${fmtMin(v.earliestMin)} and they close at ${fmtMin(v.closeMin)}.`
     : `Estimated arrival ${fmtMin(v.etaMin)} against a ${fmtMin(v.closeMin)} close${v.hoursTier === 'assumed' ? ' (no hours on file — 5pm assumed)' : v.hoursTier === 'auto' ? ' (hours auto-detected — verify)' : ''}. Moving it earlier on the route should clear it.`;
@@ -21623,7 +21629,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
   if (dayKey && notes) {
     for (const s of rows) {
       if (s.__unresolved) continue;
-      const chip = timeMarkChip(notes.get(s.matchKey), dayKey, { autoHours: COMPARE_AUTO_HOURS_ON });
+      const chip = timeMarkChip(notes.get(s.matchKey), dayKey, { autoHours: COMPARE_AUTO_HOURS_ON, fullWindow: COMPARE_FULL_WINDOW_ON });
       if (chip) timeMarkByStop.set(String(s.stopNbr), chip);
     }
   }
@@ -21895,7 +21901,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
                   )}
                   {(pf?.late || tm) && (
                     <div className={`flex items-center gap-1 flex-wrap ${isMobile ? 'mt-1' : 'mt-0.5'}`}>
-                      <PreflightStopBadge v={pf} isMobile={isMobile} />
+                      <PreflightStopBadge v={pf} isMobile={isMobile} lateOverCantMake={COMPARE_UNREACHABLE_LATE_ON && !!hoursLine} />
                       <TimeMarkChip mark={tm} isMobile={isMobile} />
                     </div>
                   )}
