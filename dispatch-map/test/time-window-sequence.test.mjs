@@ -32,7 +32,7 @@ test('THE ASK: the far stop that closes early goes first, and the late badge goe
   assert.equal(res.after.late, 0);
   // Judged by the SAME check the card's badges read.
   assert.equal(routePreflight({ ...base(A_CLOSES_930), order: res.order }).lateCount, 0);
-  assert.equal(timeWindowSummary(res, 'MARCUS'), 'Re-sequenced MARCUS · Time windows — 1 late (50m in all) → 0 late');
+  assert.equal(timeWindowSummary(res, 'MARCUS'), 'Re-sequenced MARCUS · Time windows — 1 late (50m in all) → 0 late · last stop 10:20a → 10:44a', 'the cost is said: the day ends 24m later');
 });
 
 test('never worse: a card that already makes every window keeps its order and says so', () => {
@@ -57,7 +57,7 @@ test('a typed OPENING is respected: the stop that opens at 9:30a is not reached 
   assert.equal(res.after.early, 0);
   assert.equal(res.after.late, 0, 'without making anything late');
   assert.notEqual(res.order[0], 'F');
-  assert.match(timeWindowSummary(res, 'MARCUS'), /before a typed opening 1 → 0/);
+  assert.match(timeWindowSummary(res, 'MARCUS'), /before an opening 1 → 0/);
 });
 
 test('an AUTO opening is not chased — auto hours can invent one ("DELIVER BY 2PM" reads 6:00a–2:00p)', () => {
@@ -157,5 +157,58 @@ test('the Re-sequence handler scores with the SAME route key, departure, travel 
     assert.match(src, /dayKey: weekdayKeyFromDate\(selectedDate\)/);
     assert.match(src, /depot: ROUTING_DEPOT/);
   }
+  assert.match(win, /defaultSlots: detectDefaultSlots\(stops\)/, 'the board\'s vendor-default slots reach the optimizer');
   assert.match(APP, /\{COMPARE_TIME_WINDOWS_ON && <option value="windows">Time windows — fewest late<\/option>\}/);
+});
+
+// ── BOOKED WINDOWS AND APPOINTMENTS COUNT, NOT RECEIVING HOURS ALONE ─────────
+//
+// Chad, 2026-09-28: "optimizes to the time restrictions". A stop's clock is the merged rule the route
+// builder reads (order window / appointment + receiving hours + closed day), so a booked slot moves the
+// order too. Numbers below were measured on the real engine before being pinned.
+const eta = (stops, order, notes = new Map()) => Object.fromEntries(
+  routePreflight({ stopById: stops, notes, routeKey: 'MARCUS', servedDate: '2026-09-29', dayKey: 'tue', depot, order }).stops.map((s) => [s.stopNbr, s.etaMin]));
+const booked = (id, lat, lng, from, to) => ({ ...stop(id, lat, lng), scheduledFrom: `2026-09-29T${from}:00`, scheduledTo: `2026-09-29T${to}:00` });
+const SOUTH = () => new Map([['B', STOPS.get('B')], ['C', STOPS.get('C')], ['D', STOPS.get('D')], ['E', STOPS.get('E')]]);
+
+test('a 9:30a–12:00p ORDER WINDOW: the stop by the depot is not delivered at 8:04a, it goes last', () => {
+  const s = SOUTH(); s.set('F', booked('F', 33.69, -84.49, '09:30', '12:00'));
+  const args = { ...base(new Map()), stopById: s };
+  assert.equal(eta(s, ['F', 'B', 'C', 'D', 'E']).F, 484, 'distance order reaches F at 8:04a, before its window opens');
+  const res = timeWindowSequence({ ...args, order: ['F', 'B', 'C', 'D', 'E'] });
+  assert.deepEqual(res.before, { late: 0, early: 1, lateMin: 0, finish: 572 });
+  assert.equal(res.after.early, 0);
+  assert.equal(res.after.late, 0);
+  assert.equal(res.order[res.order.length - 1], 'F');
+  assert.ok(eta(s, res.order).F >= 9 * 60 + 30 && eta(s, res.order).F <= 12 * 60, 'F is now reached inside its window');
+  // The cost of making the window is SAID: the day ends later than the shortest order.
+  assert.equal(timeWindowSummary(res, 'MARCUS'), 'Re-sequenced MARCUS · Time windows — none late · before an opening 1 → 0 · last stop 9:32a → 9:50a');
+});
+
+test('a 9:00a–9:30a BOOKED APPOINTMENT: the order lands the stop inside its slot', () => {
+  const s = SOUTH(); s.set('G', booked('G', 33.69, -84.49, '09:00', '09:30'));
+  const res = timeWindowSequence({ ...base(new Map()), stopById: s, order: ['G', 'B', 'C', 'D', 'E'] });
+  assert.equal(res.before.early, 1, 'G first is reached at 8:04a, an hour early for its slot');
+  assert.equal(res.after.early, 0);
+  const at = eta(s, res.order).G;
+  assert.ok(at >= 9 * 60 && at <= 9 * 60 + 30, `G reached at ${at}`);
+});
+
+test('the vendor\'s default creation slot is NOT an appointment (detectDefaultSlots keeps it out)', () => {
+  const s = SOUTH(); s.set('G', booked('G', 33.69, -84.49, '09:00', '09:30'));
+  const withDefault = timeWindowSequence({ ...base(new Map()), stopById: s, order: ['G', 'B', 'C', 'D', 'E'], defaultSlots: new Set(['540-570']) });
+  assert.equal(withDefault.before.early, 0);
+  assert.equal(withDefault.changed, false);
+});
+
+test('the card\'s own late verdict is never ignored, and a stop closed today adds nothing to the ranking', () => {
+  const s = SOUTH();
+  // B is shut on Tuesdays (typed) and also carries an impossible 8:00a close: the card would flag it, no order can serve it.
+  const notes = new Map([['mB', { ...typed('7:00', '8:00'), closed_days: ['tue'], manual_overrides: { receiving_hours: true, closed_days: true } }]]);
+  const res = timeWindowSequence({ ...base(notes), stopById: s, order: ['B', 'C', 'D', 'E'] });
+  assert.equal(res.before.late, 0, 'a closed stop is left out of the count');
+  const open = new Map([['mC', typed('7:00', '8:10')]]);   // C is open but closes before the truck can get there in this order
+  const r2 = timeWindowSequence({ ...base(open), stopById: s, order: ['B', 'C', 'D', 'E'] });
+  const pf = routePreflight({ ...base(open), stopById: s, order: ['B', 'C', 'D', 'E'] });
+  assert.equal(r2.before.late, pf.lateCount, 'what the badges show, the ranking counts');
 });
