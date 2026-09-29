@@ -154,6 +154,7 @@ import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // wide the panel being placed actually is.
 const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
+import { editorClosedDay, toggleClosedPatch, dropClosedPrints, unusedStoredClosedDays, closedDaysFromOrderEnabled } from './lib/closed-days.js';
 import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled } from './lib/route-preflight.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
@@ -193,7 +194,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.87.5';
+const APP_VERSION = '1.88.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -247,6 +248,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.88.1', 'CLOSED ON MONDAYS IS READ FROM THE ORDER IN FRONT OF US, EVERY TIME, NEVER STORED FROM AN OLD ONE. Chad: “the closed on Fridays and closed on Mondays. I want those to be read live every time an order comes in. and not stored because we had a situation where a delivery today was marked closed on Mondays, but the new orders do not signify that. And therefore we did not deliver it.” (PRO 007182580.) SANTA FE TORTILLAS: a June 19 order said “CLOSED ON MONDAYS”; the scanner stored Monday as closed on the customer and only ever added days, so Monday 9/28’s order, which says nothing about Mondays, was treated as a closed dock and left off the trucks. NOW a closed day counts only when THIS order’s own text says it (its instructions and address line, read off the list every scan) or a dispatcher typed it on the customer; a day the scanner stored from an older order counts for nothing, and the scanner no longer stores order-text closed days. Every place that decides reads the order it is looking at: the board flag (red, quoting the order), the time-restrictions report, the route builder’s closed-today exclusion and the route time windows. The notes editor shows a closed day ticked only when it counts, says which stored days are not used, and ticking one makes it the dispatcher’s. STILL READING THE OLD STORED DAYS, named rather than left to be found: the map pin’s closed badge, the Routing hours line, the stop panel’s hours display, the stop lookup summary and the AI search; a follow-up. THE WAY BACK: CLOSED_DAYS_FROM_ORDER=off with VITE_CLOSED_DAYS_FROM_ORDER=off (the server rule now, the screen after a redeploy) puts the stored-day rule back on both sides. Zero NuVizz calls.'],
   ['1.87.5', 'A LOAD BUILT IN THE PORTAL NOW OPENS IN COMPARE WITHOUT CHANGING THE DATE, AND A CARD THAT CANNOT OPEN SAYS WHY. Chad: “tony will not pull up in the compare panel even though its a fresh scan. It was built in nuvizz not our system but should still pull up in our system unless when i hit refresh it doesn’t load the roster scan?” He was right, read off the code: the Routing screen read the day’s loads roster once, when the date was picked, and neither Refresh nor the two-minute auto-refresh read it again. TONY 1 was built in the portal and captured by the 9:36 PM scan, after the screen had opened 9/29; its stops carry no load id, so the card needs the roster to know which NuVizz load it is, found nothing there, and refused. The refusal was written to the Setup panel, which is hidden whenever the map has the full width, so nothing on screen said why. NOW every newer scan makes the screen re-read the STORED roster for the date (never a NuVizz call) and use it when it is a newer capture with loads in it; a failed, missing or empty read keeps the roster already on screen, because could-not-read is not no-loads. And a card that cannot open says why on the map as well. THE WAY BACK: VITE_ROUTING_ROSTER_REREAD=off (a redeploy) puts both back. 6 new tests.'],
   ['1.87.4', 'A FORKLIFT STOP YOU MARK NO TRACTOR TRAILER NOW WEARS A RED RING INSTEAD OF DISAPPEARING. Chad: “on a stop that i mark no tractor trailer but the shiplfy data says they have a forklift just make the green ring red instead.” Until now the mark made the Shiplify forklift pin vanish: a stated no vetoes the lime, and the stop drew its no-trailer icon instead, so the map stopped saying there is a forklift at exactly the stop where a box truck is now the plan and the forklift is how the freight comes off. The same forklift pin now draws in the Box-only red. WHAT COUNTS AS YOUR MARK is the map’s own rule for a stated no: Box truck only, or a confirmed “No tractor trailer”. An advisory no, read off order text and never checked, keeps its split icon. IT REPLACES THE NO-TRAILER MARK AND NOTHING ELSE: a stop that also draws a clock, a liftgate or any other restriction keeps its cluster, so nothing is hidden; a selection, a search hit, a flag, do-not-send, an open route, a live status, a school / church / government mark, the amber address tint and the Estes ring all still win, exactly as they do over the green ring. Only the forklift pin changes; a Shiplify dock is untouched. On a pickup the PU keeps the middle and the forklift rides a red corner badge, never a lime one. The Legend has its own row, “Shiplify: forklift, marked no tractor trailer”, counted from what the map drew, and a red-ring stop is no longer counted under the no-trailer icon it replaced. THE WAY BACK: VITE_MAP_FORKLIFT_RED_RING=off (a redeploy) puts every such stop back to exactly what it drew before, byte for byte. 11 new tests, and the Legend-equals-map test widened to cover it.'],
   ['1.87.3', 'THE WRITE JOURNAL NOW KEEPS WHICH STOPS EACH SAVE SENT. Chad, after BRIAN was refused at 8:38 and 8:39 PM with “load has a non-DO stop in a delivery slot that this card is not sequencing”: “maybe the journal should save this information.” The journal could say the 8:37 Save of BRIAN worked and the next two were refused, and could NOT say which stops any of the three carried, because it kept each Save’s RESULT and never what the card sent. That the 8:37 Save carried the LOCKHEED MARTIN pickup and the 8:38 card no longer listed it had to be worked out from a board stamp and the guard’s own rule instead of read. EVERY SAVE’S ROW NOW CARRIES, per load, the stop numbers in the order the card sent them and the ones it struck off, with the load, the board day and which screen built it; the board write-through that follows a Save names its stops too, not just how many. READ BACK FOR FREE: the write log takes ?stop= (the Saves that carried a stop) and ?load= (every Save of a load, the refused ones included), and the stop explain now lists every Save of the stop’s route that day and says of each “sent 16 stops — NOT this one” or “sent 17 stops, this one #17”, so “when did the card lose it” is a lookup. BOUNDED so the journal row can never outgrow itself: 300 stops a load and 12 loads a Save, and a cut says it cut. Nothing on screen changes and nothing a Save sends to NuVizz changes: zero NuVizz calls. Rows written before this release have no list and read exactly as they did. PUTTING IT BACK IS ONE REVERT. 17 new tests.'],
@@ -10121,12 +10123,10 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [], stop 
       manual_overrides: { ...(D.manual_overrides || {}), receiving_hours: true },
     });
   };
-  const toggleClosed = (day) => {
-    const current = Array.isArray(D.closed_days) ? D.closed_days : [];
-    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
-    setD({ closed_days: next, manual_overrides: { ...(D.manual_overrides || {}), closed_days: true } });
-  };
-  const isClosed = (day) => Array.isArray(D.closed_days) && D.closed_days.includes(day);
+  // Closed days come from each ORDER now, plus what a dispatcher types here (lib/closed-days.js):
+  // a day shows ticked only when it counts, and ticking one makes it the dispatcher's.
+  const toggleClosed = (day) => setD(toggleClosedPatch(D, day));
+  const isClosed = (day) => editorClosedDay(D, day);
   const copyMondayToWeekdays = () => {
     const monClosed = isClosed('mon');
     const monHours = D.receiving_hours?.mon;
@@ -10146,6 +10146,8 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [], stop 
         patch.receiving_hours[d] = typeof monHours === 'string' ? monHours : { open: monHours.open || '', close: monHours.close || '' };
       }
     }
+    // Days the dispatcher just set are theirs — drop the scanner's old fingerprints for them.
+    if (closedDaysFromOrderEnabled()) Object.assign(patch, dropClosedPrints(D, weekdays));
     setD(patch);
     setCopyToast(true);
     setTimeout(() => setCopyToast(false), 1500);
@@ -10298,6 +10300,11 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [], stop 
             );
           })}
         </div>
+        {unusedStoredClosedDays(D).length > 0 && (
+          <div className="text-[10px] text-slate-500 mb-2">
+            Not used: closed {unusedStoredClosedDays(D).map((x) => x.toUpperCase()).join(', ')} — read from an old order. Each order's own instructions decide now; tick a day to keep it closed.
+          </div>
+        )}
         <div className="flex items-center gap-2 mb-2">
           <button type="button" onClick={copyMondayToWeekdays}
             disabled={!isClosed('mon') && !(D.receiving_hours?.mon && (typeof D.receiving_hours.mon === 'string' ? D.receiving_hours.mon : (D.receiving_hours.mon.open || D.receiving_hours.mon.close)))}

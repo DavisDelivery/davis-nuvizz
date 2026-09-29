@@ -14,6 +14,13 @@ import { decideWrite } from '../src/lib/customer-notes-writer.ts';
 // lazy) precisely so this file can load. Stubs stand in for serverTimestamp/deleteField.
 const STAMPS = { serverTimestamp: () => ({ __serverTimestamp: true }), deleteField: () => ({ __deleteField: true }) };
 const write = (stop, existing) => decideWrite(stop, existing, STAMPS);
+// Storing closed days from order text is the OLD rule, behind CLOSED_DAYS_FROM_ORDER=off (lib/closed-days.js
+// — Chad, 2026-09-28: closed days are "read live every time an order comes in. and not stored").
+const withStoredClosedDays = (fn) => {
+  const prev = process.env.CLOSED_DAYS_FROM_ORDER;
+  process.env.CLOSED_DAYS_FROM_ORDER = 'off';
+  try { return fn(); } finally { if (prev === undefined) delete process.env.CLOSED_DAYS_FROM_ORDER; else process.env.CLOSED_DAYS_FROM_ORDER = prev; }
+};
 
 const scannedStop = (over = {}) => ({
   matchKey: 'acme|1 main|buford|30518',
@@ -35,13 +42,29 @@ test('an hours-ONLY detection writes — no equipment flag required', () => {
   assert.equal(d.payload.auto_matches.receiving_hours[0].text, 'HOURS 8AM-2PM');
 });
 
-test('a closed-day-ONLY detection writes — no equipment flag required', () => {
+test('a closed-day-ONLY detection writes — no equipment flag required (old rule, switch off)', () => withStoredClosedDays(() => {
   const d = write(scannedStop({
     closedDaysResult: [{ day: 'fri', matchedSource: 'orderInstructions', matchedText: 'CLOSED ON FRIDAYS' }],
   }), undefined);
   assert.ok(d, 'closed-day-only scan must produce a write decision');
   assert.deepEqual(d.payload.closed_days, ['fri']);
   assert.equal(d.payload.auto_matches.closed_days[0].pattern, 'closed_fri');
+}));
+
+test('NOW: an order\'s "CLOSED ON FRIDAYS" is never stored on the customer — every reader asks the order', () => {
+  // SANTA FE TORTILLAS: a June order's "CLOSED ON MONDAYS" stored this way kept a September Monday
+  // delivery off the trucks when the September order said nothing of the kind.
+  const only = write(scannedStop({
+    closedDaysResult: [{ day: 'fri', matchedSource: 'orderInstructions', matchedText: 'CLOSED ON FRIDAYS' }],
+  }), undefined);
+  assert.equal(only, null, 'a closed-day-only detection no longer writes anything');
+  const withHours = write(scannedStop({
+    hoursResult: HOURS,
+    closedDaysResult: [{ day: 'mon', matchedSource: 'orderInstructions', matchedText: 'CLOSED ON MONDAYS' }],
+  }), undefined);
+  assert.ok(withHours, 'the hours still write');
+  assert.equal(withHours.payload.closed_days, undefined, 'but no closed day rides along');
+  assert.equal(withHours.payload.auto_matches?.closed_days, undefined);
 });
 
 test('a dismissed equipment advisory must not drag co-occurring hours down with it', () => {
@@ -105,7 +128,7 @@ test('legacy per-day hours the scanner cannot prove it wrote are never flattened
   assert.equal(d.payload.receiving_hours, undefined, 'legacy per-day hours must survive');
 });
 
-test('already-recorded closed days are a no-op; a NEW day still writes', () => {
+test('already-recorded closed days are a no-op; a NEW day still writes (old rule, switch off)', () => withStoredClosedDays(() => {
   const existing = { closed_days: ['fri'] };
   assert.equal(write(scannedStop({
     closedDaysResult: [{ day: 'fri', matchedSource: 'orderInstructions', matchedText: 'CLOSED ON FRIDAYS' }],
@@ -115,7 +138,7 @@ test('already-recorded closed days are a no-op; a NEW day still writes', () => {
   }), existing);
   assert.ok(d);
   assert.deepEqual([...d.payload.closed_days].sort(), ['fri', 'mon'], 'union keeps the old day');
-});
+}));
 
 test('no signals at all still writes nothing', () => {
   assert.equal(write(scannedStop(), undefined), null);

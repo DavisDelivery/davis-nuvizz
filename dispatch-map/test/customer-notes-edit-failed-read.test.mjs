@@ -19,7 +19,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import * as lucide from 'lucide-react';
 import { liftFromApp, libExports } from './helpers/app-lift.mjs';
 
-const libs = await libExports(['place-mark.js', 'place-glyphs.js', 'map-legend.js', 'time-marks.js', 'trailer-block.js', 'matchKey.js']);
+const libs = await libExports(['place-mark.js', 'place-glyphs.js', 'map-legend.js', 'time-marks.js', 'trailer-block.js', 'matchKey.js', 'closed-days.js']);
 const APP_SRC = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const lucideNames = /import\s*\{([^}]*)\}\s*from 'lucide-react'/.exec(APP_SRC)[1]
   .split(',').map((x) => x.trim()).filter(Boolean)

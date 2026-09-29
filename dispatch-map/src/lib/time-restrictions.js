@@ -360,8 +360,9 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
   }
 
   // ── shut today ──────────────────────────────────────────────────────────────
-  const closedToday = dayKey ? !!closedDayTier(note, dayKey) : false;
-  if (closedToday) { kinds.push('closed_day'); sources.add('Customer notes (closed day)'); }
+  const closedTier = dayKey ? closedDayTier(note, dayKey, stop) : null;
+  const closedToday = !!closedTier;
+  if (closedToday) { kinds.push('closed_day'); sources.add(closedTier === 'order' ? 'Order instructions (closed day)' : 'Customer notes (closed day)'); }
 
   // ── AM/PM preference a dispatcher set by hand ───────────────────────────────
   // AM means be there before noon; PM means do not come before it. Expressed in the same
