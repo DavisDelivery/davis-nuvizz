@@ -38,7 +38,11 @@ import { driverKeyFor, stopMatchKey } from './history-derive.mts';
 import {
   getPlanMeta, setPlanMeta, listPlanStops, upsertPlanStops,
   setAttemptsManifest, upsertAttemptItems,
+  readHolderDoc, writeHolderDoc,
 } from './attempts-store.mts';
+import {
+  attHolderEnabled, nextHolders, holderFor, planRecordFromHolder, HOLDER_VERSION,
+} from './att-holder.mts';
 
 const TENANT = 'davis';
 
@@ -152,9 +156,9 @@ export function buildPlanRecord(s: any, date: string, capturedAt: string): any {
 }
 
 // One attempts-list item: a stop now carrying the ATT marker, joined back to the
-// morning plan record by stopNbr. `matched` = the morning plan knew a driver for it
-// (true for every item produced from the snapshot; the field is kept so a future
-// midday-add path can surface unmatched attempts honestly rather than dropping them).
+// plan-shaped record that names who had it — the 8:30 freeze's, or (v1.99.0) one built from
+// the day's who-had-it record where the freeze had nothing (attributeAttempts). `matched` =
+// that record knew a driver; an item with neither is written unmatched rather than dropped.
 export function buildAttemptItem(plan: any, current: any, date: string, detectedAt: string): any {
   const matched = !!(plan.driverUserName || plan.driverName);
   return {
@@ -215,9 +219,76 @@ export async function capturePlanSnapshot(date: string): Promise<any> {
   return { date, ok: true, source, planned: records.length, totalStops: stops.length };
 }
 
+// ── all day: who had each stop before it failed (v1.99.0, lib/att-holder.mts) ─
+//
+// Called by the */15 list scan right after it writes TODAY's board, with the rows it just wrote.
+// ZERO NuVizz calls: one Firestore read, and one write only when a stop was dispatched, moved or
+// newly marked since the last scan. THROWS when the day's record cannot be read — the caller skips
+// that cycle rather than writing over the day (see readHolderDoc).
+export async function recordAttHolders(date: string, stops: any[], at: string): Promise<any> {
+  if (!attHolderEnabled()) return { date, skipped: 'disabled (NUVIZZ_ATT_HOLDER=off)' };
+  const doc = await readHolderDoc(TENANT, date);
+  const step = nextHolders(doc?.stops || null, stops, at);
+  const total = Object.keys(step.holders).length;
+  if (!step.changed) return { date, changed: false, total, ...step.counts };
+  await writeHolderDoc(TENANT, date, {
+    tenant: TENANT, date, version: HOLDER_VERSION,
+    firstAt: doc?.firstAt || at, updatedAt: at,
+    stops: step.holders,
+  });
+  return { date, changed: true, total, ...step.counts };
+}
+
+/**
+ * PURE. The evening join: each ATT stop → an attempts-list item with the driver who had it.
+ *
+ * The 8:30 freeze wins wherever it has the stop — every attempt it attributed before v1.99.0 keeps
+ * exactly that driver. Only where it has nothing does the day's record answer (`holders`, from
+ * recordAttHolders; null = the freeze alone, exactly the pre-v1.99.0 join). `attributedFrom` says
+ * which one did, so a row is never read as the freeze's answer when it was the record's.
+ */
+export function attributeAttempts(
+  attemptStops: any[],
+  planByNbr: Map<string, any>,
+  holders: Record<string, any> | null,
+  date: string,
+  detectedAt: string,
+): any[] {
+  const items: any[] = [];
+  for (const cur of attemptStops || []) {
+    // Defensive: only keep stops actually carrying the ATT marker (the saved search already
+    // filters to these, but never trust a feed blindly).
+    if (!cur || !cur.stopNbr || !isAttemptShipment(cur.shipmentNbr)) continue;
+    const nbr = String(cur.stopNbr);
+    const fromPlan = planByNbr.get(nbr);
+    const hit = fromPlan ? null : holderFor(holders, nbr);
+    const p = fromPlan || (hit ? planRecordFromHolder(hit, nbr) : { stopNbr: nbr });
+    const item = buildAttemptItem(p, cur, date, detectedAt);
+    item.attributedFrom = fromPlan ? 'plan' : hit ? (hit.via === 'stop' ? 'holder' : 'holder-original') : null;
+    if (hit) item.holderFrozen = !!hit.rec.frozenAt;
+    items.push(item);
+  }
+  return items;
+}
+
 // ── 8:00pm: find attempts + join back to the morning driver ───────────────────
 export async function runAttemptScan(date: string): Promise<any> {
   const [plan, planMeta] = await Promise.all([listPlanStops(TENANT, date), getPlanMeta(TENANT, date)]);
+  // Who had each stop before it failed, from the day's scans. Read leniently: a missing or
+  // unreadable record leaves the join exactly as it was before v1.99.0 (the 8:30 freeze only),
+  // and the manifest says which of the two happened.
+  let holders: Record<string, any> | null = null;
+  let holderState: 'off' | 'absent' | 'read' | 'unreadable' = 'off';
+  if (attHolderEnabled()) {
+    try {
+      const doc = await readHolderDoc(TENANT, date);
+      holders = doc?.stops || null;
+      holderState = doc ? 'read' : 'absent';
+    } catch (e: any) {
+      holderState = 'unreadable';
+      console.warn(`[att-scan] date=${date} holder record unreadable (${e?.message}); attributing from the 8:30 freeze only`);
+    }
+  }
   const detectedAt = new Date().toISOString();
 
   // ONE NuVizz call: pull the ATTEMPTS saved search (Shipment Number starts-with "att",
@@ -239,22 +310,17 @@ export async function runAttemptScan(date: string): Promise<any> {
   const planByNbr = new Map<string, any>();
   for (const p of plan) if (p && p.stopNbr) planByNbr.set(String(p.stopNbr), p);
 
-  const items: any[] = [];
-  for (const cur of attemptStops) {
-    // Defensive: only keep stops actually carrying the ATT marker (the saved search already
-    // filters to these, but never trust a feed blindly).
-    if (!cur || !cur.stopNbr || !isAttemptShipment(cur.shipmentNbr)) continue;
-    const p = planByNbr.get(String(cur.stopNbr)) || { stopNbr: String(cur.stopNbr) };
-    items.push(buildAttemptItem(p, cur, date, detectedAt));
-  }
+  const items = attributeAttempts(attemptStops, planByNbr, holders, date, detectedAt);
 
   const matched = items.filter((it) => it.matched).length;
+  const matchedByHolder = items.filter((it) => it.matched && String(it.attributedFrom || '').startsWith('holder')).length;
   await upsertAttemptItems(TENANT, date, items);
   const counts = {
     candidates: plan.length,       // morning-plan size (the attribution source)
     found: attemptStops.length,    // rows the attempts filter returned
     attempts: items.length,        // confirmed ATT stops written
-    matched,                       // attempts we could attribute to a morning driver
+    matched,                       // attempts attributed to a driver (8:30 freeze or the day's record)
+    matchedByHolder,               // …of which the day's record answered (the 8:30 freeze had no driver)
     unmatched: items.length - matched,
   };
   // Manifest LAST.
@@ -262,10 +328,11 @@ export async function runAttemptScan(date: string): Promise<any> {
     tenant: TENANT, date, generatedAt: detectedAt,
     planSnapshotAt: planMeta?.capturedAt ?? null,
     planMissing: !planMeta,
+    holder: holderState,
     fetchOk,
     counts, ok: true,
   });
-  console.log(`[att-scan] date=${date} ${JSON.stringify(counts)} planMissing=${!planMeta} fetchOk=${fetchOk} (1 NuVizz call)`);
+  console.log(`[att-scan] date=${date} ${JSON.stringify(counts)} planMissing=${!planMeta} holder=${holderState} fetchOk=${fetchOk} (1 NuVizz call)`);
   return { date, ok: true, ...counts };
 }
 

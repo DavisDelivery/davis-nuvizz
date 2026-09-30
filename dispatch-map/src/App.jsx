@@ -51,7 +51,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -158,7 +158,7 @@ import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } fro
 import { dropSide, dropSideClass, dropRight } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel, routingRosterRereadEnabled, rosterRereadApplies } from './lib/roster-freshness.js';
 // Time windows on the Compare card's Re-sequence menu (v1.89.0) — scored by the card's own preflight.
-import { timeWindowSequence, timeWindowSummary, compareTimeWindowsEnabled } from './lib/time-window-sequence.js';
+import { timeWindowSequence, timeWindowSummary, compareTimeWindowsEnabled, timeWindowsMilesCapEnabled } from './lib/time-window-sequence.js';
 import { detectDefaultSlots } from './lib/time-restrictions.js';
 import { PARSE_SCHEDULE_LABEL, parsePollOverdue } from './lib/manifest-schedule.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
@@ -168,7 +168,7 @@ const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 import { computeStopProgress } from './lib/stop-progress.js';
 import { editorClosedDay, toggleClosedPatch, dropClosedPrints, unusedStoredClosedDays, closedDaysFromOrderEnabled } from './lib/closed-days.js';
-import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, travelForServedDate } from './lib/route-preflight.js';
+import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, preflightCountsEveryLateStopEnabled, travelForServedDate } from './lib/route-preflight.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
@@ -210,7 +210,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.98.7';
+const APP_VERSION = '1.99.6';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,7 +264,13 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.98.7', 'ERRORS NOW READ AS PLAIN SENTENCES. Chad: “Can you make it simple sentence when there is an error that looks less like code.” When a Save, a new route, an address fix or a note was refused, the screen showed the server’s own diagnostic — “commitBoard(rwb): load DAVIS000204039 has 5 stop(s) the board isn’t showing (…) — a declarative RWB save would unplan them. Refresh and retry.” NOW it says what happened and what to do: “Not saved. NuVizz has 5 orders on this route that your screen isn’t showing yet (…). Saving now would take them off the truck — refresh, then Save again.” Every wording was written from a real refusal in the write log (September: 104 failed writes, and every one of them now reads plainly). Route names instead of load numbers, except when two routes share a name (BUFORD on two days). Nothing is claimed that the server did not say, and no instruction is dropped. A message nobody has seen before keeps its own words, with only the code-looking prefix taken off. The full technical text is still in the write log. VITE_PLAIN_ERRORS=off puts back the old words (a redeploy). Zero NuVizz calls.'],
+  ['1.99.6', 'ERRORS NOW READ AS PLAIN SENTENCES. Chad: “Can you make it simple sentence when there is an error that looks less like code.” When a Save, a new route, an address fix or a note was refused, the screen showed the server’s own diagnostic — “commitBoard(rwb): load DAVIS000204039 has 5 stop(s) the board isn’t showing (…) — a declarative RWB save would unplan them. Refresh and retry.” NOW it says what happened and what to do: “Not saved. NuVizz has 5 orders on this route that your screen isn’t showing yet (…). Saving now would take them off the truck — refresh, then Save again.” Every wording was written from a real refusal in the write log (September: 104 failed writes, and every one of them now reads plainly). Route names instead of load numbers, except when two routes share a name (BUFORD on two days). Nothing is claimed that the server did not say, and no instruction is dropped. A message nobody has seen before keeps its own words, with only the code-looking prefix taken off. The full technical text is still in the write log. VITE_PLAIN_ERRORS=off puts back the old words (a redeploy). Zero NuVizz calls.'],
+  ['1.99.5', 'TIME WINDOWS NOW WEIGHS MILES: A MISSED WINDOW IS WORTH A COUPLE OF MILES, NOT 15 OR 20. Asked what one late stop is worth to the Time windows re-sequence, Chad: \u201cFor the time windows, I mean, a couple of miles is worth it, but not 15 or 20 miles.\u201d Tested on 1,120 real routes with made-up receiving hours, it had taken 390 late stops to 7 for 10.7% more road miles and crossed the route over on 355 cards; it never looked at miles. Now each late stop is priced at 2 of the card header\u2019s miles, and it takes the order with the fewest miles plus that price, never with more late stops than the card. A stop reached before a booked window or a typed opening is treated the same way (never more of them than the card, 2 miles each) \u2014 Chad priced late stops, and pricing an early one the same is this release\u2019s reading, so a booked slot the card makes is not given up to save miles. So a late stop is made when making it costs 2 miles or less against the shortest order that leaves it late. Measured again after a Shortest distance press: 390 late \u2192 250 for 0.1% FEWER road miles, crossing cards 0 \u2192 56; the 243 late stops it no longer chases had cost 9,299 road miles, about 38 a stop. SAID PLAINLY: a far stop that can only be made by driving 20 extra miles is now left late, and the line says why; the menu still reads \u201cTime windows \u2014 fewest late\u201d. The line says the miles now: \u201c1 late \u2192 0 late \u00b7 14.7 \u2192 15.7 mi\u201d. The 2 is one line to move. THE WAY BACK: VITE_TIME_WINDOWS_MILES_CAP=off (a redeploy) puts back the search that never looked at miles. 9 new tests.'],
+  ['1.99.4', 'CLOSEST FIRST WITHOUT THE ONE-TOWN-AT-A-TIME RULE, TO TRY. Asked whether Closest first should keep the Sep 10 \u201cone town at a time\u201d rule \u2014 measured on 1,120 real routes, the rule changes Closest first\u2019s order on 228 of them and there adds 29 self-crossings and removes none \u2014 Chad: \u201cKeep the closest first. Try closest without it on the number four option.\u201d So Closest first on the Compare card\u2019s Re-sequence menu (straight line and road box) and on the Build-result card\u2019s menu is now the plain shortest sweep out from Buford. What it does, measured: on straight lines it changes 228 routes, shorter on 191 (2.1% fewer miles on those), 29 crossings gone and none added, but it now visits a town twice on 161 of them, the shape the rule was written for on JEFF; with the road box, 57 crossings gone and 41 added. By eye it is mixed: NELSON 09-03 and TREVARR 09-17 stop crossing themselves, TRAILER 6 09-16 now drives past its first stops and comes back. Farthest first keeps the town rule; the Build Panel engine and Return to warehouse are untouched. THE WAY BACK: VITE_CLOSEST_FIRST_WITHOUT_TOWNS=off (a redeploy) puts the town rule back on Closest first. 5 new tests.'],
+  ['1.99.3', 'A STOP GOOGLE CANNOT ROUTE NO LONGER COUNTS AS ZERO MILES ON A COMPARE CARD\u2019S ROAD BOX. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 3. With the road box ticked, the card asks Google for road distances between its stops. Where Google had no route for a pair, or left it out of its answer, the card was handed a free 0-mile, 0-minute leg, so that stop looked like the cheapest one on the card and the order was built around it. The route builder has priced such a leg at the straight-line road estimate (1.3 \u00d7 crow-flies) since A5-S27-4; the card now does the same. Every leg Google could drive is still Google\u2019s. Server-only: no screen code changed. THE WAY BACK: ROAD_BOX_ESTIMATE_UNROUTABLE=off (a redeploy) puts the old 0-mile reading back for the card alone; the builder keeps its own switch, ROUTE_MATRIX_ESTIMATE_UNROUTABLE. 3 new tests, 1 updated.'],
+  ['1.99.2', 'EVERY LATE STOP ON A COMPARE CARD GETS ITS BADGE, HOWEVER MANY THERE ARE. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 2. The flag panel folds more than 12 red (25 amber, 40 critical) rows of one kind into a single summary line, and the card\u2019s late check read only rows that name a stop, so the whole batch vanished from the card: thirteen stops each 15 minutes past a typed close showed NO late badge, where twelve showed twelve. Time windows scores orders with the same check and used the gap: on a 30-stop card it reported \u201c23 late \u2192 0 late\u201d for an order that really had 26 late, by making three more stops late to push the card past the cap. Now the card reads the stops behind the summary line too, and Time windows reads them the same way, so the badges and the re-sequence cannot disagree. The board\u2019s flag panel and the alerts are untouched. THE WAY BACK: VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP=off (a redeploy) puts the old reading back for both. 4 new tests.'],
+  ['1.99.1', 'A LATE ROAD REPLY NO LONGER PUTS A STOP BACK ON A CARD IT LEFT. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 1. With the road box ticked, a re-sequence pick lands the straight-line order at once and the road order after Google replies, and that road order was computed from the stops the card held at the pick. A stop dragged to another card, or removed, while the reply was out came back with it: it sat on two cards and Save sent it on both loads, or it sat in the order and the removals at once and its unplan was never sent. Now the road order lands on the card as it is when the reply arrives: only the stops still on it, in the road order, then anything added meanwhile. Nothing else about the re-sequence changes, and a reply that lands on an unchanged card gives exactly the order it always did. THE WAY BACK: VITE_ROAD_REPLY_DROPS_MOVED_STOPS=off (a redeploy) puts the old reading back. 6 new tests.'],
+  ['1.99.0', 'ATTEMPTS NAME THE DRIVER WHO HAD THE ORDER, NOT JUST THE ONE WHO HAD IT AT 8:30. Chad: \u201cWhy are we freezing the snapshot at 8:30 when we have Firestore data all day long of scans that are being ran constantly?\u201d The evening attempts list names a driver by looking each failed stop up in the 8:30 freeze, and the freeze only keeps a stop that had a driver AT 8:30 \u2014 so a route built overnight and dispatched later in the day was missing from it whole, and every failure on it was written with no driver. Order 007182021 on 9/25: planned onto CHRIS HEAD at 1:29 AM, dispatched to Chris Head at 12:43 PM, failed, unplanned at 5:58 PM \u2014 written as Unknown, with six more that day. NOW every 15-minute scan keeps, for each of today\u2019s stops, the driver it was on the last time it was seen routed and not yet marked ATT, and locks that the moment the ATT marker appears, so a same-day re-plan onto the next driver cannot overwrite it. The evening list uses it ONLY where the 8:30 freeze has nothing: every attempt the freeze already names keeps exactly that driver. A \u201c-1\u201d copy with no record of its own is named from its original stop. Each row says where its driver came from (plan / holder / holder-original). See it for any day, free: nuvizz-attempts?date=YYYY-MM-DD&holders=1 \u2014 the day\u2019s record beside every attempt, and whether it agrees with the 8:30 freeze where both named someone. WHAT DID NOT CHANGE: the 8:30 freeze, what it records and who reads it; where any order is filed. Starts with today\u2019s scans; days already past are not filled in by this change. NUVIZZ_ATT_HOLDER=off stops the recording and the fallback together (a Netlify environment setting, no code change). Zero NuVizz calls.'],
   ['1.98.6', '＋ NEW ROUTE’S SWITCH CAN BE READ, AND SO CAN WHERE IT WOULD GO — BEFORE ANY CALL IS SPENT. Chad said yes to one test route on the UAT site. Before spending it, the code was checked for where that test would land, and it could not say: the portal create goes wherever NUVIZZ_RWB_PORTAL_BASE points, a setting of its own that nothing ties to the site’s other NuVizz address — and the UAT site was built by copying production’s settings (lib/mirror-guard.mts says so). Nothing could read whether NUVIZZ_ROUTE_CREATE_RWB was on either, and with it on the dry run still described the OLD create. NOW a dry run of ＋ New route (zero NuVizz calls) says which create a Save would make (portal or v7), whether the portal sign-in is set, and which NuVizz hosts it would sign in at and create on — and with the switch on, its plan and preview describe the portal create. Off, the old plan is unchanged. Nothing a Save does changes. 7 new tests. Zero NuVizz calls.'],
   ['1.98.5', '＋ NEW ROUTE CAN NOW CREATE THE ROUTE THE WAY THE PORTAL DOES — BUILT AND READY, SWITCHED OFF UNTIL ONE TEST CREATE LANDS. Chad, after every ＋ New route since Sep 15 died on NuVizz’s “deliverItLoad is null”: “HERE IS A HAR FOR CREATING A ROUTE.” READ OFF THAT CAPTURE: the portal does not use the v7 routePlan/update this app calls (which refuses an empty route and crashes on one with stops). Its Route Workbench reads the route profile (buildEmptyRouteJson), then makes the route EMPTY with one call (addNewRoutePlan) and gets the new load number straight back — SEYMOUR came back as DAVIS000205172. NOW, with the switch on, ＋ New route does exactly that, then puts the card’s orders on the new route through the SAME Save an existing load already gets — added, sequenced in card order, checked against NuVizz’s own read-back, written to the board — and assigns the staged driver after. A name already in use is refused in words (“NuVizz already has a route named TONY — open it from the Routes panel”). A route that is made but whose orders do not attach says so, with its load number, and says not to create it again. WHAT THE CAPTURE COULD NOT SHOW, SAID PLAINLY: whether NuVizz accepts that call from this app’s portal sign-in (every other Route Workbench call here works that way), and the vehicle-type number for a tractor — the capture only shows 475 “Straight Truck”, which all three of its creates used, so every route is created as Straight Truck until that number is known (NUVIZZ_ROUTE_CREATE_VEHICLE_TYPE_ID sets it). HOW TO TURN IT ON: NUVIZZ_ROUTE_CREATE_RWB=on — a Netlify environment setting, no code change; try one route on the UAT site first. Off (the default, and any typo) keeps today’s create exactly. 16 new tests, including SEYMOUR’s request rebuilt field for field from the capture.'],
   ['1.98.4', 'THE “NON-DO STOP” REFUSAL NOW SAYS WHICH STOP. Chad, after MONE was refused twice on 9/28 (10:43 and 10:48 PM) and BRIAN before it (8:38, 8:39): “I WANT THE REAL FIX.” The refusal said “load has a non-DO stop in a delivery slot that this card is not sequencing — reorder skipped (verify in portal)” and never which one — though the load it had just read from NuVizz held the stop’s number, its type, where it sits on the load and the customer. So a dispatcher at 10:43 PM had to open the portal and hunt. NOW it reads, for example, “… not sequencing — RA58610778-1-1 (pickup, LOCKHEED MARTIN, NuVizz stop 19). Nothing was sent: add it to the card if it belongs on this route, or take it off the load in the portal, then Save.” Three stops named at most, then a count. The write log keeps the named stops on the refused Save’s row, so the next one is a lookup, not a hunt. WHAT DID NOT CHANGE: the guard itself — the same stops refuse, for the same reason, and nothing is sent, because saving the card as shown would take that pickup off the truck. Checked on the way: re-sequencing (Reverse, Shortest…) never drops a stop from a card, so the missing stop was never on the card to begin with. NUVIZZ_RWB_NAME_UNMODELED=off puts the old sentence back exactly (a Netlify environment setting, no code change). Zero NuVizz calls.'],
@@ -1383,9 +1389,16 @@ const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 const COMPARE_FULL_WINDOW_ON = compareFullWindowEnabled(import.meta.env);
 // "Time windows" in the Compare card's Re-sequence menu (lib/time-window-sequence.js).
 const COMPARE_TIME_WINDOWS_ON = compareTimeWindowsEnabled(import.meta.env);
+// VITE_TIME_WINDOWS_MILES_CAP=off puts back the Time windows search that never looked at miles.
+const TIME_WINDOWS_MILES_CAP_ON = timeWindowsMilesCapEnabled(import.meta.env);
 // Return to warehouse: on the UAT site always, on production only once VITE_RETURN_TO_WAREHOUSE=on
 // (lib/routing-select.js returnToWarehouseVisible says why it defaults off).
 const RETURN_TO_WAREHOUSE_ON = returnToWarehouseVisible(import.meta.env, BENCH_ON);
+// VITE_ROAD_REPLY_DROPS_MOVED_STOPS=off puts back a late road reply re-adding a moved or removed stop.
+const ROAD_REPLY_DROPS_MOVED_STOPS_ON = roadReplyDropsMovedStopsEnabled(import.meta.env);
+// The sweep a re-sequence pick runs: Closest first without the town rule unless
+// VITE_CLOSEST_FIRST_WITHOUT_TOWNS=off puts the rule back (sweepModeFor).
+const sweepModeOf = (strategy) => sweepModeFor(strategy, import.meta.env);
 // The Routing screen re-reads the stored roster when a newer scan lands (lib/roster-freshness.js).
 const ROUTING_ROSTER_REREAD_ON = routingRosterRereadEnabled(import.meta.env);
 // The Residential paint brush in the Routing gear (lib/place-mark.js).
@@ -1397,6 +1410,8 @@ const COMPARE_UNREACHABLE_HOURS_ON = compareUnreachableHoursEnabled(import.meta.
 // on the hours line above (lib/route-preflight.js preflightBadgeWords). VITE_COMPARE_UNREACHABLE_LATE=off
 // puts "can't make" back. Build-time.
 const COMPARE_UNREACHABLE_LATE_ON = compareUnreachableLateEnabled(import.meta.env);
+// VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP=off puts back a card past the flag cap showing no late badges.
+const PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON = preflightCountsEveryLateStopEnabled(import.meta.env);
 // A Stop lookup note save writes only the fields the rep changed (lib/customer-note-edit.js).
 // VITE_NOTE_SAVE_CHANGED_ONLY=off puts back the whole-draft write. Build-time, so flipping it is a redeploy.
 const NOTE_SAVE_CHANGED_ONLY_ON = noteSaveChangedOnlyEnabled(import.meta.env);
@@ -25167,6 +25182,8 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         // The board's vendor-default creation slots, so a system-stamped 9:00–9:30 is not read as
         // a booked appointment (the same suppression the time-restrictions report applies).
         defaultSlots: detectDefaultSlots(stops),
+        countCollapsed: PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON,
+        milesCap: TIME_WINDOWS_MILES_CAP_ON,
         ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
       });
       setWbRoutes((prev) => prev.map((x) => (x.key !== key ? x : { ...x, order: res.order, strategy, roadSequenced: false })));
@@ -25175,13 +25192,14 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     }
     // Return to warehouse reports WHICH order it used and what that saved (returnPickSummary).
     const homePick = strategy === 'home' ? returnToWarehouse(pts, ROUTING_DEPOT) : null;
-    const newOrder = (homePick ? homePick.order : resequence(pts, ROUTING_DEPOT, strategy)).map((s) => s.id);
+    const newOrder = (homePick ? homePick.order : resequence(pts, ROUTING_DEPOT, strategy, sweepModeOf(strategy))).map((s) => s.id);
     const resolved = new Set(newOrder);
+    // The road order lands AFTER Google replies, onto the card as it is by then: a stop moved to
+    // another card or removed while the reply was out stays gone (mergeReplyOrder). Ids the reply
+    // did not place ride after it in the card's order — never dropped.
     const applyOrder = (ids, suffix) => setWbRoutes((prev) => prev.map((x) => {
       if (x.key !== key) return x;
-      const done = new Set(ids);
-      const tail = x.order.map(String).filter((id) => !done.has(id));   // never drop unresolvable ids
-      return { ...x, order: [...ids, ...tail], strategy, roadSequenced: suffix === 'road' };
+      return { ...x, order: mergeReplyOrder(ids, x.order, ROAD_REPLY_DROPS_MOVED_STOPS_ON), strategy, roadSequenced: suffix === 'road' };
     }));
     // The straight-line order lands INSTANTLY, exactly as it always has. Road distances (below)
     // only ever replace it a moment later — so the dropdown never feels slower than it did, and
@@ -25216,7 +25234,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
           return;
         }
         const roadPick = strategy === 'home' ? returnToWarehouseOnMatrix(pts, cost, ROUTING_DEPOT) : null;
-        const roadOrder = (roadPick ? roadPick.order : resequenceOnMatrix(pts, cost, strategy)).map((s) => s.id);
+        const roadOrder = (roadPick ? roadPick.order : resequenceOnMatrix(pts, cost, strategy, sweepModeOf(strategy))).map((s) => s.id);
         applyOrder(roadOrder, 'road');
         setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} · real road distances${roadPick ? ` — ${returnPickSummary(roadPick, 'road')}` : ''}`);
       } catch (e) {
@@ -26017,6 +26035,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         order: r.order, stopById, notes, routeKey,
         servedDate: selectedDate, dayKey: weekdayKeyFromDate(selectedDate),
         depot: ROUTING_DEPOT, travel,
+        countCollapsed: PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON,
         ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
       }));
     }
@@ -26643,7 +26662,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       if (!curOrder) return prev;
       const stops = curOrder.map((id) => { const s = stopById.get(String(id)); return s ? { id: String(id), lat: s.lat, lng: s.lng } : null; }).filter(Boolean);
       if (stops.length < 2) return prev;
-      const newOrder = resequence(stops, depot, strategy).map((s) => s.id);
+      const newOrder = resequence(stops, depot, strategy, sweepModeOf(strategy)).map((s) => s.id);
       const resolved = new Set(newOrder);
       const tail = curOrder.map(String).filter((id) => !resolved.has(id)); // keep any unresolvable ids (no silent drops)
       return { ...(prev || {}), [truckId]: { order: [...newOrder, ...tail], reordered: true } };

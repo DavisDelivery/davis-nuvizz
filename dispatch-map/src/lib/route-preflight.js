@@ -103,6 +103,8 @@ export function earliestArrivalMin(stop, { depot, travel = null, departMin = DEF
  *                        "2:10p against a measured 3:42a departure" and "2:10p against a
  *                        departure nobody has measured" are different claims and a router
  *                        deciding whether to believe it needs to know which.
+ * @param opts.countCollapsed  read the stops behind a capped summary row too (default on; see
+ *                        EVERY LATE STOP GETS ITS BADGE below). false is the old reading.
  */
 export function routePreflight({
   order = [],
@@ -116,6 +118,7 @@ export function routePreflight({
   departMin = DEFAULT_DEPART_MIN,
   departureSource = 'assumed',
   rosterRows = null,
+  countCollapsed = true,
 } = {}) {
   const ids = (Array.isArray(order) ? order : []).map((v) => String(v)).filter(Boolean);
   const lookup = stopById instanceof Map ? stopById : new Map();
@@ -181,10 +184,22 @@ export function routePreflight({
     },
   });
 
+  // EVERY LATE STOP GETS ITS BADGE (Chad, 2026-09-30: "I see bugs one through three, and those
+  // look like something I want to fix." — this is bug 2). The flag engine caps each rule and tier
+  // for the PANEL: past 12 reds, 25 ambers or 40 criticals it folds the rows into ONE summary row
+  // with stopNbr null and carries the stops behind it in collapsedRows. Reading only rows with a
+  // stopNbr, this check dropped the whole batch: thirteen stops each 15 minutes past a typed close
+  // showed NO late badge, and Time windows could make one more stop late to get a card past the
+  // cap and report "0 late". The cap is about how many lines a panel can show, never about which
+  // stops are late, so the constituents are read too — they carry every field read below.
   const flagByStop = new Map();
   for (const r of out.rows || []) {
-    if (r?.rule !== 'hours_risk' || r?.stopNbr == null) continue;
-    flagByStop.set(String(r.stopNbr), r);
+    if (r?.rule !== 'hours_risk') continue;
+    if (r.stopNbr != null) { flagByStop.set(String(r.stopNbr), r); continue; }
+    if (!countCollapsed || !Array.isArray(r.collapsedRows)) continue;
+    for (const c of r.collapsedRows) {
+      if (c?.stopNbr != null && !flagByStop.has(String(c.stopNbr))) flagByStop.set(String(c.stopNbr), c);
+    }
   }
 
   const stops = staged.map((s, i) => {
@@ -269,5 +284,15 @@ export function preflightBadgeWords(v, { lateOverCantMake = false } = {}) {
  *  Build-time, so flipping it is a redeploy. */
 export function compareUnreachableLateEnabled(env) {
   const v = String(env?.VITE_COMPARE_UNREACHABLE_LATE ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP — house shape: default on, an off-word (off/0/false/no)
+ *  turns it off, anything malformed leaves it on. Off puts back the old reading, where a card with
+ *  more late stops than the flag panel's cap showed none of them. It covers the card's badges and
+ *  the Time windows re-sequence, which scores orders with this same check. Build-time, so flipping
+ *  it is a redeploy. */
+export function preflightCountsEveryLateStopEnabled(env) {
+  const v = String(env?.VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
 }

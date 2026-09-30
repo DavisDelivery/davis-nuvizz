@@ -1041,18 +1041,78 @@ export function returnPickSummary(pick, basis = 'straight-line') {
 //   closest  — near stop first, then the shortest sweep out to the far stop.
 //   home     — return to the warehouse: Shortest distance, unless another order this menu
 //              draws gets the truck home a mile and 1.5% sooner without looking wrong (above).
-export function resequence(stops, depot, strategy) {
+// `mode` is the sweep's town rule for closest/farthest ('towns' | 'pure'); left out, SWEEP_MODE.
+export function resequence(stops, depot, strategy, mode = SWEEP_MODE) {
   const arr = Array.isArray(stops) ? stops : [];
   if (arr.length < 2) return [...arr];
   switch (strategy) {
     case 'reverse': return [...arr].reverse();
-    case 'closest': return closestFirst(arr, depot);
-    case 'farthest': return farthestFirst(arr, depot);
+    case 'closest': return closestFirst(arr, depot, mode);
+    case 'farthest': return farthestFirst(arr, depot, mode);
     case 'loop': return twoOptLoop(nearestNeighbor(arr, depot), depot);
     case 'min': return twoOpt(nearestNeighbor(arr, depot), depot);
     case 'home': return returnToWarehouse(arr, depot).order;
     default: return [...arr];
   }
+}
+
+// ── CLOSEST FIRST WITHOUT THE TOWN RULE (Chad, 2026-09-30) ───────────────────
+//
+// Asked whether Closest first should keep the Sep 10 "one town at a time" rule — measured on 1,120
+// real routes, the rule changes Closest first's order on 228 of them, and there it adds 29
+// self-crossings and removes none — Chad: "Try closest without it". So the Compare card's menu and
+// the Build-result card's menu run Closest first as the plain shortest sweep out from Buford
+// (SWEEP_MODE 'pure'). Farthest first keeps the town rule; the Build Panel engine and Return to
+// warehouse are untouched.
+//
+// WHAT IT COSTS, SAID: without the rule, Closest first visits a town twice on 161 of those 228
+// routes (straight line) — the spur-in-the-middle shape the rule was written to stop on JEFF — for
+// 2.1% fewer miles and the 29 crossings gone. With the road box: 57 crossings removed, 41 added.
+//
+// PURE. The sweep mode a menu pick of `strategy` runs: 'pure' for Closest first while the switch is
+// on, SWEEP_MODE for everything else.
+export function sweepModeFor(strategy, env) {
+  return strategy === 'closest' && closestFirstWithoutTownsEnabled(env) ? 'pure' : SWEEP_MODE;
+}
+
+// THE SWITCH. VITE_CLOSEST_FIRST_WITHOUT_TOWNS — house shape: default on, an off-word (off/0/false/
+// no) turns it off, anything malformed leaves it on. Off puts the town rule back on Closest first.
+// Build-time, so flipping it is an env change and a redeploy.
+export function closestFirstWithoutTownsEnabled(env) {
+  const v = String(env?.VITE_CLOSEST_FIRST_WITHOUT_TOWNS ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+// ── A LATE ROAD REPLY LANDS ON THE CARD AS IT IS NOW (Chad, 2026-09-30) ──────
+//
+// With the road box ticked, a re-sequence pick asks Google for a matrix and the road order lands
+// after the reply comes back. That order was computed from the stops the card held AT THE PICK. A
+// stop dragged to another card, or removed, while the reply was out came back with it: the card
+// put the reply's ids first and its own tail after. So the stop sat on two cards and Save sent it
+// on both loads, or it sat in the order and in the card's removals at once and the unplan was
+// never sent. Chad, shown it: "I see bugs one through three, and those look like something I want
+// to fix."
+//
+// PURE. The card's new order: the reply's ids that are STILL on the card, in the reply's order,
+// then every id the card holds that the reply did not place, in the card's order (a stop added
+// while the reply was out, or one the matrix could not score) — never dropped, never doubled. `dropGone` false
+// is the old reading, byte for byte: every reply id first, whether or not it is still on the card.
+export function mergeReplyOrder(replyIds, currentOrder, dropGone = true) {
+  const current = (Array.isArray(currentOrder) ? currentOrder : []).map(String);
+  const reply = Array.isArray(replyIds) ? replyIds : [];
+  const onCard = new Set(current);
+  const head = dropGone ? [...new Set(reply.map(String))].filter((id) => onCard.has(id)) : reply;
+  const done = new Set(head);
+  return [...head, ...current.filter((id) => !done.has(id))];
+}
+
+// THE SWITCH. VITE_ROAD_REPLY_DROPS_MOVED_STOPS — house shape: default on, an off-word (off/0/
+// false/no) turns it off, anything malformed leaves it on. Off puts back the old reading, where a
+// late reply re-adds a stop that was moved or removed while it was out. Build-time, so flipping it
+// is an env change and a redeploy.
+export function roadReplyDropsMovedStopsEnabled(env) {
+  const v = String(env?.VITE_ROAD_REPLY_DROPS_MOVED_STOPS ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
 }
 
 // Is this stop already committed to a load?

@@ -54,12 +54,24 @@ export function haversineMatrix(depot: LatLng, stops: LatLng[]): Matrix {
 // ROUTE_MATRIX_ESTIMATE_UNROUTABLE=off puts back the old reading. House shape: default ON, an
 // explicit off-word turns it off, anything malformed leaves it ON.
 //
-// SCOPE: the BUILD only (routing-build-background → resolveMatrix). This file's HTTP handler is
-// called by exactly one screen — the Route Workbench's "road distances" re-sequence on a Compare
-// card — and the workbench is frozen (CLAUDE.md), so the handler keeps the old reading until Chad
-// names that change. The switch therefore reverts every side this change has: the build's matrix.
+// SCOPE: the BUILD (routing-build-background → resolveMatrix). This switch reverts the build's
+// matrix and nothing else; the Compare card's road box has its own, below.
 export function unroutableEstimateEnabled(env: any = process.env): boolean {
   const v = String(env?.ROUTE_MATRIX_ESTIMATE_UNROUTABLE ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+// THE COMPARE CARD'S ROAD BOX GETS THE SAME ESTIMATE (Chad, 2026-09-30: "I see bugs one through
+// three, and those look like something I want to fix." — bug 3). This file's HTTP handler has
+// exactly one caller: the Route Workbench's "road distances" re-sequence on a Compare card. It kept
+// the 0-second, 0-metre reading while the workbench was frozen, so a stop Google could not route
+// looked like the cheapest leg on the card and the order was built around it. Now it takes the
+// straight-line road estimate the build takes.
+// ROAD_BOX_ESTIMATE_UNROUTABLE=off puts back the old reading for the card alone (the build keeps
+// its own switch above). House shape: default ON, an explicit off-word turns it off, anything
+// malformed leaves it ON. An env change and a redeploy, like every function env var.
+export function roadBoxUnroutableEstimateEnabled(env: any = process.env): boolean {
+  const v = String(env?.ROAD_BOX_ESTIMATE_UNROUTABLE ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
 }
 
@@ -100,7 +112,8 @@ export async function buildMatrixViaGoogle(depot: LatLng, stops: LatLng[], apiKe
   const nodes = [depot, ...stops];
   const n = nodes.length;
   // Start from the road estimate so any pair without a real Google route keeps an honest cost.
-  // An explicit `estimateUnroutable` wins over the switch (the workbench handler passes false).
+  // An explicit `estimateUnroutable` wins over the build's switch (the card's handler passes its own,
+  // ROAD_BOX_ESTIMATE_UNROUTABLE).
   const estimate = opts.estimateUnroutable ?? unroutableEstimateEnabled();
   const base = estimate ? haversineMatrix(depot, stops) : null;
   const durationSec = base ? base.durationSec : Array.from({ length: n }, () => new Array(n).fill(0));
@@ -153,9 +166,9 @@ export default async function handler(req: Request): Promise<Response> {
   const mode = body?.mode === 'google' || body?.matrixMode === 'google' ? 'google' : 'haversine';
   if (!depot || !stops) return new Response(JSON.stringify({ error: 'depot and stops required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   try {
-    // The only caller is the Route Workbench's road-distance re-sequence (frozen): it keeps the
-    // pre-A5-S27-4 reading of an unroutable leg exactly as it was. See the SCOPE note above.
-    const { matrix, source } = await resolveMatrix(depot, stops, mode, { estimateUnroutable: false });
+    // The only caller is the Compare card's road-distance re-sequence: an unroutable leg takes the
+    // road estimate unless ROAD_BOX_ESTIMATE_UNROUTABLE is off (see above).
+    const { matrix, source } = await resolveMatrix(depot, stops, mode, { estimateUnroutable: roadBoxUnroutableEstimateEnabled() });
     return new Response(JSON.stringify({ matrix, source, available: isGoogleRoutesEnabled() }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (e: any) {
     return new Response(JSON.stringify({ error: e?.message }), { status: 400, headers: { 'Content-Type': 'application/json' } });

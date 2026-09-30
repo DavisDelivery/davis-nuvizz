@@ -12,7 +12,7 @@
 // old 0-cost reading (house shape: default ON, explicit off-word, malformed stays ON).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import matrixHandler, { buildMatrixViaGoogle, haversineMatrix, resolveMatrix, unroutableEstimateEnabled } from '../netlify/functions/google-route-matrix.mts';
+import matrixHandler, { buildMatrixViaGoogle, haversineMatrix, resolveMatrix, unroutableEstimateEnabled, roadBoxUnroutableEstimateEnabled } from '../netlify/functions/google-route-matrix.mts';
 
 const DEPOT = { lat: 34.147791, lng: -83.960911 };
 const A = { lat: 34.237791, lng: -83.960911 };  // ~6 miles north
@@ -101,9 +101,8 @@ test('the switch is house shape: default ON, only an explicit off-word turns it 
   for (const on of ['on', 'yes', '1', 'ofF!', '']) assert.equal(unroutableEstimateEnabled({ ROUTE_MATRIX_ESTIMATE_UNROUTABLE: on }), true, on);
 });
 
-// SCOPE (review): the estimate is the BUILD's. The HTTP handler's only caller is the Route
-// Workbench's "road distances" re-sequence on a Compare card, and the workbench is frozen — so it
-// keeps the old reading until Chad names that change.
+// SCOPE: the build has ROUTE_MATRIX_ESTIMATE_UNROUTABLE; the Compare card's road box (the HTTP
+// handler's only caller) has ROAD_BOX_ESTIMATE_UNROUTABLE, since Chad asked for bug 3 (2026-09-30).
 test('the build (routing-build-background → resolveMatrix, mode google) prices an unroutable leg at the road estimate', async () => {
   delete process.env.ROUTE_MATRIX_ESTIMATE_UNROUTABLE;
   process.env.GOOGLE_ROUTES_API_KEY = 'test-key';
@@ -116,20 +115,55 @@ test('the build (routing-build-background → resolveMatrix, mode google) prices
   } finally { g.restore(); delete process.env.GOOGLE_ROUTES_API_KEY; }
 });
 
-test('the Route Workbench re-sequence (HTTP handler) is untouched: an unroutable leg still reads 0, switch ON or not', async () => {
+// Chad, 2026-09-30: "I see bugs one through three, and those look like something I want to fix."
+// Bug 3: the card's road box read a stop Google could not route as a free 0-mile leg.
+const callHandler = async () => {
+  const res = await matrixHandler(new Request('https://x.netlify.app/.netlify/functions/google-route-matrix', {
+    method: 'POST', body: JSON.stringify({ depot: DEPOT, stops: [A, B], mode: 'google' }),
+  }));
+  assert.equal(res.status, 200);
+  return res.json();
+};
+
+test('the Compare card\'s road box (HTTP handler) prices an unroutable leg at the road estimate, not 0', async () => {
+  delete process.env.ROAD_BOX_ESTIMATE_UNROUTABLE;
   delete process.env.ROUTE_MATRIX_ESTIMATE_UNROUTABLE;
   delete process.env.AUTH_REQUIRED;
   process.env.GOOGLE_ROUTES_API_KEY = 'test-key';
   const g = stubGoogle((i, j) => (i === 0 && j === 1 ? { condition: 'ROUTE_NOT_FOUND' } : i === j ? routed(0, 0) : routed(600, 9000)));
   try {
-    const res = await matrixHandler(new Request('https://x.netlify.app/.netlify/functions/google-route-matrix', {
-      method: 'POST', body: JSON.stringify({ depot: DEPOT, stops: [A, B], mode: 'google' }),
-    }));
-    assert.equal(res.status, 200);
-    const j = await res.json();
-    assert.equal(j.source, 'google');
-    assert.equal(j.matrix.durationSec[0][1], 0, 'the frozen workbench keeps its pre-fix reading');
-    assert.equal(j.matrix.distanceMeters[0][1], 0);
+    const j = await callHandler();
+    const est = haversineMatrix(DEPOT, [A, B]);
+    assert.equal(j.source, 'google', 'still a Google matrix: every leg Google could drive is Google\'s');
+    assert.equal(j.matrix.distanceMeters[0][1], est.distanceMeters[0][1]);
+    assert.equal(j.matrix.durationSec[0][1], est.durationSec[0][1]);
+    assert.ok(j.matrix.distanceMeters[0][1] > 0, 'not a free leg');
     assert.equal(j.matrix.durationSec[1][0], 600);
+    assert.equal(j.matrix.distanceMeters[0][2], 9000);
   } finally { g.restore(); delete process.env.GOOGLE_ROUTES_API_KEY; }
+});
+
+test('the card has its own switch: the build\'s switch off leaves the card\'s fix on, and the reverse', async () => {
+  delete process.env.AUTH_REQUIRED;
+  process.env.GOOGLE_ROUTES_API_KEY = 'test-key';
+  const g = stubGoogle((i, j) => (i === 0 && j === 1 ? { condition: 'ROUTE_NOT_FOUND' } : i === j ? routed(0, 0) : routed(600, 9000)));
+  try {
+    process.env.ROUTE_MATRIX_ESTIMATE_UNROUTABLE = 'off';
+    delete process.env.ROAD_BOX_ESTIMATE_UNROUTABLE;
+    assert.ok((await callHandler()).matrix.distanceMeters[0][1] > 0, 'build switch off: the card still estimates');
+    delete process.env.ROUTE_MATRIX_ESTIMATE_UNROUTABLE;
+    process.env.ROAD_BOX_ESTIMATE_UNROUTABLE = 'off';
+    const old = await callHandler();
+    assert.equal(old.matrix.durationSec[0][1], 0, 'ROAD_BOX_ESTIMATE_UNROUTABLE=off: the old 0-cost reading, byte for byte');
+    assert.equal(old.matrix.distanceMeters[0][1], 0);
+    assert.equal(old.matrix.durationSec[1][0], 600);
+    const { matrix } = await resolveMatrix(DEPOT, [A, B], 'google');
+    assert.ok(matrix.distanceMeters[0][1] > 0, 'card switch off: the build still estimates');
+  } finally { g.restore(); delete process.env.GOOGLE_ROUTES_API_KEY; delete process.env.ROAD_BOX_ESTIMATE_UNROUTABLE; delete process.env.ROUTE_MATRIX_ESTIMATE_UNROUTABLE; }
+});
+
+test('the card\'s switch is house shape: default ON, only an explicit off-word turns it off, malformed stays ON', () => {
+  assert.equal(roadBoxUnroutableEstimateEnabled({}), true);
+  for (const off of ['off', '0', 'false', 'no', ' Off ']) assert.equal(roadBoxUnroutableEstimateEnabled({ ROAD_BOX_ESTIMATE_UNROUTABLE: off }), false, off);
+  for (const on of ['on', 'yes', '1', 'ofF!', '']) assert.equal(roadBoxUnroutableEstimateEnabled({ ROAD_BOX_ESTIMATE_UNROUTABLE: on }), true, on);
 });
