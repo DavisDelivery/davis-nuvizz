@@ -1041,18 +1041,46 @@ export function returnPickSummary(pick, basis = 'straight-line') {
 //   closest  — near stop first, then the shortest sweep out to the far stop.
 //   home     — return to the warehouse: Shortest distance, unless another order this menu
 //              draws gets the truck home a mile and 1.5% sooner without looking wrong (above).
-export function resequence(stops, depot, strategy) {
+// `mode` is the sweep's town rule for closest/farthest ('towns' | 'pure'); left out, SWEEP_MODE.
+export function resequence(stops, depot, strategy, mode = SWEEP_MODE) {
   const arr = Array.isArray(stops) ? stops : [];
   if (arr.length < 2) return [...arr];
   switch (strategy) {
     case 'reverse': return [...arr].reverse();
-    case 'closest': return closestFirst(arr, depot);
-    case 'farthest': return farthestFirst(arr, depot);
+    case 'closest': return closestFirst(arr, depot, mode);
+    case 'farthest': return farthestFirst(arr, depot, mode);
     case 'loop': return twoOptLoop(nearestNeighbor(arr, depot), depot);
     case 'min': return twoOpt(nearestNeighbor(arr, depot), depot);
     case 'home': return returnToWarehouse(arr, depot).order;
     default: return [...arr];
   }
+}
+
+// ── CLOSEST FIRST WITHOUT THE TOWN RULE (Chad, 2026-09-30) ───────────────────
+//
+// Asked whether Closest first should keep the Sep 10 "one town at a time" rule — measured on 1,120
+// real routes, the rule changes Closest first's order on 228 of them, and there it adds 29
+// self-crossings and removes none — Chad: "Try closest without it". So the Compare card's menu and
+// the Build-result card's menu run Closest first as the plain shortest sweep out from Buford
+// (SWEEP_MODE 'pure'). Farthest first keeps the town rule; the Build Panel engine and Return to
+// warehouse are untouched.
+//
+// WHAT IT COSTS, SAID: without the rule, Closest first visits a town twice on 161 of those 228
+// routes (straight line) — the spur-in-the-middle shape the rule was written to stop on JEFF — for
+// 2.1% fewer miles and the 29 crossings gone. With the road box: 57 crossings removed, 41 added.
+//
+// PURE. The sweep mode a menu pick of `strategy` runs: 'pure' for Closest first while the switch is
+// on, SWEEP_MODE for everything else.
+export function sweepModeFor(strategy, env) {
+  return strategy === 'closest' && closestFirstWithoutTownsEnabled(env) ? 'pure' : SWEEP_MODE;
+}
+
+// THE SWITCH. VITE_CLOSEST_FIRST_WITHOUT_TOWNS — house shape: default on, an off-word (off/0/false/
+// no) turns it off, anything malformed leaves it on. Off puts the town rule back on Closest first.
+// Build-time, so flipping it is an env change and a redeploy.
+export function closestFirstWithoutTownsEnabled(env) {
+  const v = String(env?.VITE_CLOSEST_FIRST_WITHOUT_TOWNS ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
 }
 
 // ── A LATE ROAD REPLY LANDS ON THE CARD AS IT IS NOW (Chad, 2026-09-30) ──────
