@@ -30,6 +30,7 @@ import { normalizeMatchKey, placeKeyOfStop } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
+import { cardManifestPages } from './lib/card-manifest.js';
 import { snapshotSharedWindows, snapshotStopTimeliness, snapshotOnTime } from './lib/driver-snapshot-timeliness.js';
 import { scrubStop } from './lib/debug-capture-scrub.js';
 import { routeLoadLine, podPhotoFetchOffer, podPhotoPullOutcome, podSectionVisible, isPodImageExt, foldFreshStop, stopRecordIdentity, trackStopRecord } from './lib/stop-card-sections.js';
@@ -208,7 +209,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.98.0';
+const APP_VERSION = '1.98.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -262,6 +263,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.98.1', 'A COMPARE CARD’S PRINTED MANIFEST NOW FOLLOWS THE CARD — SAVED OR NOT. Chad: “why my print manifest doesn’t match the order my deliveries are in in route work bench until a nuvizz save has occurred — to me it should always match even if a save hasn’t occurred,” then “I want my manifest to always match what is in dispatch map.” THE CAUSE WAS ONE LINE. Print manifest handed its stops over in the card’s order and the manifest builder threw that order away, re-sorting by NuVizz’s stop sequence. Before a Save every stop still carries the sequence of the load it came off, so the paper printed the OLD route. A confirmed Save stamps the new sequence 1..N onto the stops, and the same re-sort then happened to agree with the screen — which is why saving looked like it fixed the manifest. On a brand-new route no stop has a sequence at all, and the re-sort fell back to a map chain starting from the most north-west stop: an order nobody chose, with every ticket’s circle printed blank. THE CIRCLE HAD THE SAME FAULT: each ticket printed NuVizz’s number, so fixing the page order alone would still have handed a driver pages stamped 7, 3, 12. NOW: the card’s manifest prints its stops in the card’s order, and each ticket’s circle carries the number that stop’s row carries on the card. A stop the board can no longer find keeps its number on the card and is left off the paper with the warning it always had, so the pages read 1, 2, 4 and the gap is real. UNCHANGED: the route detail panel’s Print Manifest (it already prints the list it shows), single delivery tickets, Save, the map and the card itself. Zero NuVizz calls. WHAT IT DOES NOT DO: the “Next Stop” time at the foot of each ticket is still NuVizz’s ETA for that stop, worked out for the order NuVizz holds, and the Driver line still names the load’s current driver, not one picked on the card and not yet saved. PUT IT BACK: VITE_MANIFEST_IN_CARD_ORDER=off and a redeploy; anything else, a typo included, leaves it on. 14 new tests run the real manifest builder and read the printed pages back; putting the old sort back turns 4 of them red, and ignoring the card’s numbers turns 4 red. A new real-browser check (verify:card-manifest, desktop and phone, in CI) opens a load, reverses it on the card WITHOUT saving, presses Print manifest and reads the tickets out of what the browser prints: E D C B A, numbered 1 to 5. Built with the switch off, the same check reproduces the reported bug exactly — card E D C B A, paper A B C D E.'],
   ['1.98.0', 'RETURN TO WAREHOUSE: A RE-SEQUENCE FOR A TRUCK THAT COMES BACK TO BUFORD, TESTED ON 1,120 REAL ROUTES AND BY EYE ON EVERY ONE WHERE IT CHANGES THE ORDER, AND SHIPPED SWITCHED OFF ON PRODUCTION UNTIL CHAD SAYS. Chad, after v1.96.0 made Shortest distance count the drive home: \u201cNot every driver returns to warehouse but even if this driver did this would still be absolutely awful optimization. Make shortest work like it did then you can create another optimization around returning to the warehouse.\u201d Then: \u201cTest it throughly.\u201d v1.97.0 put Shortest distance back byte for byte; this is the other optimization, one new line on the Compare card\u2019s menu. WHAT WAS AWFUL, read off his two screens: the shortest round trip is free to start and finish anywhere, and used it. TRAILER 3 started mid-corridor at Lithonia, ran to the far end of Conyers and came back west over I-20 past its own start (117 road miles, against 102 for the corridor walked once); SAMUEL finished three stops from where it began. SO IT INVENTS NO NEW SHAPE. It starts from Shortest distance\u2019s order and only trades it for an order this menu already draws (Shortest distance the other way round, Loop either way round, Farthest first, Closest first) when that order gets the truck home at least a mile AND 1.5% sooner, the drive home counted, on the distances the card is using, and its picture is clean: it does not cross itself, drive a road twice, drive past a stop and come back for it, split a town more than Shortest distance does, come back to a neighbourhood it left three miles behind, drive IN past a stop it serves later, close on its own first stop, or double back along a corridor (TRAILER 3 itself). The feedback line says which order it used and the round-trip saving, drive home included and marked as a straight-line estimate when it is one, or that it kept Shortest distance. HOW IT WAS TESTED. 1,120 real routes from 20 board days (Sep 1\u201329, every route with six or more stops, read from the cached boards: no NuVizz calls), scored in real road miles from a free public road router with the drive home counted, every reference run exactly as the card runs it. Every route where the first version differed from Shortest distance (607 pictures) was drawn beside Shortest distance and judged by eye against the shapes Chad has rejected: 405 better, 88 the same, 36 worse, 78 awful. The last four checks above were built from those 78 (three tuned on Sep 1\u201315 and confirmed on Sep 16\u201329, the corridor one from a stress test of corridors lying across the Buford direction). An adversarial code review and 13,000 seeded stress runs found no order that drops or doubles a stop, depends on the order stops were listed in, or makes the round trip longer than Shortest distance on the distances used. RESULT. Straight line (the card\u2019s default): 122.2 \u2192 120.8 mi a route (\u22121.15%); shorter on 239, the same on 852, longer by more than half a mile on 29 (the straight line not seeing a road, as Shortest distance does not either). Road box ticked: 120.4 \u2192 119.1 (\u22121.14%), longer on none. It never drew a fault Shortest distance does not already draw. It keeps Shortest distance\u2019s order on three routes in four; when it switches it is nearly always to a clean Loop, a median 3.4 straight-line miles shorter. Of the 78 awful pictures, 52 are now Shortest distance again and 24 remain; 31 good switches were given up to get there. WHY IT IS OFF ON PRODUCTION: 24 of its 502 switches (about 1 in 21) still draw a picture a reviewer called awful. Whether that is good enough is Chad\u2019s call. It is always on at the UAT site, to try against seeded orders; VITE_RETURN_TO_WAREHOUSE=on (and a redeploy) turns it on for production, and anything else, a typo included, leaves it off. WHAT IT DOES NOT DO: on BRENT it keeps the Shortest distance order he called \u201cnot a good optimization\u201d on straight lines (no order the menu draws is both clean and a mile shorter there; ticked, it takes Farthest first, 4.6 road miles shorter). It does not read receiving hours. The card header still shows one-way miles. Nothing else changes; a one-commit revert removes it. 11 new tests, and a real-browser run on desktop and phone, straight line and road, switched off, switched on and on UAT.'],
   ['1.97.0', 'DROPPED 1 PR(S): #1079 (v1.96.0). Chad: "This is awful optimization roll it back to way it was. Make shortest work like it did". Everything else on main is untouched — this reverts only those commits, rather than returning the tree to a moment in time, so every other fix that shipped since stays in. Each drop is a forward commit, so `git revert` of it puts the PR back. CODE ONLY: Firestore and anything already sent to NuVizz are untouched.'],
   ['1.95.0', 'THE 5:30P OPEN-ORDERS EMAIL TO CUSTOMER SERVICE. Chad: “I want to send them an email of everything that’s been undelivered that is planned, not unplanned … at 5:30,” after a normal scan at 5:25, to customer service and him. Weekdays from 5:30p ET it lists every planned order not delivered yet, one row per PRO: customer, address, route and driver, and whether it is not delivered yet, out for delivery / on site, or attempted and not delivered (a refusal or exception). Delivered, cancelled and unplanned orders are left out, as are CHAD and ULINE APPT (the email names them in one line so nothing is hidden). It uses the same planned / delivered rules as the 6:30 report, so the two cannot disagree about what is open. It WAITS for the 5:25 scan: it sends as soon as both lists have been pulled since 5:20, and if the scan has not landed by 5:45 it sends anyway and says how old the board is. Once a day, stamped only after the mailer confirms; a failed send is recorded and retried by the next firing before 6:00. Nothing is sent on a day with nothing planned. Recipients: Diagnostics → Alert recipients → “5:30p open orders”, customer service always on it (OPEN_ORDERS_TO is the env fallback). Dry run, sends nothing: /.netlify/functions/open-orders-email (add ?email=1 to see the email). 0 NuVizz calls. The 6:30 report is unchanged. PUT IT BACK: OPEN_ORDERS_EMAIL=off in Netlify (takes effect on the next deploy), or revert this commit.'],
@@ -9019,8 +9021,11 @@ const TICKET_STYLE = `
 
 // The INNER markup of one Delivery Ticket (no <html>/<style> wrapper) — so it can be
 // emitted standalone (buildTicketHtml) or concatenated into the manifest (buildManifestHtml).
-function ticketBody(stop, logoUrl, brandTitle = 'Delivery Ticket') {
+// `seqLabel`: the number the circle prints. Omitted (every caller but a Compare-card manifest) it
+// is NuVizz's own sequence, exactly as before; the card passes the number its row wears on screen.
+function ticketBody(stop, logoUrl, brandTitle = 'Delivery Ticket', seqLabel = undefined) {
   const d = ticketData(stop);
+  const seq = seqLabel == null ? d.seq : seqLabel;
   const cityLine = [d.shipCity, [d.shipState, d.shipZip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   const reqLine = (d.reqFrom || d.reqTo) ? `${tktReqTime(d.reqFrom)} - ${tktReqClock(d.reqTo)} +${tktDayOffset(d.reqFrom, d.reqTo)}D` : '';
   const MIN_ROWS = 6;
@@ -9045,7 +9050,7 @@ function ticketBody(stop, logoUrl, brandTitle = 'Delivery Ticket') {
   <div class="head">
     <div class="l">
       <div class="row1">
-        <span class="seq">${bolEsc(d.seq)}</span>
+        <span class="seq">${bolEsc(seq)}</span>
         <span class="type">${bolEsc(d.type)}</span>
         <span class="pro">${bolEsc(d.pro)}</span>
       </div>
@@ -9106,8 +9111,16 @@ function manifestOrigin(stops) {
   }
   return '';
 }
-function buildManifestHtml(stops, logoUrl, routeNameOverride = null) {
-  const ordered = orderRouteStops(stops);
+// `asGiven`: print the stops in the order the caller hands them over, and number each ticket from
+// `labels` (parallel to `stops`). The Compare card needs this — its order is a STAGED edit NuVizz
+// has not seen yet, so re-sorting by NuVizz's sequence printed the old route until a Save
+// (lib/card-manifest.js has the whole story). Without it the builder sorts exactly as it always
+// has, which is what the route detail panel's own list is drawn from.
+function buildManifestHtml(stops, logoUrl, routeNameOverride = null, { asGiven = false, labels = null } = {}) {
+  const ordered = asGiven ? (Array.isArray(stops) ? stops.filter(Boolean) : []) : orderRouteStops(stops);
+  // Labels are positional, so they are only honoured when the order is the caller's own — a
+  // label list against a re-sorted array would put one stop's number on another stop's page.
+  const labelAt = (i) => (asGiven && Array.isArray(labels) && labels.length === ordered.length ? labels[i] : undefined);
   // Header shows the human ROUTE NAME, never the DAVIS load NUMBER (dispatcher request). Prefer,
   // in order: the caller's override (Compare card's name), then a stop's routeName, then a stop's
   // loadNbr — but each only if it's a real NAME (not a DAVIS load number or a hash id). Only if
@@ -9135,7 +9148,7 @@ function buildManifestHtml(stops, logoUrl, routeNameOverride = null) {
     pallets: a.pallets + (Number(d.pallets) || 0),
     pieces: a.pieces + (Number(d.totalPieces) || 0),
   }), { weight: 0, loose: 0, pallets: 0, pieces: 0 });
-  const pages = ordered.map((s) => `<section class="tkt">${ticketBody(s, logoUrl)}</section>`).join('');
+  const pages = ordered.map((s, i) => `<section class="tkt">${ticketBody(s, logoUrl, undefined, labelAt(i))}</section>`).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><title>Driver Manifest ${bolEsc(routeName)}</title>
 <style>${TICKET_STYLE}
   /* Page 1 = summary header + the first ticket; every ticket after starts a new page,
@@ -20063,6 +20076,16 @@ const ADD_SELECTION_ACCEPTS_HIGHLIGHT = (() => {
   try { return houseSwitchOn(import.meta.env.VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT); } catch { return true; }
 })();
 
+// Does a Compare card's Print manifest print the card's OWN order, numbered the way the card
+// numbers its rows? ON by default (v1.98.1). Chad: "I want my manifest to always match what is in
+// dispatch map." PUT IT BACK: VITE_MANIFEST_IN_CARD_ORDER=off and the card's manifest is re-sorted
+// by NuVizz's sequence again (the old order until a Save) — one switch for both the page order and
+// the ticket numbers, so paper can never come out in one rule's order wearing the other's numbers.
+// Anything malformed leaves it ON. Build-time, so it costs a redeploy either way.
+const MANIFEST_IN_CARD_ORDER = (() => {
+  try { return houseSwitchOn(import.meta.env.VITE_MANIFEST_IN_CARD_ORDER); } catch { return true; }
+})();
+
 // Live-write (beta) gate — the routes-panel driver-assign + dispatch UI. UNLIKE the
 // routing beta this defaults OFF (live writes are opt-in): enable with env
 // VITE_NUVIZZ_WRITE_BETA='true', or force per-session with ?write=1 (?write=0 hides it).
@@ -25252,17 +25275,22 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     if (!route) return;
     // boardStopById, not stopById: a stop with no geocode is still a stop the driver has to
     // make, and printing from the coord-only index silently dropped it off the manifest.
-    const stops = route.order.map((id) => boardStopById.get(String(id))).filter(Boolean);
+    // `labels` = the number each stop's row wears on the card (lib/card-manifest.js).
+    const { stops, labels, missing } = cardManifestPages(route.order, boardStopById);
     if (!stops.length) { setLastAction(`${loadDisplayName(key)} has no stops to print`); return; }
     // Any id the board can't resolve at all can't be printed (no address to put on paper) —
     // say so out loud rather than handing over a manifest that's quietly one stop short.
-    const missing = route.order.length - stops.length;
     if (missing > 0) setLastAction(`${loadDisplayName(key)}: ${missing} stop(s) aren’t on today’s board and are NOT on this manifest — check the card.`);
     const logo = (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg';
     // Pass the card's human route NAME (not the DAVIS load number a Loads-grid-opened card is
     // keyed by) as the manifest header name.
     const displayName = route.name || loadDisplayName(key) || String(key);
-    setWbManifest({ title: `Driver Manifest · ${displayName}`, html: buildManifestHtml(stops, logo, displayName) });
+    // The card's order is a staged edit NuVizz has not seen until Save, so the paper follows the
+    // CARD, not NuVizz's sequence — saved or not (MANIFEST_IN_CARD_ORDER above).
+    const html = MANIFEST_IN_CARD_ORDER
+      ? buildManifestHtml(stops, logo, displayName, { asGiven: true, labels })
+      : buildManifestHtml(stops, logo, displayName);
+    setWbManifest({ title: `Driver Manifest · ${displayName}`, html });
   }, [wbRoutes, boardStopById]);
   // Ninja-add: append a clicked stop to the active route (in click order), removing it from any
   // OTHER open route so a stop only ever sits on one compare-panel card. No-op if it's already there.
