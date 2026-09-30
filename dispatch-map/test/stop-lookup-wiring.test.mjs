@@ -20,8 +20,18 @@ const APP = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const FN = readFileSync(new URL('../netlify/functions/stop-lookup.mts', import.meta.url), 'utf8');
 const TOML = readFileSync(new URL('../netlify.toml', import.meta.url), 'utf8');
 
-test('THE DESKTOP MORE MENU CARRIES IT', () => {
-  assert.match(APP, /id: 'stoplookup', label: 'Stop lookup'/, 'the overflow menu must list it');
+test('THE DESKTOP BAR CARRIES IT AS "Stops", RIGHT OF ROUTING — and More does not list it twice', () => {
+  // Chad, v1.99.11: "take the stops out of the more tab drop down and I want to move it into the
+  // main bar on desktop. Um, probably to the right of routing." Then: "Just call it stops not stop
+  // lookup now."
+  const routing = APP.indexOf('<TabBtn label="Routing (beta)"');
+  const lookup = APP.indexOf('<TabBtn label="Stops"');
+  const next = APP.indexOf('<TabBtn label="New Order"');
+  assert.ok(routing > 0 && lookup > 0, 'the bar has both tabs');
+  assert.ok(routing < lookup && lookup < next, 'Stops sits right after Routing, before New Order');
+  // Bounded look-ahead, not [^>]*: the icon's own `<Search … />` carries a '>'.
+  assert.match(APP, /<TabBtn label="Stops"[\s\S]{0,120}?active=\{tab === 'stoplookup'\} onClick=\{\(\) => setTab\('stoplookup'\)\}/);
+  assert.ok(!/id: 'stoplookup', label: 'Stop lookup'/.test(APP), 'More no longer lists it');
 });
 
 test('THE PHONE CHIP MENU CARRIES IT TOO — this is the v0.54.50 failure', () => {

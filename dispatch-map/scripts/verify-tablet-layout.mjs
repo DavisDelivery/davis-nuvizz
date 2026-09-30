@@ -57,7 +57,7 @@ const SCREENS = [
   { key: 'quote', label: 'Quote', nav: /quote/i },
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
-  { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
+  { key: 'stoplookup', label: 'Stop lookup', nav: /^stops$/i },   // the bar's "Stops" tab since v1.99.11; the heading still reads Stop lookup
   { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },

@@ -210,7 +210,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.99.10';
+const APP_VERSION = '1.99.11';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,6 +264,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.99.11', 'STOPS IS ON THE DESKTOP BAR, RIGHT OF ROUTING. Chad: \u201ctake the stops out of the more tab drop down and I want to move it into the main bar on desktop. Um, probably to the right of routing\u201d \u2014 and then \u201cJust call it stops not stop lookup now.\u201d Stop lookup is now a tab called Stops beside Routing (beta) \u2014 one click instead of two \u2014 and More no longer lists it. The phone menu is unchanged, and the screen itself still says Stop lookup at the top. THE WAY BACK: one small commit; a revert puts it back under More.'],
   ['1.99.10', 'STOP LOOKUP: A TAPPED BUSINESS SAYS IT IS OPENING, AND A ROW\u2019S ROUTE OPENS ITS LOAD. Chad, on a phone with \u201c22 businesses match \u2018master\u2019\u201d: \u201cclicking this and nothing happens doens\u2019t show me the load \u2026 i want you to build this entire screen and test everything in it.\u201d The tap was working \u2014 a customer takes about ten seconds to read \u2014 but its only sign was \u201cLooking\u2026\u201d on the search button, a screen above on a phone, and a second tap started the read over. NOW: the tapped business says \u201cOpening \u2014 reading their deliveries\u2026\u201d with a spinner and ignores a second tap (tapping a different business switches to that one instead of waiting), and a dark line at the top of the view says what is being read (\u201cOpening MASTER WINDOW SYSTEMS\u2026\u201d) wherever the page is scrolled \u2014 for every search on this screen, not just this one. THE LOAD: on a customer\u2019s row, an order\u2019s day and an address result, the route (FRANK \u00b7 stop 15) is now a link. It opens that load under the row \u2014 the map, every stop in delivery order, this order marked \u2014 and the customer stays on screen; tap it again to close. It reads the same records as Driver\u2019s loads (no NuVizz call). If two drivers share the name it asks which; if the driver was renamed (the name on the row matches nobody that day) it lists who ran loads that day instead of saying there is no load; if none of their loads carries the route it lists that day\u2019s loads to pick, never picks one for you; if the load it opens does not hold this order (moved to another truck that day) it says so above the load; a day that has not happened says the load has not run yet. An order tapped inside the load opens there, once. Below dispatcher the route stays plain text, as Driver\u2019s loads is. Also: a business picked after the search box was edited now opens the business you picked. TESTED: a new check taps every control on Stop lookup on a phone and a desktop with every answer made to arrive late, and fails any tap that changes nothing on screen within a quarter second; it fails on the code before this. THE WAY BACK: one commit; a revert puts the screen back.'],
   ['1.99.9', 'A ULINE “STRAIGHT TRUCK ONLY” NOTE IS A FULL YELLOW DISC NOW — GREEN SHOWS ONLY WHERE A TRACTOR HAS ACTUALLY DELIVERED. Chad: “i don’t agree with this icon being half green if a tractor has never been there why would it be half green should just be a full yellow advisory.” The half-and-half mark used its green half to mean “nobody has checked this”, but on the map green means a trailer fits, and at a dock no tractor has ever delivered to nothing says one does. NOW: an unconfirmed no (a Uline note, or a scanner’s find) fills solid in the advisory yellow with the slashed truck; a no that someone here ticked stays solid red, so the two cannot be confused; and the yellow keeps a green half only in the one case worth a second look, when a tractor HAS delivered to that dock anyway (yellow beside the bright tractor-delivered lime). The Legend shows all three. Map pins and cluster pins draw the same way. THE WAY BACK: one small commit, so a revert puts the half-and-half mark back.'],
   ['1.99.8', 'ERRORS NOW READ AS PLAIN SENTENCES. Chad: “Can you make it simple sentence when there is an error that looks less like code.” When a Save, a new route, an address fix or a note was refused, the screen showed the server’s own diagnostic — “commitBoard(rwb): load DAVIS000204039 has 5 stop(s) the board isn’t showing (…) — a declarative RWB save would unplan them. Refresh and retry.” NOW it says what happened and what to do: “Not saved. NuVizz has 5 orders on this route that your screen isn’t showing yet (…). Saving now would take them off the truck — refresh, then Save again.” Every wording was written from a real refusal in the write log (September: 104 failed writes, and every one of them now reads plainly). Route names instead of load numbers, except when two routes share a name (BUFORD on two days). Nothing is claimed that the server did not say, and no instruction is dropped. A message nobody has seen before keeps its own words, with only the code-looking prefix taken off. The full technical text is still in the write log. VITE_PLAIN_ERRORS=off puts back the old words (a redeploy). Zero NuVizz calls.'],
@@ -31433,6 +31434,13 @@ function Shell() {
             <nav className="flex items-center gap-1 text-sm min-w-0 overflow-x-auto">
               <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
               {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => openTab('routing')} />}
+              {/* STOP LOOKUP IS ON THE BAR NOW, beside Routing, and it is called STOPS (v1.99.11). Chad:
+                  "take the stops out of the more tab drop down and I want to move it into the main bar on
+                  desktop. Um, probably to the right of routing." — then "Just call it stops not stop lookup
+                  now." A customer on the phone is the everyday case, not an occasional visit. Desktop only:
+                  the phone menu is its own view and keeps it where it was. The screen's own heading still
+                  reads "Stop lookup" (the layout guards prove arrival by it). */}
+              <TabBtn label="Stops" icon={<Search size={14} />} active={tab === 'stoplookup'} onClick={() => setTab('stoplookup')} />
               <TabBtn label="New Order" icon={<Package size={14} />} active={tab === 'neworder'} onClick={() => setTab('neworder')} />
               <TabBtn label="Quote" icon={<Calculator size={14} />} active={tab === 'quote'} onClick={() => setTab('quote')} />
               <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
@@ -31466,13 +31474,9 @@ function Shell() {
               items={[
                 { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
                 { id: 'comms', label: 'Customer emails', hint: 'Delivery-complete email program', icon: <Mail size={14} /> },
-                // FIRST OF THE THREE HISTORY SCREENS, because it is the one a customer's
-                // phone call sends you to: the other two are LOGS you browse, this answers
-                // about ONE order. No badge, ever — nothing here is a problem waiting to be
-                // noticed, it is a question waiting to be asked.
-                { id: 'stoplookup', label: 'Stop lookup', hint: 'Everything we hold about one order — 0 NuVizz calls', icon: <Search size={14} /> },
+                // Stop lookup left this menu for the bar itself, right of Routing (v1.99.11).
                 // Davis labels for one shipper's orders on one day, one at a time or all at once.
-                // Beside Stop lookup because both answer about orders; phone menu below too.
+                // It sat beside Stop lookup because both answer about orders; phone menu below too.
                 { id: 'labels', label: 'Print labels', hint: 'Davis labels by shipper and day — 0 NuVizz calls', icon: <Tag size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
