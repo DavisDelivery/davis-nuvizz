@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Building2, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound, LogOut } from 'lucide-react';
+  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound, LogOut, TrendingUp } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc, arrayUnion, arrayRemove, deleteField,
@@ -140,6 +140,12 @@ import { tabLoadFailed } from './components/TabLoadFailure.jsx';
 // (components/TabLoadFailure.jsx) — never a white page. scripts/check-shadow-chunk.mjs fails CI
 // if a start-up file the built index.html names carries the Shadow's code.
 const ClaudeShadowScreen = React.lazy(() => import('./shadow/ClaudeShadowScreen.jsx').catch((err) => tabLoadFailed('Shadow', err)));
+// MORE → PERFORMANCE (v1.100.0). Chad, 2026-09-30: "I wanted to build a stock performance UI under the
+// more tab … to track the number of stops that we've done compared to other days or like the daily
+// average at that point in time to let us know if we're behind or ahead of schedule." Its own
+// directory (src/performance/), LAZY for the same reason as the Shadow above: a screen visited on
+// purpose need not ride in the start-up file, and a failed fetch is a line on the tab, not a white page.
+const PerformanceScreen = React.lazy(() => import('./performance/PerformanceScreen.jsx').catch((err) => tabLoadFailed('Performance', err)));
 import { isUatHost } from './lib/mirror-site.js';
 import { mergeDayLoads, splitDayLoads } from './lib/day-loads.js';
 import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
@@ -210,7 +216,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.99.10';
+const APP_VERSION = '1.100.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,6 +270,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.100.0', 'MORE → PERFORMANCE: ARE WE AHEAD OR BEHIND RIGHT NOW, AND HOW ARE THE DAYS, WEEKS AND MONTHS GOING. Chad: “I wanted to build a stock performance UI under the more tab … to track performance over days, weeks, months … and also like interday to track the number of stops that we’ve done compared to other days or like the daily average at that point in time to let us know if we’re behind or ahead of schedule.” It had never been started — nothing for it on main, on any branch or in any PR. NOW, under More on the desktop and the phone: TODAY’S PACE — stops delivered so far against a typical day AT THE SAME MINUTE (the median of the last 8 of today’s weekday, or of the last 20 weekdays for the week after a holiday, with the middle half of those days drawn as a band), judged at the board’s last scan, and called Ahead / On pace / Behind only once 4 comparison days exist; four tiles (delivered today, share of today’s board done, delivered per day and completion, each against a named comparison); the trend by day, week or month with a moving average; where the stops ended up; the average by weekday; and every day and every route as rows — sorted, searched, paged — where a ticked day is drawn over today, a holiday can be left out of the typical day, and rows copy out. Counted exactly as the 6:30 report counts: planned only, 90 and 91 both delivered, cancelled orders out of the total, CHAD and appointment routes left out. HOW: each night’s capture now also writes one small pace digest per sealed day (pace_days — 288 five-minute buckets and the route rows), and today is worked out live from the board. Days sealed before this shipped have no digest yet: the screen shows them as gaps, never zeros, and an admin builds them from its History card (ten days a step). ZERO NuVizz calls on every path. PUT IT BACK: STOP_PACE=off in Netlify switches off the screen’s read, the nightly digest and the rebuild together; reverting this commit removes all of it. 64 new tests; the phone, tablet and desktop layout guards all measure the screen.'],
   ['1.99.10', 'STOP LOOKUP: A TAPPED BUSINESS SAYS IT IS OPENING, AND A ROW\u2019S ROUTE OPENS ITS LOAD. Chad, on a phone with \u201c22 businesses match \u2018master\u2019\u201d: \u201cclicking this and nothing happens doens\u2019t show me the load \u2026 i want you to build this entire screen and test everything in it.\u201d The tap was working \u2014 a customer takes about ten seconds to read \u2014 but its only sign was \u201cLooking\u2026\u201d on the search button, a screen above on a phone, and a second tap started the read over. NOW: the tapped business says \u201cOpening \u2014 reading their deliveries\u2026\u201d with a spinner and ignores a second tap (tapping a different business switches to that one instead of waiting), and a dark line at the top of the view says what is being read (\u201cOpening MASTER WINDOW SYSTEMS\u2026\u201d) wherever the page is scrolled \u2014 for every search on this screen, not just this one. THE LOAD: on a customer\u2019s row, an order\u2019s day and an address result, the route (FRANK \u00b7 stop 15) is now a link. It opens that load under the row \u2014 the map, every stop in delivery order, this order marked \u2014 and the customer stays on screen; tap it again to close. It reads the same records as Driver\u2019s loads (no NuVizz call). If two drivers share the name it asks which; if the driver was renamed (the name on the row matches nobody that day) it lists who ran loads that day instead of saying there is no load; if none of their loads carries the route it lists that day\u2019s loads to pick, never picks one for you; if the load it opens does not hold this order (moved to another truck that day) it says so above the load; a day that has not happened says the load has not run yet. An order tapped inside the load opens there, once. Below dispatcher the route stays plain text, as Driver\u2019s loads is. Also: a business picked after the search box was edited now opens the business you picked. TESTED: a new check taps every control on Stop lookup on a phone and a desktop with every answer made to arrive late, and fails any tap that changes nothing on screen within a quarter second; it fails on the code before this. THE WAY BACK: one commit; a revert puts the screen back.'],
   ['1.99.9', 'A ULINE “STRAIGHT TRUCK ONLY” NOTE IS A FULL YELLOW DISC NOW — GREEN SHOWS ONLY WHERE A TRACTOR HAS ACTUALLY DELIVERED. Chad: “i don’t agree with this icon being half green if a tractor has never been there why would it be half green should just be a full yellow advisory.” The half-and-half mark used its green half to mean “nobody has checked this”, but on the map green means a trailer fits, and at a dock no tractor has ever delivered to nothing says one does. NOW: an unconfirmed no (a Uline note, or a scanner’s find) fills solid in the advisory yellow with the slashed truck; a no that someone here ticked stays solid red, so the two cannot be confused; and the yellow keeps a green half only in the one case worth a second look, when a tractor HAS delivered to that dock anyway (yellow beside the bright tractor-delivered lime). The Legend shows all three. Map pins and cluster pins draw the same way. THE WAY BACK: one small commit, so a revert puts the half-and-half mark back.'],
   ['1.99.8', 'ERRORS NOW READ AS PLAIN SENTENCES. Chad: “Can you make it simple sentence when there is an error that looks less like code.” When a Save, a new route, an address fix or a note was refused, the screen showed the server’s own diagnostic — “commitBoard(rwb): load DAVIS000204039 has 5 stop(s) the board isn’t showing (…) — a declarative RWB save would unplan them. Refresh and retry.” NOW it says what happened and what to do: “Not saved. NuVizz has 5 orders on this route that your screen isn’t showing yet (…). Saving now would take them off the truck — refresh, then Save again.” Every wording was written from a real refusal in the write log (September: 104 failed writes, and every one of them now reads plainly). Route names instead of load numbers, except when two routes share a name (BUFORD on two days). Nothing is claimed that the server did not say, and no instruction is dropped. A message nobody has seen before keeps its own words, with only the code-looking prefix taken off. The full technical text is still in the write log. VITE_PLAIN_ERRORS=off puts back the old words (a redeploy). Zero NuVizz calls.'],
@@ -11707,6 +11714,15 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                   {/* BOTH NAVIGATIONS OR NEITHER. A badge on the laptop and not the phone is
                       the v0.54.50 shape — dispatch runs on a phone. */}
                   {addrBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{addrBadge > 99 ? '99+' : addrBadge}</span>}
+                </button>
+                {/* PERFORMANCE (v1.100.0) — the same place as on the desktop menu. Both navigations or
+                    neither: a screen in one navigation only does not exist on a phone. */}
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('performance')}
+                  role="menuitem"
+                >
+                  <TrendingUp size={12} /> Performance
                 </button>
                 {/* Claude shadow is not here any more: it is Routing's third tab, Build | Engine |
                     Shadow (Chad, 2026-09-25). On a phone it is Routing → gear → Shadow view, and
@@ -31313,7 +31329,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'uatbench', 'users'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'performance', 'uatbench', 'users'];
     openTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -31476,6 +31492,10 @@ function Shell() {
                 { id: 'labels', label: 'Print labels', hint: 'Davis labels by shipper and day — 0 NuVizz calls', icon: <Tag size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
+                // PERFORMANCE (v1.100.0): stops delivered — today against a typical day at the same minute,
+                // and by day, week and month. Both navigations or neither: the phone menu carries it too,
+                // in the same place (under Address history).
+                { id: 'performance', label: 'Performance', hint: 'Ahead or behind today · days, weeks, months — 0 NuVizz calls', icon: <TrendingUp size={14} /> },
                 // Claude shadow moved to Routing's Build | Engine | Shadow toggle (Chad, 2026-09-25).
                 // Account & logins (v1.75.0): sign in, your own NuVizz login and, for admins, everyone's.
                 // Beside Diagnostics because both are about the app rather than the day. The phone menu
@@ -31528,7 +31548,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'users' ? (accountsOpen ? <AccountScreen isMobile={isMobile} loginMode={LOGIN_MODE} /> : null) : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'performance' ? <React.Suspense fallback={<div className="flex-1 bg-zinc-950 p-6 text-sm text-zinc-400">Loading Performance…</div>}><PerformanceScreen isMobile={isMobile} canBuild={accountsOpen} /></React.Suspense> : tab === 'users' ? (accountsOpen ? <AccountScreen isMobile={isMobile} loginMode={LOGIN_MODE} /> : null) : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}

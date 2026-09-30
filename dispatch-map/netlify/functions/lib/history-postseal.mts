@@ -28,6 +28,7 @@ import { updateDriverDaysForDay } from './routing-driver-days.mts';
 import { updateServiceTimesForDay } from './routing-service-times.mts';
 import { updateCustomerDriversForDay } from './routing-customer-drivers.mts';
 import { updateStopSearchForDay } from './stop-search-store.mts';
+import { updateStopPaceForDay } from './stop-pace-store.mts';
 
 // One post-seal hook: name + the pass to run. Order is stable (rollup first, then
 // paint, then the engine miners) but each is independent.
@@ -43,6 +44,12 @@ const HOOKS: Array<{ name: string; run: (t: string, d: string, s: any[]) => Prom
   { name: 'driver-days', run: updateDriverDaysForDay },
   { name: 'service-times', run: updateServiceTimesForDay },
   { name: 'customer-drivers', run: updateCustomerDriversForDay },
+  // THE PACE DIGEST (v1.100.0): one small document per sealed day — deliveries counted into
+  // 5-minute buckets of the ET day, beside the 6:30 report's own totals — so the Performance
+  // screen's "a typical Tuesday by 11:15" is one read per day instead of every stop of every
+  // day (lib/stop-pace.mts). Nothing else here reads it. Before the search digest, which stays
+  // last. stop-pace-rebuild re-derives it from the warehouse. STOP_PACE=off puts it back.
+  { name: 'stop-pace', run: updateStopPaceForDay },
   // THE SEARCH DIGEST (v1.62.0): one document per sealed day that turns "every stop at this
   // address / in this city, all dates" into one read per day instead of one per stop — see
   // src/lib/stop-search.js for why that is the only way it fits the 26-second limit. LAST, because

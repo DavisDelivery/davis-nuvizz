@@ -28,6 +28,7 @@ import { claudeShadowFixtureFor } from './lib/claude-shadow-fixture.mjs';
 import { TAB_LOAD_FAILURE_TAIL } from '../src/lib/load-failure.js';
 import { labelsAnswer } from './lib/labels-fixture.mjs';
 import { accountAnswer, ADMIN_SESSION, SESSION_KEY } from './lib/account-fixture.mjs';
+import { performanceAnswer } from './lib/performance-fixture.mjs';
 
 const DIST = process.argv[2] || 'dist';
 const PORT = 4183;
@@ -53,6 +54,9 @@ const SCREENS = [
   { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
+  // MORE → PERFORMANCE (v1.100.0). The label is the screen's own heading ("Stop performance"), which
+  // is this guard's proof of arrival; the menu item reads "Performance". LAZY: waited for below.
+  { key: 'performance', label: 'Stop performance', nav: /^performance/i, inMore: true, lazy: true },
   // Routing's third tab since v1.68.2: Routing, then the Build | Engine | Shadow toggle. The
   // label is the screen's own heading, which is this guard's proof of arrival.
   { key: 'claudeshadow', label: 'Claude shadow', nav: /routing/i, sub: /^shadow$/i },
@@ -106,6 +110,11 @@ for (const device of DESKTOPS) {
   // Account & logins reads three auth-* endpoints; answered here so the screen renders its real
   // layout (the admin table, the checklist) rather than a load error. Nothing else is affected:
   // the only other caller is the app's boot-time auth-me, whose answer here changes nothing drawn.
+  // More → Performance draws its tiles, charts and rows only once its read has answered; without
+  // this it would measure its load-error box. Built by the real pace digest.
+  await page.route('**/.netlify/functions/stop-performance*', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(performanceAnswer(route.request().url())),
+  }));
   await page.route('**/.netlify/functions/auth-*', (route) => {
     const a = accountAnswer(route.request().url());
     if (!a) return route.continue();
@@ -147,6 +156,13 @@ for (const device of DESKTOPS) {
       }, screen.nav.source);
       if (!clicked) return false;
       await page.waitForTimeout(1100);
+      // A LAZY screen opened straight from the menu (Performance): its file is fetched on the click.
+      // WAIT (up to 15s) for its own label, then give its data the same 1100ms — the same rule as the
+      // Shadow's sub-tab below, for the same reason.
+      if (screen.lazy) {
+        await page.waitForFunction((label) => document.body.innerText.includes(label), screen.label, { timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(1100);
+      }
       // A sub-tab (Routing's Build | Engine | Shadow), clicked the same way.
       if (screen.sub) {
         const sub = await page.evaluate((src) => {
