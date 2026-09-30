@@ -386,24 +386,33 @@ test('A CONFIRMED BLOCKER FILLS ITS WHOLE DISC — a person said no, and it is t
   assert.ok(!/fill="white"\s+fill-opacity/.test(svg), 'the old white disc is gone');
 });
 
-test('AN ADVISORY BLOCKER FILLS HALF — literally half of the confirmed mark', () => {
-  const svg = blocker(['no_tractor_trailer'], { advisory: ['no_tractor_trailer'] });
-  const f = fills(svg);
-  assert.ok(f.includes(RED), 'half the restriction colour');
-  assert.ok(f.includes(GREEN), 'half the eligibility green');
-  assert.ok(f.indexOf(RED) < f.indexOf(GREEN), 'the warn half is drawn first (left)');
+// Chad, 2026-09-30, on a Uline advisory drawn half yellow / half green at a dock no tractor has
+// ever delivered to: "i don't agree with this icon being half green if a tractor has never been
+// there why would it be half green should just be a full yellow advisory." On a map green means
+// "a trailer fits", and nothing said one did.
+test('AN ADVISORY BLOCKER WITH NO TRACTOR PROOF IS A FULL YELLOW DISC — no green anywhere', () => {
+  for (const key of ['uline_straight_truck', 'no_tractor_trailer']) {
+    const f = fills(blocker([key], { advisory: [key] }));
+    assert.ok(f.includes(AMBER), `${key}: the advisory yellow fills the disc`);
+    assert.ok(!f.includes(GREEN) && !f.includes(LIME), `${key}: no green half when no tractor has been there`);
+    assert.ok(!f.includes(RED), `${key}: an unconfirmed no is never the confirmed red`);
+  }
 });
 
-test('THE WARN HALF IS THE RESTRICTION COLOUR, NEVER THE STOP TINT', () => {
-  // The defect that broke the first working build of v0.76.5, re-pinned against the disc.
-  // A Uline advisory on a stop a tractor HAS delivered carries the lime tint; letting the
-  // tint speak painted lime beside green — two greens, no split — in precisely the case the
-  // feature exists for. A dispatcher would have read it as permission.
+test('A CONFIRMED BLOCKER AND AN ADVISORY ONE STILL CANNOT BE CONFUSED — solid red vs solid yellow', () => {
+  const confirmed = fills(blocker(['no_tractor_trailer']));
+  const advisory = fills(blocker(['no_tractor_trailer'], { advisory: ['no_tractor_trailer'] }));
+  assert.ok(confirmed.includes(RED) && !confirmed.includes(AMBER), 'a person said no: red');
+  assert.ok(advisory.includes(AMBER) && !advisory.includes(RED), 'only a note says no: yellow');
+});
+
+test('THE STOP TINT NEVER REACHES THE DISC — a lime tint alone is not proof', () => {
+  // The defect that broke the first working build of v0.76.5, re-pinned. The lime TINT on the
+  // stop is not the tractorProven boolean; handing it in must not paint any green.
   const svg = blocker(['uline_straight_truck'], { advisory: ['uline_straight_truck'], tint: LIME });
   const f = fills(svg);
-  assert.ok(f.includes(AMBER), 'the warn half is the restriction amber');
-  assert.ok(f.includes(GREEN), 'the other half is the eligibility green');
-  assert.ok(!f.includes(LIME), 'the tractor-delivered tint must not reach the disc');
+  assert.ok(f.includes(AMBER), 'the advisory yellow');
+  assert.ok(!f.includes(LIME) && !f.includes(GREEN), 'the tint must not reach the disc');
 });
 
 test('restrictionWarnColor ignores the tint entirely — it takes only a key', () => {
@@ -416,7 +425,8 @@ test('restrictionWarnColor ignores the tint entirely — it takes only a key', (
 test('the two halves sweep OPPOSITE ways, or one covers the other', () => {
   // Same start and end point; only the sweep flag makes them different halves. Both at 0
   // draws the same wedge twice and the second colour wins the whole disc.
-  const svg = blocker(['no_tractor_trailer'], { advisory: ['no_tractor_trailer'] });
+  const B = new Set(['uline_straight_truck']);
+  const svg = markerSvg(P.iconMarkerSvg(['uline_straight_truck'], null, { blockerKeys: B, advisoryKeys: B, tractorProven: true }));
   assert.match(svg, /A18 18 0 0 0 20 38 Z/, 'one half sweeps 0');
   assert.match(svg, /A18 18 0 0 1 20 38 Z/, 'the other sweeps 1');
 });
@@ -446,32 +456,34 @@ test('THE PROHIBITION STILL READS: a dark slash over a white truck', () => {
   assert.equal(inkInGlyph, 1, 'the only ink on the glyph is the slash — the wheels stay white');
 });
 
-test('THE GREEN HALF GOES BRIGHT WHEN A TRACTOR HAS ACTUALLY BEEN HERE', () => {
-  // On an unconfirmed blocker, "a 53-footer has delivered to this dock before" is the best
-  // counter-evidence a dispatcher has — it is what turns the mark into a decision instead of
-  // a shrug. Under the white disc that proof rode on the truck, painted with the tint; a white
-  // truck cannot carry it, so it moves to the half that already means "a trailer fits".
-  const B = new Set(['no_tractor_trailer']);
-  const plain = markerSvg(P.iconMarkerSvg(['no_tractor_trailer'], null, { blockerKeys: B, advisoryKeys: B }));
-  const proven = markerSvg(P.iconMarkerSvg(['no_tractor_trailer'], null, { blockerKeys: B, advisoryKeys: B, tractorProven: true }));
-  assert.ok(fills(plain).includes(GREEN), 'no proof → the eligibility green');
-  assert.ok(fills(proven).includes(LIME), 'proof → the tractor-delivered lime');
-  assert.ok(!fills(proven).includes(GREEN), 'one green or the other, never both');
-  assert.ok(fills(proven).includes(RED), 'and the warn half is untouched either way');
+test('GREEN APPEARS ONLY WHERE A TRACTOR HAS ACTUALLY BEEN — yellow beside the lime of that proof', () => {
+  // The one case worth a second look: somebody else's note says no, and a 53-footer has
+  // delivered to this dock anyway. That conflict keeps its split; nothing else does.
+  const B = new Set(['uline_straight_truck']);
+  const plain = fills(markerSvg(P.iconMarkerSvg(['uline_straight_truck'], null, { blockerKeys: B, advisoryKeys: B })));
+  const proven = fills(markerSvg(P.iconMarkerSvg(['uline_straight_truck'], null, { blockerKeys: B, advisoryKeys: B, tractorProven: true })));
+  assert.ok(!plain.includes(LIME) && !plain.includes(GREEN), 'no proof → no green at all');
+  assert.ok(proven.includes(LIME) && proven.includes(AMBER), 'proof → yellow beside lime');
+  assert.ok(!proven.includes(GREEN), 'the forest "rules allow it" green is never drawn on a blocker');
+  assert.ok(proven.indexOf(AMBER) < proven.indexOf(LIME), 'the yellow half is drawn first (left)');
 });
 
-test('the proof is a BOOLEAN — a priority flag hue can never become the "a trailer fits" half', () => {
-  // The tint at the call site is `tractorDelivered ? LIME : (eligColor || flagHue)`. Handing
-  // THAT to the disc would paint a priority flag's purple as the half that means a trailer is
-  // fine — the v0.76.5 defect wearing a new coat. Only the proof itself may speak here.
+test('a CONFIRMED blocker never splits, proof or not — a person said no', () => {
   const B = new Set(['no_tractor_trailer']);
+  const f = fills(markerSvg(P.iconMarkerSvg(['no_tractor_trailer'], null, { blockerKeys: B, tractorProven: true })));
+  assert.ok(f.includes(RED) && !f.includes(LIME) && !f.includes(GREEN));
+});
+
+test('the proof is a BOOLEAN — a priority flag hue or a truthy string can never switch the split on', () => {
+  // The tint at the call site is `tractorDelivered ? LIME : (eligColor || flagHue)`. Handing
+  // THAT to the disc would paint a priority flag's purple onto a blocker — the v0.76.5 defect
+  // wearing a new coat. Only the proof itself may speak here.
+  const B = new Set(['uline_straight_truck']);
   const flagHue = '#a855f7';
-  const svg = markerSvg(P.iconMarkerSvg(['no_tractor_trailer'], flagHue, { blockerKeys: B, advisoryKeys: B }));
+  const svg = markerSvg(P.iconMarkerSvg(['uline_straight_truck'], flagHue, { blockerKeys: B, advisoryKeys: B }));
   assert.ok(!fills(svg).includes(flagHue), 'no tint of any kind reaches a blocker disc');
-  assert.ok(fills(svg).includes(GREEN) && fills(svg).includes(RED));
-  // And a truthy-but-wrong value cannot switch it on.
-  const sloppy = markerSvg(P.iconMarkerSvg(['no_tractor_trailer'], null, { blockerKeys: B, advisoryKeys: B, tractorProven: 'yes' }));
-  assert.ok(fills(sloppy).includes(GREEN), 'only a real boolean true counts as proof');
+  const sloppy = markerSvg(P.iconMarkerSvg(['uline_straight_truck'], null, { blockerKeys: B, advisoryKeys: B, tractorProven: 'yes' }));
+  assert.ok(!fills(sloppy).includes(LIME), 'only a real boolean true counts as proof');
 });
 
 test('ONLY TRAILER BLOCKERS FILL — every other restriction is untouched', () => {
@@ -487,12 +499,15 @@ test('ONLY TRAILER BLOCKERS FILL — every other restriction is untouched', () =
 test('a blocker looks like itself inside a CLUSTER too', () => {
   // A mark that changes meaning depending on how many neighbours it has is a mark nobody
   // can learn. The liftgate beside it must still be the plain white disc.
-  const svg = blocker(['no_tractor_trailer', 'liftgate_required'], {
-    blockers: ['no_tractor_trailer'], advisory: ['no_tractor_trailer'],
+  const svg = blocker(['uline_straight_truck', 'liftgate_required'], {
+    blockers: ['uline_straight_truck'], advisory: ['uline_straight_truck'],
   });
   const f = fills(svg);
-  assert.ok(f.includes(RED) && f.includes(GREEN), 'the blocker slot is split');
+  assert.ok(f.includes(AMBER) && !f.includes(GREEN) && !f.includes(LIME), 'the blocker slot is the full yellow disc');
   assert.match(svg, /fill="white" fill-opacity="0.95"/, 'the liftgate slot keeps its white disc');
+  const B = new Set(['uline_straight_truck']);
+  const proven = markerSvg(P.iconMarkerSvg(['uline_straight_truck', 'liftgate_required'], null, { blockerKeys: B, advisoryKeys: B, tractorProven: true }));
+  assert.ok(fills(proven).includes(LIME), 'and splits in a cluster exactly as on its own');
 });
 
 test('an ALIASED blocker still gets the treatment', () => {
@@ -501,7 +516,8 @@ test('an ALIASED blocker still gets the treatment', () => {
   // with no confidence on it at all — a scanner-found "no" presented as settled fact.
   assert.ok(TRAILER_BLOCKER_KEYS.has('straight_truck_only'));
   const svg = blocker(['straight_truck_only'], { advisory: ['straight_truck_only'] });
-  assert.ok(fills(svg).includes(GREEN), 'the alias draws its advisory half');
+  assert.ok(fills(svg).includes(AMBER), 'the alias draws the advisory yellow');
+  assert.doesNotMatch(svg, /fill="white" fill-opacity="0.95"/, 'not an ordinary white-disc restriction');
 });
 
 test('the +N overflow badge never grows a disc', () => {
@@ -594,12 +610,13 @@ test('EVERY legend swatch carrying a blocker says so — including the shape row
 
 test('THE LEGEND DEMONSTRATES THE MARK THE MAP DRAWS', () => {
   // A legend that disagrees with the map is worse than none — it teaches the wrong thing with
-  // authority. Both swatches are built by this same iconMarkerSvg, so the only way they can
-  // drift is if the legend forgets to say "this one is a blocker".
+  // authority. Every swatch is built by this same iconMarkerSvg, so the only way they can drift
+  // is if the legend forgets to say "this one is a blocker" or forgets the proof on the split.
   const APP_SRC = APP.slice(APP.indexOf('function LegendMarkerExample('));
-  assert.match(APP_SRC, /blockerKeys=\{LEGEND_BLOCKER_EXAMPLE\}[\s\S]{0,400}?blockerKeys=\{LEGEND_BLOCKER_EXAMPLE\}/,
-    'both the confirmed and the advisory swatch declare themselves blockers');
-  assert.ok(!/Half ring/.test(APP_SRC), 'the wording must not still describe a ring');
+  assert.match(APP_SRC, /blockerKeys=\{LEGEND_BLOCKER_EXAMPLE\}[\s\S]{0,400}?blockerKeys=\{LEGEND_ADVISORY_BLOCKER\}[\s\S]{0,600}?blockerKeys=\{LEGEND_ADVISORY_BLOCKER\}[\s\S]{0,200}?tractorProven/,
+    'the confirmed, the advisory and the advisory-with-proof swatches all declare themselves blockers');
+  assert.ok(!/Half ring|Half and half/.test(APP_SRC), 'the wording must not still describe the old half-green mark');
+  assert.match(APP.slice(APP.indexOf('function LegendMarkerExample(')), /tractorProven \? \{ tractorProven: true \}/, 'the swatch passes the proof through');
 });
 
 // ── THE GREEN ROW AND THE BUTTON THAT DROPS THE REST ────────────────────────

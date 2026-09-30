@@ -210,7 +210,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.99.8';
+const APP_VERSION = '1.99.9';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,6 +264,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.99.9', 'A ULINE “STRAIGHT TRUCK ONLY” NOTE IS A FULL YELLOW DISC NOW — GREEN SHOWS ONLY WHERE A TRACTOR HAS ACTUALLY DELIVERED. Chad: “i don’t agree with this icon being half green if a tractor has never been there why would it be half green should just be a full yellow advisory.” The half-and-half mark used its green half to mean “nobody has checked this”, but on the map green means a trailer fits, and at a dock no tractor has ever delivered to nothing says one does. NOW: an unconfirmed no (a Uline note, or a scanner’s find) fills solid in the advisory yellow with the slashed truck; a no that someone here ticked stays solid red, so the two cannot be confused; and the yellow keeps a green half only in the one case worth a second look, when a tractor HAS delivered to that dock anyway (yellow beside the bright tractor-delivered lime). The Legend shows all three. Map pins and cluster pins draw the same way. THE WAY BACK: one small commit, so a revert puts the half-and-half mark back.'],
   ['1.99.8', 'ERRORS NOW READ AS PLAIN SENTENCES. Chad: “Can you make it simple sentence when there is an error that looks less like code.” When a Save, a new route, an address fix or a note was refused, the screen showed the server’s own diagnostic — “commitBoard(rwb): load DAVIS000204039 has 5 stop(s) the board isn’t showing (…) — a declarative RWB save would unplan them. Refresh and retry.” NOW it says what happened and what to do: “Not saved. NuVizz has 5 orders on this route that your screen isn’t showing yet (…). Saving now would take them off the truck — refresh, then Save again.” Every wording was written from a real refusal in the write log (September: 104 failed writes, and every one of them now reads plainly). Route names instead of load numbers, except when two routes share a name (BUFORD on two days). Nothing is claimed that the server did not say, and no instruction is dropped. A message nobody has seen before keeps its own words, with only the code-looking prefix taken off. The full technical text is still in the write log. VITE_PLAIN_ERRORS=off puts back the old words (a redeploy). Zero NuVizz calls.'],
   ['1.99.7', 'THE ATTEMPTS BACKFILL NO LONGER SPENDS A CALL TO LEARN WHAT THE LIST ALREADY SAYS. Its dry run of 06/26 \u2192 09/29 found 96 orders to look up where 69 were expected: 27 were a \u201c-1\u201d or \u201c-2\u201d copy listed beside a row of the SAME order that the 8:30 freeze had already named, and the backfill would have read each one\u2019s timeline (27 NuVizz calls) to learn that driver again. NOW such a row takes the named row\u2019s driver, route and load directly \u2014 free, marked attributedFrom: sibling \u2014 and only orders nobody named are read. The dry run lists the two separately. Zero NuVizz calls for the free rows; 1 per order for the rest, as before.'],
   ['1.99.6', 'PAST ATTEMPTS WRITTEN WITH NO DRIVER CAN NOW BE GIVEN THE DRIVER WHO HAD THEM ON THE DAY THEY WERE DUE. Chad: \u201cI want the driver it was assigned to on day it should have delivered not the driver that delivered it the next day late.\u201d Before 1.99.0 nothing in Firestore kept that answer for a route dispatched after the 8:30 freeze; the order\u2019s own NuVizz activity timeline does. NEW: nuvizz-att-backfill. GET ?from=&to= is a free dry run \u2014 every attempt with no driver in the range and what reading them would cost. POST ?from=&to=&confirm=1 reads up to 6 timelines per request and writes the answer onto the attempt (field-masked), marked attributedFrom: timeline. THE RULE (tested on five real timelines, including two the 8:30 freeze had already named correctly): the Davis driver dispatched on the due day, before customer service unplanned it; a later day\u2019s dispatch is the redelivery and is never the answer. Each row also records whether that driver reached the customer that day (atCustomer). A \u201c-1\u201d copy is answered with its original stop \u2014 one timeline read for both. A row already read is never read again. Nothing runs on its own: each run is a POST with confirm=1, and the calls count against the daily ceiling. 1 NuVizz call per order (2 when its stopId is not on file).'],
@@ -4173,14 +4174,27 @@ const BLOCKER_GLYPH_INK = '#111827';
 // site is `tractorDelivered ? LIME : (eligColor || flagHue)` — hand THAT in and a priority
 // flag's purple becomes the "a trailer fits" half, which is the v0.76.5 defect wearing a new
 // coat. Only the proof itself may speak here.
+//
+// AN UNCONFIRMED "NO" IS A FULL YELLOW DISC, AND GREEN APPEARS ONLY WHERE A TRACTOR HAS BEEN.
+// Chad, on a Uline advisory drawn half yellow and half (forest) green at a dock no tractor has
+// ever delivered to: "i don't agree with this icon being half green if a tractor has never
+// been there why would it be half green should just be a full yellow advisory." Right: the
+// green half was there to say "unconfirmed", but on a map green means "a trailer fits", and
+// nothing here says one does. So an advisory blocker fills SOLID in the advisory yellow — the
+// one colour that means "somebody else's note says no, nobody here has checked" — and a
+// confirmed one stays solid in its own colour (red), so the two still cannot be confused. The
+// split survives for the one case worth a second look: an unconfirmed no at a dock a tractor
+// HAS actually delivered to — yellow beside the lime of that proof.
+const ADVISORY_WARN_COLOR = '#f59e0b';   // the Uline advisory amber (RESTRICTION_ICONS.uline_straight_truck)
 function blockerDiscMarkup(cx, cy, r, warnColor, advisory, tractorProven) {
   const top = cy - r, bottom = cy + r;
-  const okHalf = tractorProven ? TRACTOR_DELIVERED_COLOR : ELIG_TRACTOR_COLOR;
-  // Solid when a person has confirmed it; split down the middle when nobody has.
-  const disc = advisory
-    ? `<path d="M${cx} ${top} A${r} ${r} 0 0 0 ${cx} ${bottom} Z" fill="${warnColor}"/>`
-      + `<path d="M${cx} ${top} A${r} ${r} 0 0 1 ${cx} ${bottom} Z" fill="${okHalf}"/>`
-    : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${warnColor}"/>`;
+  const warn = advisory ? ADVISORY_WARN_COLOR : warnColor;
+  // Solid when a person has confirmed it (its own colour) or when nothing argues with the
+  // advisory (yellow); yellow beside lime only when a tractor has delivered here anyway.
+  const disc = advisory && tractorProven
+    ? `<path d="M${cx} ${top} A${r} ${r} 0 0 0 ${cx} ${bottom} Z" fill="${warn}"/>`
+      + `<path d="M${cx} ${top} A${r} ${r} 0 0 1 ${cx} ${bottom} Z" fill="${TRACTOR_DELIVERED_COLOR}"/>`
+    : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${warn}"/>`;
   // The white rim is what keeps a filled disc off the base map. Without it the red half
   // disappears into a brick roof and the green half into a treeline — checked on both.
   return disc + `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="white" stroke-width="${(r * 2.2 / 18).toFixed(2)}"/>`;
@@ -4219,8 +4233,9 @@ function renderBlockerGlyph(restrictionKey, glyphX, glyphY, scale) {
 
 function iconMarkerSvg(restrictions, tint, opts = {}) {
   if (!restrictions || restrictions.length === 0) return null;
-  // Trailer blockers draw a FILLED disc (see blockerDiscMarkup): solid when a person has
-  // confirmed it, half restriction / half green when only a scanner has. Everything else keeps
+  // Trailer blockers draw a FILLED disc (see blockerDiscMarkup): solid in its own colour when a
+  // person has confirmed it, solid yellow when only a scanner or Uline says so, and yellow beside
+  // lime when a tractor has delivered there anyway. Everything else keeps
   // the white disc and coloured ring. Keys are compared RESOLVED so an alias
   // (straight_truck_only → box_truck_only) cannot slip past the set and quietly draw as an
   // ordinary restriction.
@@ -6254,13 +6269,14 @@ function LegendRestrictionIcon({ kind, px = LEGEND_ICON_PX }) {
   return <img src={spec.url} alt="" width={w} height={px} style={{ display: 'block', flex: 'none' }} />;
 }
 
-function LegendMarkerExample({ restrictions, label, advisoryKeys = null, blockerKeys = null }) {
+function LegendMarkerExample({ restrictions, label, advisoryKeys = null, blockerKeys = null, tractorProven = false }) {
   const spec = useMemo(
     () => iconMarkerSvg(restrictions, null, {
       ...(advisoryKeys ? { advisoryKeys } : {}),
       ...(blockerKeys ? { blockerKeys } : {}),
+      ...(tractorProven ? { tractorProven: true } : {}),
     }),
-    [restrictions, advisoryKeys, blockerKeys],
+    [restrictions, advisoryKeys, blockerKeys, tractorProven],
   );
   if (!spec) return null;
   return (
@@ -6355,7 +6371,9 @@ const RESTRICTION_LEGEND_ORDER = Object.keys(RESTRICTION_ICONS).filter((k) => !L
 // Module-level so their identity is stable — LegendMarkerExample memoizes on these, and a
 // fresh array every render would rebuild the data-URI on every keystroke in the filter box.
 const LEGEND_CONFIRMED_EXAMPLE = ['no_tractor_trailer'];
-const LEGEND_ADVISORY_EXAMPLE = new Set(['no_tractor_trailer']);
+const LEGEND_ADVISORY_EXAMPLE = new Set(['uline_straight_truck']);
+const LEGEND_ADVISORY_RESTRICTIONS = ['uline_straight_truck'];
+const LEGEND_ADVISORY_BLOCKER = new Set(['uline_straight_truck']);
 // The legend has to say "this is a trailer blocker" the same way the map does, or the two
 // swatches below draw as ordinary white-disc restrictions and the panel demonstrates a mark
 // that is nowhere on the board.
@@ -6674,15 +6692,24 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true, t
               </div>
               <div className="flex items-center gap-2">
                 <LegendMarkerExample
-                  restrictions={LEGEND_CONFIRMED_EXAMPLE}
-                  blockerKeys={LEGEND_BLOCKER_EXAMPLE}
+                  restrictions={LEGEND_ADVISORY_RESTRICTIONS}
+                  blockerKeys={LEGEND_ADVISORY_BLOCKER}
                   advisoryKeys={LEGEND_ADVISORY_EXAMPLE}
-                  label="Half and half — found automatically (a scanner, or a Uline note). Nobody has checked it, so a tractor may well be fine."
+                  label="Yellow — found automatically (a Uline note, or a scanner). Nobody here has checked it."
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <LegendMarkerExample
+                  restrictions={LEGEND_ADVISORY_RESTRICTIONS}
+                  blockerKeys={LEGEND_ADVISORY_BLOCKER}
+                  advisoryKeys={LEGEND_ADVISORY_EXAMPLE}
+                  tractorProven
+                  label="Yellow and green — the note says no, but a tractor has delivered here. Worth a look."
                 />
               </div>
             </div>
             <p className="text-slate-600 mt-1.5 leading-snug">
-              Ticking the restriction on the stop fills the other half in.
+              Ticking the restriction on the stop makes it solid red.
             </p>
           </div>
         </div>
