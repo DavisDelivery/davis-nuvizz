@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {
   weekOf, weekLabel, addDays, wallTime, wallMinutes, totalAmounts, sealPrice, orderPrice, baseOrderNbr,
   driversOfWeek, resolveDriver, deliveredRun, milesPath, routeChunks, pathFingerprint, buildLoad,
-  pricedRows, driverWeek, withMiles, toMiles, YARD, MAX_INTERMEDIATES, COST_NOT_RECORDED,
+  pricedRows, driverWeek, withMiles, toMiles, YARD, MAX_INTERMEDIATES, COST_NOT_RECORDED, loadForRow,
 } from '../src/lib/load-lookup.js';
 
 const row = (stopNbr, extra = {}) => ({
@@ -276,4 +276,50 @@ test('the period buttons — a running period ends today, a finished one on its 
   assert.deepEqual(periodRange('range', t, { from: '2026-09-20', to: '2026-09-01' }), { from: '2026-09-01', to: '2026-09-20' });
   assert.equal(periodRange('range', t, {}), null);
   assert.equal(datesBetween('2026-09-01', '2026-09-30').length, 30);
+});
+
+// ── loadForRow — the load a Stop lookup row rode on (v1.99.10) ───────────────────────────────
+// Chad, 2026-09-30: tapping a customer's row "doesn't show me the load". The row names a route,
+// a driver and a day; these pin which of the driver's loads that day the screen opens.
+
+const L = (date, name, nbrs) => ({ key: `${date}|${name}`, date, name, rows: nbrs.map((n) => ({ stopNbr: n, date })) });
+
+test('loadForRow: the load holding THIS order that day is the load, whatever its name reads', () => {
+  const loads = [L('2026-09-30', 'FRANK', ['A', 'B']), L('2026-09-30', 'FRANK 2', ['007183702-1'])];
+  assert.equal(loadForRow(loads, { date: '2026-09-30', route: 'FRANK', stopNbr: '007183702-1' }).name, 'FRANK 2');
+});
+
+test('loadForRow: no order match falls back to the route name — exact key first', () => {
+  const loads = [L('2026-09-30', 'FRANK', ['A']), L('2026-09-30', 'SAMUEL', ['B'])];
+  assert.equal(loadForRow(loads, { date: '2026-09-30', route: 'FRANK', stopNbr: 'ZZZ' }).key, '2026-09-30|FRANK');
+});
+
+test('loadForRow: case and doubled spaces do not hide a load, but only ONE may match', () => {
+  const one = [L('2026-09-30', 'COLIN  1', ['A'])];
+  assert.equal(loadForRow(one, { date: '2026-09-30', route: 'colin 1' }).name, 'COLIN  1');
+  const two = [L('2026-09-30', 'COLIN 1', ['A']), L('2026-09-30', 'colin  1', ['B'])];
+  assert.equal(loadForRow(two, { date: '2026-09-30', route: 'Colin 1' }), null);
+});
+
+test('loadForRow: another day\'s load of the same name is never the answer (route names repeat every day)', () => {
+  const loads = [L('2026-09-29', 'FRANK', ['007183702-1'])];
+  assert.equal(loadForRow(loads, { date: '2026-09-30', route: 'FRANK', stopNbr: '007183702-1' }), null);
+});
+
+test('loadForRow: a route that matches none of the day\'s loads is null — never the driver\'s only load by default', () => {
+  const loads = [L('2026-09-30', 'SAMUEL', ['B'])];
+  assert.equal(loadForRow(loads, { date: '2026-09-30', route: 'FRANK', stopNbr: 'A' }), null);
+});
+
+test('loadForRow: an order on two loads that day is settled by the route name among those two', () => {
+  const loads = [L('2026-09-30', 'FRANK', ['X']), L('2026-09-30', 'FRANK PM', ['X']), L('2026-09-30', 'OTHER', ['Y'])];
+  assert.equal(loadForRow(loads, { date: '2026-09-30', route: 'FRANK PM', stopNbr: 'X' }).name, 'FRANK PM');
+  assert.equal(loadForRow(loads, { date: '2026-09-30', route: 'OTHER', stopNbr: 'X' }), null, 'OTHER does not hold X, so it is not among the candidates');
+});
+
+test('loadForRow: empty, absent and malformed inputs answer null, never throw', () => {
+  assert.equal(loadForRow(null, { date: '2026-09-30', route: 'FRANK' }), null);
+  assert.equal(loadForRow([], {}), null);
+  assert.equal(loadForRow([null, { date: '2026-09-30' }], { date: '2026-09-30', route: 'FRANK' }), null);
+  assert.equal(loadForRow([L('2026-09-30', 'FRANK', [])], { date: '', route: 'FRANK' }), null);
 });

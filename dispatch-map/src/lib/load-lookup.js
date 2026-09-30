@@ -502,6 +502,37 @@ export function driverWeek(stops, driverKey, { aliases = [], classes = {}, miles
 }
 
 /**
+ * WHICH OF A DRIVER'S LOADS A STOP LOOKUP ROW RODE ON (v1.99.10).
+ *
+ * Chad, 2026-09-30, on a customer's row in Stop lookup: "doesn't show me the load". The row names a
+ * route, a driver and a day; the driver's loads that day come from the same records as the row. The
+ * join, most certain first:
+ *   1. the one load that day whose orders include THIS order — the records put it there, so it is
+ *      the load, whatever its name field says;
+ *   2. the load keyed `${date}|${route}` — the name the board files the load under;
+ *   3. the one load that day whose name reads the same once case and doubled spaces are ignored.
+ * Anything else is null, and the screen lists the day's loads for the person to pick. Never the
+ * driver's only load by default: a row whose route matches none of them is a disagreement to show,
+ * not one to paper over.
+ */
+export function loadForRow(loads, { date, route, stopNbr } = {}) {
+  const d = s(date);
+  if (!d) return null;
+  const onDay = (loads || []).filter((l) => l && l.date === d);
+  const nbr = s(stopNbr);
+  const holding = nbr ? onDay.filter((l) => (l.rows || []).some((r) => s(r.stopNbr) === nbr)) : [];
+  if (holding.length === 1) return holding[0];
+  const pool = holding.length > 1 ? holding : onDay;
+  const r = s(route);
+  if (!r) return null;
+  const exact = pool.find((l) => l.key === `${d}|${r}`);
+  if (exact) return exact;
+  const norm = (x) => s(x).toUpperCase().replace(/\s+/g, ' ');
+  const same = pool.filter((l) => norm(l.name) === norm(r));
+  return same.length === 1 ? same[0] : null;
+}
+
+/**
  * Put a measured distance on a load, and the two ratios a distance and a price make.
  *
  * $/mile and $/stop are printed ONLY when every order on the load that counts toward it is
