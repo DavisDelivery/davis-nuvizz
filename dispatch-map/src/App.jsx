@@ -50,7 +50,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, dayMiles, resequence, resequenceOnMatrix, SHORTEST_OBJECTIVE, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -166,7 +166,7 @@ const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 import { computeStopProgress } from './lib/stop-progress.js';
 import { editorClosedDay, toggleClosedPatch, dropClosedPrints, unusedStoredClosedDays, closedDaysFromOrderEnabled } from './lib/closed-days.js';
-import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, travelForServedDate } from './lib/route-preflight.js';
+import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, travelForServedDate, orientRoundTrip } from './lib/route-preflight.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
@@ -208,7 +208,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.95.0';
+const APP_VERSION = '1.96.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -262,6 +262,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.96.0', 'SHORTEST DISTANCE MEANS THE SHORTEST DAY NOW \u2014 OUT, EVERY STOP, AND HOME \u2014 DRIVEN THE WAY ROUND THAT KEEPS THE RECEIVING WINDOWS. Chad, on an 18-stop BRENT card re-sequenced Shortest distance: \u201cthis is not a good optimization.\u201d The card ran Conley, Ellenwood, five miles south to Morrow, four miles back north to Forest Park, a spur up to Faith Technologies, the airport \u2014 and FINISHED at Life Science Logistics, seven miles further west than anything else on the load. THE SEARCH WAS NOT WEAK, AND THAT WAS CHECKED BEFORE ANYTHING WAS CHANGED: solved exactly over all 18 stops, the best order by that rule was 151.2 real road miles for the day and what shipped was 152.0. ITS JOB WAS THE WRONG JOB. It minimised the drive OUT from Buford and never counted the drive HOME, so it had every reason to finish at the far end of the load \u2014 and every truck comes back to 943 Gainesville Hwy. It now finds the shortest ROUND TRIP. Across all 16 routes on that day\u2019s board the round trip was never a longer day than either old strategy on any route; five were two or more miles long, and ULINE APPT was 21 miles long. THEN THE WAY ROUND, WHICH THE FIRST CUT GOT WRONG AND A CHECK CAUGHT: a round trip can be driven either way for the same straight-line miles but not for the same day. As first found, BRENT\u2019s loop reached Express Container in Morrow \u2014 receiving closes 2:00p \u2014 at stop 16 of 18, 1:44p by the card\u2019s own preflight, and PAST the close on a 9:00a start. So the direction is judged by that same preflight, with the same notes, departure and travel model the badges read, so the order and the badges cannot disagree: fewest stops past their close, then fewest the truck cannot make at all, then fewest past their close if it rolls an hour late, then the shorter day. On BRENT that turns the loop round: Ellenwood first, Morrow at stop 3 around 9:48a, finishing in Conley, the load\u2019s nearest stop to home. MEASURED ON REAL ROADS, 8:00a start: 152.0 miles as shipped, 148.4 now, back at Buford 3:33p instead of 3:35p, and every window on the card met even at 20 minutes a stop. With the road-distances box ticked it is 146.0 miles and safe at the calibrated pace and on a late start; on an extreme 20-minute-a-stop day its last stop, Faith (3:30p), would run late, and the card\u2019s late badge says so. LOOP WAS ALREADY A ROUND TRIP but, seeded once and improved by 2-opt alone, it had landed on the same order as Shortest distance; both now run the stronger search the town sweep uses, so they agree. THE CARD NOW SHOWS THE DRIVE HOME beside the drive out \u2014 on BRENT, \u201c88.8 mi \u00b7 DH 51.8 mi \u00b7 home 63.8 mi\u201d before and \u201c98.0 mi \u00b7 DH 52.5 mi \u00b7 home 51.8 mi\u201d after. A shorter day can have a LONGER drive out and a much shorter drive home, and a card that showed only the first half would make the better route look nine miles worse; the first number is unchanged and still matches NuVizz, and the line under the dropdown now says what the whole day went from and to (152.6 \u2192 149.9 on the card\u2019s own arithmetic). THE WAY BACK IS ONE WORD: SHORTEST_OBJECTIVE in lib/routing-select.js is \u2018round-trip\u2019; set it to \u2018one-way\u2019 and both strategies are exactly what shipped before, byte for byte, which a test pins. NOT CHANGED: the engine Build\u2019s MIN_DISTANCE has the same one-way objective, but it feeds capacity spill and window repair and wants its own test before it moves. 9 new tests, most on BRENT\u2019s real coordinates and the three windows from his card; flipping the switch back fails exactly the ones that pin the new rule.'],
   ['1.95.0', 'THE 5:30P OPEN-ORDERS EMAIL TO CUSTOMER SERVICE. Chad: “I want to send them an email of everything that’s been undelivered that is planned, not unplanned … at 5:30,” after a normal scan at 5:25, to customer service and him. Weekdays from 5:30p ET it lists every planned order not delivered yet, one row per PRO: customer, address, route and driver, and whether it is not delivered yet, out for delivery / on site, or attempted and not delivered (a refusal or exception). Delivered, cancelled and unplanned orders are left out, as are CHAD and ULINE APPT (the email names them in one line so nothing is hidden). It uses the same planned / delivered rules as the 6:30 report, so the two cannot disagree about what is open. It WAITS for the 5:25 scan: it sends as soon as both lists have been pulled since 5:20, and if the scan has not landed by 5:45 it sends anyway and says how old the board is. Once a day, stamped only after the mailer confirms; a failed send is recorded and retried by the next firing before 6:00. Nothing is sent on a day with nothing planned. Recipients: Diagnostics → Alert recipients → “5:30p open orders”, customer service always on it (OPEN_ORDERS_TO is the env fallback). Dry run, sends nothing: /.netlify/functions/open-orders-email (add ?email=1 to see the email). 0 NuVizz calls. The 6:30 report is unchanged. PUT IT BACK: OPEN_ORDERS_EMAIL=off in Netlify (takes effect on the next deploy), or revert this commit.'],
   ['1.94.1', 'A NORMAL SCAN AT 5:25P AND 6:20P, SO THE EVENING EMAILS READ A FRESH BOARD. Chad: “at 5:25, I want to run a refresh scan so that everything and all the data is fresh” and “make sure that before 630 is sent a normal scan is done at 620. No forced scans here just the normal scans where it’s just a few nuvizz calls.” Weekdays at 5:25p and 6:20p the scanner now treats the planned/unplanned and completed lists as due, so that fire takes the same scheduled list scan as every other one: two NuVizz calls, never the forced number-probe scan. The weekend blackout, the 10-minute anti-thrash floor, the daily ceiling and the breaker all still apply; if the floor holds the 5:25 fire back, the next fire inside the following 20 minutes catches it, and a scan in the five minutes before the pin already counts. The roster is not pinned. The 6:30p report itself is unchanged. nuvizz-scan-config?explain=1 now shows the pins and whether one is firing (0 calls). PUT IT BACK: SCAN_PINS=off in Netlify (takes effect on the next deploy), or revert this commit.'],
   ['1.94.0', 'STOPS COMPLETED ON THE PHONE. Chad: “on the mobile version of the app, I want a stops completed percentage … so I can kind of follow along mobilely from my phone … Don’t include any stops that are on a [Chad] route or a Uline appointment route.” The phone’s Stops tab now opens with a Stops completed card: completed of total, the percentage, and a bar. CHAD and ULINE APPT (any APPT / APPOINTMENT route) are left out of both numbers, using the same rule the flag list and the nightly 6:30 report already use, so the three agree; CHADWICK and CHATTANOOGA still count. Unplanned stops are left out too, as in the nightly report, because they are on nobody’s truck yet — “unplanned” meaning exactly the stops whose badge says Unplanned. The small “% delivered” beside “Showing N of M stops” on the phone is gone: it counted CHAD and ULINE APPT, so it would have shown a second, different percentage right under the card. The desktop’s % completed is unchanged. The card reads the whole day’s board, so it does not move while you search or filter. Phone only; the desktop and the Route Workbench are untouched. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
@@ -21818,6 +21819,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
   const miles = rc ? rc.totalDistanceMeters / 1609.344 : 0;
   const driveMin = rc ? Math.round(rc.totalDurationSec / 60) : 0;
   const dhMi = rc && rc.legs[0] ? rc.legs[0].distanceMeters / 1609.344 : 0;   // deadhead: depot → first stop
+  const homeMi = rc ? rc.returnDistanceMeters / 1609.344 : 0;                 // last stop → back to Buford
   const nextMiById = new Map();
   if (rc) for (let k = 0; k < pts.length; k++) { const nl = rc.legs[k + 1]; if (nl) nextMiById.set(pts[k].id, nl.distanceMeters / 1609.344); }
   const fmtDur = (m) => (m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m` : `${m}m`);
@@ -21884,7 +21886,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
             (no truncation — nothing gets cut off), with the freight counts (orders · skids · loose)
             bolded so they stand out. Physical stops = one truck stop per address (like NuVizz's
             card); orders shown alongside when it differs so nothing is hidden. */}
-        {rc && <div className="text-[11px] text-slate-500">{miles.toFixed(1)} mi · {fmtDur(driveMin)} · DH {dhMi.toFixed(1)} mi</div>}
+        {rc && <div className="text-[11px] text-slate-500">{miles.toFixed(1)} mi · {fmtDur(driveMin)} · DH {dhMi.toFixed(1)} mi · home {homeMi.toFixed(1)} mi</div>}
         {(() => { const locs = new Set(rows.map((s) => s.matchKey || String(s.stopNbr))).size; return (
         <div className="text-[11px] text-slate-500 leading-tight">
           {driverLabel} · {locs} stop{locs === 1 ? '' : 's'}
@@ -25090,7 +25092,29 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       setLastAction(timeWindowSummary(res, loadDisplayName(key) || 'load'));
       return;
     }
-    const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
+    let newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
+    // WHICH WAY ROUND. Shortest distance and Loop now find the shortest round trip, which can be
+    // driven either way for the same straight-line miles but not for the same day: BRENT's loop
+    // as first found reached a 2:00p close at 1:44p (and 2:44p on a late start); the other way
+    // round it was stop 3 at 9:37a. The card's OWN preflight picks the direction, with the same
+    // inputs its badges read, so the order and the badges cannot disagree.
+    const isRoundTrip = (strategy === 'min' || strategy === 'loop') && SHORTEST_OBJECTIVE !== 'one-way';
+    const routeKeyForJudge = r.name || r.loadNbr || r.key;
+    const measuredDepart = departureFor(departTable, routeKeyForJudge);
+    const judgeInputs = {
+      stopById, notes, routeKey: routeKeyForJudge,
+      servedDate: selectedDate, dayKey: weekdayKeyFromDate(selectedDate),
+      depot: ROUTING_DEPOT, travel: travelForServedDate(travelInputs, selectedDate),
+      ...(measuredDepart != null ? { departMin: measuredDepart, departureSource: 'measured' } : {}),
+    };
+    const ptById = new Map(pts.map((p) => [p.id, p]));
+    const tailFor = (ids) => { const done = new Set(ids); return r.order.map(String).filter((id) => !done.has(id)); };
+    if (isRoundTrip) {
+      newOrder = orientRoundTrip(newOrder, {
+        ...judgeInputs, tail: tailFor(newOrder),
+        dayOf: (ids) => dayMiles(ids.map((id) => ptById.get(id)).filter(Boolean), ROUTING_DEPOT),
+      });
+    }
     const resolved = new Set(newOrder);
     const applyOrder = (ids, suffix) => setWbRoutes((prev) => prev.map((x) => {
       if (x.key !== key) return x;
@@ -25102,7 +25126,17 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // only ever replace it a moment later — so the dropdown never feels slower than it did, and
     // a slow or failed matrix leaves a working card rather than an empty one.
     applyOrder(newOrder, 'crow');
-    setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy}`);
+    // For the two strategies that optimise the whole day, say what the day went from and to, on
+    // the card's own arithmetic. The drive OUT (the card's first number) can rise when the drive
+    // HOME falls further; without the day total a shorter route reads as a longer one.
+    let dayNote = '';
+    if (strategy === 'min' || strategy === 'loop') {
+      const byId = new Map(pts.map((p) => [p.id, p]));
+      const before = dayMiles(pts, ROUTING_DEPOT);
+      const after = dayMiles(newOrder.map((id) => byId.get(id)).filter(Boolean), ROUTING_DEPOT);
+      if (before > 0 && after > 0) dayNote = ` · whole day ${before.toFixed(1)} → ${after.toFixed(1)} mi out and back`;
+    }
+    setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy}${dayNote}`);
 
     // ── REAL ROAD DISTANCES (opt-in) ──────────────────────────────────────────────────────
     // Chad, on a 23-stop JEAN card sequenced Shortest distance: "Logic is still not fixed."
@@ -25130,7 +25164,21 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
           setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances unavailable, straight-line order kept`);
           return;
         }
-        const roadOrder = resequenceOnMatrix(pts, cost, strategy).map((s) => s.id);
+        let roadOrder = resequenceOnMatrix(pts, cost, strategy).map((s) => s.id);
+        if (isRoundTrip) {
+          // On roads the two directions differ a little in miles too (one-way streets, ramps), so
+          // the final tie-break reads the matrix rather than straight lines.
+          const nodeOf = new Map(pts.map((p, i) => [p.id, i + 1]));
+          roadOrder = orientRoundTrip(roadOrder, {
+            ...judgeInputs, tail: tailFor(roadOrder),
+            dayOf: (ids) => {
+              const k = ids.map((id) => nodeOf.get(id));
+              let m = cost[0][k[0]];
+              for (let i = 1; i < k.length; i++) m += cost[k[i - 1]][k[i]];
+              return (m + cost[k[k.length - 1]][0]) / 1609.344;
+            },
+          });
+        }
         applyOrder(roadOrder, 'road');
         setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} · real road distances`);
       } catch (e) {
