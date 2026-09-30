@@ -264,7 +264,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.99.10', 'STOP LOOKUP: A TAPPED BUSINESS SAYS IT IS OPENING, AND A ROW\u2019S ROUTE OPENS ITS LOAD. Chad, on a phone with \u201c22 businesses match \u2018master\u2019\u201d: \u201cclicking this and nothing happens doens\u2019t show me the load \u2026 i want you to build this entire screen and test everything in it.\u201d The tap was working \u2014 a customer takes about ten seconds to read \u2014 but its only sign was \u201cLooking\u2026\u201d on the search button, a screen above on a phone, and a second tap started the read over. NOW: the tapped business says \u201cOpening \u2014 reading their deliveries\u2026\u201d with a spinner, the other businesses grey out until it opens, and a dark line at the top of the view says what is being read (\u201cOpening MASTER WINDOW SYSTEMS\u2026\u201d) wherever the page is scrolled \u2014 for every search on this screen, not just this one. THE LOAD: on a customer\u2019s row, an order\u2019s day and an address result, the route (FRANK \u00b7 stop 15) is now a link. It opens that load under the row \u2014 the map, every stop in delivery order, this order marked \u2014 and the customer stays on screen; tap it again to close. It reads the same records as Driver\u2019s loads (no NuVizz call). If two drivers share the name it asks which; if none of their loads that day carries the route it lists that day\u2019s loads to pick, never picks one for you; a day that has not happened says the load has not run yet. Below dispatcher the route stays plain text, as Driver\u2019s loads is. Also: a business picked after the search box was edited now opens the business you picked. TESTED: a new check taps every control on Stop lookup on a phone and a desktop with every answer made to arrive late, and fails any tap that changes nothing on screen within a quarter second; it fails on the code before this. THE WAY BACK: one commit; a revert puts the screen back.'],
+  ['1.99.10', 'STOP LOOKUP: A TAPPED BUSINESS SAYS IT IS OPENING, AND A ROW\u2019S ROUTE OPENS ITS LOAD. Chad, on a phone with \u201c22 businesses match \u2018master\u2019\u201d: \u201cclicking this and nothing happens doens\u2019t show me the load \u2026 i want you to build this entire screen and test everything in it.\u201d The tap was working \u2014 a customer takes about ten seconds to read \u2014 but its only sign was \u201cLooking\u2026\u201d on the search button, a screen above on a phone, and a second tap started the read over. NOW: the tapped business says \u201cOpening \u2014 reading their deliveries\u2026\u201d with a spinner and ignores a second tap (tapping a different business switches to that one instead of waiting), and a dark line at the top of the view says what is being read (\u201cOpening MASTER WINDOW SYSTEMS\u2026\u201d) wherever the page is scrolled \u2014 for every search on this screen, not just this one. THE LOAD: on a customer\u2019s row, an order\u2019s day and an address result, the route (FRANK \u00b7 stop 15) is now a link. It opens that load under the row \u2014 the map, every stop in delivery order, this order marked \u2014 and the customer stays on screen; tap it again to close. It reads the same records as Driver\u2019s loads (no NuVizz call). If two drivers share the name it asks which; if the driver was renamed (the name on the row matches nobody that day) it lists who ran loads that day instead of saying there is no load; if none of their loads carries the route it lists that day\u2019s loads to pick, never picks one for you; if the load it opens does not hold this order (moved to another truck that day) it says so above the load; a day that has not happened says the load has not run yet. An order tapped inside the load opens there, once. Below dispatcher the route stays plain text, as Driver\u2019s loads is. Also: a business picked after the search box was edited now opens the business you picked. TESTED: a new check taps every control on Stop lookup on a phone and a desktop with every answer made to arrive late, and fails any tap that changes nothing on screen within a quarter second; it fails on the code before this. THE WAY BACK: one commit; a revert puts the screen back.'],
   ['1.99.9', 'A ULINE “STRAIGHT TRUCK ONLY” NOTE IS A FULL YELLOW DISC NOW — GREEN SHOWS ONLY WHERE A TRACTOR HAS ACTUALLY DELIVERED. Chad: “i don’t agree with this icon being half green if a tractor has never been there why would it be half green should just be a full yellow advisory.” The half-and-half mark used its green half to mean “nobody has checked this”, but on the map green means a trailer fits, and at a dock no tractor has ever delivered to nothing says one does. NOW: an unconfirmed no (a Uline note, or a scanner’s find) fills solid in the advisory yellow with the slashed truck; a no that someone here ticked stays solid red, so the two cannot be confused; and the yellow keeps a green half only in the one case worth a second look, when a tractor HAS delivered to that dock anyway (yellow beside the bright tractor-delivered lime). The Legend shows all three. Map pins and cluster pins draw the same way. THE WAY BACK: one small commit, so a revert puts the half-and-half mark back.'],
   ['1.99.8', 'ERRORS NOW READ AS PLAIN SENTENCES. Chad: “Can you make it simple sentence when there is an error that looks less like code.” When a Save, a new route, an address fix or a note was refused, the screen showed the server’s own diagnostic — “commitBoard(rwb): load DAVIS000204039 has 5 stop(s) the board isn’t showing (…) — a declarative RWB save would unplan them. Refresh and retry.” NOW it says what happened and what to do: “Not saved. NuVizz has 5 orders on this route that your screen isn’t showing yet (…). Saving now would take them off the truck — refresh, then Save again.” Every wording was written from a real refusal in the write log (September: 104 failed writes, and every one of them now reads plainly). Route names instead of load numbers, except when two routes share a name (BUFORD on two days). Nothing is claimed that the server did not say, and no instruction is dropped. A message nobody has seen before keeps its own words, with only the code-looking prefix taken off. The full technical text is still in the write log. VITE_PLAIN_ERRORS=off puts back the old words (a redeploy). Zero NuVizz calls.'],
   ['1.99.7', 'THE ATTEMPTS BACKFILL NO LONGER SPENDS A CALL TO LEARN WHAT THE LIST ALREADY SAYS. Its dry run of 06/26 \u2192 09/29 found 96 orders to look up where 69 were expected: 27 were a \u201c-1\u201d or \u201c-2\u201d copy listed beside a row of the SAME order that the 8:30 freeze had already named, and the backfill would have read each one\u2019s timeline (27 NuVizz calls) to learn that driver again. NOW such a row takes the named row\u2019s driver, route and load directly \u2014 free, marked attributedFrom: sibling \u2014 and only orders nobody named are read. The dry run lists the two separately. Zero NuVizz calls for the free rows; 1 per order for the rest, as before.'],
@@ -38866,7 +38866,7 @@ function CustomerRangeBar({ sel, setSel, range, today, stacked, yearOn, onYear }
 
 /** Two or more real businesses matched what was typed. Counts included, because the sweep
  *  that produced them has already been paid for and an uninformed choice is a wasted one. */
-function CustomerChooser({ matches, query, onPick, incomplete, openingKey = null, busy = false }) {
+function CustomerChooser({ matches, query, onPick, incomplete, openingKey = null }) {
   // A match with `stops: null` was never counted (the year's chooser) — it gets no count line,
   // because "nothing in this window" is a claim, and nothing measured it.
   const counted = matches.some((m) => m.stops != null);
@@ -38882,17 +38882,17 @@ function CustomerChooser({ matches, query, onPick, incomplete, openingKey = null
         </div>
       )}
       <div className="space-y-2">
-        {/* THE TAPPED ROW SAYS IT IS OPENING, AND THE REST WAIT. Chad, 2026-09-30: "clicking this and
-            nothing happens". It did happen — a customer's answer takes about ten seconds to read — but
-            the only sign was "Looking…" on the search button, a screen above on a phone, and a second
-            tap started the read again and the clock with it. */}
+        {/* THE TAPPED ROW SAYS IT IS OPENING. Chad, 2026-09-30: "clicking this and nothing happens".
+            It did happen — a customer's answer takes about ten seconds to read — but the only sign was
+            "Looking…" on the search button, a screen above on a phone, and a second tap started the read
+            again and the clock with it. That row now ignores a second tap; a different row switches. */}
         {matches.map((m) => {
           const opening = openingKey === m.nameKey;
           return (
-            <button key={m.nameKey} onClick={() => onPick(m)} disabled={busy} aria-busy={opening}
+            <button key={m.nameKey} onClick={() => onPick(m)} disabled={opening} aria-busy={opening}
               className={`w-full text-left rounded-xl border p-3 flex items-center gap-3 min-h-[56px] ${opening
                 ? 'bg-blue-50 border-blue-300'
-                : 'bg-white hover:bg-slate-50 hover:border-slate-300 disabled:opacity-60'}`}>
+                : 'bg-white hover:bg-slate-50 hover:border-slate-300'}`}>
               <div className="min-w-0 flex-1">
                 <div className="font-semibold text-slate-800 break-words">{m.name}</div>
                 <div className="text-[11px] text-slate-500">
@@ -40169,12 +40169,19 @@ function RowLoadPanel({ st, stacked, onClose, onPickDriver, onPickLoad, onOrder,
     return note(<span className="text-red-800">{day} could not be read, so {st.route}&rsquo;s load cannot be shown. Try again.</span>, null, 'ring-red-200');
   }
   if (j.mode === 'driver-week-choose') {
-    const list = (j.candidates && j.candidates.length ? j.candidates : []);
+    // TWO WAYS TO GET HERE, and neither is "there is no load". Several drivers answer to the name —
+    // pick one. Or NONE does: driver-loads folds the alias list (a vendor rename, "Brent  Boyd" →
+    // "Brent  Bryd") before it matches, and this row was never folded, so the load is filed under
+    // another spelling. Then the day's drivers are the list — `drivers`, which the answer carries.
+    const several = (j.candidates || []).length > 1;
+    const list = several ? j.candidates : (j.drivers || []);
     return note(
-      list.length > 1
+      several
         ? <>&ldquo;{st.driver}&rdquo; matches {list.length} drivers on {day}. Pick the one who ran {st.route}:</>
-        : <>Our records hold no load for &ldquo;{st.driver}&rdquo; on {day}, so there is no load to open.</>,
-      list.length > 1 ? <div className="flex flex-wrap gap-2">{list.map((d) => (
+        : list.length
+          ? <>No driver in our records for {day} is called &ldquo;{st.driver}&rdquo; &mdash; a renamed driver is filed under the new name. The drivers who ran loads that day:</>
+          : <>Our records hold no loads at all for {day}, so there is no load to open.</>,
+      list.length ? <div className="flex flex-wrap gap-2">{list.map((d) => (
         <button key={d.key} type="button" onClick={() => onPickDriver(d.key)} className={pickBtn}>{d.label} · {plural(d.loads, 'load')}</button>
       ))}</div> : null);
   }
@@ -40190,8 +40197,10 @@ function RowLoadPanel({ st, stacked, onClose, onPickDriver, onPickLoad, onOrder,
       ))}</div> : null);
   }
   const f = loadFacts(load, j.miles);
-  // The row's own order opens under the ROW above, not a second time inside the load's list.
-  const inner = (nbr, date, o) => (nbr === st.stopNbr && date === st.date ? null : renderDetail?.(nbr, date, o));
+  // A LOAD THAT DOES NOT HOLD THIS ORDER IS SAID TO. Picked by its route name, it is the truck the
+  // row names — but an order moved onto another truck that day (an attempt taken over, a re-plan)
+  // is filed on the one that ended with it, and a rep must not read this load out as its truck.
+  const holds = !st.stopNbr || (load.rows || []).some((r) => r.stopNbr === st.stopNbr);
   return shell(<>
     <div className="flex items-start justify-between gap-3 p-3">
       <div className="min-w-0">
@@ -40203,8 +40212,13 @@ function RowLoadPanel({ st, stacked, onClose, onPickDriver, onPickLoad, onOrder,
       </div>
       {closeBtn}
     </div>
+    {!holds && (
+      <div className="mx-3 mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+        This order is not on {load.name} in {day}&rsquo;s records. This is the load the row names; do not read it out as the order&rsquo;s truck.
+      </div>
+    )}
     <div className="border-t border-slate-200 bg-slate-50">
-      <LoadDetail load={load} yard={j.yard} stacked={stacked} milesWhy={f.milesWhy} onOrder={onOrder} renderDetail={inner} markNbr={st.stopNbr} />
+      <LoadDetail load={load} yard={j.yard} stacked={stacked} milesWhy={f.milesWhy} onOrder={onOrder} renderDetail={renderDetail} markNbr={st.stopNbr} />
     </div>
   </>);
 }
@@ -40249,7 +40263,7 @@ function StopLookupScreen() {
   // How many of the year's orders are listed. Starts short because the year is read for its
   // COUNTS; a rep who wants the list asks for more.
   const [yearOrdersShown, setYearOrdersShown] = useState(20);
-  const [detail, setDetail] = useState(null);       // { stopNbr, date } | null
+  const [detail, setDetail] = useState(null);       // { stopNbr, date, where } | null
   const [detailData, setDetailData] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailErr, setDetailErr] = useState(null);
@@ -40296,6 +40310,10 @@ function StopLookupScreen() {
   // not open under whatever is on screen now.
   const [rowLoad, setRowLoad] = useState(null);
   const rowLoadReqRef = useRef(0);
+  // Set for the one openOrder call a tap INSIDE a row's load makes, so the order opens there.
+  const orderInLoadRef = useRef(false);
+  const detailRef = useRef(null);
+  detailRef.current = detail;
   // RECENT LOOKUPS on this device — see src/lib/stop-lookup-recent.js for what is kept and why.
   const [recent, setRecent] = useState(() => {
     try { return parseRecent(localStorage.getItem(STOP_LOOKUP_RECENT)); } catch { return []; }
@@ -40442,11 +40460,17 @@ function StopLookupScreen() {
     const id = String(stopNbr ?? '').trim();
     const day = String(date ?? '').trim();
     if (!id || !day) return;
+    // WHERE IT WAS TAPPED (v1.99.10): under its row, or inside a load opened under a row. One order
+    // can be in both places at once — a customer with two orders on one truck — and it opens in the
+    // one that was tapped, never both (two panels meant two priced timeline buttons for one order).
+    const where = orderInLoadRef.current ? 'load' : 'row';
+    orderInLoadRef.current = false;
+    if (detail && detail.stopNbr === id && detail.date === day && (detail.where || 'row') !== where) { setDetail({ ...detail, where }); return; }
     // TAPPING THE OPEN ONE AGAIN CLOSES IT. Inline, the row IS the control — an expanded panel
     // with no way back but a Close button four hundred pixels down the page is how an
     // accordion becomes a trap.
     if (detail && detail.stopNbr === id && detail.date === day) { closeOrder(); return; }
-    setDetail({ stopNbr: id, date: day });
+    setDetail({ stopNbr: id, date: day, where });
     setDetailLoading(true); setDetailErr(null); setDetailData(null);
     const req = ++detailReqRef.current;
     try {
@@ -40485,6 +40509,7 @@ function StopLookupScreen() {
   const renderOrderPanel = useCallback((stopNbr, date, opts = {}) => {
     if (!detail) return null;
     if (detail.stopNbr !== String(stopNbr ?? '').trim() || detail.date !== String(date ?? '').trim()) return null;
+    if ((detail.where || 'row') !== (opts.where || 'row')) return null;
     const pro = detailData?.stop?.pro || detail.stopNbr;
     return (
       <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={opts.stacked ?? isMobile} onTimelineSpent={timelineSpent}
@@ -40670,12 +40695,20 @@ function StopLookupScreen() {
   // answer was for neither. (The line above is an anchor: customer-notes-edit-dock-race.test.mjs cuts
   // saveEdit out of this file at it.)
   const pickCustomer = useCallback((m) => {
-    if (busy) return;
+    // The business already opening ignores a second tap (that restarted its ten-second read). A
+    // DIFFERENT business replaces it: run() drops the older answer, so a mis-tap costs nothing.
+    if (busy === 'order' && openingKey === m.nameKey) return;
     setNameKey(m.nameKey);
     run(data?.query || q, { range, nameKey: m.nameKey, year: yearOn ? today.slice(0, 4) : null, note: `Opening ${m.name}…`, opening: m.nameKey });
-  }, [run, data, q, range, yearOn, today, busy]);
+  }, [run, data, q, range, yearOn, today, busy, openingKey]);
 
-  const closeRowLoad = useCallback(() => { rowLoadReqRef.current += 1; setRowLoad(null); }, []);
+  // Closing a load closes an order opened inside it too — nothing is left open where no one can see it.
+  const closeRowLoad = useCallback(() => {
+    rowLoadReqRef.current += 1; setRowLoad(null);
+    if (detailRef.current?.where === 'load') closeOrder();
+  }, [closeOrder]);
+  const openOrderInLoad = useCallback((stopNbr, date) => { orderInLoadRef.current = true; openOrder(stopNbr, date); }, [openOrder]);
+  const renderOrderInLoad = useCallback((stopNbr, date, o = {}) => renderOrderPanel(stopNbr, date, { ...o, where: 'load' }), [renderOrderPanel]);
 
   /**
    * THE LOAD A ROW RODE ON, opened under that row (v1.99.10). Chad, 2026-09-30: "doesn't show me the
@@ -40709,9 +40742,9 @@ function StopLookupScreen() {
       <RowLoadPanel st={rowLoad} stacked={isMobile} onClose={closeRowLoad}
         onPickDriver={(driverKey) => openRowLoad(rowLoad, { driverKey })}
         onPickLoad={(k) => setRowLoad((cur) => (cur ? { ...cur, chosen: k } : cur))}
-        onOrder={openOrder} renderDetail={renderOrderPanel} />
+        onOrder={openOrderInLoad} renderDetail={renderOrderInLoad} />
     );
-  }, [rowLoad, isMobile, closeRowLoad, openRowLoad, openOrder, renderOrderPanel]);
+  }, [rowLoad, isMobile, closeRowLoad, openRowLoad, openOrderInLoad, renderOrderInLoad]);
   // Below dispatcher Driver's loads is refused, so the route stays the plain text it always was.
   const loadHandler = driverGate.reason ? null : openRowLoad;
 
@@ -40925,7 +40958,7 @@ function StopLookupScreen() {
             <CustomerRangeBar sel={sel} setSel={changeRange} range={data.window || range} today={today} stacked={isMobile}
               yearOn={!!data.year} onYear={showYear} />
             <CustomerChooser matches={data.matches} query={data.query} onPick={pickCustomer} incomplete={data.complete === false}
-              openingKey={busy === 'order' ? openingKey : null} busy={!!busy} />
+              openingKey={busy === 'order' ? openingKey : null} />
           </div>
         )}
 

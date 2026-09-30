@@ -31,7 +31,7 @@ import { CUSTOMER_VIEW, ORDER_DETAIL, ORDER_EVENTS } from './lib/customer-view-f
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { PLACE_VIEW } from './lib/place-search-fixture.mjs';
 import { driverWeekAnswer } from './lib/driver-week-fixture.mjs';
-import { CUSTOMER_CHOOSE, rowLoadAnswer, isRowLoadAsk, futureOrder } from './lib/stop-lookup-flow-fixture.mjs';
+import { CUSTOMER_CHOOSE, rowLoadAnswer, isRowLoadAsk, orderOn, FUTURE_DAY } from './lib/stop-lookup-flow-fixture.mjs';
 
 const DIST = resolve(process.argv[2] || 'dist');
 const PORT = Number(process.env.SMOKE_PORT) || 8823;
@@ -55,7 +55,14 @@ const bad = (m) => { fails.push(m); console.error(`  \x1b[31m✗\x1b[0m ${m}`); 
 // ── THE STUBS ───────────────────────────────────────────────────────────────────────────────────
 const PROMPTED_MISS = { ok: true, nuvizzCalls: 1, mode: 'stop', prompted: { attempted: true, ok: false, reason: 'not_found', text: 'NuVizz has no order 000000000.' } };
 const ROSTER = { ok: true, drivers: [], roster: [], loads: [], at: '2026-09-18T12:00:00Z', count: 0 };
-const FUTURE_ORDER = futureOrder(STOP_LOOKUP_DOSSIER);
+// Order pages whose one day is a case the load panel must say plainly (stop-lookup-flow-fixture.mjs).
+const ORDERS = {
+  '007199999': orderOn(STOP_LOOKUP_DOSSIER, '007199999', { date: FUTURE_DAY, route: 'GAINESVILLE 1', seq: 4 }),
+  '007150001': orderOn(STOP_LOOKUP_DOSSIER, '007150001', { date: '2026-09-16', route: 'BRENT 1', driver: 'Brent  Boyd', seq: 1 }),
+  '007160001': orderOn(STOP_LOOKUP_DOSSIER, '007160001', { date: '2026-09-15', route: 'FRANK 1', driver: 'FRANK OKINE', currentDriver: 'SAMUEL OSEI', seq: 4 }),
+};
+// A second business, answered SLOWER than the first, so a switch proves the older answer is dropped.
+const GOODS_VIEW = { ...CUSTOMER_VIEW, query: 'earthly', view: { ...CUSTOMER_VIEW.view, name: 'EARTHLY GOODS', nameKey: 'earthly_goods' } };
 function answer(u) {
   if (u.includes('stop-lookup-prompted')) return { body: PROMPTED_MISS, delay: DELAY_MS };
   if (u.includes('nuvizz-stop-events')) return { body: ORDER_EVENTS, delay: DELAY_MS };
@@ -63,10 +70,11 @@ function answer(u) {
     const q = new URL(u).searchParams;
     if (q.get('detail')) return { body: ORDER_DETAIL, delay: DELAY_MS };
     if (q.get('year')) return { body: CUSTOMER_YEAR, delay: DELAY_MS };
+    if (q.get('nameKey') === 'earthly_goods') return { body: GOODS_VIEW, delay: DELAY_MS * 3 };
     if (q.get('name')) return { body: q.get('nameKey') || !/earthly/i.test(q.get('name')) ? CUSTOMER_VIEW : CUSTOMER_CHOOSE, delay: DELAY_MS };
     if (q.get('addr') || q.get('city') || q.get('zip')) return { body: PLACE_VIEW, delay: DELAY_MS };
     if (q.get('stop') === '000000000') return { body: STOP_LOOKUP_NOTFOUND, delay: DELAY_MS };
-    if (q.get('stop') === '007199999') return { body: FUTURE_ORDER, delay: DELAY_MS };
+    if (ORDERS[q.get('stop')]) return { body: ORDERS[q.get('stop')], delay: DELAY_MS };
     return { body: STOP_LOOKUP_DOSSIER, delay: DELAY_MS };
   }
   if (u.includes('driver-loads')) return { body: isRowLoadAsk(u) ? rowLoadAnswer(u) : driverWeekAnswer(u), delay: DELAY_MS };
@@ -189,19 +197,24 @@ async function sweep(dev) {
     await idle(page);
     must(/22 businesses match/.test(await text(page)), 'no chooser');
   });
-  await step(dev, 'tapping a business says it is opening, on that row and at the top of the view, and every row waits', async () => {
+  await step(dev, 'tapping a business says it is opening, on that row and at the top of the view; a second tap on it starts nothing; another business takes over', async () => {
     // The box is edited after the list appeared: the pick must still ask the list's own question.
     await orderBox(page).fill('zzz');
-    const row = page.getByRole('button', { name: /EARTHLY ALTERNATIVE DISTRIBUTION SOUTHEAST/ }).first();
+    const goods = page.getByRole('button', { name: /^EARTHLY GOODS/ }).first();
     const asksBefore = dev.asks.length;
-    await tap(page, row, 'a business in the chooser', { atTop: true });
+    await tap(page, goods, 'a business in the chooser', { atTop: true });
     must(await page.locator('button[aria-busy="true"]').filter({ hasText: /Opening/ }).isVisible(), 'the tapped row does not say Opening');
     must(await inViewNow(page, '[data-lookup-busy]'), 'no status line in view while the customer is read');
-    must(/Opening EARTHLY ALTERNATIVE/.test(await page.locator('[data-lookup-busy]').innerText()), 'the status line does not name the business');
-    await page.getByRole('button', { name: /EARTHLY GOODS/ }).click({ force: true, timeout: 2000 }).catch(() => {});
+    must(/Opening EARTHLY GOODS/.test(await page.locator('[data-lookup-busy]').innerText()), 'the status line does not name the business');
+    await goods.click({ force: true, timeout: 2000 }).catch(() => {});
     await page.waitForTimeout(150);
-    must(dev.asks.slice(asksBefore).filter((u) => u.includes('stop-lookup')).length === 1, 'a second tap while opening started another read');
+    must(dev.asks.slice(asksBefore).filter((u) => u.includes('stop-lookup')).length === 1, 'a second tap on the opening business started another read');
+    // A mis-tap is not a wait: another business replaces the read, and the slower answer to the
+    // first is dropped when it lands.
+    await tap(page, page.getByRole('button', { name: /EARTHLY ALTERNATIVE DISTRIBUTION SOUTHEAST/ }).first(), 'another business while the first is opening');
+    must(/Opening EARTHLY ALTERNATIVE/.test(await page.locator('[data-lookup-busy]').innerText()), 'the status line did not switch to the new business');
     await idle(page);
+    must(!(await text(page)).includes('EARTHLY GOODS'), 'the older, slower answer painted over the business picked last');
     const ask = lastAsk(dev, 'nameKey=');
     must(/name=earthly(&|$)/.test(ask), `the pick asked for the box's new text, not the list's question: ${ask}`);
     must(ask.includes(`nameKey=${CUSTOMER_VIEW.view.nameKey}`), 'the pick did not send the business key');
@@ -260,6 +273,21 @@ async function sweep(dev) {
     await tap(page, route, 'the open route (to close it)');
     must(await panel.count() === 0, 'the load did not close');
   });
+  await step(dev, 'another of the customer\'s orders tapped inside the load opens ONCE, inside the load — one panel, one priced timeline button', async () => {
+    const route = page.getByRole('button', { name: 'ATLANTA SOUTHWEST 3', exact: true }).first();
+    await tap(page, route, 'the route ATLANTA SOUTHWEST 3');
+    const panel = page.getByRole('region', { name: 'ATLANTA SOUTHWEST 3 — the load' });
+    await panel.getByText('this order', { exact: true }).waitFor({ timeout: ACTION_MS });
+    await tap(page, panel.locator('li').filter({ hasText: '007180003' }).getByRole('button').first(), 'the customer\'s order 007180003 inside the load');
+    await panel.getByRole('button', { name: 'Close order detail' }).waitFor({ timeout: ACTION_MS });
+    must(await page.getByRole('button', { name: 'Close order detail' }).count() === 1, `${await page.getByRole('button', { name: 'Close order detail' }).count()} order panels for one order`);
+    await panel.getByRole('button', { name: /Show the activity timeline/ }).waitFor({ timeout: ACTION_MS });
+    const priced = page.getByRole('button', { name: /Show the activity timeline/ });
+    must(await priced.count() === 1, `${await priced.count()} priced timeline buttons for one order: ${(await priced.evaluateAll((els) => els.map((e) => `${e.innerText.slice(0, 50)} @${Math.round(e.getBoundingClientRect().top + scrollY)} in ${e.closest('section,[role=region],li,tr')?.getAttribute('aria-label') || e.closest('section,[role=region],li,tr')?.tagName}`))).join(' | ')}`);
+    // Closing the load closes an order opened inside it — nothing is left open out of sight.
+    await tap(page, panel.getByRole('button', { name: 'Close', exact: true }), 'Close on the load');
+    must(await page.getByRole('button', { name: 'Close order detail' }).count() === 0, 'an order stayed open after its load closed');
+  });
   await step(dev, 'a driver name two people answer to asks which, then a route none of their loads carry lists the day\'s loads to pick', async () => {
     const rows = page.getByRole('button', { name: 'ATLANTA SOUTHWEST 3', exact: true });
     await tap(page, rows.nth(1), 'ROBERT MENSAH-ADDAI\'s route');
@@ -268,6 +296,7 @@ async function sweep(dev) {
     await page.getByText(/No load named ATLANTA SOUTHWEST 3/).waitFor({ timeout: ACTION_MS });
     await tap(page, page.getByRole('button', { name: /^ROBERT 1 · 3 stops$/ }), 'ROBERT 1 in the day\'s loads');
     await page.getByText(/ROBERT 1 — /).waitFor({ timeout: ACTION_MS });
+    must(/This order is not on ROBERT 1/.test(await page.getByRole('region', { name: 'ATLANTA SOUTHWEST 3 — the load' }).innerText()), 'a load that does not hold the order does not say so');
     await tap(page, page.getByRole('region', { name: 'ATLANTA SOUTHWEST 3 — the load' }).getByRole('button', { name: 'Close', exact: true }), 'Close on the load');
   });
 
@@ -301,6 +330,23 @@ async function sweep(dev) {
     await tap(page, page.getByRole('button', { name: /Sep 1[5-7]|9\/1[5-7]/ }).first(), 'a day of the order');
     await page.getByRole('button', { name: 'Close order detail' }).waitFor({ timeout: ACTION_MS });
     await tap(page, page.getByRole('button', { name: 'Close order detail' }), 'Close on the day');
+  });
+  await step(dev, 'a driver the alias list renamed is never "no load": the day\'s drivers are listed, and picking one opens the load that holds the order', async () => {
+    await searchOrder(dev, '007150001');
+    await tap(page, page.getByRole('button', { name: 'BRENT 1', exact: true }).first(), 'the route BRENT 1 (driver renamed)');
+    const panel = page.getByRole('region', { name: 'BRENT 1 — the load' });
+    await panel.getByText(/No driver in our records for .* is called/).waitFor({ timeout: ACTION_MS });
+    must(!/no load to open/i.test(await panel.innerText()), 'it says there is no load');
+    await tap(page, panel.getByRole('button', { name: /^Brent Bryd · 1 load$/i }), 'the renamed driver in the day\'s list');
+    await panel.getByText('this order', { exact: true }).waitFor({ timeout: ACTION_MS });
+    must(/key=/.test(lastAsk(dev, 'driver-loads')), 'the pick did not go by key');
+  });
+  await step(dev, 'a route whose load does not hold the order (moved that day) says so above the load', async () => {
+    await searchOrder(dev, '007160001');
+    await tap(page, page.getByRole('button', { name: 'FRANK 1', exact: true }).first(), 'the route FRANK 1 (order moved)');
+    const panel = page.getByRole('region', { name: 'FRANK 1 — the load' });
+    await panel.getByText(/This order is not on FRANK 1/).waitFor({ timeout: ACTION_MS });
+    must(await panel.getByText('this order', { exact: true }).count() === 0, 'an order not on the load is marked on it');
   });
   await step(dev, 'a route on a day that has not happened says the load has not run yet — never that there is no load', async () => {
     await searchOrder(dev, '007199999');
