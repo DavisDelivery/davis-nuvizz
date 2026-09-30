@@ -86,16 +86,23 @@ test('a repeated complaint is one complaint — fourteen identical lines is not 
 
 test('a clip SAYS it clipped and names where the rest is — an unmarked cut is what cost Sep 9', () => {
   const long = `x${'y'.repeat(5000)}`;
-  const out = clipForToast(long);
+  // VITE_PLAIN_ERRORS=off: the words as they were.
+  const out = clipForToast(long, TOAST_MAX, { plain: false });
   assert.ok(out.length > TOAST_MAX && out.length < TOAST_MAX + 120);
   assert.match(out, /\[cut — full text in the write log/);
   // Something that fits is returned untouched, with no marker to mislead.
-  assert.equal(clipForToast('stop 007144371 is already planned on TRAILER 6'), 'stop 007144371 is already planned on TRAILER 6');
+  assert.equal(clipForToast('stop 007144371 is already planned on TRAILER 6', TOAST_MAX, { plain: false }), 'stop 007144371 is already planned on TRAILER 6');
+  // Plain sentences (v1.98.7, the default): the cut still says so, and where the rest is, in words.
+  const said = clipForToast(long);
+  assert.ok(said.length > TOAST_MAX && said.length < TOAST_MAX + 80);
+  assert.match(said, /\(cut short — the full message is in the write log\)$/);
 });
 
 test('a non-vendor message passes through unchanged — the parser never eats an ordinary refusal', () => {
   const plain = 'createRoute: order 007174458 is ALREADY PLANNED on TRAILER 6 — remove it from this card';
-  assert.equal(clipForToast(plain), plain);
+  assert.equal(clipForToast(plain, TOAST_MAX, { plain: false }), plain);
+  // Plain sentences: a message no rule knows keeps its words; only the code-looking prefix goes.
+  assert.equal(clipForToast(plain), 'Order 007174458 is ALREADY PLANNED on TRAILER 6 — remove it from this card.');
   assert.equal(summarizeVendorError(plain), null);
   for (const junk of [null, undefined, '', 0]) assert.equal(summarizeVendorError(junk), null);
 });

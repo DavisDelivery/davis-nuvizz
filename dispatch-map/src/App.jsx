@@ -124,7 +124,7 @@ import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops, hou
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute, resolveRouteOrigin, originLine, newRouteSeed, newRouteSeedNote } from './lib/route-create.js';
-import { clipForToast } from './lib/write-error.js';
+import { clipForToast, plainWriteError, PLAIN_ERRORS_ON } from './lib/write-error.js';
 import UatBench from './components/UatBench.jsx';
 import UatModeBar from './components/UatModeBar.jsx';
 import AccountScreen from './components/AccountScreen.jsx';
@@ -210,7 +210,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.98.6';
+const APP_VERSION = '1.98.7';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,6 +264,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.98.7', 'ERRORS NOW READ AS PLAIN SENTENCES. Chad: “Can you make it simple sentence when there is an error that looks less like code.” When a Save, a new route, an address fix or a note was refused, the screen showed the server’s own diagnostic — “commitBoard(rwb): load DAVIS000204039 has 5 stop(s) the board isn’t showing (…) — a declarative RWB save would unplan them. Refresh and retry.” NOW it says what happened and what to do: “Not saved. NuVizz has 5 orders on this route that your screen isn’t showing yet (…). Saving now would take them off the truck — refresh, then Save again.” Every wording was written from a real refusal in the write log (September: 104 failed writes, and every one of them now reads plainly). Route names instead of load numbers, except when two routes share a name (BUFORD on two days). Nothing is claimed that the server did not say, and no instruction is dropped. A message nobody has seen before keeps its own words, with only the code-looking prefix taken off. The full technical text is still in the write log. VITE_PLAIN_ERRORS=off puts back the old words (a redeploy). Zero NuVizz calls.'],
   ['1.98.6', '＋ NEW ROUTE’S SWITCH CAN BE READ, AND SO CAN WHERE IT WOULD GO — BEFORE ANY CALL IS SPENT. Chad said yes to one test route on the UAT site. Before spending it, the code was checked for where that test would land, and it could not say: the portal create goes wherever NUVIZZ_RWB_PORTAL_BASE points, a setting of its own that nothing ties to the site’s other NuVizz address — and the UAT site was built by copying production’s settings (lib/mirror-guard.mts says so). Nothing could read whether NUVIZZ_ROUTE_CREATE_RWB was on either, and with it on the dry run still described the OLD create. NOW a dry run of ＋ New route (zero NuVizz calls) says which create a Save would make (portal or v7), whether the portal sign-in is set, and which NuVizz hosts it would sign in at and create on — and with the switch on, its plan and preview describe the portal create. Off, the old plan is unchanged. Nothing a Save does changes. 7 new tests. Zero NuVizz calls.'],
   ['1.98.5', '＋ NEW ROUTE CAN NOW CREATE THE ROUTE THE WAY THE PORTAL DOES — BUILT AND READY, SWITCHED OFF UNTIL ONE TEST CREATE LANDS. Chad, after every ＋ New route since Sep 15 died on NuVizz’s “deliverItLoad is null”: “HERE IS A HAR FOR CREATING A ROUTE.” READ OFF THAT CAPTURE: the portal does not use the v7 routePlan/update this app calls (which refuses an empty route and crashes on one with stops). Its Route Workbench reads the route profile (buildEmptyRouteJson), then makes the route EMPTY with one call (addNewRoutePlan) and gets the new load number straight back — SEYMOUR came back as DAVIS000205172. NOW, with the switch on, ＋ New route does exactly that, then puts the card’s orders on the new route through the SAME Save an existing load already gets — added, sequenced in card order, checked against NuVizz’s own read-back, written to the board — and assigns the staged driver after. A name already in use is refused in words (“NuVizz already has a route named TONY — open it from the Routes panel”). A route that is made but whose orders do not attach says so, with its load number, and says not to create it again. WHAT THE CAPTURE COULD NOT SHOW, SAID PLAINLY: whether NuVizz accepts that call from this app’s portal sign-in (every other Route Workbench call here works that way), and the vehicle-type number for a tractor — the capture only shows 475 “Straight Truck”, which all three of its creates used, so every route is created as Straight Truck until that number is known (NUVIZZ_ROUTE_CREATE_VEHICLE_TYPE_ID sets it). HOW TO TURN IT ON: NUVIZZ_ROUTE_CREATE_RWB=on — a Netlify environment setting, no code change; try one route on the UAT site first. Off (the default, and any typo) keeps today’s create exactly. 16 new tests, including SEYMOUR’s request rebuilt field for field from the capture.'],
   ['1.98.4', 'THE “NON-DO STOP” REFUSAL NOW SAYS WHICH STOP. Chad, after MONE was refused twice on 9/28 (10:43 and 10:48 PM) and BRIAN before it (8:38, 8:39): “I WANT THE REAL FIX.” The refusal said “load has a non-DO stop in a delivery slot that this card is not sequencing — reorder skipped (verify in portal)” and never which one — though the load it had just read from NuVizz held the stop’s number, its type, where it sits on the load and the customer. So a dispatcher at 10:43 PM had to open the portal and hunt. NOW it reads, for example, “… not sequencing — RA58610778-1-1 (pickup, LOCKHEED MARTIN, NuVizz stop 19). Nothing was sent: add it to the card if it belongs on this route, or take it off the load in the portal, then Save.” Three stops named at most, then a count. The write log keeps the named stops on the refused Save’s row, so the next one is a lookup, not a hunt. WHAT DID NOT CHANGE: the guard itself — the same stops refuse, for the same reason, and nothing is sent, because saving the card as shown would take that pickup off the truck. Checked on the way: re-sequencing (Reverse, Shortest…) never drops a stop from a card, so the missing stop was never on the card to begin with. NUVIZZ_RWB_NAME_UNMODELED=off puts the old sentence back exactly (a Netlify environment setting, no code change). Zero NuVizz calls.'],
@@ -7527,7 +7528,7 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       if (landed && !clean) {
         setPush({ kind: 'warn', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order in NuVizz.'} The write also touched something else on the order, so check it in the portal before the truck goes: ${why}${pinWarn}` });
       } else if (!landed) {
-        setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${why} The driver's manifest still has the old address — fix the order in the portal.${pinWarn}` });
+        setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${plainWriteError(why)} The driver's manifest still has the old address — fix the order in the portal.${pinWarn}` });
       }
       // Logged ONCE, after the vendor half resolves, so the row records what happened rather
       // than what was attempted. `nuvizz` is the outcome: see lib/address-log.js.
@@ -22727,14 +22728,14 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, tract
         if (k == null || String(k).trim() === '' || String(k) === 'null') return nm ? String(nm) : 'a card with no load number';
         return nm && nm !== String(k) ? `${nm} (${k})` : String(k);
       };
-      showToast(`✗ ${failed.map((l) => `${cardName(l)}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
+      showToast(`✗ ${failed.map((l) => `${cardName(l)}: ${plainWriteError(l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; '))}`).join(' | ') || plainWriteError(res.error || 'write failed')}${orphanMsg}`);
       // …and the card keeps saying so after that toast is gone (v1.37.1). Same array the
       // toast names, so the chip and the message can never disagree about which card failed.
       markSaveFailed(failed.map(keyOf).filter(Boolean));
     } else if (!pendings.length) {
       if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}${callsMsg}.${orphanMsg}${syncMsg}${finishedMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
       else {
-        showToast(`✗ ${res.error || 'write failed'}${orphanMsg}`);
+        showToast(`✗ ${plainWriteError(res.error || 'write failed')}${orphanMsg}`);
         // THE WHOLE CALL FAILED — no per-load results came back, so nothing above named a
         // card. Every card in this payload that was not confirmed is a refusal, and without
         // this the one failure mode with NO per-card detail would be the one that left the
@@ -35127,7 +35128,7 @@ function classifyPushResult(j) {
   if (j?.ok && out.noteLanded === false) return { kind: 'partial', text: `${out.message || 'Address corrected.'}` };
   if (j?.ok) return { kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order.' };
   if (out.blocked) return { kind: 'blocked', text: 'Address writes are switched off on this server (NUVIZZ_ADDRESS_WRITE=off). The board correction is saved.' };
-  if (out.unverified) return { kind: 'unknown', text: `${out.error || err} — check the order in the portal before re-trying.` };
+  if (out.unverified) return { kind: 'unknown', text: PLAIN_ERRORS_ON && (out.error || err) ? plainWriteError(out.error || err) : `${out.error || err} — check the order in the portal before re-trying.` };
   // THE ADDRESS LANDED AND THE WRITE WAS NOT CLEAN — four of six rows on 2026-09-14, every one
   // of them reported to the dispatcher as "NuVizz refused the write". It did not: the server
   // proved the new street on the read-back and recorded `addressLanded: true` on this very
@@ -35135,9 +35136,9 @@ function classifyPushResult(j) {
   // saying and is a different sentence. Amber, and the row does NOT go back on the queue as
   // unfixed, because the order is fixed.
   if (addressReachedNuvizz(j)) {
-    return { kind: 'dirty', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order.'} The write also touched something else — check it in the portal: ${out.error || err || 'see the write log.'}` };
+    return { kind: 'dirty', text: PLAIN_ERRORS_ON && (out.error || err) ? plainWriteError(out.error || err) : `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order.'} The write also touched something else — check it in the portal: ${out.error || err || 'see the write log.'}` };
   }
-  return { kind: 'refused', text: out.error || err || 'NuVizz refused the write.' };
+  return { kind: 'refused', text: plainWriteError(out.error || err) || 'NuVizz refused the write.' };
 }
 
 // ── ULINE: STRAIGHT TRUCK ONLY — look at the building, then decide ──────────
