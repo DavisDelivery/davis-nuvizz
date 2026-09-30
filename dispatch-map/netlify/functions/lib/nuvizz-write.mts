@@ -318,8 +318,58 @@ function currentDeliveryStopIds(load: any): string[] {
 // guard refused every edit of a load carrying a mid-route pickup, contradicting the pickup-leg
 // support it sits in front of. Omitted (classic engine) → original behavior.
 function hasUnmodeledDelivery(load: any, modeledNbrs?: Set<string>): boolean {
-  return (load?.stops || []).some((s: any) => String(s?.stopType || '').toUpperCase() !== 'DO' && Number(s?.stopSeq ?? 0) > 1
-    && !(modeledNbrs && s?.stopNbr != null && modeledNbrs.has(String(s.stopNbr))));
+  return unmodeledDeliveries(load, modeledNbrs).length > 0;
+}
+
+export interface UnmodeledStop { stopNbr: string | null; stopType: string | null; stopSeq: number | null; name: string | null }
+
+/**
+ * THE STOPS hasUnmodeledDelivery OBJECTS TO, NAMED (v1.98.4) — one predicate, so the guard and the
+ * words it prints can never disagree.
+ *
+ * Chad: "I WANT THE REAL FIX." MONE was refused at 10:43 and 10:48 PM on 2026-09-28, BRIAN at 8:38
+ * and 8:39 — "load has a non-DO stop in a delivery slot that this card is not sequencing — reorder
+ * skipped (verify in portal)" — and the refusal never said WHICH stop, though the load read in hand
+ * holds its number, its type, its NuVizz position and (in rawStops) the customer. PURE; exported
+ * for tests. A pickup is named from its pickup side (from), anything else from its drop side (to);
+ * no fallback to the other side, which for a pickup would name our own warehouse.
+ */
+export function unmodeledDeliveries(load: any, modeledNbrs?: Set<string>): UnmodeledStop[] {
+  const raw = (Array.isArray(load?.rawStops) ? load.rawStops : []).map((e: any) => e?.stop || e);
+  return (load?.stops || [])
+    .filter((s: any) => String(s?.stopType || '').toUpperCase() !== 'DO' && Number(s?.stopSeq ?? 0) > 1
+      && !(modeledNbrs && s?.stopNbr != null && modeledNbrs.has(String(s.stopNbr))))
+    .map((s: any) => {
+      const stopNbr = s?.stopNbr != null ? String(s.stopNbr) : null;
+      const stopType = s?.stopType ? String(s.stopType) : null;
+      const st = stopNbr ? raw.find((r: any) => r?.stopNbr != null && String(r.stopNbr) === stopNbr) : null;
+      const side = String(stopType || '').toUpperCase() === 'PU' ? st?.from : st?.to;
+      const name = String(side?.address?.name ?? '').trim() || null;
+      const seq = Number(s?.stopSeq);
+      return { stopNbr, stopType, stopSeq: Number.isFinite(seq) ? seq : null, name };
+    });
+}
+
+/** PURE: the stops in words a dispatcher can find in the portal —
+ *  "RA58610778-1-1 (pickup, LOCKHEED MARTIN, NuVizz stop 19)". Three at most, then a count. */
+export function describeUnmodeled(list: UnmodeledStop[]): string {
+  const one = (u: UnmodeledStop) => {
+    const t = String(u.stopType || '').toUpperCase();
+    const kind = t === 'PU' ? 'pickup' : t ? `type ${t}` : 'no stop type';
+    return `${u.stopNbr || '(no stop number)'} (${[kind, u.name, u.stopSeq != null ? `NuVizz stop ${u.stopSeq}` : null].filter(Boolean).join(', ')})`;
+  };
+  const shown = (list || []).slice(0, 3).map(one).join('; ');
+  return (list || []).length > 3 ? `${shown} (+${list.length - 3} more)` : shown;
+}
+
+/** The refusal's words. NUVIZZ_RWB_NAME_UNMODELED=off puts back the original sentence exactly
+ *  (house shape: default on, an off-word turns it off, anything malformed leaves it on). The guard
+ *  itself — what is refused and that nothing is sent — is identical either way. */
+export function unmodeledRefusal(list: UnmodeledStop[], named: boolean): string {
+  const base = 'commitBoard(rwb): load has a non-DO stop in a delivery slot that this card is not sequencing';
+  if (!named || !list?.length) return `${base} — reorder skipped (verify in portal)`;
+  const it = list.length === 1;
+  return `${base} — ${describeUnmodeled(list)}. Nothing was sent: add ${it ? 'it' : 'them'} to the card if ${it ? 'it belongs' : 'they belong'} on this route, or take ${it ? 'it' : 'them'} off the load in the portal, then Save.`;
 }
 
 /**
@@ -1623,8 +1673,13 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     // (a pickup like MUGELE, a return) is a legitimate save, but without this the
     // removed stop still read as an unmodeled non-DO stop and the guard refused it.
     const removeNbrsGuard = Array.isArray(p.L?.removeStopNbrs) ? p.L.removeStopNbrs.map((x: any) => String(x)).filter(Boolean) : [];
-    if (hasUnmodeledDelivery(load, new Set([...p.orderedNbrs, ...removeNbrsGuard]))) {
-      p.result.ok = false; p.result.error = 'commitBoard(rwb): load has a non-DO stop in a delivery slot that this card is not sequencing — reorder skipped (verify in portal)';
+    const unmodeled = unmodeledDeliveries(load, new Set([...p.orderedNbrs, ...removeNbrsGuard]));
+    if (unmodeled.length) {
+      // NAMED (v1.98.4): which stop, what kind, where on the load — and kept on the result, so the
+      // write journal records it too (the refusal used to be the one row that could not say).
+      p.result.ok = false;
+      p.result.unmodeled = unmodeled.slice(0, 10);
+      p.result.error = unmodeledRefusal(unmodeled, envFlag('NUVIZZ_RWB_NAME_UNMODELED', true));
       continue;
     }
     batchNbrs.add(p.loadNbr);
@@ -2361,6 +2416,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       // Membership-confirmed order/removal failures carry NuVizz's OBSERVED delivery order so the
       // client can write the board through with the truth despite the ✗ (SCOTT SHP29379, Jul 10).
       observedOrder: p.result.observedOrder || undefined,
+      // The stops the non-DO guard refused on, named (v1.98.4) — journaled with the op.
+      unmodeled: p.result.unmodeled || undefined,
       // A refused add whose holder already had the stop FINISHED: what the record said and whether
       // the board was told (recordFinishedHolder) — journaled, so "the board still says unplanned"
       // is answerable from nuvizz-write-log alone.
