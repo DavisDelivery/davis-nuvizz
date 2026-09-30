@@ -407,7 +407,27 @@ test('runCommitBoardRwb: a non-DO stop the card is NOT sequencing still refuses 
     assert.equal(r.loads[0].ok, false);
     assert.match(String(r.loads[0].error || ''), /not sequencing/i);
     assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), false);
+    // v1.98.4 (Chad: "I WANT THE REAL FIX"): the refusal says WHICH stop, and the journal keeps it.
+    assert.match(String(r.loads[0].error || ''), /not sequencing — X \(pickup, NuVizz stop 3\)\. Nothing was sent:/);
+    assert.deepEqual(r.loads[0].unmodeled, [{ stopNbr: 'X', stopType: 'PU', stopSeq: 3, name: null }]);
   });
+});
+
+test('runCommitBoardRwb: NUVIZZ_RWB_NAME_UNMODELED=off puts the original refusal back, word for word', async () => {
+  const prev = process.env.NUVIZZ_RWB_NAME_UNMODELED;
+  process.env.NUVIZZ_RWB_NAME_UNMODELED = 'off';
+  try {
+    await withRwb({}, async () => {
+      const loadStops = { value: ['A', 'X'] };
+      const { requester, calls } = makeRequester({ loadStops, stopTypes: { X: 'PU' } });
+      const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'] }] }, CREDS);
+      assert.equal(r.loads[0].ok, false);
+      assert.equal(r.loads[0].error, 'commitBoard(rwb): load has a non-DO stop in a delivery slot that this card is not sequencing — reorder skipped (verify in portal)');
+      assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'the guard itself is unchanged');
+    });
+  } finally {
+    if (prev === undefined) delete process.env.NUVIZZ_RWB_NAME_UNMODELED; else process.env.NUVIZZ_RWB_NAME_UNMODELED = prev;
+  }
 });
 
 test('runCommitBoardRwb: UNPLANNING a non-DO pickup (removeStopNbrs) is ALLOWED — the guard counts removals', async () => {
