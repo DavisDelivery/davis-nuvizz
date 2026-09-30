@@ -67,12 +67,14 @@ test('Time windows can no longer "fix" a card by pushing it past the cap — the
   const a = { ...args(stops, new Map()), departMin: 14 * 60 + 30, maxEvals: 3000 };
   const trulyLate = (order) => routePreflight({ ...a, order }).lateCount;
 
-  const off = timeWindowSequence({ ...a, countCollapsed: false });
+  // Both runs leave the miles price off (VITE_TIME_WINDOWS_MILES_CAP, v1.99.5): the price refuses
+  // the longer order on its own, so with it on this test could not tell countCollapsed on from off.
+  const off = timeWindowSequence({ ...a, countCollapsed: false, milesCap: false });
   assert.equal(off.before.late, 23);
   assert.equal(off.after.late, 0, 'the old reading: it reported every late stop cleared');
   assert.ok(trulyLate(off.order) > 23, `that order really has ${trulyLate(off.order)} late`);
 
-  const on = timeWindowSequence(a);
+  const on = timeWindowSequence({ ...a, milesCap: false });
   assert.equal(on.before.late, 23);
   assert.ok(on.after.late <= 23);
   assert.equal(on.after.late, trulyLate(on.order), 'what it reports is what the card shows');
