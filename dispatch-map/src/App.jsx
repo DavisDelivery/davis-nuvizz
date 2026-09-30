@@ -158,7 +158,7 @@ import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } fro
 import { dropSide, dropSideClass, dropRight } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel, routingRosterRereadEnabled, rosterRereadApplies } from './lib/roster-freshness.js';
 // Time windows on the Compare card's Re-sequence menu (v1.89.0) — scored by the card's own preflight.
-import { timeWindowSequence, timeWindowSummary, compareTimeWindowsEnabled } from './lib/time-window-sequence.js';
+import { timeWindowSequence, timeWindowSummary, compareTimeWindowsEnabled, timeWindowsMilesCapEnabled } from './lib/time-window-sequence.js';
 import { detectDefaultSlots } from './lib/time-restrictions.js';
 import { PARSE_SCHEDULE_LABEL, parsePollOverdue } from './lib/manifest-schedule.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
@@ -210,7 +210,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.99.4';
+const APP_VERSION = '1.99.5';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,6 +264,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.99.5', 'TIME WINDOWS NOW WEIGHS MILES: A LATE STOP IS WORTH A COUPLE OF MILES, NOT 15 OR 20. Asked what one late stop is worth to the Time windows re-sequence, Chad: \u201cFor the time windows, I mean, a couple of miles is worth it, but not 15 or 20 miles.\u201d Tested on 1,120 real routes with made-up receiving hours, it had taken 390 late stops to 7 for 10.7% more road miles, crossed the route over on 355 cards, and on a quarter of them re-ordered only to avoid arriving before an opening; it never looked at miles. Now each late stop is priced at 2 of the card header\u2019s miles and it takes the order with the fewest miles plus that price, never one with more late stops than the card. So a late stop is made when making it costs 2 miles or less against the shortest order that leaves it late, and an order that makes no late stop may not add a mile. Measured again: 390 late \u2192 249 for 0.2% FEWER road miles, crossing cards 0 \u2192 23; the 242 late stops it no longer chases had cost 9,413 road miles, about 39 a stop. SAID PLAINLY: a far stop that can only be made by driving 20 extra miles is now left late, and the line says why (\u201cno late stop it can make for 2 mi or less\u201d). The line also says the miles now: \u201c1 late \u2192 0 late \u00b7 14.7 \u2192 15.7 mi\u201d. The 2 is one line to move. THE WAY BACK: VITE_TIME_WINDOWS_MILES_CAP=off (a redeploy) puts back the search that never looked at miles. 7 new tests.'],
   ['1.99.4', 'CLOSEST FIRST WITHOUT THE ONE-TOWN-AT-A-TIME RULE, TO TRY. Asked whether Closest first should keep the Sep 10 \u201cone town at a time\u201d rule \u2014 measured on 1,120 real routes, the rule changes Closest first\u2019s order on 228 of them and there adds 29 self-crossings and removes none \u2014 Chad: \u201cKeep the closest first. Try closest without it on the number four option.\u201d So Closest first on the Compare card\u2019s Re-sequence menu (straight line and road box) and on the Build-result card\u2019s menu is now the plain shortest sweep out from Buford. What it does, measured: on straight lines it changes 228 routes, shorter on 191 (2.1% fewer miles on those), 29 crossings gone and none added, but it now visits a town twice on 161 of them, the shape the rule was written for on JEFF; with the road box, 57 crossings gone and 41 added. By eye it is mixed: NELSON 09-03 and TREVARR 09-17 stop crossing themselves, TRAILER 6 09-16 now drives past its first stops and comes back. Farthest first keeps the town rule; the Build Panel engine and Return to warehouse are untouched. THE WAY BACK: VITE_CLOSEST_FIRST_WITHOUT_TOWNS=off (a redeploy) puts the town rule back on Closest first. 5 new tests.'],
   ['1.99.3', 'A STOP GOOGLE CANNOT ROUTE NO LONGER COUNTS AS ZERO MILES ON A COMPARE CARD\u2019S ROAD BOX. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 3. With the road box ticked, the card asks Google for road distances between its stops. Where Google had no route for a pair, or left it out of its answer, the card was handed a free 0-mile, 0-minute leg, so that stop looked like the cheapest one on the card and the order was built around it. The route builder has priced such a leg at the straight-line road estimate (1.3 \u00d7 crow-flies) since A5-S27-4; the card now does the same. Every leg Google could drive is still Google\u2019s. Server-only: no screen code changed. THE WAY BACK: ROAD_BOX_ESTIMATE_UNROUTABLE=off (a redeploy) puts the old 0-mile reading back for the card alone; the builder keeps its own switch, ROUTE_MATRIX_ESTIMATE_UNROUTABLE. 3 new tests, 1 updated.'],
   ['1.99.2', 'EVERY LATE STOP ON A COMPARE CARD GETS ITS BADGE, HOWEVER MANY THERE ARE. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 2. The flag panel folds more than 12 red (25 amber, 40 critical) rows of one kind into a single summary line, and the card\u2019s late check read only rows that name a stop, so the whole batch vanished from the card: thirteen stops each 15 minutes past a typed close showed NO late badge, where twelve showed twelve. Time windows scores orders with the same check and used the gap: on a 30-stop card it reported \u201c23 late \u2192 0 late\u201d for an order that really had 26 late, by making three more stops late to push the card past the cap. Now the card reads the stops behind the summary line too, and Time windows reads them the same way, so the badges and the re-sequence cannot disagree. The board\u2019s flag panel and the alerts are untouched. THE WAY BACK: VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP=off (a redeploy) puts the old reading back for both. 4 new tests.'],
@@ -1387,6 +1388,8 @@ const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 const COMPARE_FULL_WINDOW_ON = compareFullWindowEnabled(import.meta.env);
 // "Time windows" in the Compare card's Re-sequence menu (lib/time-window-sequence.js).
 const COMPARE_TIME_WINDOWS_ON = compareTimeWindowsEnabled(import.meta.env);
+// VITE_TIME_WINDOWS_MILES_CAP=off puts back the Time windows search that never looked at miles.
+const TIME_WINDOWS_MILES_CAP_ON = timeWindowsMilesCapEnabled(import.meta.env);
 // Return to warehouse: on the UAT site always, on production only once VITE_RETURN_TO_WAREHOUSE=on
 // (lib/routing-select.js returnToWarehouseVisible says why it defaults off).
 const RETURN_TO_WAREHOUSE_ON = returnToWarehouseVisible(import.meta.env, BENCH_ON);
@@ -25179,6 +25182,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         // a booked appointment (the same suppression the time-restrictions report applies).
         defaultSlots: detectDefaultSlots(stops),
         countCollapsed: PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON,
+        milesCap: TIME_WINDOWS_MILES_CAP_ON,
         ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
       });
       setWbRoutes((prev) => prev.map((x) => (x.key !== key ? x : { ...x, order: res.order, strategy, roadSequenced: false })));

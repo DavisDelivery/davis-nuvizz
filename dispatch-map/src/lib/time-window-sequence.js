@@ -23,7 +23,10 @@
 // ignored. Free-text restrictions ("CLOSES AT 3 30 PM", a lunch closure, "APPT REQD") are read by the
 // tested parsers behind that rule, not guessed at here.
 //
-// WHAT "BEST" MEANS, in the order a dispatcher weighs it:
+// WHAT "BEST" MEANS. With the miles price on (the default since 2026-09-30, see WHAT ONE LATE STOP
+// IS WORTH below): never more late stops than the card, then the lowest miles plus two miles a late
+// stop, and the list below only breaks ties. With it off (VITE_TIME_WINDOWS_MILES_CAP=off), the list
+// below alone, in the order a dispatcher weighs it:
 //   1. fewest stops reached after they close — a receiving-hours close, or the end of a booked window;
 //   2. fewest stops reached before an opening that is a real commitment: a booked window or
 //      appointment, or a DISPATCHER-TYPED opening. Auto hours can invent one ("DELIVER BY 2PM" parses
@@ -48,12 +51,30 @@
 // treat an unplaceable stop.
 import { routePreflight } from './route-preflight.js';
 import { dayReceivingWindow, fmtMin } from './board-flags.js';
-import { resequence } from './routing-select.js';
+import { resequence, recomputeRoute } from './routing-select.js';
 import { orderWindow } from './time-restrictions.js';
 import { stopTimeRestriction } from '../../netlify/functions/lib/routing-time-windows.mts';
 
 /** Scorings one press may spend. ~0.7 s at 18 stops in Node; a cut is reported, never silent. */
 export const TIME_WINDOW_MAX_EVALS = 6000;
+
+// ── WHAT ONE LATE STOP IS WORTH IN MILES (Chad, 2026-09-30) ──────────────────
+//
+// Tested on 1,120 real routes with made-up receiving hours, this search took 390 late stops to 7
+// for 10.7% more road miles, and on a quarter of the cards it re-ordered only to avoid arriving
+// before an opening. It ranked late, then early, and never looked at miles. Chad, asked what one late
+// stop is worth: "a couple of miles is worth it, but not 15 or 20 miles."
+//
+// So each late stop is priced at TIME_WINDOW_MILES_PER_LATE_STOP miles, and the search takes the
+// order with the lowest miles-plus-price — never one with more late stops than the card has. A late
+// stop is made only when making it costs no more than that against the best order that leaves it
+// late: not against the card as it stands, which on a zig-zag card would buy the headroom Chad ruled
+// out (measured in review: a stop kept on time for 25.7 miles over the shortest order giving it up).
+// An order that makes no late stop may not add a mile, so arriving before an opening is no longer
+// chased at a cost. Miles are the card header's own (recomputeRoute: straight line x
+// ROUTE_ROAD_FACTOR, Buford to the last stop). Moving the number is a one-line change.
+export const TIME_WINDOW_MILES_PER_LATE_STOP = 2;
+const MI_M = 1609.344;
 
 const hasCoords = (s) => Number.isFinite(s?.lat) && Number.isFinite(s?.lng);
 
@@ -74,8 +95,10 @@ export function compareWindowScores(a, b) {
  * @returns {{ order: string[], before: object, after: object, changed: boolean, evals: number,
  *             capped: boolean, judged: number, unjudged: number }}
  *   order    — every id the card had, judged ones in the chosen order, unjudged ones after them
- *   before   — the card's own order, scored { late, early, lateMin, finish }
+ *   before   — the card's own order, scored { late, early, lateMin, finish, meters }
+ *              (meters: the card header's miles for it, 0 with the miles price off)
  *   after    — the returned order, scored the same way
+ *   milesPerLateStop — the price the search ran with, or null with it off
  */
 export function timeWindowSequence({
   order = [],
@@ -92,6 +115,7 @@ export function timeWindowSequence({
   defaultSlots = null,   // detectDefaultSlots(board) — keeps the vendor's creation stamp from posing as an appointment
   maxEvals = TIME_WINDOW_MAX_EVALS,
   countCollapsed = true, // routePreflight's own option — the card's badges and this search read one clock
+  milesCap = true,       // the miles price above; false is the old search, miles never looked at
 } = {}) {
   const ids = (Array.isArray(order) ? order : []).map((v) => String(v)).filter(Boolean);
   const lookup = stopById instanceof Map ? stopById : new Map();
@@ -147,7 +171,9 @@ export function timeWindowSequence({
         if (c?.hardOpen != null && eta < c.hardOpen) early += 1;
       }
     }
-    const out = { late, early, lateMin: Math.round(lateMin), finish: Math.round(finish) };
+    // The card header's miles for this order (the stops it can place; the rest ride at the end).
+    const meters = milesCap && hasCoords(depot) ? recomputeRoute(seq.map((id) => lookup.get(id)), depot).totalDistanceMeters : 0;
+    const out = { late, early, lateMin: Math.round(lateMin), finish: Math.round(finish), meters };
     memo.set(key, out);
     return out;
   };
@@ -167,7 +193,22 @@ export function timeWindowSequence({
   const rankInDistance = new Map(distanceOrder.map((id, i) => [id, i]));
   const closesFirst = [...judged].sort((a, b) => (closeOf(a) - closeOf(b)) || (rankInDistance.get(a) - rankInDistance.get(b)));
 
-  const better = (a, b) => compareWindowScores(a, b) < 0;
+  // THE MILES PRICE (see the header). First, never more late stops than the card: fewer extra is
+  // better, so a start that begins with more (the Shortest-distance order can) walks back. Then the
+  // lowest miles plus TIME_WINDOW_MILES_PER_LATE_STOP a late stop. Then the ranking below, which
+  // now only breaks exact ties. The card itself has no extra late stops, so the answer never has
+  // more late stops than the card and never costs more miles-plus-price than it.
+  const extraLate = (x) => Math.max(0, x.late - before.late);
+  const priced = (x) => Math.round(x.meters + TIME_WINDOW_MILES_PER_LATE_STOP * MI_M * x.late);
+  const better = (a, b) => {
+    if (milesCap) {
+      const ea = extraLate(a); const eb = extraLate(b);
+      if (ea !== eb) return ea < eb;
+      const pa = priced(a); const pb = priced(b);
+      if (pa !== pb) return pa < pb;
+    }
+    return compareWindowScores(a, b) < 0;
+  };
   const improve = (start) => {
     let cur = [...start];
     let curScore = score(cur);
@@ -217,6 +258,7 @@ export function timeWindowSequence({
     capped,
     judged: judged.length,
     unjudged: tail.length,
+    milesPerLateStop: milesCap ? TIME_WINDOW_MILES_PER_LATE_STOP : null,
   };
 }
 
@@ -233,8 +275,12 @@ export function timeWindowSummary(res, name = 'load') {
   const lateWords = (s) => `${s.late || 0} late${s.late ? ` (${dur(s.lateMin)} in all)` : ''}`;
   const cut = res.capped ? ' — search cut short, the best order found so far' : '';
   const skipped = res.unjudged ? ` · ${res.unjudged} stop(s) without a map location left at the end` : '';
+  const priced = res.milesPerLateStop != null;
   if (!res.changed) {
-    return `Time windows: kept ${name}'s order — no order found with fewer late stops (${lateWords(b)}${b.early ? `, ${b.early} before an opening` : ''})${cut}${skipped}.`;
+    const why = priced
+      ? `no shorter order, and no late stop it can make for ${res.milesPerLateStop} mi or less`
+      : 'no order found with fewer late stops';
+    return `Time windows: kept ${name}'s order — ${why} (${lateWords(b)}${b.early ? `, ${b.early} before an opening` : ''})${cut}${skipped}.`;
   }
   const lateChange = (b.late === a.late && !b.late) ? 'none late' : `${lateWords(b)} → ${lateWords(a)}`;
   const earlyPart = (b.early || a.early) ? ` · before an opening ${b.early || 0} → ${a.early || 0}` : '';
@@ -242,7 +288,11 @@ export function timeWindowSummary(res, name = 'load') {
   const moved = Number(a.finish) - Number(b.finish);
   const finishPart = Number.isFinite(moved) && Math.abs(moved) >= 5 && a.finish > 0 && b.finish > 0
     ? ` · last stop ${fmtMin(b.finish)} → ${fmtMin(a.finish)}` : '';
-  return `Re-sequenced ${name} · Time windows — ${lateChange}${earlyPart}${finishPart}${cut}${skipped}`;
+  // THE MILES, SAID: what the order costs on the card's own mileage.
+  const miles = (m) => (Number(m) / MI_M).toFixed(1);
+  const milesPart = priced && Number.isFinite(Number(b.meters)) && Number.isFinite(Number(a.meters)) && (b.meters > 0 || a.meters > 0)
+    ? ` · ${miles(b.meters)} → ${miles(a.meters)} mi` : '';
+  return `Re-sequenced ${name} · Time windows — ${lateChange}${earlyPart}${finishPart}${milesPart}${cut}${skipped}`;
 }
 
 /** VITE_COMPARE_TIME_WINDOWS — house shape: default on, an off-word (off/0/false/no) turns it off,
@@ -250,5 +300,13 @@ export function timeWindowSummary(res, name = 'load') {
  *  other strategy is untouched either way. Build-time, so flipping it is a redeploy. */
 export function compareTimeWindowsEnabled(env) {
   const v = String(env?.VITE_COMPARE_TIME_WINDOWS ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** VITE_TIME_WINDOWS_MILES_CAP — house shape: default on, an off-word (off/0/false/no) turns it off,
+ *  anything malformed leaves it on. Off puts back the old search, which ranked late stops and early
+ *  arrivals and never looked at miles. Build-time, so flipping it is a redeploy. */
+export function timeWindowsMilesCapEnabled(env) {
+  const v = String(env?.VITE_TIME_WINDOWS_MILES_CAP ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
 }

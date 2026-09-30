@@ -67,7 +67,9 @@ test('Time windows can no longer "fix" a card by pushing it past the cap — the
   const a = { ...args(stops, new Map()), departMin: 14 * 60 + 30, maxEvals: 3000 };
   const trulyLate = (order) => routePreflight({ ...a, order }).lateCount;
 
-  const off = timeWindowSequence({ ...a, countCollapsed: false });
+  // The search as it was then: the cap unread, and no miles price (v1.99.x's price would refuse the
+  // longer order on its own, which is a different fix — pinned in time-window-sequence.test.mjs).
+  const off = timeWindowSequence({ ...a, countCollapsed: false, milesCap: false });
   assert.equal(off.before.late, 23);
   assert.equal(off.after.late, 0, 'the old reading: it reported every late stop cleared');
   assert.ok(trulyLate(off.order) > 23, `that order really has ${trulyLate(off.order)} late`);

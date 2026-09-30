@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { routePreflight } from '../src/lib/route-preflight.js';
-import { timeWindowSequence, timeWindowSummary, compareWindowScores, compareTimeWindowsEnabled } from '../src/lib/time-window-sequence.js';
+import { timeWindowSequence, timeWindowSummary, compareWindowScores, compareTimeWindowsEnabled, timeWindowsMilesCapEnabled, TIME_WINDOW_MILES_PER_LATE_STOP } from '../src/lib/time-window-sequence.js';
 
 const depot = { lat: 33.7004, lng: -84.4955 };
 const stop = (id, lat, lng) => ({ stopNbr: id, lat, lng, matchKey: `m${id}`, businessName: id, normalizedStatus: 'SCHEDULED', status: '20' });
@@ -20,15 +20,18 @@ const STOPS = new Map([
 ]);
 const base = (notes, extra = {}) => ({ stopById: STOPS, notes, routeKey: 'MARCUS', servedDate: '2026-09-29', dayKey: 'tue', depot, ...extra });
 const A_CLOSES_930 = new Map([['mA', typed('7:00', '9:30')]]);
+// The window logic below is pinned on the search as it read windows before the miles price (Chad,
+// 2026-09-30); those tests pass NO_PRICE. The price has its own tests at the end of this file.
+const NO_PRICE = { milesCap: false };
 
 test('THE ASK: the far stop that closes early goes first, and the late badge goes away', () => {
   // Measured on the real engine: B-C-D-E-A reaches A at 10:20a, 50m past its 9:30a close.
   const pfBefore = routePreflight({ ...base(A_CLOSES_930), order: ['B', 'C', 'D', 'E', 'A'] });
   assert.equal(pfBefore.lateCount, 1);
-  const res = timeWindowSequence({ ...base(A_CLOSES_930), order: ['B', 'C', 'D', 'E', 'A'] });
+  const res = timeWindowSequence({ ...base(A_CLOSES_930), order: ['B', 'C', 'D', 'E', 'A'], ...NO_PRICE });
   assert.equal(res.changed, true);
   assert.equal(res.order[0], 'A');
-  assert.deepEqual(res.before, { late: 1, early: 0, lateMin: 50, finish: 620 });
+  assert.deepEqual(res.before, { late: 1, early: 0, lateMin: 50, finish: 620, meters: 0 });
   assert.equal(res.after.late, 0);
   // Judged by the SAME check the card's badges read.
   assert.equal(routePreflight({ ...base(A_CLOSES_930), order: res.order }).lateCount, 0);
@@ -40,7 +43,7 @@ test('never worse: a card that already makes every window keeps its order and sa
   assert.equal(res.after.late, 0);
   assert.ok(compareWindowScores(res.after, res.before) <= 0);
   // Measured: B-C-D-E (no hours anywhere) already has the earliest finish, 9:16a.
-  const same = timeWindowSequence({ ...base(new Map()), order: ['B', 'C', 'D', 'E'] });
+  const same = timeWindowSequence({ ...base(new Map()), order: ['B', 'C', 'D', 'E'], ...NO_PRICE });
   assert.equal(same.changed, false);
   assert.deepEqual(same.order, ['B', 'C', 'D', 'E']);
   assert.deepEqual(same.after, same.before);
@@ -51,7 +54,7 @@ test('a typed OPENING is respected: the stop that opens at 9:30a is not reached 
   const s = new Map([...STOPS].filter(([k]) => k !== 'A'));
   s.set('F', stop('F', 33.69, -84.49));   // right by the depot — nearest first by distance
   const notes = new Map([['mF', typed('9:30', '17:00')]]);
-  const args = { ...base(notes), stopById: s, order: ['F', 'B', 'C', 'D', 'E'] };
+  const args = { ...base(notes), stopById: s, order: ['F', 'B', 'C', 'D', 'E'], ...NO_PRICE };
   const res = timeWindowSequence(args);
   assert.equal(res.before.early, 1, 'distance order reaches F before it opens');
   assert.equal(res.after.early, 0);
@@ -175,8 +178,8 @@ test('a 9:30a–12:00p ORDER WINDOW: the stop by the depot is not delivered at 8
   const s = SOUTH(); s.set('F', booked('F', 33.69, -84.49, '09:30', '12:00'));
   const args = { ...base(new Map()), stopById: s };
   assert.equal(eta(s, ['F', 'B', 'C', 'D', 'E']).F, 484, 'distance order reaches F at 8:04a, before its window opens');
-  const res = timeWindowSequence({ ...args, order: ['F', 'B', 'C', 'D', 'E'] });
-  assert.deepEqual(res.before, { late: 0, early: 1, lateMin: 0, finish: 572 });
+  const res = timeWindowSequence({ ...args, order: ['F', 'B', 'C', 'D', 'E'], ...NO_PRICE });
+  assert.deepEqual(res.before, { late: 0, early: 1, lateMin: 0, finish: 572, meters: 0 });
   assert.equal(res.after.early, 0);
   assert.equal(res.after.late, 0);
   assert.equal(res.order[res.order.length - 1], 'F');
@@ -187,7 +190,7 @@ test('a 9:30a–12:00p ORDER WINDOW: the stop by the depot is not delivered at 8
 
 test('a 9:00a–9:30a BOOKED APPOINTMENT: the order lands the stop inside its slot', () => {
   const s = SOUTH(); s.set('G', booked('G', 33.69, -84.49, '09:00', '09:30'));
-  const res = timeWindowSequence({ ...base(new Map()), stopById: s, order: ['G', 'B', 'C', 'D', 'E'] });
+  const res = timeWindowSequence({ ...base(new Map()), stopById: s, order: ['G', 'B', 'C', 'D', 'E'], ...NO_PRICE });
   assert.equal(res.before.early, 1, 'G first is reached at 8:04a, an hour early for its slot');
   assert.equal(res.after.early, 0);
   const at = eta(s, res.order).G;
@@ -211,4 +214,93 @@ test('the card\'s own late verdict is never ignored, and a stop closed today add
   const r2 = timeWindowSequence({ ...base(open), stopById: s, order: ['B', 'C', 'D', 'E'] });
   const pf = routePreflight({ ...base(open), stopById: s, order: ['B', 'C', 'D', 'E'] });
   assert.equal(r2.before.late, pf.lateCount, 'what the badges show, the ranking counts');
+});
+
+// ── THE MILES PRICE (Chad, 2026-09-30) ───────────────────────────────────────────────────────────
+// "a couple of miles is worth it, but not 15 or 20 miles." Each late stop is priced at
+// TIME_WINDOW_MILES_PER_LATE_STOP of the card header's miles; the search takes the lowest miles plus
+// that price, never with more late stops than the card.
+const MI_M = 1609.344;
+
+test('the price is two miles a late stop saved', () => {
+  assert.equal(TIME_WINDOW_MILES_PER_LATE_STOP, 2);
+});
+
+test('THE ASK again, priced: saving A costs 22 miles, so the card keeps its order and says why', () => {
+  const res = timeWindowSequence({ ...base(A_CLOSES_930), order: ['B', 'C', 'D', 'E', 'A'] });
+  const aFirst = timeWindowSequence({ ...base(A_CLOSES_930), order: ['A', 'B', 'C', 'D', 'E'], maxEvals: 1 }).before;
+  assert.ok((aFirst.meters - res.before.meters) / MI_M > 20, 'A first really is 20+ miles longer');
+  assert.equal(res.changed, false);
+  assert.deepEqual(res.order, ['B', 'C', 'D', 'E', 'A']);
+  assert.equal(timeWindowSummary(res, 'MARCUS'), "Time windows: kept MARCUS's order — no shorter order, and no late stop it can make for 2 mi or less (1 late (50m in all)).");
+  // The switch off is the old search, byte for byte.
+  const old = timeWindowSequence({ ...base(A_CLOSES_930), order: ['B', 'C', 'D', 'E', 'A'], ...NO_PRICE });
+  assert.equal(old.order[0], 'A');
+  assert.equal(old.milesPerLateStop, null);
+});
+
+test('a late stop saved for a mile is taken, and the miles are said', () => {
+  // B, then C 0.6 km further on. C closes at 8:23a; B-C reaches it at 8:28a, C-B at 8:12a.
+  const s = new Map([['B', stop('B', 33.64, -84.49)], ['C', stop('C', 33.6345, -84.4885)], ['D', stop('D', 33.58, -84.45)], ['E', stop('E', 33.55, -84.43)]]);
+  const notes = new Map([['mC', typed('7:00', '8:23')]]);
+  const res = timeWindowSequence({ ...base(notes), stopById: s, order: ['B', 'C', 'D', 'E'] });
+  assert.deepEqual(res.order, ['C', 'B', 'D', 'E']);
+  assert.equal(res.before.late, 1);
+  assert.equal(res.after.late, 0);
+  const added = (res.after.meters - res.before.meters) / MI_M;
+  assert.ok(added > 0 && added <= 2, `${added.toFixed(2)} mi`);
+  assert.equal(res.milesPerLateStop, 2);
+  assert.equal(timeWindowSummary(res, 'MARCUS'), 'Re-sequenced MARCUS · Time windows — 1 late (5m in all) → 0 late · 14.7 → 15.7 mi');
+});
+
+test('a zig-zag card does not buy headroom: the stop is priced against the shortest order that leaves it late', () => {
+  // Found in review. FGEBDCA runs 108.9 mi with A late. AFEDCBG makes A for 109.9 mi, only a mile over
+  // the card, but 25.7 mi over BGCDEFA, the shortest order that leaves A late. That is the 15-20
+  // miles Chad ruled out, so the price takes the short order and says what it saved.
+  const s = new Map([...STOPS, ['F', stop('F', 33.64, -84.36)], ['G', stop('G', 33.58, -84.60)]]);
+  const args = { ...base(A_CLOSES_930), stopById: s, order: ['F', 'G', 'E', 'B', 'D', 'C', 'A'] };
+  const res = timeWindowSequence(args);
+  assert.deepEqual(res.order, ['B', 'G', 'C', 'D', 'E', 'F', 'A']);
+  assert.equal(res.after.late, 1);
+  assert.match(timeWindowSummary(res, 'MARCUS'), /· 108\.9 → 84\.2 mi$/);
+  const old = timeWindowSequence({ ...args, ...NO_PRICE });
+  assert.deepEqual(old.order, ['A', 'F', 'E', 'D', 'C', 'B', 'G'], 'the old search: A made, at any cost');
+});
+
+test('an order that saves no late stop may not add a mile — arriving before an opening is not chased at a cost', () => {
+  const s = new Map([...STOPS].filter(([k]) => k !== 'A'));
+  s.set('F', stop('F', 33.69, -84.49));
+  const res = timeWindowSequence({ ...base(new Map([['mF', typed('9:30', '17:00')]])), stopById: s, order: ['F', 'B', 'C', 'D', 'E'] });
+  assert.equal(res.before.early, 1);
+  assert.ok(res.after.meters <= res.before.meters, 'no miles added');
+  assert.equal(res.after.late, 0);
+});
+
+test('never over the price, on 60 random cards with random closes', () => {
+  let seed = 11;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  for (let t = 0; t < 60; t++) {
+    const n = 5 + Math.floor(rnd() * 6);
+    const st = new Map(); const notes = new Map();
+    for (let i = 0; i < n; i++) {
+      const id = `S${i}`;
+      st.set(id, stop(id, 33.45 + rnd() * 0.5, -84.75 + rnd() * 0.5));
+      if (rnd() < 0.5) notes.set(`m${id}`, typed('7:00', `${8 + Math.floor(rnd() * 4)}:${rnd() < 0.5 ? '00' : '30'}`));
+    }
+    const order = [...st.keys()];
+    const res = timeWindowSequence({ ...base(notes), stopById: st, order, maxEvals: 800 });
+    const allowed = TIME_WINDOW_MILES_PER_LATE_STOP * MI_M * Math.max(0, res.before.late - res.after.late);
+    assert.ok(res.after.meters - res.before.meters <= allowed + 1, `card ${t}: +${((res.after.meters - res.before.meters) / MI_M).toFixed(1)} mi for ${res.before.late - res.after.late} late stop(s) saved`);
+    assert.ok(res.after.late <= res.before.late, 'never more late stops');
+    const priced = (x) => x.meters + TIME_WINDOW_MILES_PER_LATE_STOP * MI_M * x.late;
+    assert.ok(priced(res.after) <= priced(res.before) + 1, 'never costs more miles-plus-price than the card');
+    assert.deepEqual([...res.order].sort(), [...order].sort(), 'every stop once');
+  }
+});
+
+test('VITE_TIME_WINDOWS_MILES_CAP: default on, an off-word turns it off, a typo leaves it on', () => {
+  assert.equal(timeWindowsMilesCapEnabled({}), true);
+  assert.equal(timeWindowsMilesCapEnabled(undefined), true);
+  for (const v of ['off', 'OFF', ' 0 ', 'false', 'no']) assert.equal(timeWindowsMilesCapEnabled({ VITE_TIME_WINDOWS_MILES_CAP: v }), false, v);
+  for (const v of ['on', '1', '2', 'offf', '']) assert.equal(timeWindowsMilesCapEnabled({ VITE_TIME_WINDOWS_MILES_CAP: v }), true, `"${v}" leaves it on`);
 });
