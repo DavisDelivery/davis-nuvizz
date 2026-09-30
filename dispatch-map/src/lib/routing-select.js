@@ -757,15 +757,30 @@ const REDRIVE_LIMIT_M = 1.5 * MI_M;                // … for this far (or 15% o
 const REDRIVE_LIMIT_SHARE = 0.15;
 const PASS_NEAR_M = 0.3 * MI_M;                    // passing this close to a stop …
 const PASS_CLEAR_M = 0.75 * MI_M;                  // … that is not a neighbour of either end of that leg
+const COMEBACK_NEAR_M = 0.75 * MI_M;               // back within this of a stop already served …
+const COMEBACK_AWAY_M = 3 * MI_M;                  // … after the truck had gone farther than this from it
+const DRIVE_IN_NEAR_M = 0.5 * MI_M;                // the drive in passing this close to a stop served later …
+const DRIVE_IN_CLEAR_M = 1 * MI_M;                 // … that is not a neighbour of the first stop
+const CLOSES_ON_START_SHARE = 0.1;                 // last stop within 10% of the route's width of the first
 
 /**
  * PURE. What a dispatcher would object to in the picture of `points` (stops in visiting order,
- * each { lat, lng }), measured on straight stop-to-stop legs.
- * @returns {{ crossesItself: boolean, redriveMeters: number, pathMeters: number, drivesPast: boolean }}
+ * each { lat, lng }), measured on straight lines as the card draws them. With a `depot` it also
+ * judges the drive in.
+ *
+ * The last three were added after the first version was tested by eye: every route where it
+ * differed from Shortest distance (607 pictures over 20 board days) was drawn beside Shortest
+ * distance and judged against the shapes Chad has rejected, and 78 were called awful. They were
+ * the SAMUEL shape (a neighbourhood worked early and again at the end), the TRAILER 3 shape
+ * seen from the drive in (driving past stops to begin elsewhere and coming back for them), and
+ * loops that close on their own first stop. These three catch about half of them, and in a
+ * test held out by date (tuned on Sep 1-15, checked on Sep 16-29) cost 2 of 178 good switches.
+ * @returns {{ crossesItself: boolean, redriveMeters: number, pathMeters: number, drivesPast: boolean,
+ *             comesBack: boolean, driveInPast: boolean, closesOnStart: boolean }}
  */
-export function routeShapeFaults(points) {
+export function routeShapeFaults(points, depot = null) {
   const P = (Array.isArray(points) ? points : []).filter(mappable);
-  const out = { crossesItself: false, redriveMeters: 0, pathMeters: 0, drivesPast: false };
+  const out = { crossesItself: false, redriveMeters: 0, pathMeters: 0, drivesPast: false, comesBack: false, driveInPast: false, closesOnStart: false };
   if (P.length < 3) {
     if (P.length === 2) out.pathMeters = haversineMeters(P[0], P[1]);
     return out;
@@ -821,6 +836,29 @@ export function routeShapeFaults(points) {
       if (toSeg(xy[i], M) < PASS_NEAR_M && dist(xy[i], M.a) > PASS_CLEAR_M && dist(xy[i], M.b) > PASS_CLEAR_M) { out.drivesPast = true; break; }
     }
   }
+  // 5. Coming back to a neighbourhood: a stop within COMEBACK_NEAR_M of one served earlier, after the
+  // truck had been more than COMEBACK_AWAY_M from that earlier stop in between (the SAMUEL shape).
+  // For each earlier stop walk forward keeping the farthest the truck has been from it: O(n^2).
+  for (let i = 0; i < xy.length - 2 && !out.comesBack; i++) {
+    let away = 0;
+    for (let j = i + 1; j < xy.length; j++) {
+      const dij = dist(xy[i], xy[j]);
+      if (j > i + 1 && dij < COMEBACK_NEAR_M && away > COMEBACK_AWAY_M) { out.comesBack = true; break; }
+      if (dij > away) away = dij;
+    }
+  }
+  // 6. The drive in from the depot passing a stop that is served later, away from where it begins.
+  if (mappable(depot)) {
+    const D = [depot.lng * kx, depot.lat * ky];
+    const inLeg = { a: D, b: xy[0], dx: xy[0][0] - D[0], dy: xy[0][1] - D[1] };
+    for (let j = 1; j < xy.length && !out.driveInPast; j++) {
+      if (toSeg(xy[j], inLeg) < DRIVE_IN_NEAR_M && dist(xy[j], xy[0]) > DRIVE_IN_CLEAR_M) out.driveInPast = true;
+    }
+  }
+  // 7. A loop that closes on its own first stop.
+  let width = 0;
+  for (let i = 0; i < xy.length; i++) for (let j = i + 1; j < xy.length; j++) width = Math.max(width, dist(xy[i], xy[j]));
+  out.closesOnStart = xy.length >= 4 && dist(xy[0], xy[xy.length - 1]) < CLOSES_ON_START_SHARE * width;
   return out;
 }
 
@@ -834,9 +872,10 @@ function townSplits(order, townOf) {
  * PURE, node level. `base` is Shortest distance's order and `candidates` are [{ source, order }]
  * drawn by the menu's other options — all over the same node indices, node 0 the depot. `cost` is
  * the matrix the card is using; `crow` a straight-line matrix over the same nodes (towns are what
- * the map shows); `pointOf(k)` a node's { lat, lng }. Returns the order to use and why.
+ * the map shows); `pointOf(k)` a node's { lat, lng }; `depot` (optional) the yard, so the drive in
+ * is judged too. Returns the order to use and why.
  */
-export function pickReturnOrder(base, candidates, cost, crow, pointOf) {
+export function pickReturnOrder(base, candidates, cost, crow, pointOf, depot = null) {
   const baseMeters = loopPathCost(base, cost);
   const towns = townsOf([...base].sort((a, b) => a - b), crow, TOWN_RADIUS_METERS);
   const townOf = new Map();
@@ -844,8 +883,8 @@ export function pickReturnOrder(base, candidates, cost, crow, pointOf) {
   const baseSplits = townSplits(base, townOf);
   const want = new Set(base);
   const clean = (order) => {
-    const f = routeShapeFaults(order.map(pointOf));
-    return !f.crossesItself && !f.drivesPast
+    const f = routeShapeFaults(order.map(pointOf), depot);
+    return !f.crossesItself && !f.drivesPast && !f.comesBack && !f.driveInPast && !f.closesOnStart
       && f.redriveMeters < Math.max(REDRIVE_LIMIT_M, REDRIVE_LIMIT_SHARE * f.pathMeters)
       && townSplits(order, townOf) <= baseSplits;
   };
@@ -890,17 +929,18 @@ export function returnToWarehouse(stops, depot) {
     { source: 'farthest', order: nodes(farthestFirst(placed, depot)) },
     { source: 'closest', order: nodes(closestFirst(placed, depot)) },
   ];
-  const pick = pickReturnOrder(min, candidates, crow, crow, (k) => placed[k - 1]);
+  const pick = pickReturnOrder(min, candidates, crow, crow, (k) => placed[k - 1], depot);
   return { ...pick, order: [...pick.order.map((k) => placed[k - 1]), ...unplaced] };
 }
 
 /**
  * Return to the warehouse on a cost MATRIX (the road box). `stops` and `cost` as
- * resequenceOnMatrix(); the stops' own positions draw the picture. Nodes the matrix cannot
- * score, or that have no position to judge the picture by, ride at the END in their own order.
+ * resequenceOnMatrix(); the stops' own positions draw the picture, and `depot` (the card passes
+ * the yard) lets the drive in be judged. Nodes the matrix cannot score, or that have no position
+ * to judge the picture by, ride at the END in their own order.
  * @returns {{ order: object[], source: string, meters: number, baseMeters: number }}
  */
-export function returnToWarehouseOnMatrix(stops, cost) {
+export function returnToWarehouseOnMatrix(stops, cost, depot = null) {
   const arr = Array.isArray(stops) ? stops : [];
   if (arr.length < 2) return { order: [...arr], source: 'none', meters: 0, baseMeters: 0 };
   const all = arr.map((_, i) => i + 1);
@@ -931,8 +971,22 @@ export function returnToWarehouseOnMatrix(stops, cost) {
     { source: 'farthest', order: SWEEP_MODE === 'pure' ? pureSweepNodes(nodes, C, 'homeward') : townSweepNodes(nodes, C, 'homeward') },
     { source: 'closest', order: SWEEP_MODE === 'pure' ? pureSweepNodes(nodes, C, 'outward') : townSweepNodes(nodes, C, 'outward') },
   ];
-  const pick = pickReturnOrder(min, candidates, C, crow, pointOf);
+  const pick = pickReturnOrder(min, candidates, C, crow, pointOf, depot);
   return { ...pick, order: [...pick.order.map((k) => orig[k]), ...tail].map((k) => arr[k - 1]) };
+}
+
+// THE SWITCH, and why it is the reverse of the house shape. Tested by eye, about 1 in 13 of this
+// option's switches away from Shortest distance still draws a shape a reviewer called awful (41 of
+// 2,240 runs over 20 board days). That is Chad's call to make, not ours, so on the production site
+// the option stays OFF until VITE_RETURN_TO_WAREHOUSE is set to an explicit on-word (on/1/true/
+// yes); anything else, a typo included, keeps it off rather than putting an unapproved order on a
+// dispatcher's card. On the UAT site it is always on, so it can be tried against seeded orders.
+// Build-time (VITE_), so flipping it is an env change and a redeploy; removing the menu line is
+// the whole of the revert either way.
+export function returnToWarehouseVisible(env, onUat = false) {
+  if (onUat) return true;
+  const v = String(env?.VITE_RETURN_TO_WAREHOUSE ?? '').trim().toLowerCase();
+  return ['on', '1', 'true', 'yes'].includes(v);
 }
 
 // What the card's feedback line says after a Return-to-warehouse pick — which order it used and

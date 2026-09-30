@@ -716,7 +716,7 @@ test('loop on a matrix is scored as a round trip, min as a one-way path', () => 
 // already draws when that order is clean AND gets the truck home a mile and 1.5% sooner.
 import {
   returnToWarehouse, returnToWarehouseOnMatrix, pickReturnOrder, routeShapeFaults, returnPickSummary,
-  RETURN_MIN_SAVING_METERS, RETURN_MIN_SAVING_SHARE,
+  RETURN_MIN_SAVING_METERS, RETURN_MIN_SAVING_SHARE, returnToWarehouseVisible,
 } from '../src/lib/routing-select.js';
 
 const HOME_DEPOT = { lat: 34.147791, lng: -83.960911 };
@@ -724,7 +724,7 @@ const at = (rows) => rows.map(([id, city, lat, lng]) => ({ id, city, lat, lng })
 const geometry = (list) => list.map((s) => `${s.lat},${s.lng}`).join(';');
 const crowOf = (stops, depot = HOME_DEPOT) => { const p = [depot, ...stops]; return p.map((a) => p.map((b) => haversineMeters(a, b))); };
 const roundTrip = (list, depot = HOME_DEPOT) => { let t = haversineMeters(depot, list[0]); for (let i = 1; i < list.length; i++) t += haversineMeters(list[i - 1], list[i]); return t + haversineMeters(list.at(-1), depot); };
-const clean = (f) => !f.crossesItself && !f.drivesPast && f.redriveMeters < Math.max(1.5 * 1609.344, 0.15 * f.pathMeters);
+const clean = (f) => !f.crossesItself && !f.drivesPast && !f.comesBack && !f.driveInPast && !f.closesOnStart && f.redriveMeters < Math.max(1.5 * 1609.344, 0.15 * f.pathMeters);
 
 // TRAILER 3, 2026-09-30, in the order his card showed with real road distances ticked — the one he
 // called "more awful": in at Lithonia, east to the end of Conyers, back west past the start to Decatur.
@@ -755,7 +755,7 @@ test('return to warehouse — TRAILER 3: the order Chad called awful is caught, 
   assert.equal(rejected.drivesPast, true, 'his card drives past a stop and comes back for it');
   const pick = returnToWarehouse(TRAILER3_CARD, HOME_DEPOT);
   assert.equal(pick.order.length, 14);
-  assert.ok(clean(routeShapeFaults(pick.order)), 'a clean corridor sweep');
+  assert.ok(!routeShapeFaults(pick.order).crossesItself && !routeShapeFaults(pick.order).drivesPast, 'a corridor sweep that neither crosses itself nor drives past a stop');
   assert.ok(roundTrip(pick.order) < roundTrip(TRAILER3_CARD) - 1609.344, 'and a shorter day than his card');
   // Nothing clears the bar here, so it IS Shortest distance — the order he asked to have back.
   assert.equal(pick.source, 'min');
@@ -771,7 +771,7 @@ test('return to warehouse — GEORGE L: a clean Loop that comes home 3.8 miles s
   const saved = roundTrip(min) - roundTrip(pick.order);
   assert.ok(saved >= Math.max(RETURN_MIN_SAVING_METERS, RETURN_MIN_SAVING_SHARE * roundTrip(min)), 'it cleared the bar');
   assert.ok(Math.abs(saved / 1609.344 - 3.85) < 0.05, `saved ${saved / 1609.344} mi`);
-  assert.ok(clean(routeShapeFaults(pick.order)));
+  assert.ok(clean(routeShapeFaults(pick.order, HOME_DEPOT)));
   assert.equal(returnPickSummary(pick), "Loop's order, 3.8 straight-line mi shorter round trip than Shortest distance");
 });
 
@@ -825,9 +825,31 @@ test('routeShapeFaults: the pictures a dispatcher objects to, and the ones he do
   // Driving straight past a stop and coming back for it at the end.
   assert.equal(routeShapeFaults(line([[33.70, -84.00], [33.70, -84.04], [33.70, -84.10], [33.72, -84.10], [33.70005, -84.07]])).drivesPast, true);
   // Degenerate input never throws.
-  assert.deepEqual(routeShapeFaults([]), { crossesItself: false, redriveMeters: 0, pathMeters: 0, drivesPast: false });
+  assert.deepEqual(routeShapeFaults([]), { crossesItself: false, redriveMeters: 0, pathMeters: 0, drivesPast: false, comesBack: false, driveInPast: false, closesOnStart: false });
   assert.equal(routeShapeFaults(null).crossesItself, false);
   assert.equal(routeShapeFaults([{ lat: NaN, lng: 1 }, { lat: 33.7, lng: -84 }]).pathMeters, 0);
+});
+
+test('routeShapeFaults: the three shapes the review of 607 real routes found — back to a neighbourhood, past it on the drive in, a loop closing on its start', () => {
+  const pts = (rows) => rows.map(([lat, lng]) => ({ lat, lng }));
+  const MI = 1609.344;
+  // SAMUEL: a stop by the first one, served after the truck had been five miles away.
+  const samuel = pts([[33.70, -84.00], [33.70, -84.03], [33.70, -84.09], [33.66, -84.09], [33.66, -84.03], [33.703, -84.005]]);
+  assert.equal(routeShapeFaults(samuel).comesBack, true);
+  // … but working one neighbourhood and moving on is not coming back.
+  assert.equal(routeShapeFaults(pts([[33.70, -84.00], [33.702, -84.004], [33.70, -84.09], [33.66, -84.09]])).comesBack, false);
+  // Drive in from Buford straight past a stop to begin farther out, then come back for it.
+  const line = pts([[33.90, -84.00], [33.80, -84.00], [33.75, -84.02]]);                    // served far, far, then …
+  const withPassed = [...line, { lat: 34.0, lng: -83.99 }];                                   // … a stop the drive in went by
+  assert.equal(routeShapeFaults(withPassed, HOME_DEPOT).driveInPast, true);
+  assert.equal(routeShapeFaults(withPassed).driveInPast, false, 'no depot, no drive in to judge');
+  assert.equal(routeShapeFaults(line, HOME_DEPOT).driveInPast, false);
+  // A ring that ends on the pin it started from.
+  const ring = Array.from({ length: 8 }, (_, i) => ({ lat: 33.7 + 0.05 * Math.sin((i / 8) * 2 * Math.PI), lng: -84.0 + 0.06 * Math.cos((i / 8) * 2 * Math.PI) }));
+  ring.push({ lat: ring[0].lat + 0.001, lng: ring[0].lng });
+  assert.equal(routeShapeFaults(ring).closesOnStart, true);
+  assert.equal(routeShapeFaults(ring.slice(0, 5)).closesOnStart, false, 'half a ring is a sweep');
+  assert.ok(MI > 0);
 });
 
 test('return to warehouse never makes the day longer than Shortest distance, and never draws a fault Shortest distance does not', () => {
@@ -844,7 +866,7 @@ test('return to warehouse never makes the day longer than Shortest distance, and
     assert.ok(roundTrip(pick.order) <= roundTrip(min) + 1e-6, `card ${card}: never a longer day`);
     if (pick.source !== 'min') {
       switched++;
-      assert.ok(clean(routeShapeFaults(pick.order)), `card ${card}: a switch is always to a clean picture`);
+      assert.ok(clean(routeShapeFaults(pick.order, HOME_DEPOT)), `card ${card}: a switch is always to a clean picture`);
       assert.ok(roundTrip(min) - roundTrip(pick.order) >= RETURN_MIN_SAVING_METERS - 1e-6);
     } else {
       assert.equal(geometry(pick.order), geometry(min), `card ${card}: otherwise it IS Shortest distance`);
@@ -915,4 +937,13 @@ test('return to warehouse: 150 stops (the selection cap) come back whole, in the
   // It runs Shortest distance and Loop both (~0.25 s and ~0.5 s here on their own at 150), so it
   // costs about what those two cost together. A generous ceiling for a shared CI runner.
   assert.ok(ms < 6000, `150 stops took ${ms} ms`);
+});
+
+test('return to warehouse: OFF on production until an explicit on-word, always ON on the UAT site', () => {
+  assert.equal(returnToWarehouseVisible({}), false, 'unset: off');
+  assert.equal(returnToWarehouseVisible(undefined), false);
+  for (const v of ['on', 'ON', ' 1 ', 'true', 'yes']) assert.equal(returnToWarehouseVisible({ VITE_RETURN_TO_WAREHOUSE: v }), true, v);
+  for (const v of ['off', '0', 'no', 'false', 'onn', 'enable', '']) assert.equal(returnToWarehouseVisible({ VITE_RETURN_TO_WAREHOUSE: v }), false, `"${v}" never turns it on`);
+  assert.equal(returnToWarehouseVisible({}, true), true, 'UAT: on');
+  assert.equal(returnToWarehouseVisible({ VITE_RETURN_TO_WAREHOUSE: 'off' }, true), true);
 });
