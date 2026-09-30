@@ -51,7 +51,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -210,7 +210,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.99.3';
+const APP_VERSION = '1.99.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,6 +264,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.99.4', 'CLOSEST FIRST WITHOUT THE ONE-TOWN-AT-A-TIME RULE, TO TRY. Asked whether Closest first should keep the Sep 10 \u201cone town at a time\u201d rule \u2014 measured on 1,120 real routes, the rule changes Closest first\u2019s order on 228 of them and there adds 29 self-crossings and removes none \u2014 Chad: \u201cKeep the closest first. Try closest without it on the number four option.\u201d So Closest first on the Compare card\u2019s Re-sequence menu (straight line and road box) and on the Build-result card\u2019s menu is now the plain shortest sweep out from Buford. What it does, measured: on straight lines it changes 228 routes, shorter on 191 (2.1% fewer miles on those), 29 crossings gone and none added, but it now visits a town twice on 161 of them, the shape the rule was written for on JEFF; with the road box, 57 crossings gone and 41 added. By eye it is mixed: NELSON 09-03 and TREVARR 09-17 stop crossing themselves, TRAILER 6 09-16 now drives past its first stops and comes back. Farthest first keeps the town rule; the Build Panel engine and Return to warehouse are untouched. THE WAY BACK: VITE_CLOSEST_FIRST_WITHOUT_TOWNS=off (a redeploy) puts the town rule back on Closest first. 5 new tests.'],
   ['1.99.3', 'A STOP GOOGLE CANNOT ROUTE NO LONGER COUNTS AS ZERO MILES ON A COMPARE CARD\u2019S ROAD BOX. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 3. With the road box ticked, the card asks Google for road distances between its stops. Where Google had no route for a pair, or left it out of its answer, the card was handed a free 0-mile, 0-minute leg, so that stop looked like the cheapest one on the card and the order was built around it. The route builder has priced such a leg at the straight-line road estimate (1.3 \u00d7 crow-flies) since A5-S27-4; the card now does the same. Every leg Google could drive is still Google\u2019s. Server-only: no screen code changed. THE WAY BACK: ROAD_BOX_ESTIMATE_UNROUTABLE=off (a redeploy) puts the old 0-mile reading back for the card alone; the builder keeps its own switch, ROUTE_MATRIX_ESTIMATE_UNROUTABLE. 3 new tests, 1 updated.'],
   ['1.99.2', 'EVERY LATE STOP ON A COMPARE CARD GETS ITS BADGE, HOWEVER MANY THERE ARE. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 2. The flag panel folds more than 12 red (25 amber, 40 critical) rows of one kind into a single summary line, and the card\u2019s late check read only rows that name a stop, so the whole batch vanished from the card: thirteen stops each 15 minutes past a typed close showed NO late badge, where twelve showed twelve. Time windows scores orders with the same check and used the gap: on a 30-stop card it reported \u201c23 late \u2192 0 late\u201d for an order that really had 26 late, by making three more stops late to push the card past the cap. Now the card reads the stops behind the summary line too, and Time windows reads them the same way, so the badges and the re-sequence cannot disagree. The board\u2019s flag panel and the alerts are untouched. THE WAY BACK: VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP=off (a redeploy) puts the old reading back for both. 4 new tests.'],
   ['1.99.1', 'A LATE ROAD REPLY NO LONGER PUTS A STOP BACK ON A CARD IT LEFT. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 1. With the road box ticked, a re-sequence pick lands the straight-line order at once and the road order after Google replies, and that road order was computed from the stops the card held at the pick. A stop dragged to another card, or removed, while the reply was out came back with it: it sat on two cards and Save sent it on both loads, or it sat in the order and the removals at once and its unplan was never sent. Now the road order lands on the card as it is when the reply arrives: only the stops still on it, in the road order, then anything added meanwhile. Nothing else about the re-sequence changes, and a reply that lands on an unchanged card gives exactly the order it always did. THE WAY BACK: VITE_ROAD_REPLY_DROPS_MOVED_STOPS=off (a redeploy) puts the old reading back. 6 new tests.'],
@@ -1391,6 +1392,9 @@ const COMPARE_TIME_WINDOWS_ON = compareTimeWindowsEnabled(import.meta.env);
 const RETURN_TO_WAREHOUSE_ON = returnToWarehouseVisible(import.meta.env, BENCH_ON);
 // VITE_ROAD_REPLY_DROPS_MOVED_STOPS=off puts back a late road reply re-adding a moved or removed stop.
 const ROAD_REPLY_DROPS_MOVED_STOPS_ON = roadReplyDropsMovedStopsEnabled(import.meta.env);
+// The sweep a re-sequence pick runs: Closest first without the town rule unless
+// VITE_CLOSEST_FIRST_WITHOUT_TOWNS=off puts the rule back (sweepModeFor).
+const sweepModeOf = (strategy) => sweepModeFor(strategy, import.meta.env);
 // The Routing screen re-reads the stored roster when a newer scan lands (lib/roster-freshness.js).
 const ROUTING_ROSTER_REREAD_ON = routingRosterRereadEnabled(import.meta.env);
 // The Residential paint brush in the Routing gear (lib/place-mark.js).
@@ -25183,7 +25187,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     }
     // Return to warehouse reports WHICH order it used and what that saved (returnPickSummary).
     const homePick = strategy === 'home' ? returnToWarehouse(pts, ROUTING_DEPOT) : null;
-    const newOrder = (homePick ? homePick.order : resequence(pts, ROUTING_DEPOT, strategy)).map((s) => s.id);
+    const newOrder = (homePick ? homePick.order : resequence(pts, ROUTING_DEPOT, strategy, sweepModeOf(strategy))).map((s) => s.id);
     const resolved = new Set(newOrder);
     // The road order lands AFTER Google replies, onto the card as it is by then: a stop moved to
     // another card or removed while the reply was out stays gone (mergeReplyOrder). Ids the reply
@@ -25225,7 +25229,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
           return;
         }
         const roadPick = strategy === 'home' ? returnToWarehouseOnMatrix(pts, cost, ROUTING_DEPOT) : null;
-        const roadOrder = (roadPick ? roadPick.order : resequenceOnMatrix(pts, cost, strategy)).map((s) => s.id);
+        const roadOrder = (roadPick ? roadPick.order : resequenceOnMatrix(pts, cost, strategy, sweepModeOf(strategy))).map((s) => s.id);
         applyOrder(roadOrder, 'road');
         setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} · real road distances${roadPick ? ` — ${returnPickSummary(roadPick, 'road')}` : ''}`);
       } catch (e) {
@@ -26653,7 +26657,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       if (!curOrder) return prev;
       const stops = curOrder.map((id) => { const s = stopById.get(String(id)); return s ? { id: String(id), lat: s.lat, lng: s.lng } : null; }).filter(Boolean);
       if (stops.length < 2) return prev;
-      const newOrder = resequence(stops, depot, strategy).map((s) => s.id);
+      const newOrder = resequence(stops, depot, strategy, sweepModeOf(strategy)).map((s) => s.id);
       const resolved = new Set(newOrder);
       const tail = curOrder.map(String).filter((id) => !resolved.has(id)); // keep any unresolvable ids (no silent drops)
       return { ...(prev || {}), [truckId]: { order: [...newOrder, ...tail], reordered: true } };
