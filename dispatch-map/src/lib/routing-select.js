@@ -161,21 +161,7 @@ export function recomputeRoute(orderedStops, depot, departSec = 0, serviceSec = 
     clock += serviceSec;              // dwell before departing to the next
     prev = s;
   }
-  // THE DRIVE HOME, reported beside the total rather than inside it. The total stays the drive
-  // OUT (depot -> last stop) because that is the number the card has always shown and the one
-  // NuVizz's route card is compared against. But every truck comes back to Buford, and since
-  // Shortest distance started optimising the whole day (2026-09-30) a better order can have a
-  // LONGER drive out and a much shorter drive home — so a card that showed only the first half
-  // would make the better route look worse. The caller shows both.
-  const returnDistanceMeters = orderedStops.length ? Math.round(haversineMeters(prev, depot) * ROUTE_ROAD_FACTOR) : 0;
-  return { legs, etas, totalDistanceMeters: Math.round(totalDistanceMeters), totalDurationSec, returnDistanceMeters };
-}
-
-/** Miles for the whole day on the card's own arithmetic: out from the depot, every stop, and home. */
-export function dayMiles(orderedStops, depot) {
-  if (!Array.isArray(orderedStops) || !orderedStops.length) return 0;
-  const rc = recomputeRoute(orderedStops, depot);
-  return (rc.totalDistanceMeters + rc.returnDistanceMeters) / 1609.344;
+  return { legs, etas, totalDistanceMeters: Math.round(totalDistanceMeters), totalDurationSec };
 }
 
 
@@ -691,102 +677,7 @@ function improveOrder(order, cost, score, maxPasses = 40) {
  * not allowed to poison the arithmetic either: it rides at the END in its own order, the same
  * rule sweep() uses for a stop with no map position.
  */
-// ── SHORTEST DISTANCE MEANS THE SHORTEST DAY (Chad, 2026-09-30) ─────────────────────────
-//
-// Chad, on an 18-stop BRENT card re-sequenced Shortest distance: "this is not a good
-// optimization." The card ran Conley -> Ellenwood -> five miles south to Morrow -> four miles
-// back north to Forest Park -> a spur up to Faith Technologies -> the airport -> and FINISHED at
-// Life Science Logistics, seven miles further west than anything else on the load.
-//
-// THE SEARCH WAS NOT WEAK. Solved exactly (Held-Karp, all 18 stops), the best possible ONE-WAY
-// order on straight lines is 151.2 real road miles for the day; what shipped was 152.0. Shortest
-// distance was doing its job almost perfectly. ITS JOB WAS THE WRONG JOB: it minimised the drive
-// OUT from Buford and never counted the drive HOME, so it had every reason to end the day at the
-// far end of the load and no reason not to. Every truck comes back to 943 Gainesville Hwy.
-//
-//   BRENT, measured on real roads (OSRM), 8:00a out, 11.7 min a stop:
-//     Shortest distance as shipped (best drive out)      152.0 mi   back 3:40p
-//     best round trip, straight lines (this, free)       148.4 mi
-//     best round trip, real roads (this + the road box)  144.6 mi   back 3:34p
-//   Every one of those meets the three receiving windows on the card.
-//
-// Across all 16 routes on that day's board the round trip is never longer than either old
-// strategy on any route, 5 routes were 2+ miles long, and ULINE APPT was 21 miles long.
-//
-// Loop was ALREADY a round trip, but seeded once and improved by 2-opt alone it landed on the
-// SAME order as Shortest distance on BRENT — a local optimum. Both now run the search below, so
-// they agree; the shortest day on a straight-line map never crosses itself, which is all Loop
-// promised. THE WAY BACK IS ONE WORD: SHORTEST_OBJECTIVE = 'one-way' restores both strategies
-// to exactly what shipped before, byte for byte, and a test pins that.
-export const SHORTEST_OBJECTIVE = 'round-trip';
-
-// The best depot -> every node -> depot tour on a cost matrix (node 0 = the depot). It is a
-// pinned path whose two ends are both the depot, so it reuses improvePinnedPath — the same
-// delta-scored 2-opt and or-opt the sweep runs — from seven starting orders, and keeps the
-// shortest. Every seed is a function of the node SET, so the answer never depends on the order
-// the card happened to be in.
-export function roundTripNodes(nodes, cost) {
-  nodes = [...nodes].sort((a, b) => a - b);
-  if (nodes.length < 2) return nodes;
-  const nn = nearestNeighborFrom(0, nodes, cost);
-  const radial = [...nodes].sort((a, b) => (cost[0][b] - cost[0][a]) || (a - b));
-  const seeds = [
-    nn, [...nn].reverse(),
-    radial, [...radial].reverse(),
-    townSweepNodes(nodes, cost, 'homeward'), townSweepNodes(nodes, cost, 'outward'),
-    nodes,
-  ];
-  let best = nodes, bestLen = Infinity;
-  for (const seed of seeds) {
-    const cand = improvePinnedPath(seed, 0, 0, cost);
-    const len = pinnedPathCost(cand, 0, 0, cost);
-    if (len + 1e-6 < bestLen) { bestLen = len; best = cand; }
-  }
-  return best;
-}
-
-// ── WHICH WAY ROUND ─────────────────────────────────────────────────────────────────────
-//
-// A round trip can be driven either way for the same straight-line miles, but not for the same
-// day. BRENT's round trip, as the search first found it, reached Express Container in Morrow
-// — receiving closes 2:00p — at stop 16 of 18, 1:44p by the card's own preflight: sixteen
-// minutes to spare, and PAST the close if the truck rolls an hour late. Driven the other way
-// round it is stop 3 at 9:37a and still safe with a 10:00a departure. Picking the direction is
-// free in miles and is the difference between a delivery and a refused one on a slow day.
-//
-// So the direction is judged, not assumed. `judge(order)` returns numbers, lower is better,
-// compared left to right; the caller supplies what it knows (route-preflight's orientRoundTrip
-// supplies late stops now, can't-make stops now, late stops on a slow day, then day miles).
-// Ties keep the order as the search found it.
-export const ROUND_TRIP_STRESS_DELAY_MIN = 60;
-
-export function pickRoundTripDirection(order, judge) {
-  const fwd = Array.isArray(order) ? [...order] : [];
-  if (fwd.length < 2 || typeof judge !== 'function') return fwd;
-  const rev = [...fwd].reverse();
-  const a = judge(fwd) || [];
-  const b = judge(rev) || [];
-  const n = Math.max(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    const x = Number.isFinite(a[i]) ? a[i] : 0;
-    const y = Number.isFinite(b[i]) ? b[i] : 0;
-    if (y < x - 1e-9) return rev;
-    if (x < y - 1e-9) return fwd;
-  }
-  return fwd;
-}
-
-// Round trip over a card's stops on straight lines. Same shape as sweep(): unmappable stops
-// ride at the end in their own order, placed stops are sorted canonically first.
-function roundTrip(stops, depot) {
-  const placed = stops.filter(mappable).sort((a, b) => (a.lat - b.lat) || (a.lng - b.lng) || String(a.id).localeCompare(String(b.id)));
-  const unplaced = stops.filter((s) => !mappable(s));
-  if (placed.length < 2) return [...placed, ...unplaced];
-  const cost = distanceMatrix([depot, ...placed]);
-  return [...roundTripNodes(placed.map((_, i) => i + 1), cost).map((k) => placed[k - 1]), ...unplaced];
-}
-
-export function resequenceOnMatrix(stops, cost, strategy, mode = SWEEP_MODE, objective = SHORTEST_OBJECTIVE) {
+export function resequenceOnMatrix(stops, cost, strategy, mode = SWEEP_MODE) {
   const arr = Array.isArray(stops) ? stops : [];
   if (arr.length < 2) return [...arr];
   if (strategy === 'reverse') return [...arr].reverse();
@@ -810,8 +701,8 @@ export function resequenceOnMatrix(stops, cost, strategy, mode = SWEEP_MODE, obj
   switch (strategy) {
     case 'closest': order = mode === 'pure' ? pureSweepNodes(nodes, cost, 'outward') : townSweepNodes(nodes, cost, 'outward'); break;
     case 'farthest': order = mode === 'pure' ? pureSweepNodes(nodes, cost, 'homeward') : townSweepNodes(nodes, cost, 'homeward'); break;
-    case 'loop': order = objective === 'one-way' ? improveOrder(nnFromDepot(nodes, cost), cost, loopPathCost) : roundTripNodes(nodes, cost); break;
-    case 'min': order = objective === 'one-way' ? improveOrder(nnFromDepot(nodes, cost), cost, openPathCost) : roundTripNodes(nodes, cost); break;
+    case 'loop': order = improveOrder(nnFromDepot(nodes, cost), cost, loopPathCost); break;
+    case 'min': order = improveOrder(nnFromDepot(nodes, cost), cost, openPathCost); break;
     default: return [...arr];
   }
   return [...order, ...unusable].map((k) => arr[k - 1]);
@@ -819,21 +710,20 @@ export function resequenceOnMatrix(stops, cost, strategy, mode = SWEEP_MODE, obj
 
 // Re-sequence one route's stops by strategy. 'reverse' flips the current order;
 // the others are computed fresh from depot + positions.
-//   min      — the shortest DAY: out from Buford, every stop, and home (see above).
-//   loop     — the same round trip; a shortest day on straight lines never crosses itself.
-//              SHORTEST_OBJECTIVE = 'one-way' puts both back to what they were: min as the
-//              shortest drive OUT (no return leg), loop as one greedy seed + 2-opt.
+//   loop     — nearest-neighbour seed + closed-loop 2-opt → U-shape (down one side,
+//              back the other), the no-crisscross order for a highway corridor.
+//   min      — nearest-neighbour seed + open-path 2-opt → shortest one-way distance.
 //   farthest — far stop first, then the shortest sweep home (see above).
 //   closest  — near stop first, then the shortest sweep out to the far stop.
-export function resequence(stops, depot, strategy, objective = SHORTEST_OBJECTIVE) {
+export function resequence(stops, depot, strategy) {
   const arr = Array.isArray(stops) ? stops : [];
   if (arr.length < 2) return [...arr];
   switch (strategy) {
     case 'reverse': return [...arr].reverse();
     case 'closest': return closestFirst(arr, depot);
     case 'farthest': return farthestFirst(arr, depot);
-    case 'loop': return objective === 'one-way' ? twoOptLoop(nearestNeighbor(arr, depot), depot) : roundTrip(arr, depot);
-    case 'min': return objective === 'one-way' ? twoOpt(nearestNeighbor(arr, depot), depot) : roundTrip(arr, depot);
+    case 'loop': return twoOptLoop(nearestNeighbor(arr, depot), depot);
+    case 'min': return twoOpt(nearestNeighbor(arr, depot), depot);
     default: return [...arr];
   }
 }
