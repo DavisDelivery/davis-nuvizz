@@ -37,7 +37,7 @@ import { isHashLikeId, statusFromCode, isTerminalStatus } from './nuvizz-list.mt
 import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay, readStopDoc, patchStopFields } from './firestore.mts';
 import { completionPatch } from './scan-completions.mts';
 import { finishedGuardEnabled } from './finished-guard.mts';
-import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes } from './nuvizz-rwb.mts';
+import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes, rwbCreateRoute } from './nuvizz-rwb.mts';
 import { basicAuthFor } from './nuvizz-identity.mts';
 
 const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
@@ -3110,6 +3110,69 @@ export function routeCreateBlocked(): boolean {
   return /^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ROUTE_CREATE ?? '').trim());
 }
 
+/**
+ * THE PORTAL'S CREATE, SWITCHED ON EXPLICITLY (v1.98.5). NUVIZZ_ROUTE_CREATE_RWB=on sends ＋ New
+ * route through the Route Workbench's own addNewRoutePlan (nuvizz-rwb.mts rwbCreateRoute — the call
+ * Chad captured the portal making) and attaches the card's orders through the SAME save an existing
+ * load gets. Anything else keeps the v7 routePlan/update below, byte for byte.
+ *
+ * DELIBERATELY NOT THE HOUSE SHAPE. A switch that REVERTS a change defaults on; this one TURNS ON a
+ * write path no call has proven yet (whether addNewRoutePlan accepts this app's portal sign-in is the
+ * one thing the capture cannot show), so it ships dark and fails CLOSED: unset, a typo, anything but
+ * an on-word → the old path. One test create — on UAT first — is the gate, and flipping it is a
+ * Netlify environment setting, no code change.
+ */
+export function routeCreateViaRwb(): boolean {
+  return /^(1|true|on|yes)$/i.test(String(process.env.NUVIZZ_ROUTE_CREATE_RWB ?? '').trim());
+}
+
+/**
+ * The new route, made the portal's way, then filled through runCommitBoardRwb exactly like a Save of
+ * an existing load: the orders the ORDER GUARD just read are added, sequenced in card order, verified
+ * against NuVizz's own read-back, written through to the board, and the staged driver assigned (and
+ * dispatched) — every guard that already protects a Save protects this one. The answer keeps
+ * runNewRoute's contract, so the Compare card reads it with no client change.
+ *
+ * A route that was made but whose orders did not attach is reported as NOT saved, with its load
+ * number and what to do: the card stays a pending create, and a second Save would only meet
+ * NuVizz's DuplicateRouteName — so the words say to open it from the Routes panel instead.
+ */
+async function createRouteViaRwb(requester: RequesterLike, payload: any, creds: WriteCreds,
+  ctx: { nbrs: string[]; reads: Map<string, any>; routeName: string; steps: any[] }): Promise<any> {
+  const { nbrs, reads, routeName, steps } = ctx;
+  const day = isDayString(payload?.date) ? String(payload.date) : etDayString();
+  const made = await rwbCreateRoute(requester, { routeName, date: day }, creds.rwb);
+  steps.push({ op: 'rwb:createRoute', ok: made.ok, result: { calls: made.calls, steps: made.steps, route: made.route ?? null, duplicate: made.duplicate ?? null }, error: made.ok ? null : (made.error || 'failed') });
+  if (!made.ok || !made.route) {
+    return { ok: false, engine: 'rwb', ...(made.duplicate ? { exists: true } : {}), error: `createRoute: ${made.error || 'NuVizz did not create the route'} — nothing was created`, steps };
+  }
+  const { id: loadId, loadNbr } = made.route;
+  const gotName = String(made.route.name ?? '').trim() || routeName;
+  const stopIdsByNbr: Record<string, string> = {};
+  for (const n of nbrs) { const sid = reads.get(n)?.stop?.stopId; if (sid) stopIdsByNbr[n] = String(sid); }
+  const commit = await runCommitBoardRwb(requester, { loads: [{
+    __key: 'new-route', loadNbr, loadId, routeName: gotName, orderedStopNbrs: nbrs, stopIdsByNbr,
+    ...(hasDriverId(payload?.driverId) ? { driverId: payload.driverId, driverName: payload?.driverName ?? null } : {}),
+    ...(payload?.dispatch ? { dispatch: true } : {}),
+  }], date: day, useRwb: true }, creds);
+  const L = (Array.isArray(commit?.loads) ? commit.loads : [])[0] || null;
+  steps.push({ op: 'rwb:attachOrders', ok: !!L?.ok, result: L ? { steps: L.steps, boardSync: L.boardSync ?? null } : null, error: L?.ok ? null : (L?.error || commit?.error || 'no result') });
+  if (!L?.ok) {
+    return { ok: false, engine: 'rwb', created: true, loadNbr, loadId, routeName: gotName,
+      error: `createRoute: route ${gotName} WAS created in NuVizz (${loadNbr}), but its ${nbrs.length} order(s) did not attach — ${L?.error || commit?.error || 'no result'}. Close this card and open ${gotName} from the Routes panel to add them; do NOT create it again.`, steps };
+  }
+  const driverApplied = (L.steps || []).some((s: any) => s.op === 'assignDriver' && s.ok);
+  const dispatched = (L.steps || []).some((s: any) => s.op === 'dispatchLoad' && s.ok);
+  return {
+    ok: true, engine: 'rwb', loadNbr, loadId,
+    routeName: gotName, requestedRouteName: routeName, nameMatched: gotName.toUpperCase() === routeName.toUpperCase(),
+    stopsRequested: nbrs.length, stopsAttached: nbrs.length, allAttached: true,
+    driverApplied, dispatched,
+    ...(L.boardSync ? { boardSync: L.boardSync } : {}),
+    steps,
+  };
+}
+
 export async function runNewRoute(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
   if (routeCreateBlocked()) return { ok: false, blocked: true, error: 'route creation is disabled on this server (NUVIZZ_ROUTE_CREATE=off)' };
   const steps: any[] = [];
@@ -3126,25 +3189,35 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
   const dupes = nbrs.filter((n, i) => nbrs.indexOf(n) !== i);
   if (dupes.length) return { ok: false, error: `createRoute: order ${dupes[0]} appears twice on the card — remove the duplicate and re-Save`, steps };
 
-  // ── 1. COLLISION GUARD — the number must be genuinely free ──────────────────
-  const pre = await fetchLoad(requester, loadNbr, creds);
-  steps.push({ op: 'getLoad', ok: true, result: { found: !!pre.load, httpStatus: pre.httpStatus }, error: null });
-  if (pre.load) {
-    return { ok: false, exists: true, loadNbr, loadId: pre.load.loadId ?? null,
-      error: `createRoute: load ${loadNbr} already exists in NuVizz (${loadDisplayLabel(pre.load)}) — pick a different route name/date, or open that route from the board instead`, steps };
+  // The portal's create (routeCreateViaRwb) — refused up front when its sign-in is not configured,
+  // rather than quietly falling back to the v7 path that has never once worked.
+  const viaRwb = routeCreateViaRwb();
+  if (viaRwb && !rwbConfigReady(creds.rwb)) {
+    return { ok: false, engine: 'rwb', error: 'createRoute: route creation through the Route Workbench is switched on (NUVIZZ_ROUTE_CREATE_RWB) but its portal sign-in is not ready (NUVIZZ_RWB_ENABLED / the NuVizz login) — nothing was created', steps };
   }
-  // WHICH ANSWERS MEAN "FREE". load/info returns 400 — not 404 — for a load number the tenant
-  // does not have. Observed on the first real create (Jul 31): TRAILER-0731 refused itself with
-  // "NuVizz answered 400 to the check" on a number that plainly did not exist. (The STOP
-  // existence gate above sees a true 404, so the two endpoints genuinely differ.) Either way
-  // the read came back with NO LOAD, so there is nothing at that number to overwrite.
-  //
-  // Everything else still refuses: 401/403 (auth), 429 (throttled) and 5xx/network are
-  // "I could not check", and creating on one risks silently editing a live route's header.
-  // A malformed number is safe here too — it simply fails the CREATE below, loudly, having
-  // written nothing.
-  if (pre.httpStatus != null && !LOAD_ABSENT_STATUSES.has(pre.httpStatus)) {
-    return { ok: false, error: `createRoute: could not confirm load ${loadNbr} is free (NuVizz answered ${pre.httpStatus} to the check) — nothing was created; try again`, steps };
+
+  // ── 1. COLLISION GUARD — the number must be genuinely free ──────────────────
+  // (v7 only: the portal numbers the load itself and refuses a name already in use.)
+  const pre = viaRwb ? { load: null, httpStatus: null } : await fetchLoad(requester, loadNbr, creds);
+  if (!viaRwb) {
+    steps.push({ op: 'getLoad', ok: true, result: { found: !!pre.load, httpStatus: pre.httpStatus }, error: null });
+    if (pre.load) {
+      return { ok: false, exists: true, loadNbr, loadId: pre.load.loadId ?? null,
+        error: `createRoute: load ${loadNbr} already exists in NuVizz (${loadDisplayLabel(pre.load)}) — pick a different route name/date, or open that route from the board instead`, steps };
+    }
+    // WHICH ANSWERS MEAN "FREE". load/info returns 400 — not 404 — for a load number the tenant
+    // does not have. Observed on the first real create (Jul 31): TRAILER-0731 refused itself with
+    // "NuVizz answered 400 to the check" on a number that plainly did not exist. (The STOP
+    // existence gate above sees a true 404, so the two endpoints genuinely differ.) Either way
+    // the read came back with NO LOAD, so there is nothing at that number to overwrite.
+    //
+    // Everything else still refuses: 401/403 (auth), 429 (throttled) and 5xx/network are
+    // "I could not check", and creating on one risks silently editing a live route's header.
+    // A malformed number is safe here too — it simply fails the CREATE below, loudly, having
+    // written nothing.
+    if (pre.httpStatus != null && !LOAD_ABSENT_STATUSES.has(pre.httpStatus)) {
+      return { ok: false, error: `createRoute: could not confirm load ${loadNbr} is free (NuVizz answered ${pre.httpStatus} to the check) — nothing was created; try again`, steps };
+    }
   }
 
   // ── 2. ORDER GUARD — every order must be readable, unplanned and unexecuted ──
@@ -3174,6 +3247,8 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
       return { ok: false, error: `createRoute: order ${n} is already ${st} — finished work cannot ride a new route. Remove it and re-Save. Nothing was created`, steps };
     }
   }
+
+  if (viaRwb) return createRouteViaRwb(requester, payload, creds, { nbrs, reads, routeName, steps });
 
   // ── 3. WRITE the header + the references, in card order ─────────────────────
   const r = await fireSingle(requester, 'createRoute', {

@@ -732,6 +732,206 @@ export async function rwbCheckLogin(requester: RwbRequesterLike, auth: RwbAuth):
   return { verdict: c.verdict, detail: c.detail, steps: r.steps };
 }
 
+// ── ROUTE CREATE — THE PORTAL'S OWN "ORDER LOAD WITH FULL MANUAL SEQUENCE" (v1.98.5) ──────────
+//
+// Chad, 2026-09-30, after "Cannot invoke …DeliverItLoad.getCompanyCode() because deliverItLoad is
+// null" on every ＋ New route since Sep 15 — the v7 routePlan/update the app used refuses an empty
+// route (903) and crashes on one with stops — captured the portal creating a route and sent the HAR:
+// "HERE IS A HAR FOR CREATING A ROUTE." What the portal does, read off that capture:
+//   GET  dirouteworkbench/routePlan/buildEmptyRouteJson   the tenant's route profile, depot, window
+//   POST dirouteworkbench/routePlan/addNewRoutePlan        multipart manualBuildJsonData=[{…}],
+//                                                          isPlanningMode=true (+ the browser's _csrf)
+// It creates the route EMPTY and answers with the new load: routes[0].id (the route plan id every
+// other call here takes) and routes[0].rteNbr (the load NUMBER). A name already in use answers HTTP
+// 200 with {"message":"{\"DuplicateRouteName\":[\"SHEATS\"]}"} (the capture's first two tries).
+//
+// WHAT IS MIRRORED, AND WHAT IS NOT:
+//   • every field of the capture's entry, same shape, with the route name, the day and the window
+//     filled in — profile, depot and window read from buildEmptyRouteJson (echo, never invent), the
+//     capture's own values the fallback when that read fails;
+//   • NO driver. The DAVISROUTE profile marks driver isReq:false; the staged driver is assigned
+//     afterwards by the existing, verified assignDriver step. A driver object assembled here from our
+//     roster would be a guess at a shape seen once;
+//   • vehicle type 475 "Straight Truck" — the profile REQUIRES one, and 475 is the only one the
+//     capture shows (all three creates in it used it). The list of vehicle types was not in the
+//     capture, so a tractor type cannot be chosen from here; NUVIZZ_ROUTE_CREATE_VEHICLE_TYPE_ID
+//     overrides the id (with its name in _NAME) the day that id is known;
+//   • no _csrf. This module signs in with the portal's JWT/authToken scheme, not the browser session,
+//     and none of its other dirouteworkbench POSTs send one. Whether addNewRoutePlan agrees is the
+//     one thing the capture cannot show — which is why the engine ships switched OFF
+//     (NUVIZZ_ROUTE_CREATE_RWB, nuvizz-write.mts) until one test create has landed.
+const CREATE_HAR = {
+  profileId: '625bb549938c3b055c6b66ab',
+  company: { fullAddress: 'Davis Delivery, 943 Gainesville Highway, Buford, Georgia, United States, 30518', line1: '943 GAINESVILLE HIGHWAY', line2: '', city: 'BUFORD', state: 'GEORGIA', zipCode: '30518', country: 'UNITED STATES', name: 'DAVIS DELIVERY' },
+  lat: 34.14838,
+  lng: -83.95948,
+  start: '08:00:00',
+  end: '23:59:00',
+  proReturnToDepot: { name: 'returnToDepot', selVal: 'NEVER', isReq: false, isLoc: false, isVis: true },
+  proSeqMode: { name: 'seqMode', selVal: 'None', isReq: false, isLoc: false, isVis: true },
+  vehicle475: {
+    costPerMile: 0, fixedCost: 0, description: 'Straight Truck', isActive: true, costPerHour: 0,
+    los: [{ capacityType: 'Weight', capacity: 15000 }, { capacityType: 'Volume', capacity: 100 }, { capacityType: 'Carton', capacity: 25 }, { capacityType: 'Pallet', capacity: 125 }],
+    isDefault: false, vehicleIconName: 'STRAIGHT_TRUCK', text: 'Straight Truck', value: '475', maxRouteDistMiles: 0, mileage: 0,
+  },
+};
+/** NuVizz caps a route name at 20 characters on the v7 side (ROUTE_FIELD_MAX); refuse up front. */
+export const RWB_ROUTE_NAME_MAX = 20;
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** The portal's moment-style time object for "HH:MM[:SS]" — exactly the capture's shape. */
+export function rwbTimeObj(hms: string): Record<string, string> {
+  const [H, M] = String(hms).split(':').map((x) => Number(x));
+  const h12 = H % 12 || 12;
+  const k = H === 0 ? 24 : H;
+  return { HH: pad2(H), H: String(H), hh: pad2(h12), h: String(h12), a: H < 12 ? 'am' : 'pm', A: H < 12 ? 'AM' : 'PM', kk: pad2(k), k: String(k), m: String(M), mm: pad2(M), s: '', ss: '' };
+}
+const clock12 = (hms: string) => { const t = rwbTimeObj(hms); return `${t.hh}:${t.mm}:00 ${t.a}`; };
+
+/** The route-profile facts the create echoes, read off buildEmptyRouteJson (null → the capture's). */
+function templateFacts(template: any) {
+  const profiles = Array.isArray(template?.profilesData) ? template.profilesData : [];
+  const profileId = String(template?.defaultProfileRef || '').trim() || CREATE_HAR.profileId;
+  const prof = profiles.find((p: any) => String(p?.id) === profileId) || profiles.find((p: any) => p?.isDefault) || null;
+  const info = Array.isArray(prof?.routeInfo) ? prof.routeInfo : [];
+  const slot = info.find((f: any) => f?.name === 'startEndTime')?.timeSlots?.[0] || null;
+  const rtd = info.find((f: any) => f?.name === 'returnToDepot') || null;
+  const seq = (Array.isArray(prof?.addnlDtl) ? prof.addnlDtl : []).find((f: any) => f?.name === 'seqMode') || null;
+  const ca = template?.companyAddress && typeof template.companyAddress === 'object' ? template.companyAddress : null;
+  const hms = /^\d{2}:\d{2}(:\d{2})?$/;
+  const lat = Number(template?.lattitude ?? template?.latitude);
+  const lng = Number(template?.longitude);
+  return {
+    profileId,
+    company: ca && ca.line1 ? { ...CREATE_HAR.company, ...ca, line2: String(ca.line2 ?? '') } : CREATE_HAR.company,
+    lat: Number.isFinite(lat) && lat !== 0 ? lat : CREATE_HAR.lat,
+    lng: Number.isFinite(lng) && lng !== 0 ? lng : CREATE_HAR.lng,
+    start: hms.test(String(slot?.startTime || '')) ? String(slot.startTime) : CREATE_HAR.start,
+    end: hms.test(String(slot?.endTime || '')) ? String(slot.endTime) : CREATE_HAR.end,
+    proReturnToDepot: rtd ? { name: 'returnToDepot', selVal: String(rtd.selVal ?? 'NEVER'), isReq: !!rtd.isReq, isLoc: !!rtd.isLoc, isVis: rtd.isVis !== false } : CREATE_HAR.proReturnToDepot,
+    proSeqMode: seq ? { name: 'seqMode', selVal: String(seq.selVal ?? 'None'), isReq: !!seq.isReq, isLoc: !!seq.isLoc, isVis: seq.isVis !== false } : CREATE_HAR.proSeqMode,
+  };
+}
+
+/** The vehicle type the create names: the capture's 475, or the env override (id + name only). */
+function createVehicle(): any {
+  const id = String(process.env.NUVIZZ_ROUTE_CREATE_VEHICLE_TYPE_ID ?? '').trim();
+  if (!id || id === '475') return CREATE_HAR.vehicle475;
+  const name = String(process.env.NUVIZZ_ROUTE_CREATE_VEHICLE_TYPE_NAME ?? '').trim() || id;
+  return { ...CREATE_HAR.vehicle475, description: name, text: name, value: id, vehicleIconName: '', los: [] };
+}
+
+/**
+ * PURE (given the env override). One manualBuildJsonData entry — the capture's shape, field for
+ * field, with no driver. Throws on a missing/over-long name or a malformed day, so nothing
+ * malformed is ever sent.
+ */
+export function buildManualRouteJson(spec: { routeName: string; date: string }, template: any = null): any {
+  const name = String(spec?.routeName ?? '').trim();
+  if (!name) throw new Error('createRoute: the route needs a name — NuVizz names every route');
+  if (name.length > RWB_ROUTE_NAME_MAX) throw new Error(`createRoute: route name "${name}" is ${name.length} chars — NuVizz caps it at ${RWB_ROUTE_NAME_MAX}`);
+  const m = String(spec?.date ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) throw new Error(`createRoute: '${spec?.date}' is not a YYYY-MM-DD service day`);
+  const [, y, mo, d] = m;
+  const us = `${mo}/${d}/${y}`;
+  const f = templateFacts(template);
+  const vehicle = createVehicle();
+  const routeEnd = `${us} ${clock12(f.end)}`;
+  return {
+    profileId: f.profileId,
+    routePlanName: name,
+    plannedETAWindow: '30',
+    routeStart: `${us} ${clock12(f.start)}`,
+    routeEnd,
+    days: '0',
+    originOption: '02',
+    origin: f.company.fullAddress,
+    lat: f.lat,
+    lng: f.lng,
+    routeStartTime: rwbTimeObj(f.start),
+    routeEndTime: rwbTimeObj(f.end),
+    vehicleType: vehicle,
+    tz: 'America/New_York',
+    returnToDepot: 'ALWAYS',
+    seqMode: 'None',
+    stagingLocation: '',
+    stagingLocationText: '',
+    recurrenceDay: '0111110',
+    selectedProfile: {},
+    isStartEndTimeLocked: false,
+    isVehicleLocked: false,
+    isRteOriginLocked: false,
+    isOriginAddrLocked: false,
+    proReturnToDepot: f.proReturnToDepot,
+    proSeqMode: f.proSeqMode,
+    cutOffTime: routeEnd,
+    line1: f.company.line1,
+    city: f.company.city,
+    state: f.company.state,
+    line2: f.company.line2 ?? '',
+    zipCode: f.company.zipCode,
+    country: f.company.country,
+    orgAddrName: f.company.name,
+    globalDate: `${MON[Number(mo) - 1]} ${Number(d)}, ${y}`,
+    routeDate: us,
+    vehicleTypeId: String(vehicle.value),
+  };
+}
+
+export type RwbCreatedRoute = { id: string; loadNbr: string; name: string | null; status: string | null };
+
+/**
+ * PURE. Read addNewRoutePlan's answer. Success names the route (id + rteNbr); a duplicate name is a
+ * refusal carried in a 200 (inside a JSON STRING); anything else — including a 200 with no route in
+ * it — is a failure, never a guess that it landed.
+ */
+export function parseAddNewRoutePlan(status: number, body: any):
+  { ok: true; route: RwbCreatedRoute } | { ok: false; duplicate?: string[]; error: string } {
+  const text = (v: any) => String(typeof v === 'string' ? v : JSON.stringify(v ?? '')).slice(0, 200);
+  if (!(status >= 200 && status < 300)) return { ok: false, error: `NuVizz answered HTTP ${status} to the route create${body ? `: ${text(body)}` : ''}` };
+  if (!body || typeof body !== 'object') return { ok: false, error: `NuVizz answered the route create with something that is not JSON: ${text(body)}` };
+  if (body.responseCode != null && Number(body.responseCode) !== 200) return { ok: false, error: `NuVizz refused the route create (responseCode ${body.responseCode}): ${text(body.message)}` };
+  let msg: any = body.message;
+  if (typeof msg === 'string') { try { const j = JSON.parse(msg); if (j && typeof j === 'object') msg = j; } catch { /* a plain sentence */ } }
+  if (msg && typeof msg === 'object' && Array.isArray(msg.DuplicateRouteName) && msg.DuplicateRouteName.length) {
+    const names = msg.DuplicateRouteName.map(String);
+    return { ok: false, duplicate: names, error: `NuVizz already has a route named ${names.join(', ')} — open it from the Routes panel instead of creating it again, or pick another name` };
+  }
+  const r = Array.isArray(body.routes) ? body.routes[0] : null;
+  const id = r?.id != null ? String(r.id).trim() : '';
+  const nbr = r?.rteNbr != null ? String(r.rteNbr).trim() : '';
+  if (!id || !nbr) return { ok: false, error: `NuVizz answered the route create without naming a route (${text(body.message) || 'no message'}) — check the portal before trying again` };
+  return { ok: true, route: { id, loadNbr: nbr, name: r?.name != null ? String(r.name) : null, status: r?.status != null ? String(r.status) : null } };
+}
+
+/**
+ * rwbCreateRoute — make an EMPTY route the way the portal does: read the profile template, then
+ * addNewRoutePlan. 2 calls after sign-in. The create is never transport-retried (go() sends
+ * maxRetries:0); a 401 re-signs in and re-sends once, which is safe because an unauthenticated
+ * request was never processed.
+ */
+export async function rwbCreateRoute(requester: RwbRequesterLike, spec: { routeName: string; date: string }, auth?: RwbAuth | null):
+  Promise<{ ok: boolean; route?: RwbCreatedRoute; duplicate?: string[]; error?: string; calls: number; steps: any[]; sent?: any }> {
+  const cfg = rwbConfig(auth);
+  if (rwbEngineBlocked()) return { ok: false, error: 'the Route Workbench engine is switched off on this site (NUVIZZ_RWB_ENABLED)', calls: 0, steps: [] };
+  if (!cfg.username || !cfg.password) return { ok: false, error: credsMissingMessage(cfg), calls: 0, steps: [] };
+  let entry: any;
+  try { entry = buildManualRouteJson(spec, null); }   // validate BEFORE any call
+  catch (e: any) { return { ok: false, error: String(e?.message || e), calls: 0, steps: [] }; }
+  const steps: any[] = [];
+  const t = await rwbAuthedCall(requester, cfg, 'GET', 'dirouteworkbench/routePlan/buildEmptyRouteJson', null);
+  const template = t.ok && t.body && typeof t.body === 'object' ? t.body : null;
+  steps.push({ op: 'buildEmptyRouteJson', ok: !!template, status: t.status, ...(t.error ? { error: t.error } : {}) });
+  if (t.error && /login failed/i.test(t.error)) return { ok: false, error: t.error, calls: 1, steps };
+  entry = buildManualRouteJson(spec, template);
+  const c = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/addNewRoutePlan', { manualBuildJsonData: JSON.stringify([entry]), isPlanningMode: 'true' });
+  const parsed = c.error ? { ok: false as const, error: c.error } : parseAddNewRoutePlan(c.status, c.body);
+  steps.push({ op: 'addNewRoutePlan', ok: parsed.ok, status: c.status, ...(parsed.ok ? { routeId: parsed.route.id, loadNbr: parsed.route.loadNbr } : { error: parsed.error }) });
+  if (!parsed.ok) return { ok: false, error: parsed.error, ...('duplicate' in parsed && parsed.duplicate ? { duplicate: parsed.duplicate } : {}), calls: 2, steps, sent: entry };
+  return { ok: true, route: parsed.route, calls: 2, steps, sent: entry };
+}
+
 // ── PRODUCTION SWITCH CHECKLIST (mirrors the v7 DAVIS switch elsewhere in this repo) ──
 // This deploy's RWB target defaults to UAT (DAVISV5) regardless of which NuVizz tenant
 // the rest of this file's v7 writes point at. To point RWB at PRODUCTION on a specific
