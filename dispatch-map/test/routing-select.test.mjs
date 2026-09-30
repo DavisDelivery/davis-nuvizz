@@ -709,3 +709,197 @@ test('loop on a matrix is scored as a round trip, min as a one-way path', () => 
   const loop = resequenceOnMatrix(JEFF, (() => { const p = [BUFORD, ...JEFF]; return p.map((a) => p.map((b) => haversineMeters(a, b))); })(), 'loop');
   assert.deepEqual([...ids(loop)].sort(), [...ids(JEFF)].sort());
 });
+
+
+// ── Shortest distance means the shortest DAY (Chad, 2026-09-30) ─────────────────────────────
+// "this is not a good optimization" — an 18-stop BRENT card re-sequenced Shortest distance. It
+// went Conley -> Ellenwood -> five miles south to Morrow -> back north to Forest Park -> a spur
+// up to Faith -> the airport -> and FINISHED at Life Science Logistics, seven miles further west
+// than anything else. The search was not weak (the exact best one-way order was within 0.8 road
+// miles of it); the objective was wrong. It minimised the drive OUT and never counted the drive
+// HOME, so it had every reason to end the day at the far end of the load.
+import { roundTripNodes, SHORTEST_OBJECTIVE, dayMiles, twoOptLoop, haversineMeters as hav } from '../src/lib/routing-select.js';
+
+// BRENT, 2026-09-30, the real coordinates off that day's board, in the order it was sent.
+const BRENT = [
+  { id: 'UNIVERSAL TRUCKLOAD (Conley)', lat: 33.66491, lng: -84.34166 },
+  { id: 'CONLEY ARCH WOOD (Conley)', lat: 33.64225, lng: -84.34099 },
+  { id: 'ANASTEEL (Ellenwood)', lat: 33.63912, lng: -84.31549 },
+  { id: 'EXPEDITORS ANVIL (Ellenwood)', lat: 33.63495, lng: -84.29855 },
+  { id: 'EXPRESS CONTAINER (Morrow)', lat: 33.56606, lng: -84.33527 },
+  { id: 'TOTO USA (Morrow)', lat: 33.56346, lng: -84.35276 },
+  { id: 'HIGHWAY MATERIALS (Forest Park)', lat: 33.6148, lng: -84.38254 },
+  { id: 'VIATECH (Forest Park)', lat: 33.61742, lng: -84.38428 },
+  { id: 'STANDARD FIBER (Forest Park)', lat: 33.63187, lng: -84.38032 },
+  { id: 'PEDAL POINT (Forest Park)', lat: 33.6334, lng: -84.38328 },
+  { id: 'FAITH TECHNOLOGIES (Atlanta)', lat: 33.64792, lng: -84.39376 },
+  { id: 'NICKEY GREGORY (Forest Park)', lat: 33.62218, lng: -84.39386 },
+  { id: 'FN USA (Forest Park)', lat: 33.61664, lng: -84.38636 },
+  { id: 'WORLD COURIER (Forest Park)', lat: 33.60953, lng: -84.40093 },
+  { id: 'DGM SERVICES (Atlanta)', lat: 33.61821, lng: -84.40783 },
+  { id: 'SOPHISTIPLATE (Atlanta)', lat: 33.61493, lng: -84.41242 },
+  { id: 'TEAM AIR EXPRESS (Atlanta)', lat: 33.61472, lng: -84.41238 },
+  { id: 'LIFE SCIENCE LOGISTICS (Atlanta)', lat: 33.62307, lng: -84.53706 },
+];
+const dayMeters = (order, depot) => { let t = hav(depot, order[0]); for (let i = 1; i < order.length; i++) t += hav(order[i - 1], order[i]); return t + hav(order[order.length - 1], depot); };
+const outMeters = (order, depot) => dayMeters(order, depot) - hav(order[order.length - 1], depot);
+
+test('BRENT, 2026-09-30: the old Shortest distance is reproduced exactly by the one-way objective, and it ends the day at the far west stop', () => {
+  // The report, reproduced: the one-way objective returns the order that was sent, stop for stop.
+  assert.deepEqual(ids(resequence(BRENT, BUFORD, 'min', 'one-way')), ids(BRENT));
+  assert.equal(BRENT[BRENT.length - 1].id, 'LIFE SCIENCE LOGISTICS (Atlanta)');
+  // ...and 'one-way' is byte-for-byte what shipped before, for both strategies it changes.
+  assert.deepEqual(ids(resequence(BRENT, BUFORD, 'min', 'one-way')), ids(twoOpt(nearestNeighbor(BRENT, BUFORD), BUFORD)));
+  assert.deepEqual(ids(resequence(BRENT, BUFORD, 'loop', 'one-way')), ids(twoOptLoop(nearestNeighbor(BRENT, BUFORD), BUFORD)));
+});
+
+test('BRENT: Shortest distance now optimises the whole day — shorter out-and-back, and it no longer finishes at the far end', () => {
+  assert.equal(SHORTEST_OBJECTIVE, 'round-trip');
+  const oneWay = resequence(BRENT, BUFORD, 'min', 'one-way');
+  const day = resequence(BRENT, BUFORD, 'min');
+  assert.deepEqual([...ids(day)].sort(), [...ids(BRENT)].sort());                 // every stop, once
+  // The whole day is shorter — the measure a truck that comes home to Buford actually drives.
+  assert.ok(dayMeters(day, BUFORD) < dayMeters(oneWay, BUFORD) - 1609, 'the day should be more than a mile shorter');
+  // It does that by accepting a LONGER drive out in exchange for a much shorter drive home —
+  // exactly why the card must show both numbers (see the recomputeRoute test below).
+  assert.ok(outMeters(day, BUFORD) > outMeters(oneWay, BUFORD));
+  // The day no longer ends at Life Science, the far west outlier; it ends on the side facing home.
+  const last = day[day.length - 1];
+  assert.notEqual(last.id, 'LIFE SCIENCE LOGISTICS (Atlanta)');
+  assert.ok(hav(last, BUFORD) < hav(oneWay[oneWay.length - 1], BUFORD) - 8000, `ends at ${last.id}`);
+  // Loop is the same objective and now reaches the same order — the shortest day on straight
+  // lines never crosses itself, which is all Loop ever promised.
+  assert.deepEqual(ids(resequence(BRENT, BUFORD, 'loop')), ids(day));
+});
+
+test('the round trip is never a longer day than either strategy it replaces — on every real route in this file', () => {
+  for (const [name, route] of [['BRENT', BRENT], ['JEFF', JEFF], ['VICTOR', VICTOR]]) {
+    const day = dayMeters(resequence(route, BUFORD, 'min'), BUFORD);
+    for (const old of ['min', 'loop']) {
+      const was = dayMeters(resequence(route, BUFORD, old, 'one-way'), BUFORD);
+      assert.ok(day <= was + 1, `${name}: round trip ${day.toFixed(0)} m is longer than the old ${old} ${was.toFixed(0)} m`);
+    }
+  }
+});
+
+test('the round trip: same stops in any order give the same answer, unmapped stops ride last, and 150 stops stay fast', () => {
+  let seed = 930;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  const base = ids(resequence(BRENT, BUFORD, 'min'));
+  for (let k = 0; k < 5; k++) assert.deepEqual(ids(resequence([...BRENT].sort(() => rnd() - 0.5), BUFORD, 'min')), base);
+  const withGhost = [{ id: 'GHOST', lat: null, lng: null }, ...BRENT];
+  const out = resequence(withGhost, BUFORD, 'min');
+  assert.equal(out.length, BRENT.length + 1);
+  assert.equal(out[out.length - 1].id, 'GHOST');
+  const many = Array.from({ length: 150 }, (_, i) => ({ id: `s${i}`, lat: 33.5 + rnd() * 0.3, lng: -84.6 + rnd() * 0.4 }));
+  const t0 = performance.now();
+  const big = resequence(many, BUFORD, 'min');
+  const ms = performance.now() - t0;
+  assert.ok(ms < 3000, `150 stops took ${ms.toFixed(0)} ms`);
+  assert.deepEqual([...ids(big)].sort(), [...ids(many)].sort());
+  assert.ok(dayMeters(big, BUFORD) <= dayMeters(resequence(many, BUFORD, 'min', 'one-way'), BUFORD) + 1);
+});
+
+test('roundTripNodes on a matrix: an exact optimum on a small case, and the road-box path uses it for Shortest distance', () => {
+  // Square of four stops around a depot at one corner: the only non-crossing tour goes round the edge.
+  //        0 depot (0,0)   1 (0,1)   2 (1,1)   3 (1,0)
+  const P = [[0, 0], [0, 1], [1, 1], [1, 0]];
+  const C = P.map((a) => P.map((b) => Math.hypot(a[0] - b[0], a[1] - b[1])));
+  const t = roundTripNodes([1, 2, 3], C);
+  assert.ok(pinnedPathCost(t, 0, 0, C) <= 4 + 1e-9, `tour ${t.join(',')} is not the perimeter`);
+  // On a matrix the road box hands in, 'min' is the round trip too, and 'one-way' restores the old path.
+  const pts = [BUFORD, ...BRENT];
+  const crow = pts.map((a) => pts.map((b) => hav(a, b)));
+  assert.deepEqual(ids(resequenceOnMatrix(BRENT, crow, 'min')), ids(resequence(BRENT, BUFORD, 'min')));
+  const oneWayOnMatrix = resequenceOnMatrix(BRENT, crow, 'min', undefined, 'one-way');
+  assert.ok(openPathCost(oneWayOnMatrix.map((s) => BRENT.indexOf(s) + 1), crow)
+    <= openPathCost(resequenceOnMatrix(BRENT, crow, 'min').map((s) => BRENT.indexOf(s) + 1), crow) + 1);
+});
+
+test('the card shows the drive home beside the drive out — recomputeRoute adds it without changing the old total', () => {
+  const rc = recomputeRoute(BRENT, BUFORD);
+  // The total is still the drive OUT, exactly as the card and NuVizz have always measured it.
+  let out = 0, prev = BUFORD;
+  for (const s of BRENT) { out += hav(prev, s) * 1.3; prev = s; }
+  assert.equal(rc.totalDistanceMeters, Math.round(out));
+  // The drive home is its own field, on the same 1.3 road factor.
+  assert.equal(rc.returnDistanceMeters, Math.round(hav(BRENT[BRENT.length - 1], BUFORD) * 1.3));
+  assert.ok(Math.abs(dayMiles(BRENT, BUFORD) - (rc.totalDistanceMeters + rc.returnDistanceMeters) / 1609.344) < 1e-9);
+  assert.equal(dayMiles([], BUFORD), 0);
+  assert.equal(recomputeRoute([], BUFORD).returnDistanceMeters, 0);
+});
+
+
+// ── Which way round (Chad, 2026-09-30) ──────────────────────────────────────────────────────
+// A round trip can be driven either way for the same straight-line miles, but not the same day.
+// BRENT's loop as first found reached Express Container (receiving closes 2:00p) at stop 16,
+// 1:44p by the card's own preflight — and 2:44p if the truck rolled an hour late. The other way
+// round it was stop 3 at 9:37a. The direction is judged by the card's preflight, not assumed.
+import { pickRoundTripDirection, ROUND_TRIP_STRESS_DELAY_MIN } from '../src/lib/routing-select.js';
+import { orientRoundTrip, routePreflight } from '../src/lib/route-preflight.js';
+
+test('pickRoundTripDirection: the judge decides, left to right, and a tie keeps the order as found', () => {
+  const order = ['A', 'B', 'C'];
+  // fewer late stops wins outright, whatever the miles say
+  assert.deepEqual(pickRoundTripDirection(order, (o) => (o[0] === 'A' ? [1, 0, 1, 10] : [0, 0, 0, 99])), ['C', 'B', 'A']);
+  assert.deepEqual(pickRoundTripDirection(order, (o) => (o[0] === 'A' ? [0, 0, 0, 99] : [1, 0, 1, 10])), ['A', 'B', 'C']);
+  // equal now, but one direction survives a slow morning and the other does not
+  assert.deepEqual(pickRoundTripDirection(order, (o) => (o[0] === 'A' ? [0, 0, 1, 10] : [0, 0, 0, 10])), ['C', 'B', 'A']);
+  // equal on every window, so the shorter day decides
+  assert.deepEqual(pickRoundTripDirection(order, (o) => (o[0] === 'A' ? [0, 0, 0, 12] : [0, 0, 0, 11])), ['C', 'B', 'A']);
+  // a perfect tie keeps the direction the search found
+  assert.deepEqual(pickRoundTripDirection(order, () => [0, 0, 0, 10]), ['A', 'B', 'C']);
+  // degenerate input never throws
+  assert.deepEqual(pickRoundTripDirection([], () => [0]), []);
+  assert.deepEqual(pickRoundTripDirection(['A'], () => [0]), ['A']);
+  assert.deepEqual(pickRoundTripDirection(order, null), ['A', 'B', 'C']);
+  assert.deepEqual(pickRoundTripDirection(order, () => null), ['A', 'B', 'C']);
+  assert.equal(ROUND_TRIP_STRESS_DELAY_MIN, 60);
+});
+
+// BRENT's stops as the board carries them, with the three receiving windows printed on Chad's
+// card attached exactly the way the preflight reads them: notes.get(matchKey).receiving_hours.
+const BRENT_WINDOWS = {
+  'EXPRESS CONTAINER (Morrow)': ['07:00', '14:00'],
+  'FAITH TECHNOLOGIES (Atlanta)': ['07:00', '15:30'],
+  'FN USA (Forest Park)': ['08:00', '17:00'],
+};
+function brentBoard() {
+  const stopById = new Map();
+  const notes = new Map();
+  for (const s of BRENT) {
+    stopById.set(s.id, { stopNbr: s.id, businessName: s.id, lat: s.lat, lng: s.lng, matchKey: `mk:${s.id}`, normalizedStatus: 'SCHEDULED' });
+    const w = BRENT_WINDOWS[s.id];
+    if (w) notes.set(`mk:${s.id}`, { receiving_hours: { wed: { open: w[0], close: w[1] } } });
+  }
+  return { stopById, notes, routeKey: 'BRENT', servedDate: '2026-09-30', dayKey: 'wed', depot: BUFORD, travel: null };
+}
+
+test('BRENT: the round trip is driven the way round that serves the 2:00p Morrow close early — and still makes it on a late start', () => {
+  const board = brentBoard();
+  const found = ids(resequence(BRENT, BUFORD, 'min'));
+  const seqOf = (order, id) => order.indexOf(id) + 1;
+  const late = (order, departMin) => routePreflight({ ...board, order, departMin }).lateCount;
+  // The problem, reproduced with the card's own preflight: as found, Morrow is near the end, and
+  // an hour-late start puts it past its close.
+  assert.ok(seqOf(found, 'EXPRESS CONTAINER (Morrow)') > 12, `as found, Morrow is stop ${seqOf(found, 'EXPRESS CONTAINER (Morrow)')}`);
+  assert.equal(late(found, 480 + 60), 1, 'as found, a 9:00a start should miss the Morrow close');
+  // The choice: the other way round, Morrow early, nothing late at 8:00a OR 9:00a.
+  const chosen = orientRoundTrip(found, { ...board, dayOf: (o) => dayMeters(o.map((id) => BRENT.find((s) => s.id === id)), BUFORD) });
+  assert.deepEqual(chosen, [...found].reverse());
+  assert.ok(seqOf(chosen, 'EXPRESS CONTAINER (Morrow)') <= 5, `chosen, Morrow is stop ${seqOf(chosen, 'EXPRESS CONTAINER (Morrow)')}`);
+  assert.equal(late(chosen, 480), 0);
+  assert.equal(late(chosen, 480 + 60), 0);
+  // Same straight-line day either way — the direction cost nothing.
+  const asStops = (o) => o.map((id) => BRENT.find((s) => s.id === id));
+  assert.ok(Math.abs(dayMeters(asStops(chosen), BUFORD) - dayMeters(asStops(found), BUFORD)) < 1);
+  // And the shortest day now finishes in Conley, the load's nearest stop to Buford.
+  assert.equal(chosen[chosen.length - 1], 'UNIVERSAL TRUCKLOAD (Conley)');
+});
+
+test('orientRoundTrip with no receiving hours anywhere keeps the order the search found (nothing to judge but miles)', () => {
+  const board = { ...brentBoard(), notes: new Map() };
+  const found = ids(resequence(BRENT, BUFORD, 'min'));
+  assert.deepEqual(orientRoundTrip(found, board), found);
+  assert.deepEqual(orientRoundTrip([], board), []);
+});

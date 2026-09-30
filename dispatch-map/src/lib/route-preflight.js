@@ -46,7 +46,7 @@
 // browser. Measured at 2.9 ms for 60 stops across 6 routes, so it can run on every drag.
 import { computeBoardFlags, fmtMin } from './board-flags.js';
 import { resolveLegMinutes } from './travel-model.js';
-import { haversineMeters } from './routing-select.js';
+import { haversineMeters, pickRoundTripDirection, ROUND_TRIP_STRESS_DELAY_MIN } from './routing-select.js';
 
 /** The house departure, and the same one board-flags falls back to. */
 export const DEFAULT_DEPART_MIN = 8 * 60;
@@ -235,6 +235,34 @@ export function routePreflight({
     judged: judgeable.length,
     routeKey: key,
   };
+}
+
+/**
+ * PURE. Which way round to drive a round trip, judged by THIS card's own preflight — the same
+ * notes, departure, travel calibration, route key and day the badges read, so the direction it
+ * picks and the badges the card then shows cannot disagree.
+ *
+ * Judged, in order: stops past their close at the real departure; of those, stops that cannot
+ * be made in any order; stops past their close if the truck rolls `stressDelayMin` late (a slow
+ * morning, a long first stop — the day this has to survive); then the day's miles via `dayOf`.
+ * Measured on BRENT (2026-09-30): the loop as first found reached a 2:00p close at 1:44p, and at
+ * 2:44p with a 9:00a start; the other way round reached it at 9:37a. Same straight-line miles.
+ *
+ * @param order  stop ids in round-trip order (the depot is implied at both ends)
+ * @param opts.tail   ids the card carries that the sequence could not place; they stay last
+ * @param opts.dayOf  (ids) => the day's miles in that direction, for the final tie-break
+ * @param opts.*      everything routePreflight takes (stopById, notes, routeKey, servedDate,
+ *                    dayKey, depot, travel, departMin, departureSource, rosterRows)
+ */
+export function orientRoundTrip(order, { tail = [], dayOf = null, stressDelayMin = ROUND_TRIP_STRESS_DELAY_MIN, ...preflight } = {}) {
+  const depart = num(preflight.departMin) ?? DEFAULT_DEPART_MIN;
+  const extra = Array.isArray(tail) ? tail.map(String) : [];
+  const judge = (ids) => {
+    const now = routePreflight({ ...preflight, order: [...ids, ...extra], departMin: depart });
+    const slow = routePreflight({ ...preflight, order: [...ids, ...extra], departMin: depart + stressDelayMin });
+    return [now.lateCount, now.hopelessCount, slow.lateCount, typeof dayOf === 'function' ? Number(dayOf(ids)) || 0 : 0];
+  };
+  return pickRoundTripDirection(order, judge);
 }
 
 // ── THE WORDS ON A STOP'S BADGE ──────────────────────────────────────────────
