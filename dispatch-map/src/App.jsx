@@ -168,7 +168,7 @@ const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 import { computeStopProgress } from './lib/stop-progress.js';
 import { editorClosedDay, toggleClosedPatch, dropClosedPrints, unusedStoredClosedDays, closedDaysFromOrderEnabled } from './lib/closed-days.js';
-import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, travelForServedDate } from './lib/route-preflight.js';
+import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, preflightCountsEveryLateStopEnabled, travelForServedDate } from './lib/route-preflight.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
@@ -210,7 +210,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.99.1';
+const APP_VERSION = '1.99.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,6 +264,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.99.2', 'EVERY LATE STOP ON A COMPARE CARD GETS ITS BADGE, HOWEVER MANY THERE ARE. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 2. The flag panel folds more than 12 red (25 amber, 40 critical) rows of one kind into a single summary line, and the card\u2019s late check read only rows that name a stop, so the whole batch vanished from the card: thirteen stops each 15 minutes past a typed close showed NO late badge, where twelve showed twelve. Time windows scores orders with the same check and used the gap: on a 30-stop card it reported \u201c23 late \u2192 0 late\u201d for an order that really had 26 late, by making three more stops late to push the card past the cap. Now the card reads the stops behind the summary line too, and Time windows reads them the same way, so the badges and the re-sequence cannot disagree. The board\u2019s flag panel and the alerts are untouched. THE WAY BACK: VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP=off (a redeploy) puts the old reading back for both. 4 new tests.'],
   ['1.99.1', 'A LATE ROAD REPLY NO LONGER PUTS A STOP BACK ON A CARD IT LEFT. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 1. With the road box ticked, a re-sequence pick lands the straight-line order at once and the road order after Google replies, and that road order was computed from the stops the card held at the pick. A stop dragged to another card, or removed, while the reply was out came back with it: it sat on two cards and Save sent it on both loads, or it sat in the order and the removals at once and its unplan was never sent. Now the road order lands on the card as it is when the reply arrives: only the stops still on it, in the road order, then anything added meanwhile. Nothing else about the re-sequence changes, and a reply that lands on an unchanged card gives exactly the order it always did. THE WAY BACK: VITE_ROAD_REPLY_DROPS_MOVED_STOPS=off (a redeploy) puts the old reading back. 6 new tests.'],
   ['1.99.0', 'ATTEMPTS NAME THE DRIVER WHO HAD THE ORDER, NOT JUST THE ONE WHO HAD IT AT 8:30. Chad: \u201cWhy are we freezing the snapshot at 8:30 when we have Firestore data all day long of scans that are being ran constantly?\u201d The evening attempts list names a driver by looking each failed stop up in the 8:30 freeze, and the freeze only keeps a stop that had a driver AT 8:30 \u2014 so a route built overnight and dispatched later in the day was missing from it whole, and every failure on it was written with no driver. Order 007182021 on 9/25: planned onto CHRIS HEAD at 1:29 AM, dispatched to Chris Head at 12:43 PM, failed, unplanned at 5:58 PM \u2014 written as Unknown, with six more that day. NOW every 15-minute scan keeps, for each of today\u2019s stops, the driver it was on the last time it was seen routed and not yet marked ATT, and locks that the moment the ATT marker appears, so a same-day re-plan onto the next driver cannot overwrite it. The evening list uses it ONLY where the 8:30 freeze has nothing: every attempt the freeze already names keeps exactly that driver. A \u201c-1\u201d copy with no record of its own is named from its original stop. Each row says where its driver came from (plan / holder / holder-original). See it for any day, free: nuvizz-attempts?date=YYYY-MM-DD&holders=1 \u2014 the day\u2019s record beside every attempt, and whether it agrees with the 8:30 freeze where both named someone. WHAT DID NOT CHANGE: the 8:30 freeze, what it records and who reads it; where any order is filed. Starts with today\u2019s scans; days already past are not filled in by this change. NUVIZZ_ATT_HOLDER=off stops the recording and the fallback together (a Netlify environment setting, no code change). Zero NuVizz calls.'],
   ['1.98.6', '＋ NEW ROUTE’S SWITCH CAN BE READ, AND SO CAN WHERE IT WOULD GO — BEFORE ANY CALL IS SPENT. Chad said yes to one test route on the UAT site. Before spending it, the code was checked for where that test would land, and it could not say: the portal create goes wherever NUVIZZ_RWB_PORTAL_BASE points, a setting of its own that nothing ties to the site’s other NuVizz address — and the UAT site was built by copying production’s settings (lib/mirror-guard.mts says so). Nothing could read whether NUVIZZ_ROUTE_CREATE_RWB was on either, and with it on the dry run still described the OLD create. NOW a dry run of ＋ New route (zero NuVizz calls) says which create a Save would make (portal or v7), whether the portal sign-in is set, and which NuVizz hosts it would sign in at and create on — and with the switch on, its plan and preview describe the portal create. Off, the old plan is unchanged. Nothing a Save does changes. 7 new tests. Zero NuVizz calls.'],
@@ -1400,6 +1401,8 @@ const COMPARE_UNREACHABLE_HOURS_ON = compareUnreachableHoursEnabled(import.meta.
 // on the hours line above (lib/route-preflight.js preflightBadgeWords). VITE_COMPARE_UNREACHABLE_LATE=off
 // puts "can't make" back. Build-time.
 const COMPARE_UNREACHABLE_LATE_ON = compareUnreachableLateEnabled(import.meta.env);
+// VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP=off puts back a card past the flag cap showing no late badges.
+const PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON = preflightCountsEveryLateStopEnabled(import.meta.env);
 // A Stop lookup note save writes only the fields the rep changed (lib/customer-note-edit.js).
 // VITE_NOTE_SAVE_CHANGED_ONLY=off puts back the whole-draft write. Build-time, so flipping it is a redeploy.
 const NOTE_SAVE_CHANGED_ONLY_ON = noteSaveChangedOnlyEnabled(import.meta.env);
@@ -25170,6 +25173,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         // The board's vendor-default creation slots, so a system-stamped 9:00–9:30 is not read as
         // a booked appointment (the same suppression the time-restrictions report applies).
         defaultSlots: detectDefaultSlots(stops),
+        countCollapsed: PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON,
         ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
       });
       setWbRoutes((prev) => prev.map((x) => (x.key !== key ? x : { ...x, order: res.order, strategy, roadSequenced: false })));
@@ -26021,6 +26025,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         order: r.order, stopById, notes, routeKey,
         servedDate: selectedDate, dayKey: weekdayKeyFromDate(selectedDate),
         depot: ROUTING_DEPOT, travel,
+        countCollapsed: PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON,
         ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
       }));
     }
