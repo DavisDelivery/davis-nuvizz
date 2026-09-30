@@ -254,6 +254,18 @@ jobs:
         env:
           MOBILE: '1'
           SMOKE_PORT: '8808'
+      # A COMPARE CARD PRINTS WHAT IT SHOWS, BEFORE ANY SAVE. Chad: "I want my manifest to always
+      # match what is in dispatch map." The builder's rule is unit-tested (card-manifest.test.mjs);
+      # the defect was a right-looking call whose pages nobody read back. This opens a real load,
+      # reverses it on the card without saving, presses Print manifest and reads the tickets out
+      # of the print bridge — the markup window.print() puts on paper. Both layouts.
+      - run: npm run verify:card-manifest
+        env:
+          SMOKE_PORT: '8817'
+      - run: npm run verify:card-manifest
+        env:
+          MOBILE: '1'
+          SMOKE_PORT: '8818'
       # WHAT THE LOADS TAB SHOWS. Chad found the rail listing his built routes twice and the
       # empty trailers nowhere; splitDayLoads is unit-tested, but the defect was WIRING — the
       # panel was handed the wrong list — and no unit test can see that. This drives the real
