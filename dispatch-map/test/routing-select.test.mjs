@@ -724,7 +724,7 @@ const at = (rows) => rows.map(([id, city, lat, lng]) => ({ id, city, lat, lng })
 const geometry = (list) => list.map((s) => `${s.lat},${s.lng}`).join(';');
 const crowOf = (stops, depot = HOME_DEPOT) => { const p = [depot, ...stops]; return p.map((a) => p.map((b) => haversineMeters(a, b))); };
 const roundTrip = (list, depot = HOME_DEPOT) => { let t = haversineMeters(depot, list[0]); for (let i = 1; i < list.length; i++) t += haversineMeters(list[i - 1], list[i]); return t + haversineMeters(list.at(-1), depot); };
-const clean = (f) => !f.crossesItself && !f.drivesPast && !f.comesBack && !f.driveInPast && !f.closesOnStart && f.redriveMeters < Math.max(1.5 * 1609.344, 0.15 * f.pathMeters);
+const clean = (f) => !f.crossesItself && !f.drivesPast && !f.comesBack && !f.driveInPast && !f.closesOnStart && !f.doublesBackOnCorridor && f.redriveMeters < Math.max(1.5 * 1609.344, 0.15 * f.pathMeters);
 
 // TRAILER 3, 2026-09-30, in the order his card showed with real road distances ticked — the one he
 // called "more awful": in at Lithonia, east to the end of Conyers, back west past the start to Decatur.
@@ -751,6 +751,8 @@ const GEORGE_L = at([
 
 test('return to warehouse — TRAILER 3: the order Chad called awful is caught, and the option walks the I-20 corridor once', () => {
   const rejected = routeShapeFaults(TRAILER3_CARD);
+  assert.equal(rejected.doublesBackOnCorridor, true, 'his card doubles back along the I-20 corridor');
+  assert.equal(routeShapeFaults(resequence(TRAILER3_CARD, HOME_DEPOT, 'min')).doublesBackOnCorridor, false, 'the corridor walked once does not');
   assert.equal(rejected.crossesItself, true, 'his card crosses itself');
   assert.equal(rejected.drivesPast, true, 'his card drives past a stop and comes back for it');
   const pick = returnToWarehouse(TRAILER3_CARD, HOME_DEPOT);
@@ -772,7 +774,7 @@ test('return to warehouse — GEORGE L: a clean Loop that comes home 3.8 miles s
   assert.ok(saved >= Math.max(RETURN_MIN_SAVING_METERS, RETURN_MIN_SAVING_SHARE * roundTrip(min)), 'it cleared the bar');
   assert.ok(Math.abs(saved / 1609.344 - 3.85) < 0.05, `saved ${saved / 1609.344} mi`);
   assert.ok(clean(routeShapeFaults(pick.order, HOME_DEPOT)));
-  assert.equal(returnPickSummary(pick), "Loop's order, 3.8 straight-line mi shorter round trip than Shortest distance");
+  assert.equal(returnPickSummary(pick), 'Loop: about 3.8 mi shorter round trip than Shortest distance on straight lines, drive home included (roads can differ)');
 });
 
 test('return to warehouse — a shorter order is REFUSED when it crosses itself, drives a road twice, drives past a stop, or splits a town', () => {
@@ -825,7 +827,7 @@ test('routeShapeFaults: the pictures a dispatcher objects to, and the ones he do
   // Driving straight past a stop and coming back for it at the end.
   assert.equal(routeShapeFaults(line([[33.70, -84.00], [33.70, -84.04], [33.70, -84.10], [33.72, -84.10], [33.70005, -84.07]])).drivesPast, true);
   // Degenerate input never throws.
-  assert.deepEqual(routeShapeFaults([]), { crossesItself: false, redriveMeters: 0, pathMeters: 0, drivesPast: false, comesBack: false, driveInPast: false, closesOnStart: false });
+  assert.deepEqual(routeShapeFaults([]), { crossesItself: false, redriveMeters: 0, pathMeters: 0, drivesPast: false, comesBack: false, driveInPast: false, closesOnStart: false, doublesBackOnCorridor: false });
   assert.equal(routeShapeFaults(null).crossesItself, false);
   assert.equal(routeShapeFaults([{ lat: NaN, lng: 1 }, { lat: 33.7, lng: -84 }]).pathMeters, 0);
 });
@@ -921,8 +923,9 @@ test('return to warehouse: degenerate cards behave, and a stop with no map posit
   assert.equal(out.at(-1).id, 'NOPIN');
   assert.equal(returnPickSummary(null), '');
   assert.equal(returnPickSummary({ source: 'none' }), '');
-  assert.match(returnPickSummary({ source: 'min', meters: 5, baseMeters: 5 }), /kept Shortest distance's order/);
-  assert.equal(returnPickSummary({ source: 'farthest', meters: 100000, baseMeters: 104828 }, 'road'), "Farthest first's order, 3.0 road mi shorter round trip than Shortest distance");
+  assert.equal(returnPickSummary({ source: 'min', meters: 5, baseMeters: 5 }), "kept Shortest distance's order: no clean order the menu draws saves a mile and 1.5% of the round trip");
+  assert.equal(returnPickSummary({ source: 'farthest', meters: 100000, baseMeters: 104828 }, 'road'), 'Farthest first: 3.0 road mi shorter round trip than Shortest distance, drive home included');
+  assert.match(returnPickSummary({ source: 'min-reversed', meters: 1, baseMeters: 9000 }, 'road'), /^Shortest distance run the other way round: 5\.6 road mi/);
 });
 
 test('return to warehouse: 150 stops (the selection cap) come back whole, in the same order every time', () => {

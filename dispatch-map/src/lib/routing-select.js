@@ -733,8 +733,8 @@ export function resequenceOnMatrix(stops, cost, strategy, mode = SWEEP_MODE) {
 //      measured on the distances the card is using (straight line, or the road matrix when the
 //      box is ticked);
 //   2. does not cross itself;
-//   3. does not drive a road twice — a leg that runs back along an earlier one, within 0.4 mi,
-//      for more than 1.5 mi or 15% of the route (the TRAILER 3 shape);
+//   3. does not drive a road twice — legs running back along earlier ones, within 0.4 mi, for
+//      more than 1.5 mi AND more than 15% of the route;
 //   4. does not drive past a stop and come back for it later;
 //   5. does not split a town (TOWN_RADIUS_METERS, chained) more often than Shortest distance does.
 // Anything it can put on a card is something the menu can already draw; what it adds is picking
@@ -753,7 +753,7 @@ const MI_M = 1609.344;
 export const RETURN_MIN_SAVING_METERS = MI_M;      // Shortest distance stands unless a mile …
 export const RETURN_MIN_SAVING_SHARE = 0.015;      // … AND 1.5% of the day is saved
 const REDRIVE_NEAR_M = 0.4 * MI_M;                 // a leg this close to an earlier one, running along it …
-const REDRIVE_LIMIT_M = 1.5 * MI_M;                // … for this far (or 15% of the route) is a road driven twice
+const REDRIVE_LIMIT_M = 1.5 * MI_M;                // … for more than this far AND 15% of the route is a road driven twice
 const REDRIVE_LIMIT_SHARE = 0.15;
 const PASS_NEAR_M = 0.3 * MI_M;                    // passing this close to a stop …
 const PASS_CLEAR_M = 0.75 * MI_M;                  // … that is not a neighbour of either end of that leg
@@ -762,6 +762,9 @@ const COMEBACK_AWAY_M = 3 * MI_M;                  // … after the truck had go
 const DRIVE_IN_NEAR_M = 0.5 * MI_M;                // the drive in passing this close to a stop served later …
 const DRIVE_IN_CLEAR_M = 1 * MI_M;                 // … that is not a neighbour of the first stop
 const CLOSES_ON_START_SHARE = 0.1;                 // last stop within 10% of the route's width of the first
+const CORRIDOR_MIN_SPAN_M = 2 * MI_M;              // a route at least this long …
+const CORRIDOR_WIDTH_SHARE = 0.25;                 // … and narrower than a quarter of its length is a corridor;
+const CORRIDOR_BACK_SHARE = 0.25;                  // walking back along it more than a quarter of its length doubles back
 
 /**
  * PURE. What a dispatcher would object to in the picture of `points` (stops in visiting order,
@@ -775,12 +778,16 @@ const CLOSES_ON_START_SHARE = 0.1;                 // last stop within 10% of th
  * seen from the drive in (driving past stops to begin elsewhere and coming back for them), and
  * loops that close on their own first stop. These three catch about half of them, and in a
  * test held out by date (tuned on Sep 1-15, checked on Sep 16-29) cost 2 of 178 good switches.
+ * The eighth, doublesBackOnCorridor, is TRAILER 3 itself: a stress test of corridors lying across
+ * the Buford direction found the "start in the middle, run to one end, come back past the start"
+ * order getting through on a return lane half a mile to a mile and a half away, which the 0.4 mi
+ * re-drive band cannot see. On the reviewed pictures it caught 17 more awful ones for 18 good ones.
  * @returns {{ crossesItself: boolean, redriveMeters: number, pathMeters: number, drivesPast: boolean,
- *             comesBack: boolean, driveInPast: boolean, closesOnStart: boolean }}
+ *             comesBack: boolean, driveInPast: boolean, closesOnStart: boolean, doublesBackOnCorridor: boolean }}
  */
 export function routeShapeFaults(points, depot = null) {
   const P = (Array.isArray(points) ? points : []).filter(mappable);
-  const out = { crossesItself: false, redriveMeters: 0, pathMeters: 0, drivesPast: false, comesBack: false, driveInPast: false, closesOnStart: false };
+  const out = { crossesItself: false, redriveMeters: 0, pathMeters: 0, drivesPast: false, comesBack: false, driveInPast: false, closesOnStart: false, doublesBackOnCorridor: false };
   if (P.length < 3) {
     if (P.length === 2) out.pathMeters = haversineMeters(P[0], P[1]);
     return out;
@@ -859,6 +866,17 @@ export function routeShapeFaults(points, depot = null) {
   let width = 0;
   for (let i = 0; i < xy.length; i++) for (let j = i + 1; j < xy.length; j++) width = Math.max(width, dist(xy[i], xy[j]));
   out.closesOnStart = xy.length >= 4 && dist(xy[0], xy[xy.length - 1]) < CLOSES_ON_START_SHARE * width;
+  // 8. Doubling back along a corridor (TRAILER 3): on the stops' own long axis, a route much longer
+  // than it is wide that walks back along that axis more than a quarter of its length.
+  const cx = xy.reduce((a, p) => a + p[0], 0) / xy.length, cy = xy.reduce((a, p) => a + p[1], 0) / xy.length;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (const [x, y] of xy) { sxx += (x - cx) ** 2; syy += (y - cy) ** 2; sxy += (x - cx) * (y - cy); }
+  const ang = 0.5 * Math.atan2(2 * sxy, sxx - syy), ux = Math.cos(ang), uy = Math.sin(ang);
+  const along = xy.map(([x, y]) => (x - cx) * ux + (y - cy) * uy), across = xy.map(([x, y]) => -(x - cx) * uy + (y - cy) * ux);
+  const span = Math.max(...along) - Math.min(...along), wide = Math.max(...across) - Math.min(...across);
+  let fwd = 0, back = 0;
+  for (let i = 1; i < along.length; i++) { const dd = along[i] - along[i - 1]; if (dd > 0) fwd += dd; else back -= dd; }
+  out.doublesBackOnCorridor = span >= CORRIDOR_MIN_SPAN_M && wide < CORRIDOR_WIDTH_SHARE * span && Math.min(fwd, back) > CORRIDOR_BACK_SHARE * span;
   return out;
 }
 
@@ -884,7 +902,7 @@ export function pickReturnOrder(base, candidates, cost, crow, pointOf, depot = n
   const want = new Set(base);
   const clean = (order) => {
     const f = routeShapeFaults(order.map(pointOf), depot);
-    return !f.crossesItself && !f.drivesPast && !f.comesBack && !f.driveInPast && !f.closesOnStart
+    return !f.crossesItself && !f.drivesPast && !f.comesBack && !f.driveInPast && !f.closesOnStart && !f.doublesBackOnCorridor
       && f.redriveMeters < Math.max(REDRIVE_LIMIT_M, REDRIVE_LIMIT_SHARE * f.pathMeters)
       && townSplits(order, townOf) <= baseSplits;
   };
@@ -971,13 +989,15 @@ export function returnToWarehouseOnMatrix(stops, cost, depot = null) {
     { source: 'farthest', order: SWEEP_MODE === 'pure' ? pureSweepNodes(nodes, C, 'homeward') : townSweepNodes(nodes, C, 'homeward') },
     { source: 'closest', order: SWEEP_MODE === 'pure' ? pureSweepNodes(nodes, C, 'outward') : townSweepNodes(nodes, C, 'outward') },
   ];
-  const pick = pickReturnOrder(min, candidates, C, crow, pointOf, depot);
+  // A stop the matrix cannot score rides at the end, where no picture check has judged it — so with
+  // one on the card this keeps Shortest distance rather than vouch for an order it has not seen whole.
+  const pick = pickReturnOrder(min, tail.length ? [] : candidates, C, crow, pointOf, depot);
   return { ...pick, order: [...pick.order.map((k) => orig[k]), ...tail].map((k) => arr[k - 1]) };
 }
 
-// THE SWITCH, and why it is the reverse of the house shape. Tested by eye, about 1 in 13 of this
-// option's switches away from Shortest distance still draws a shape a reviewer called awful (41 of
-// 2,240 runs over 20 board days). That is Chad's call to make, not ours, so on the production site
+// THE SWITCH, and why it is the reverse of the house shape. Tested by eye, about 1 in 21 of this
+// option's switches away from Shortest distance still draws a shape a reviewer called awful (24 of
+// 502, straight line and road, over 20 board days). That is Chad's call to make, so on the production site
 // the option stays OFF until VITE_RETURN_TO_WAREHOUSE is set to an explicit on-word (on/1/true/
 // yes); anything else, a typo included, keeps it off rather than putting an unapproved order on a
 // dispatcher's card. On the UAT site it is always on, so it can be tried against seeded orders.
@@ -999,11 +1019,17 @@ const RETURN_SOURCE_NAMES = {
   farthest: 'Farthest first',
   closest: 'Closest first',
 };
+// The saving is the ROUND TRIP, drive home included, and says so: the card's own mileage stops at
+// the last stop, so it can go UP on a pick that gets the truck home sooner. On straight lines it
+// is an estimate — roads can disagree — and the words say that too.
 export function returnPickSummary(pick, basis = 'straight-line') {
   if (!pick || pick.source === 'none') return '';
-  if (pick.source === 'min') return "kept Shortest distance's order: nothing that looks right gets the truck home a mile sooner";
-  const saved = Math.max(0, (Number(pick.baseMeters) - Number(pick.meters)) / MI_M);
-  return `${RETURN_SOURCE_NAMES[pick.source] || pick.source}'s order, ${saved.toFixed(1)} ${basis} mi shorter round trip than Shortest distance`;
+  if (pick.source === 'min') return "kept Shortest distance's order: no clean order the menu draws saves a mile and 1.5% of the round trip";
+  const saved = Math.max(0, (Number(pick.baseMeters) - Number(pick.meters)) / MI_M).toFixed(1);
+  const name = RETURN_SOURCE_NAMES[pick.source] || pick.source;
+  return basis === 'road'
+    ? `${name}: ${saved} road mi shorter round trip than Shortest distance, drive home included`
+    : `${name}: about ${saved} mi shorter round trip than Shortest distance on straight lines, drive home included (roads can differ)`;
 }
 
 // Re-sequence one route's stops by strategy. 'reverse' flips the current order;
