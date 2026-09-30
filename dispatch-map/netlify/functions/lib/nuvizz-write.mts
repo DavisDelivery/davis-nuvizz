@@ -37,7 +37,7 @@ import { isHashLikeId, statusFromCode, isTerminalStatus } from './nuvizz-list.mt
 import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay, readStopDoc, patchStopFields } from './firestore.mts';
 import { completionPatch } from './scan-completions.mts';
 import { finishedGuardEnabled } from './finished-guard.mts';
-import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes, rwbCreateRoute } from './nuvizz-rwb.mts';
+import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes, rwbCreateRoute, rwbHosts } from './nuvizz-rwb.mts';
 import { basicAuthFor } from './nuvizz-identity.mts';
 
 const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
@@ -3124,6 +3124,19 @@ export function routeCreateBlocked(): boolean {
  */
 export function routeCreateViaRwb(): boolean {
   return /^(1|true|on|yes)$/i.test(String(process.env.NUVIZZ_ROUTE_CREATE_RWB ?? '').trim());
+}
+
+/**
+ * Which create ＋ New route would make on THIS server, and where it would go — read for ZERO
+ * NuVizz calls. The dry run returns it (nuvizz-write.mts), because a switch whose position cannot
+ * be read is not a switch. `rwbReady` is the RWB engine unblocked AND the portal login set — the
+ * person's own when `creds.rwb` carries one (like every other RWB check in this file), else the
+ * shared one. The dry run has no personal login in hand, so it reports the shared login; the live
+ * call checks the person's, and refuses before any call when it is not ready.
+ */
+export function routeCreateEngine(creds: Partial<Pick<WriteCreds, 'rwb'>> = {}): { engine: 'rwb' | 'v7'; switchName: string; rwbReady: boolean; loginHost: string; portalHost: string } {
+  const { loginHost, portalHost } = rwbHosts();
+  return { engine: routeCreateViaRwb() ? 'rwb' : 'v7', switchName: 'NUVIZZ_ROUTE_CREATE_RWB', rwbReady: rwbConfigReady(creds.rwb), loginHost, portalHost };
 }
 
 /**

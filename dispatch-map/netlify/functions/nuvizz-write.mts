@@ -37,8 +37,8 @@
 import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, type WriteOp } from './lib/nuvizz-write-ops.mts';
 import { requireUser } from './lib/require-user.mts';
 import { bearerFromHeaders } from './lib/auth-core.mts';
-import { runOp, resolveWriteCreds, loadImportBlocked, personalWriteCreds } from './lib/nuvizz-write.mts';
-import { rwbEngineBlocked, takeRwbLoginRefusal, holdRwbLogin, rwbLoginHeld, releaseRwbLoginCheckedSince } from './lib/nuvizz-rwb.mts';
+import { runOp, resolveWriteCreds, loadImportBlocked, personalWriteCreds, routeCreateEngine } from './lib/nuvizz-write.mts';
+import { rwbEngineBlocked, takeRwbLoginRefusal, holdRwbLogin, rwbLoginHeld, releaseRwbLoginCheckedSince, buildManualRouteJson, rwbHosts } from './lib/nuvizz-rwb.mts';
 import { personalLoginsMode, publicIdentity, type Identity } from './lib/nuvizz-identity.mts';
 import { resolveWriteIdentity, watchPersonalRefusals, refusalAfterWrite, markLoginRejected, passingCheckAt } from './lib/nuvizz-write-identity.mts';
 import { getUser, patchUser } from './lib/auth-store.mts';
@@ -134,6 +134,18 @@ function planFor(op: WriteOp, payload: any): string[] {
     // a stopless route (reason 903). The one surface that says what this op is about to do
     // was describing a payload the code no longer builds.
     const n = Array.isArray(payload?.orderedStopNbrs) ? payload.orderedStopNbrs.length : (payload?.seedStopNbr ? 1 : 0);
+    // NUVIZZ_ROUTE_CREATE_RWB=on (v1.98.5) makes a different create — describing the v7 one here
+    // would be this comment's five weeks again, one switch-flip away.
+    const eng = routeCreateEngine();
+    if (eng.engine === 'rwb') {
+      const extras = [(payload?.driverId ?? '') !== '' && Number(payload?.driverId) !== 0 ? 'assign the driver' : '', payload?.dispatch ? 'dispatch' : ''].filter(Boolean);
+      return [
+        ...(eng.rwbReady ? [] : ['REFUSE before any call: the Route Workbench sign-in is not ready on this server (NUVIZZ_RWB_ENABLED / the NuVizz portal login)']),
+        `READ all ${n} order(s) on the card — each must be readable, UNPLANNED and unexecuted, or the WHOLE create is refused`,
+        `CREATE route "${payload?.routeName ?? '?'}" for ${payload?.date ?? 'today (ET)'} the portal's way (NUVIZZ_ROUTE_CREATE_RWB=on) — addNewRoutePlan on ${eng.portalHost}, signing in at ${eng.loginHost}: an EMPTY route that NuVizz numbers itself; a name already in use that day is refused`,
+        `ATTACH the ${n} order(s) with the Route Workbench Save an existing load gets — add, sequence in card order, verify against NuVizz's read-back, board write-through${extras.length ? `, ${extras.join(', ')}` : ''}`,
+      ];
+    }
     return [
       `CHECK load ${payload?.loadNbr ?? '?'} is free (must read absent — an existing number is refused, never overwritten)`,
       `READ all ${n} order(s) on the card — each must be readable, UNPLANNED and unexecuted, or the WHOLE create is refused`,
@@ -189,6 +201,19 @@ function planFor(op: WriteOp, payload: any): string[] {
  */
 function previewBodyFor(op: WriteOp, payload: any): any {
   if (op !== 'newRoute') return null;
+  if (routeCreateEngine().engine === 'rwb') {
+    try {
+      const day = /^\d{4}-\d{2}-\d{2}$/.test(String(payload?.date ?? '')) ? String(payload.date) : etDayString();
+      const entry = buildManualRouteJson({ routeName: String(payload?.routeName ?? ''), date: day });
+      return {
+        url: `${rwbHosts().portalBase}/deliverit/dirouteworkbench/routePlan/addNewRoutePlan`,
+        body: { manualBuildJsonData: [entry], isPlanningMode: 'true' },
+        caveat: 'SHAPE ONLY — the profile, depot and window are read from the tenant\'s template (buildEmptyRouteJson) at create time; shown here are the capture\'s own values. The orders are not in this call: the Route Workbench Save attaches them after.',
+      };
+    } catch (e: any) {
+      return { refused: e?.message || 'the builder refused this card' };
+    }
+  }
   const nbrs: string[] = Array.isArray(payload?.orderedStopNbrs)
     ? payload.orderedStopNbrs.map((n: any) => String(n ?? '').trim()).filter(Boolean)
     : (payload?.seedStopNbr ? [String(payload.seedStopNbr)] : []);
@@ -277,7 +302,7 @@ export default async (req: Request): Promise<Response> => {
   // 1) DRY RUN — never touches NuVizz. The Compare panel's default mode + Beta mode.
   if (dryRun) {
     const preview = previewBodyFor(op, payload);
-    return J({ ok: true, op, tenant, live, dryRun: true, plan: planFor(op, payload), ...(preview ? { preview } : {}), ops });
+    return J({ ok: true, op, tenant, live, dryRun: true, plan: planFor(op, payload), ...(preview ? { preview } : {}), ...(op === 'newRoute' ? { routeCreate: routeCreateEngine() } : {}), ops });
   }
 
   // 2) Mutating ops require the server-side kill switch.
