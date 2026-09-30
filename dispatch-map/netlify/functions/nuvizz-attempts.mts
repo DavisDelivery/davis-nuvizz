@@ -9,15 +9,20 @@
 //   date=YYYY-MM-DD   optional; defaults to today (ET). Browse history by passing a date.
 //   driver=NAME       optional; filter to one driver (matches original driver
 //                     userName OR name, case-insensitive substring).
+//   holders=1         v1.99.0: the day's who-had-it record beside every attempt, and whether it
+//                     agrees with the 8:30 freeze where both named a driver. Firestore only.
 //
 // Response: { ok, date, generated, manifest, count, attempts[] }
 //   attempts[] items: { stopNbr, shipmentNbr, originalDriverName, originalDriverUserName,
 //                       originalLoadNbr, routeName, businessName, addr1, city, state, zip,
-//                       currentStatus, currentlyUnplanned, matched, detectedAt }
+//                       currentStatus, currentlyUnplanned, matched, detectedAt,
+//                       attributedFrom ('plan' | 'holder' | 'holder-original' | null, v1.99.0),
+//                       holderFrozen }
 
 import { isFirestoreEnabled, etDayString } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
-import { getAttemptsManifest, listAttemptItems, deleteAttemptItem } from './lib/attempts-store.mts';
+import { getAttemptsManifest, listAttemptItems, deleteAttemptItem, readHolderDoc } from './lib/attempts-store.mts';
+import { holderFor, attHolderEnabled } from './lib/att-holder.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -122,6 +127,36 @@ export default async (req: Request): Promise<Response> => {
       return new Response(JSON.stringify({
         ok: true, date, generated: new Date().toISOString(),
         manifest: null, count: 0, attempts: [], note: 'firestore-disabled',
+      }), { status: 200, headers: cors });
+    }
+
+    // ?holders=1 — v1.99.0: the day's who-had-it record (lib/att-holder.mts) beside every attempt,
+    // and where it and the 8:30 freeze both named a driver, whether they agree. Firestore only,
+    // ZERO NuVizz calls: the free way to see what the record holds and how far to trust it.
+    if (url.searchParams.get('holders') === '1') {
+      const [doc, items] = await Promise.all([readHolderDoc(TENANT, date), listAttemptItems(TENANT, date)]);
+      const stops = doc?.stops || {};
+      const key = (s: any) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const rows = items.map(({ _id, ...it }: any) => {
+        const hit = holderFor(stops, it.stopNbr);
+        // Items written before v1.99.0 carry no attributedFrom; a driver on one came from the freeze.
+        const from = it.attributedFrom ?? (it.originalDriverName ? 'plan' : null);
+        const both = from === 'plan' && !!hit;
+        return {
+          stopNbr: it.stopNbr, shipmentNbr: it.shipmentNbr ?? null,
+          attributedFrom: from, driver: it.originalDriverName ?? null,
+          holder: hit ? { driver: hit.rec.driverName, route: hit.rec.routeName ?? hit.rec.loadNbr, via: hit.via, frozenAt: hit.rec.frozenAt ?? null, since: hit.rec.since } : null,
+          ...(both ? { agrees: key(hit!.rec.driverName) === key(it.originalDriverName) } : {}),
+        };
+      });
+      const compared = rows.filter((r: any) => 'agrees' in r);
+      return new Response(JSON.stringify({
+        ok: true, date, nuvizzCalls: 0, enabled: attHolderEnabled(),
+        record: doc ? { firstAt: doc.firstAt ?? null, updatedAt: doc.updatedAt ?? null, stops: Object.keys(stops).length, frozen: Object.values(stops).filter((r: any) => r?.frozenAt).length } : null,
+        attempts: rows.length,
+        answeredOnlyByRecord: rows.filter((r: any) => !r.attributedFrom && r.holder).length,
+        comparedWithFreeze: { both: compared.length, agree: compared.filter((r: any) => r.agrees).length },
+        rows,
       }), { status: 200, headers: cors });
     }
 

@@ -63,6 +63,29 @@ export async function upsertPlanStops(tenant: string, date: string, records: any
   await upsertAll(records, (r: any) => `${base}/stops/${r.stopNbr}`);
 }
 
+// ── who had it (att_holder, v1.99.0) ─────────────────────────────────────────
+//
+//   att_holder/{tenant}__{YYYY-MM-DD}   ONE document per board day: { stops: { stopNbr → holder } }
+//
+// One document, not one per stop: the */15 scan reads it and writes it back at most once per run
+// (only when something moved), where a document per stop would be ~800 reads every 15 minutes.
+// ~800 routed stops at ~250 bytes is ~200 KB, well under Firestore's 1 MB document cap.
+// The rule lives in lib/att-holder.mts (pure); this only knows the path.
+//
+// STRICT READ. getDoc returns null for "no document yet" and THROWS when Firestore did not answer.
+// The writer depends on that difference: treating a failed read as an empty day would write an
+// empty map over the day and lose every frozen record on it.
+export const HOLDER_COLLECTION = 'att_holder';
+export function holderPath(tenant: string, date: string): string {
+  return `${HOLDER_COLLECTION}/${dayId(tenant, date)}`;
+}
+export async function readHolderDoc(tenant: string, date: string): Promise<any | null> {
+  return getDoc(holderPath(tenant, date));
+}
+export async function writeHolderDoc(tenant: string, date: string, doc: any): Promise<void> {
+  await setDoc(holderPath(tenant, date), doc);
+}
+
 // ── attempts list (8pm result) ────────────────────────────────────────────────
 export async function getAttemptsManifest(tenant: string, date: string): Promise<any | null> {
   return getDoc(attemptsPath(tenant, date));
@@ -93,6 +116,11 @@ export function recountManifest(prevManifest: any, items: any[]): any {
       attempts: items.length,
       matched,
       unmatched: items.length - matched,
+      // v1.99.0: recounted with the rest, or a delete would leave it counting a row that is gone.
+      // Only where the scan wrote it — a manifest from before v1.99.0 does not grow the field.
+      ...('matchedByHolder' in prevCounts
+        ? { matchedByHolder: items.filter((it) => it && it.matched && String(it.attributedFrom || '').startsWith('holder')).length }
+        : {}),
     },
   };
 }

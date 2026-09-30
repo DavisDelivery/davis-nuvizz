@@ -34,6 +34,7 @@ import { nameCollisionEnabled, nameCollisionLoadMax, nameCollisionMemoTtlMs, det
 import type { CollisionMemoEntry, RosterLoadLite } from './name-collision.mts';
 import { readNameCollisionMemo, writeNameCollisionMemo } from './firestore.mts';
 import { getStop } from './history-store.mts';
+import { recordAttHolders } from './attempts-core.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
@@ -2191,6 +2192,15 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // a completed scan and stamps as one. With TWO_SCAN off there is no completed pull in
         // this path at all, and claiming one would date-stamp a scan that never happened.
         const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true, includeCompleted: TWO_SCAN, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); } });
+        // v1.99.0 — who had each of TODAY's stops before it failed (lib/att-holder.mts), from the
+        // rows this scan just wrote. Zero NuVizz calls; a failure here is logged and costs one
+        // cycle's update, never the scan. Today only: a stop is recorded on the day it is worked.
+        if (date === today) {
+          try {
+            const h = await recordAttHolders(date, dateStops, scannedAt);
+            if (h.changed) console.log(`[att-holder] ${date}: ${h.total} stop(s) held — +${h.recorded} dispatched, ${h.moved} moved, ${h.frozen} frozen at the ATT marker`);
+          } catch (e: any) { console.warn(`[att-holder] ${date}: skipped this scan (${e?.message}) — the record is left as it was`); }
+        }
         // Heal the frozen copies only once today's board holds the truth (a failed write above
         // throws past this point, so a heal can never outrun the row it points at).
         if (pendingHeals.length) {
