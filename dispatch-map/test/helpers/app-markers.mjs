@@ -27,7 +27,7 @@ const NEEDED = [
   'renderMarkerGlyph', 'BLOCKER_GLYPH_INK', 'renderBlockerGlyph',
   'RESTRICTION_MARKER_SCALE', 'TIME_MARK_MARKER_SCALE', 'RESTRICTION_MARKER_KIND_SCALE',
   'restrictionMarkerScale', 'scaleMarkerSpec',
-  'restrictionWarnColor', 'blockerDiscMarkup', 'iconMarkerSvg',
+  'restrictionWarnColor', 'ADVISORY_WARN_COLOR', 'blockerDiscMarkup', 'iconMarkerSvg',
 ];
 
 function declarationLine(lines, name) {
@@ -110,7 +110,7 @@ const ICON_NEEDED = [
   'readableTextColor', 'countBadgeSvg', 'unplannedDotSvg', 'circleMarkerSvg',
   'RESTRICTION_ICONS', 'UNKNOWN_RESTRICTION', 'RESTRICTION_ALIASES',
   'isTimeMarkKey', 'timeMarkOutline', 'renderMarkerGlyph',
-  'BLOCKER_GLYPH_INK', 'renderBlockerGlyph', 'restrictionWarnColor', 'blockerDiscMarkup',
+  'BLOCKER_GLYPH_INK', 'renderBlockerGlyph', 'restrictionWarnColor', 'ADVISORY_WARN_COLOR', 'blockerDiscMarkup',
   'RESTRICTION_MARKER_SCALE', 'TIME_MARK_MARKER_SCALE', 'RESTRICTION_MARKER_KIND_SCALE',
   'restrictionMarkerScale', 'scaleMarkerSpec', 'iconMarkerSvg',
 ];

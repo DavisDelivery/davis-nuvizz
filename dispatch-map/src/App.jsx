@@ -210,7 +210,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.99.5';
+const APP_VERSION = '1.99.6';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,6 +264,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.99.6', 'A ULINE “STRAIGHT TRUCK ONLY” NOTE IS A FULL YELLOW DISC NOW — GREEN SHOWS ONLY WHERE A TRACTOR HAS ACTUALLY DELIVERED. Chad: “i don’t agree with this icon being half green if a tractor has never been there why would it be half green should just be a full yellow advisory.” The half-and-half mark used its green half to mean “nobody has checked this”, but on the map green means a trailer fits, and at a dock no tractor has ever delivered to nothing says one does. NOW: an unconfirmed no (a Uline note, or a scanner’s find) fills solid in the advisory yellow with the slashed truck; a no that someone here ticked stays solid red, so the two cannot be confused; and the yellow keeps a green half only in the one case worth a second look, when a tractor HAS delivered to that dock anyway (yellow beside the bright tractor-delivered lime). The Legend shows all three. Map pins and cluster pins draw the same way. THE WAY BACK: one small commit, so a revert puts the half-and-half mark back.'],
   ['1.99.5', 'TIME WINDOWS NOW WEIGHS MILES: A MISSED WINDOW IS WORTH A COUPLE OF MILES, NOT 15 OR 20. Asked what one late stop is worth to the Time windows re-sequence, Chad: \u201cFor the time windows, I mean, a couple of miles is worth it, but not 15 or 20 miles.\u201d Tested on 1,120 real routes with made-up receiving hours, it had taken 390 late stops to 7 for 10.7% more road miles and crossed the route over on 355 cards; it never looked at miles. Now each late stop is priced at 2 of the card header\u2019s miles, and it takes the order with the fewest miles plus that price, never with more late stops than the card. A stop reached before a booked window or a typed opening is treated the same way (never more of them than the card, 2 miles each) \u2014 Chad priced late stops, and pricing an early one the same is this release\u2019s reading, so a booked slot the card makes is not given up to save miles. So a late stop is made when making it costs 2 miles or less against the shortest order that leaves it late. Measured again after a Shortest distance press: 390 late \u2192 250 for 0.1% FEWER road miles, crossing cards 0 \u2192 56; the 243 late stops it no longer chases had cost 9,299 road miles, about 38 a stop. SAID PLAINLY: a far stop that can only be made by driving 20 extra miles is now left late, and the line says why; the menu still reads \u201cTime windows \u2014 fewest late\u201d. The line says the miles now: \u201c1 late \u2192 0 late \u00b7 14.7 \u2192 15.7 mi\u201d. The 2 is one line to move. THE WAY BACK: VITE_TIME_WINDOWS_MILES_CAP=off (a redeploy) puts back the search that never looked at miles. 9 new tests.'],
   ['1.99.4', 'CLOSEST FIRST WITHOUT THE ONE-TOWN-AT-A-TIME RULE, TO TRY. Asked whether Closest first should keep the Sep 10 \u201cone town at a time\u201d rule \u2014 measured on 1,120 real routes, the rule changes Closest first\u2019s order on 228 of them and there adds 29 self-crossings and removes none \u2014 Chad: \u201cKeep the closest first. Try closest without it on the number four option.\u201d So Closest first on the Compare card\u2019s Re-sequence menu (straight line and road box) and on the Build-result card\u2019s menu is now the plain shortest sweep out from Buford. What it does, measured: on straight lines it changes 228 routes, shorter on 191 (2.1% fewer miles on those), 29 crossings gone and none added, but it now visits a town twice on 161 of them, the shape the rule was written for on JEFF; with the road box, 57 crossings gone and 41 added. By eye it is mixed: NELSON 09-03 and TREVARR 09-17 stop crossing themselves, TRAILER 6 09-16 now drives past its first stops and comes back. Farthest first keeps the town rule; the Build Panel engine and Return to warehouse are untouched. THE WAY BACK: VITE_CLOSEST_FIRST_WITHOUT_TOWNS=off (a redeploy) puts the town rule back on Closest first. 5 new tests.'],
   ['1.99.3', 'A STOP GOOGLE CANNOT ROUTE NO LONGER COUNTS AS ZERO MILES ON A COMPARE CARD\u2019S ROAD BOX. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 3. With the road box ticked, the card asks Google for road distances between its stops. Where Google had no route for a pair, or left it out of its answer, the card was handed a free 0-mile, 0-minute leg, so that stop looked like the cheapest one on the card and the order was built around it. The route builder has priced such a leg at the straight-line road estimate (1.3 \u00d7 crow-flies) since A5-S27-4; the card now does the same. Every leg Google could drive is still Google\u2019s. Server-only: no screen code changed. THE WAY BACK: ROAD_BOX_ESTIMATE_UNROUTABLE=off (a redeploy) puts the old 0-mile reading back for the card alone; the builder keeps its own switch, ROUTE_MATRIX_ESTIMATE_UNROUTABLE. 3 new tests, 1 updated.'],
@@ -4170,14 +4171,27 @@ const BLOCKER_GLYPH_INK = '#111827';
 // site is `tractorDelivered ? LIME : (eligColor || flagHue)` — hand THAT in and a priority
 // flag's purple becomes the "a trailer fits" half, which is the v0.76.5 defect wearing a new
 // coat. Only the proof itself may speak here.
+//
+// AN UNCONFIRMED "NO" IS A FULL YELLOW DISC, AND GREEN APPEARS ONLY WHERE A TRACTOR HAS BEEN.
+// Chad, on a Uline advisory drawn half yellow and half (forest) green at a dock no tractor has
+// ever delivered to: "i don't agree with this icon being half green if a tractor has never
+// been there why would it be half green should just be a full yellow advisory." Right: the
+// green half was there to say "unconfirmed", but on a map green means "a trailer fits", and
+// nothing here says one does. So an advisory blocker fills SOLID in the advisory yellow — the
+// one colour that means "somebody else's note says no, nobody here has checked" — and a
+// confirmed one stays solid in its own colour (red), so the two still cannot be confused. The
+// split survives for the one case worth a second look: an unconfirmed no at a dock a tractor
+// HAS actually delivered to — yellow beside the lime of that proof.
+const ADVISORY_WARN_COLOR = '#f59e0b';   // the Uline advisory amber (RESTRICTION_ICONS.uline_straight_truck)
 function blockerDiscMarkup(cx, cy, r, warnColor, advisory, tractorProven) {
   const top = cy - r, bottom = cy + r;
-  const okHalf = tractorProven ? TRACTOR_DELIVERED_COLOR : ELIG_TRACTOR_COLOR;
-  // Solid when a person has confirmed it; split down the middle when nobody has.
-  const disc = advisory
-    ? `<path d="M${cx} ${top} A${r} ${r} 0 0 0 ${cx} ${bottom} Z" fill="${warnColor}"/>`
-      + `<path d="M${cx} ${top} A${r} ${r} 0 0 1 ${cx} ${bottom} Z" fill="${okHalf}"/>`
-    : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${warnColor}"/>`;
+  const warn = advisory ? ADVISORY_WARN_COLOR : warnColor;
+  // Solid when a person has confirmed it (its own colour) or when nothing argues with the
+  // advisory (yellow); yellow beside lime only when a tractor has delivered here anyway.
+  const disc = advisory && tractorProven
+    ? `<path d="M${cx} ${top} A${r} ${r} 0 0 0 ${cx} ${bottom} Z" fill="${warn}"/>`
+      + `<path d="M${cx} ${top} A${r} ${r} 0 0 1 ${cx} ${bottom} Z" fill="${TRACTOR_DELIVERED_COLOR}"/>`
+    : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${warn}"/>`;
   // The white rim is what keeps a filled disc off the base map. Without it the red half
   // disappears into a brick roof and the green half into a treeline — checked on both.
   return disc + `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="white" stroke-width="${(r * 2.2 / 18).toFixed(2)}"/>`;
@@ -4216,8 +4230,9 @@ function renderBlockerGlyph(restrictionKey, glyphX, glyphY, scale) {
 
 function iconMarkerSvg(restrictions, tint, opts = {}) {
   if (!restrictions || restrictions.length === 0) return null;
-  // Trailer blockers draw a FILLED disc (see blockerDiscMarkup): solid when a person has
-  // confirmed it, half restriction / half green when only a scanner has. Everything else keeps
+  // Trailer blockers draw a FILLED disc (see blockerDiscMarkup): solid in its own colour when a
+  // person has confirmed it, solid yellow when only a scanner or Uline says so, and yellow beside
+  // lime when a tractor has delivered there anyway. Everything else keeps
   // the white disc and coloured ring. Keys are compared RESOLVED so an alias
   // (straight_truck_only → box_truck_only) cannot slip past the set and quietly draw as an
   // ordinary restriction.
@@ -6251,13 +6266,14 @@ function LegendRestrictionIcon({ kind, px = LEGEND_ICON_PX }) {
   return <img src={spec.url} alt="" width={w} height={px} style={{ display: 'block', flex: 'none' }} />;
 }
 
-function LegendMarkerExample({ restrictions, label, advisoryKeys = null, blockerKeys = null }) {
+function LegendMarkerExample({ restrictions, label, advisoryKeys = null, blockerKeys = null, tractorProven = false }) {
   const spec = useMemo(
     () => iconMarkerSvg(restrictions, null, {
       ...(advisoryKeys ? { advisoryKeys } : {}),
       ...(blockerKeys ? { blockerKeys } : {}),
+      ...(tractorProven ? { tractorProven: true } : {}),
     }),
-    [restrictions, advisoryKeys, blockerKeys],
+    [restrictions, advisoryKeys, blockerKeys, tractorProven],
   );
   if (!spec) return null;
   return (
@@ -6352,7 +6368,9 @@ const RESTRICTION_LEGEND_ORDER = Object.keys(RESTRICTION_ICONS).filter((k) => !L
 // Module-level so their identity is stable — LegendMarkerExample memoizes on these, and a
 // fresh array every render would rebuild the data-URI on every keystroke in the filter box.
 const LEGEND_CONFIRMED_EXAMPLE = ['no_tractor_trailer'];
-const LEGEND_ADVISORY_EXAMPLE = new Set(['no_tractor_trailer']);
+const LEGEND_ADVISORY_EXAMPLE = new Set(['uline_straight_truck']);
+const LEGEND_ADVISORY_RESTRICTIONS = ['uline_straight_truck'];
+const LEGEND_ADVISORY_BLOCKER = new Set(['uline_straight_truck']);
 // The legend has to say "this is a trailer blocker" the same way the map does, or the two
 // swatches below draw as ordinary white-disc restrictions and the panel demonstrates a mark
 // that is nowhere on the board.
@@ -6671,15 +6689,24 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true, t
               </div>
               <div className="flex items-center gap-2">
                 <LegendMarkerExample
-                  restrictions={LEGEND_CONFIRMED_EXAMPLE}
-                  blockerKeys={LEGEND_BLOCKER_EXAMPLE}
+                  restrictions={LEGEND_ADVISORY_RESTRICTIONS}
+                  blockerKeys={LEGEND_ADVISORY_BLOCKER}
                   advisoryKeys={LEGEND_ADVISORY_EXAMPLE}
-                  label="Half and half — found automatically (a scanner, or a Uline note). Nobody has checked it, so a tractor may well be fine."
+                  label="Yellow — found automatically (a Uline note, or a scanner). Nobody here has checked it."
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <LegendMarkerExample
+                  restrictions={LEGEND_ADVISORY_RESTRICTIONS}
+                  blockerKeys={LEGEND_ADVISORY_BLOCKER}
+                  advisoryKeys={LEGEND_ADVISORY_EXAMPLE}
+                  tractorProven
+                  label="Yellow and green — the note says no, but a tractor has delivered here. Worth a look."
                 />
               </div>
             </div>
             <p className="text-slate-600 mt-1.5 leading-snug">
-              Ticking the restriction on the stop fills the other half in.
+              Ticking the restriction on the stop makes it solid red.
             </p>
           </div>
         </div>
