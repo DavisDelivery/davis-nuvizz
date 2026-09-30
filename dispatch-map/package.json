@@ -28,6 +28,7 @@
     "verify:shadow-map": "node scripts/verify-shadow-map.mjs dist",
     "verify:wb-own-day": "node scripts/verify-wb-own-day.mjs dist",
     "verify:driver-areas": "node scripts/verify-driver-areas.mjs dist",
+    "verify:stop-lookup": "node scripts/verify-stop-lookup.mjs dist",
     "perf:routing": "node scripts/perf-routing.mjs dist",
     "verify:effect-deps": "node scripts/check-effect-deps.mjs",
     "rollback": "node scripts/rollback.mjs"

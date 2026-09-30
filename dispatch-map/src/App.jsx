@@ -95,7 +95,7 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUE
 // so the screen can never build a query the server reads differently.
 import { placeParams, placeQuery, placeQueryUsable } from './lib/stop-search.js';
 import { addRecent, parseRecent, recentAgo, recentEntry, recentKindLabel, recentKey } from './lib/stop-lookup-recent.js';
-import { weekOf, weekLabel, addDays, PERIODS, periodRange } from './lib/load-lookup.js';
+import { weekOf, weekLabel, addDays, PERIODS, periodRange, loadForRow } from './lib/load-lookup.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -210,7 +210,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.99.9';
+const APP_VERSION = '1.99.10';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,6 +264,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.99.10', 'STOP LOOKUP: A TAPPED BUSINESS SAYS IT IS OPENING, AND A ROW\u2019S ROUTE OPENS ITS LOAD. Chad, on a phone with \u201c22 businesses match \u2018master\u2019\u201d: \u201cclicking this and nothing happens doens\u2019t show me the load \u2026 i want you to build this entire screen and test everything in it.\u201d The tap was working \u2014 a customer takes about ten seconds to read \u2014 but its only sign was \u201cLooking\u2026\u201d on the search button, a screen above on a phone, and a second tap started the read over. NOW: the tapped business says \u201cOpening \u2014 reading their deliveries\u2026\u201d with a spinner and ignores a second tap (tapping a different business switches to that one instead of waiting), and a dark line at the top of the view says what is being read (\u201cOpening MASTER WINDOW SYSTEMS\u2026\u201d) wherever the page is scrolled \u2014 for every search on this screen, not just this one. THE LOAD: on a customer\u2019s row, an order\u2019s day and an address result, the route (FRANK \u00b7 stop 15) is now a link. It opens that load under the row \u2014 the map, every stop in delivery order, this order marked \u2014 and the customer stays on screen; tap it again to close. It reads the same records as Driver\u2019s loads (no NuVizz call). If two drivers share the name it asks which; if the driver was renamed (the name on the row matches nobody that day) it lists who ran loads that day instead of saying there is no load; if none of their loads carries the route it lists that day\u2019s loads to pick, never picks one for you; if the load it opens does not hold this order (moved to another truck that day) it says so above the load; a day that has not happened says the load has not run yet. An order tapped inside the load opens there, once. Below dispatcher the route stays plain text, as Driver\u2019s loads is. Also: a business picked after the search box was edited now opens the business you picked. TESTED: a new check taps every control on Stop lookup on a phone and a desktop with every answer made to arrive late, and fails any tap that changes nothing on screen within a quarter second; it fails on the code before this. THE WAY BACK: one commit; a revert puts the screen back.'],
   ['1.99.9', 'A ULINE “STRAIGHT TRUCK ONLY” NOTE IS A FULL YELLOW DISC NOW — GREEN SHOWS ONLY WHERE A TRACTOR HAS ACTUALLY DELIVERED. Chad: “i don’t agree with this icon being half green if a tractor has never been there why would it be half green should just be a full yellow advisory.” The half-and-half mark used its green half to mean “nobody has checked this”, but on the map green means a trailer fits, and at a dock no tractor has ever delivered to nothing says one does. NOW: an unconfirmed no (a Uline note, or a scanner’s find) fills solid in the advisory yellow with the slashed truck; a no that someone here ticked stays solid red, so the two cannot be confused; and the yellow keeps a green half only in the one case worth a second look, when a tractor HAS delivered to that dock anyway (yellow beside the bright tractor-delivered lime). The Legend shows all three. Map pins and cluster pins draw the same way. THE WAY BACK: one small commit, so a revert puts the half-and-half mark back.'],
   ['1.99.8', 'ERRORS NOW READ AS PLAIN SENTENCES. Chad: “Can you make it simple sentence when there is an error that looks less like code.” When a Save, a new route, an address fix or a note was refused, the screen showed the server’s own diagnostic — “commitBoard(rwb): load DAVIS000204039 has 5 stop(s) the board isn’t showing (…) — a declarative RWB save would unplan them. Refresh and retry.” NOW it says what happened and what to do: “Not saved. NuVizz has 5 orders on this route that your screen isn’t showing yet (…). Saving now would take them off the truck — refresh, then Save again.” Every wording was written from a real refusal in the write log (September: 104 failed writes, and every one of them now reads plainly). Route names instead of load numbers, except when two routes share a name (BUFORD on two days). Nothing is claimed that the server did not say, and no instruction is dropped. A message nobody has seen before keeps its own words, with only the code-looking prefix taken off. The full technical text is still in the write log. VITE_PLAIN_ERRORS=off puts back the old words (a redeploy). Zero NuVizz calls.'],
   ['1.99.7', 'THE ATTEMPTS BACKFILL NO LONGER SPENDS A CALL TO LEARN WHAT THE LIST ALREADY SAYS. Its dry run of 06/26 \u2192 09/29 found 96 orders to look up where 69 were expected: 27 were a \u201c-1\u201d or \u201c-2\u201d copy listed beside a row of the SAME order that the 8:30 freeze had already named, and the backfill would have read each one\u2019s timeline (27 NuVizz calls) to learn that driver again. NOW such a row takes the named row\u2019s driver, route and load directly \u2014 free, marked attributedFrom: sibling \u2014 and only orders nobody named are read. The dry run lists the two separately. Zero NuVizz calls for the free rows; 1 per order for the rest, as before.'],
@@ -37625,7 +37626,7 @@ const stopFreight = (r) => [
  *      asking. It folds under the address.
  *  The six that stay are the six that answer the phone call: which day, what happened, whose
  *  truck, when, and where we went. */
-function StopDayTable({ days, onOpen, renderDetail }) {
+function StopDayTable({ days, onOpen, renderDetail, onLoad = null, renderLoad = null }) {
   return (
     <div className="rounded-xl border bg-white overflow-hidden">
       {/* AUTO layout, not table-fixed. The first cut set each column a percentage by hand,
@@ -37649,8 +37650,9 @@ function StopDayTable({ days, onOpen, renderDetail }) {
         <tbody className="divide-y">
           {days.flatMap((r) => {
             const panel = renderDetail?.(r.refs.stopNbr || r.pro, r.date);
+            const loadPanel = renderLoad?.(loadRowOf(r).key);
             return [(
-            <tr key={r.date} className={`align-top ${panel ? 'bg-blue-50' : ''}`}>
+            <tr key={r.date} className={`align-top ${panel || loadPanel ? 'bg-blue-50' : ''}`}>
               <td className="px-3 py-2 font-semibold break-words">
                 {/* THE DAY IS THE HANDLE HERE, because on a per-order screen every row is the
                     same order and it is the DAY that picks which record you want to read. */}
@@ -37663,7 +37665,7 @@ function StopDayTable({ days, onOpen, renderDetail }) {
                 {stopExtraStatus(r) && <div className="text-[11px] text-slate-400 mt-0.5 font-mono break-words">{stopExtraStatus(r)}</div>}
                 {/* The provenance chips, folded in where the From column would have been. */}
                 <div className="xl:hidden mt-1"><StopSourceChips sources={r.sources} /></div></td>
-              <td className="px-3 py-2 text-slate-700 break-words">{r.route || <span className="text-slate-400">un-planned</span>}
+              <td className="px-3 py-2 text-slate-700 break-words"><RouteLoadButton row={r} open={!!loadPanel} onLoad={onLoad} />
                 {r.seq != null && <span className="text-[11px] text-slate-400"> · stop {r.seq}</span>}</td>
               <td className="px-3 py-2 text-slate-700 break-words">{r.driver || <span className="text-slate-400">—</span>}
                 {r.currentDriver && r.currentDriver !== r.driver && (
@@ -37689,6 +37691,10 @@ function StopDayTable({ days, onOpen, renderDetail }) {
               <tr key={`${r.date}:detail`}>
                 <td colSpan={8} className="p-0 bg-slate-50"><div className="px-3 py-3">{panel}</div></td>
               </tr>
+            ) : null, loadPanel ? (
+              <tr key={`${r.date}:load`}>
+                <td colSpan={8} className="p-0 bg-slate-50"><div className="px-3 py-3">{loadPanel}</div></td>
+              </tr>
             ) : null];
           })}
         </tbody>
@@ -37699,13 +37705,14 @@ function StopDayTable({ days, onOpen, renderDetail }) {
 
 /** PHONE: cards. The same eight facts, stacked — a table at 360px is a sideways scroll, and
  *  this screen gets opened one-handed with a customer talking. */
-function StopDayListMobile({ days, onOpen, renderDetail }) {
+function StopDayListMobile({ days, onOpen, renderDetail, onLoad = null, renderLoad = null }) {
   return (
     <div className="space-y-2">
       {days.flatMap((r) => {
         const panel = renderDetail?.(r.refs.stopNbr || r.pro, r.date);
+        const loadPanel = renderLoad?.(loadRowOf(r).key);
         return [(
-        <div key={r.date} className={`rounded-xl border bg-white p-3 space-y-1.5 ${panel ? 'border-blue-300' : ''}`}>
+        <div key={r.date} className={`rounded-xl border bg-white p-3 space-y-1.5 ${panel || loadPanel ? 'border-blue-300' : ''}`}>
           <div className="flex flex-wrap items-center gap-1.5">
             <StopOutcomeChip outcome={r.outcome} />
             <button onClick={() => onOpen?.(r.refs.stopNbr || r.pro, r.date)} aria-expanded={!!panel}
@@ -37714,8 +37721,9 @@ function StopDayListMobile({ days, onOpen, renderDetail }) {
             </button>
             <span className="ml-auto"><StopSourceChips sources={r.sources} /></span>
           </div>
-          <div className="text-xs text-slate-700 break-words">
-            {r.route || 'un-planned'}{r.seq != null ? ` · stop ${r.seq}` : ''}{r.driver ? ` · ${r.driver}` : ''}
+          <div className="text-xs text-slate-700 break-words flex flex-wrap items-center gap-x-1">
+            <RouteLoadButton row={r} open={!!loadPanel} onLoad={onLoad} tall />
+            {r.seq != null && <span>· stop {r.seq}</span>}{r.driver && <span>· {r.driver}</span>}
           </div>
           {r.currentDriver && r.currentDriver !== r.driver && (
             <div className="text-[11px] text-amber-700 break-words">moved onto {r.currentDriver} afterwards</div>
@@ -37734,7 +37742,7 @@ function StopDayListMobile({ days, onOpen, renderDetail }) {
             </div>
           )}
         </div>
-        ), panel ? <div key={`${r.date}:detail`}>{panel}</div> : null];
+        ), panel ? <div key={`${r.date}:detail`}>{panel}</div> : null, loadPanel ? <div key={`${r.date}:load`}>{loadPanel}</div> : null];
       })}
     </div>
   );
@@ -38663,7 +38671,32 @@ function CustomerDayHeading({ day, stacked }) {
 }
 
 /** DESKTOP: a table. A rep comparing six stops on one day reads down a column. */
-function CustomerDayTable({ day, onPro, renderDetail }) {
+/** Which row a load panel belongs to, and what the load is asked for by. One order on one day. */
+const loadRowOf = (r) => {
+  const stopNbr = r?.refs?.stopNbr || r?.stopNbr || r?.pro || null;
+  return { key: `${r?.date}|${stopNbr}`, date: r?.date || null, route: r?.route || null, driver: r?.driver || null, stopNbr };
+};
+
+/**
+ * THE ROUTE IS THE WAY INTO THE LOAD (v1.99.10). Chad, 2026-09-30, on a customer's row: "doesn't show
+ * me the load". A row that names a route AND a driver opens that load under itself — its map and
+ * every stop — and the customer stays on screen. No route is no load to open: the row still says
+ * un-planned. `onLoad` is null below dispatcher (Driver's loads is gated there), and then the route
+ * is the plain text it always was.
+ */
+function RouteLoadButton({ row, open, onLoad, tall = false }) {
+  if (!row?.route) return <span className="text-slate-400">un-planned</span>;
+  if (!onLoad || !row.driver || !row.date) return <>{row.route}</>;
+  return (
+    <button type="button" onClick={() => onLoad(loadRowOf(row))} aria-expanded={!!open}
+      title={open ? 'Close this load' : `Open ${row.route}’s load that day — its map and every stop`}
+      className={`inline-flex items-center gap-1 text-left font-semibold text-blue-800 hover:underline break-words ${tall ? 'min-h-[40px]' : ''}`}>
+      <Truck size={12} className="shrink-0" />{row.route}
+    </button>
+  );
+}
+
+function CustomerDayTable({ day, onPro, renderDetail, onLoad = null, renderLoad = null }) {
   return (
     <div className="space-y-1.5">
       <CustomerDayHeading day={day} />
@@ -38687,8 +38720,9 @@ function CustomerDayTable({ day, onPro, renderDetail }) {
                 rows straight when the panel moves from one order to another. */}
             {day.rows.flatMap((r) => {
               const panel = renderDetail?.(r.refs?.stopNbr || r.pro, r.date);
+              const loadPanel = renderLoad?.(loadRowOf(r).key);
               return [(
-              <tr key={r.key} className={`align-top ${panel ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
+              <tr key={r.key} className={`align-top ${panel || loadPanel ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
                 <td className="px-3 py-2"><StopOutcomeChip outcome={r.outcome} /></td>
                 <td className="px-3 py-2">
                   {/* THE PRO IS THE DRILL-DOWN. A rep reading a row out loud is one tap from
@@ -38700,7 +38734,7 @@ function CustomerDayTable({ day, onPro, renderDetail }) {
                   {r.refs.po && <div className="text-[10px] text-slate-400 break-words">PO {r.refs.po}</div>}
                 </td>
                 <td className="px-3 py-2 text-slate-700 break-words">{r.driver || <span className="text-slate-400">not assigned</span>}</td>
-                <td className="px-3 py-2 text-slate-700 break-words">{r.route || <span className="text-slate-400">un-planned</span>}
+                <td className="px-3 py-2 text-slate-700 break-words"><RouteLoadButton row={r} open={!!loadPanel} onLoad={onLoad} />
                   {r.seq != null && <span className="text-[11px] text-slate-400 whitespace-nowrap"> · stop {r.seq}</span>}</td>
                 <td className="px-3 py-2 text-[11px] whitespace-nowrap">
                   {r.deliveredAt
@@ -38723,6 +38757,12 @@ function CustomerDayTable({ day, onPro, renderDetail }) {
                     <div className="px-3 py-3">{panel}</div>
                   </td>
                 </tr>
+              ) : null, loadPanel ? (
+                <tr key={`${r.key}:load`}>
+                  <td colSpan={7} className="p-0 bg-slate-50">
+                    <div className="px-3 py-3">{loadPanel}</div>
+                  </td>
+                </tr>
               ) : null];
             })}
           </tbody>
@@ -38733,15 +38773,16 @@ function CustomerDayTable({ day, onPro, renderDetail }) {
 }
 
 /** PHONE: cards. Same seven facts, stacked, at a size somebody reads one-handed. */
-function CustomerDayCards({ day, onPro, renderDetail }) {
+function CustomerDayCards({ day, onPro, renderDetail, onLoad = null, renderLoad = null }) {
   return (
     <div className="space-y-1.5">
       <CustomerDayHeading day={day} stacked />
       <div className="space-y-2">
         {day.rows.flatMap((r) => {
           const panel = renderDetail?.(r.refs?.stopNbr || r.pro, r.date);
+          const loadPanel = renderLoad?.(loadRowOf(r).key);
           return [(
-          <div key={r.key} className={`rounded-xl border bg-white p-3 space-y-1.5 ${panel ? 'border-blue-300' : ''}`}>
+          <div key={r.key} className={`rounded-xl border bg-white p-3 space-y-1.5 ${panel || loadPanel ? 'border-blue-300' : ''}`}>
             <div className="flex flex-wrap items-center gap-1.5">
               <StopOutcomeChip outcome={r.outcome} />
               {r.deliveredAt && <span className="text-xs font-bold text-slate-800">{stopWhen(r.deliveredAt)}</span>}
@@ -38751,8 +38792,10 @@ function CustomerDayCards({ day, onPro, renderDetail }) {
                 title={panel ? 'Close this order' : 'Open this order — its detail, POD, line items and contact'}
                 className="ml-auto font-mono text-xs font-semibold text-blue-800 hover:underline break-all min-h-[40px] px-1">{r.pro}</button>
             </div>
-            <div className="text-xs text-slate-700 break-words">
-              {r.driver || 'not assigned'}{r.route ? ` · ${r.route}` : ''}{r.seq != null ? ` · stop ${r.seq}` : ''}
+            <div className="text-xs text-slate-700 break-words flex flex-wrap items-center gap-x-1">
+              <span>{r.driver || 'not assigned'}</span>
+              {r.route && <><span className="text-slate-400">·</span><RouteLoadButton row={r} open={!!loadPanel} onLoad={onLoad} tall /></>}
+              {r.seq != null && <span>· stop {r.seq}</span>}
             </div>
             {(custFreight(r) || r.proCount > 1) && (
               <div className="text-[11px] text-slate-500 break-words">
@@ -38763,7 +38806,7 @@ function CustomerDayCards({ day, onPro, renderDetail }) {
               {custAddr(r.address)}<span className="text-slate-400"> {custCity(r.address)}</span>
             </div>
           </div>
-          ), panel ? <div key={`${r.key}:detail`}>{panel}</div> : null];
+          ), panel ? <div key={`${r.key}:detail`}>{panel}</div> : null, loadPanel ? <div key={`${r.key}:load`}>{loadPanel}</div> : null];
         })}
       </div>
     </div>
@@ -38796,7 +38839,7 @@ function CustomerYearButton({ on, onClick, year }) {
 function CustomerRangeBar({ sel, setSel, range, today, stacked, yearOn, onYear }) {
   const year = String(today || '').slice(0, 4);
   return (
-    <div className={stacked ? 'rounded-xl border bg-white p-2 space-y-2' : 'flex flex-wrap items-center gap-1.5'}>
+    <div role="group" aria-label="The customer's window" className={stacked ? 'rounded-xl border bg-white p-2 space-y-2' : 'flex flex-wrap items-center gap-1.5'}>
       <div className="flex flex-wrap items-center gap-1.5">
         {CUSTOMER_PRESETS.map((p) => (
           <button key={p.key} onClick={() => setSel(p.sel)}
@@ -38823,7 +38866,7 @@ function CustomerRangeBar({ sel, setSel, range, today, stacked, yearOn, onYear }
 
 /** Two or more real businesses matched what was typed. Counts included, because the sweep
  *  that produced them has already been paid for and an uninformed choice is a wasted one. */
-function CustomerChooser({ matches, query, onPick, incomplete }) {
+function CustomerChooser({ matches, query, onPick, incomplete, openingKey = null }) {
   // A match with `stops: null` was never counted (the year's chooser) — it gets no count line,
   // because "nothing in this window" is a claim, and nothing measured it.
   const counted = matches.some((m) => m.stops != null);
@@ -38839,22 +38882,35 @@ function CustomerChooser({ matches, query, onPick, incomplete }) {
         </div>
       )}
       <div className="space-y-2">
-        {matches.map((m) => (
-          <button key={m.nameKey} onClick={() => onPick(m)}
-            className="w-full text-left rounded-xl border bg-white p-3 hover:bg-slate-50 hover:border-slate-300 flex items-center gap-3 min-h-[56px]">
-            <div className="min-w-0 flex-1">
-              <div className="font-semibold text-slate-800 break-words">{m.name}</div>
-              <div className="text-[11px] text-slate-500">
-                {[m.stops == null ? null : m.stops ? `${m.stops} stop${m.stops === 1 ? '' : 's'} in this window` : 'nothing in this window',
-                  m.lastDate ? `last ${formatDateForDisplay(m.lastDate)}` : null].filter(Boolean).join(' · ')}
+        {/* THE TAPPED ROW SAYS IT IS OPENING. Chad, 2026-09-30: "clicking this and nothing happens".
+            It did happen — a customer's answer takes about ten seconds to read — but the only sign was
+            "Looking…" on the search button, a screen above on a phone, and a second tap started the read
+            again and the clock with it. That row now ignores a second tap; a different row switches. */}
+        {matches.map((m) => {
+          const opening = openingKey === m.nameKey;
+          return (
+            <button key={m.nameKey} onClick={() => onPick(m)} disabled={opening} aria-busy={opening}
+              className={`w-full text-left rounded-xl border p-3 flex items-center gap-3 min-h-[56px] ${opening
+                ? 'bg-blue-50 border-blue-300'
+                : 'bg-white hover:bg-slate-50 hover:border-slate-300'}`}>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-slate-800 break-words">{m.name}</div>
+                <div className="text-[11px] text-slate-500">
+                  {opening
+                    ? <span className="font-semibold text-blue-800">Opening — reading their deliveries…</span>
+                    : [m.stops == null ? null : m.stops ? `${m.stops} stop${m.stops === 1 ? '' : 's'} in this window` : 'nothing in this window',
+                      m.lastDate ? `last ${formatDateForDisplay(m.lastDate)}` : null].filter(Boolean).join(' · ')}
+                </div>
               </div>
-            </div>
-            {m.today > 0 && (
-              <span className="shrink-0 rounded-lg bg-blue-100 text-blue-900 px-2 py-1 text-xs font-bold whitespace-nowrap">{m.today} today</span>
-            )}
-            <ChevronRight size={16} className="shrink-0 text-slate-400" />
-          </button>
-        ))}
+              {m.today > 0 && (
+                <span className="shrink-0 rounded-lg bg-blue-100 text-blue-900 px-2 py-1 text-xs font-bold whitespace-nowrap">{m.today} today</span>
+              )}
+              {opening
+                ? <RefreshCw size={16} className="shrink-0 text-blue-700 animate-spin" />
+                : <ChevronRight size={16} className="shrink-0 text-slate-400" />}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -39255,7 +39311,7 @@ function placeDatesLine(data) {
   return c.from ? `All dates we hold · ${formatDateForDisplay(c.from)} – ${formatDateForDisplay(c.to)} · ${days}` : 'All dates we hold';
 }
 
-function PlaceResults({ data, stacked, onOrder, renderDetail, rowsShown, onMore, onNarrow, ledgerOpen, onToggleLedger }) {
+function PlaceResults({ data, stacked, onOrder, renderDetail, rowsShown, onMore, onNarrow, ledgerOpen, onToggleLedger, onLoad = null, renderLoad = null }) {
   if (data.switchedOff) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 text-sm p-3">
@@ -39377,8 +39433,8 @@ function PlaceResults({ data, stacked, onOrder, renderDetail, rowsShown, onMore,
       {days.length > 0 && (
         <div className="space-y-4">
           {days.map((day) => (stacked
-            ? <CustomerDayCards key={day.date} day={day} onPro={onOrder} renderDetail={renderDetail} />
-            : <CustomerDayTable key={day.date} day={day} onPro={onOrder} renderDetail={renderDetail} />))}
+            ? <CustomerDayCards key={day.date} day={day} onPro={onOrder} renderDetail={renderDetail} onLoad={onLoad} renderLoad={renderLoad} />
+            : <CustomerDayTable key={day.date} day={day} onPro={onOrder} renderDetail={renderDetail} onLoad={onLoad} renderLoad={renderLoad} />))}
         </div>
       )}
       {listed < v.shown && (
@@ -39792,7 +39848,7 @@ function LoadMap({ load, yard, stacked }) {
 }
 
 /** The load's orders: the delivered run first, numbered as the map numbers them, then the rest. */
-function LoadStopList({ rows, onOrder, renderDetail, narrow = false }) {
+function LoadStopList({ rows, onOrder, renderDetail, narrow = false, markNbr = null }) {
   const inRun = rows.filter((r) => r.stop != null).sort((a, b) => a.stop - b.stop || String(a.at || '').localeCompare(String(b.at || '')));
   const rest = rows.filter((r) => r.stop == null);
   return (
@@ -39801,14 +39857,19 @@ function LoadStopList({ rows, onOrder, renderDetail, narrow = false }) {
         const panel = renderDetail?.(r.stopNbr, r.date, narrow ? { stacked: true } : undefined);
         const [tone, word] = LOAD_OUTCOME[r.outcome] || LOAD_OUTCOME.open;
         const badge = r.stop != null ? BRAND : r.outcome === 'not-delivered' ? '#dc2626' : r.outcome === 'open' ? '#d97706' : r.outcome === 'out' ? '#0284c7' : '#64748b';
+        // THE ORDER THE LOAD WAS OPENED FROM, marked — a load opened from a customer's row is read
+        // for where that customer sat in it.
+        const marked = !!markNbr && r.stopNbr === markNbr;
         return [(
-          <li key={`${r.stopNbr}|${r.date}`} className={`flex items-start gap-3 px-3 py-2.5 ${panel ? 'bg-blue-50' : ''}`}>
+          <li key={`${r.stopNbr}|${r.date}`} data-marked={marked || undefined}
+            className={`flex items-start gap-3 px-3 py-2.5 ${panel ? 'bg-blue-50' : marked ? 'bg-amber-50' : ''}`}>
             <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white" style={{ background: badge }}>
               {r.stop != null ? r.stop : r.outcome === 'not-delivered' ? '!' : r.outcome === 'open' ? '?' : r.outcome === 'out' ? '›' : '·'}
             </span>
             <div className="min-w-0 flex-1">
               <button type="button" onClick={() => onOrder(r.stopNbr, r.date)} aria-expanded={!!panel}
                 className="text-left text-sm font-medium text-blue-800 hover:underline break-words">{r.businessName || r.stopNbr}</button>
+              {marked && <span className="ml-1.5 inline-block whitespace-nowrap rounded bg-amber-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">this order</span>}
               <div className="text-[11px] text-slate-500 break-words">
                 <span className="font-mono">{r.stopNbr}</span>{r.city ? ` · ${r.city}` : ''}{r.pickup ? ' · pickup' : ''}{r.attempt ? ' · redelivery' : ''}
                 {r.weight != null ? ` · ${loadLb(r.weight)}` : ''}
@@ -39827,7 +39888,7 @@ function LoadStopList({ rows, onOrder, renderDetail, narrow = false }) {
 }
 
 /** What opens under a load: its map and its orders. */
-function LoadDetail({ load, yard, stacked, milesWhy, onOrder, renderDetail }) {
+function LoadDetail({ load, yard, stacked, milesWhy, onOrder, renderDetail, markNbr = null }) {
   const left = load.runLeftOut || {};
   const unplaced = (left.noTime || 0) + (left.noPin || 0);
   return (
@@ -39843,7 +39904,7 @@ function LoadDetail({ load, yard, stacked, milesWhy, onOrder, renderDetail }) {
         </p>
       </div>
       {/* Beside the map (a desktop table row) the list is the narrow column of two. */}
-      <LoadStopList rows={load.rows} onOrder={onOrder} renderDetail={renderDetail} narrow={!stacked} />
+      <LoadStopList rows={load.rows} onOrder={onOrder} renderDetail={renderDetail} narrow={!stacked} markNbr={markNbr} />
     </div>
   );
 }
@@ -40066,6 +40127,102 @@ function DriverWeekChooser({ data, stacked, onPick }) {
   );
 }
 
+/**
+ * ONE LOAD, OPENED UNDER THE ROW THAT RODE ON IT (v1.99.10).
+ *
+ * The same answer Driver's loads gives (driver-loads, one day, one driver) with the row's load picked
+ * out by loadForRow, drawn by the same LoadDetail. Every state says what it is: reading, a name two
+ * drivers answer to, a route that matches none of the driver's loads that day (the day's loads are
+ * listed to pick from, never one chosen for them), and a read that failed.
+ */
+function RowLoadPanel({ st, stacked, onClose, onPickDriver, onPickLoad, onOrder, renderDetail }) {
+  const day = st.date ? loadDay(st.date) : '';
+  const closeBtn = (
+    <button type="button" onClick={onClose}
+      className="shrink-0 rounded-lg px-3 min-h-[40px] text-xs font-semibold text-slate-700 ring-1 ring-inset ring-slate-300 bg-white hover:bg-slate-50">Close</button>
+  );
+  const shell = (body, tone = 'ring-[#1e5b92]/30') => (
+    <section aria-label={`${st.route || 'Load'} — the load`} className={`rounded-xl bg-white ring-1 ${tone} overflow-hidden`}>{body}</section>
+  );
+  const note = (text, extra = null, tone) => shell(
+    <div className="p-3 space-y-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 text-sm text-slate-700">{text}</div>
+        {closeBtn}
+      </div>
+      {extra}
+    </div>, tone);
+  if (st.loading) {
+    return note(<span role="status" className="inline-flex items-center gap-2 font-medium text-slate-700">
+      <RefreshCw size={14} className="animate-spin shrink-0" /> Opening {st.route}&rsquo;s load for {day}…</span>);
+  }
+  if (st.err) return note(<span className="text-red-800">Could not open {st.route}&rsquo;s load: {st.err}</span>, null, 'ring-red-200');
+  const j = st.data || {};
+  const pickBtn = 'rounded-lg px-3 min-h-[40px] text-xs font-semibold text-[#1e5b92] ring-1 ring-inset ring-[#1e5b92]/30 bg-white hover:bg-[#1e5b92]/5 text-left';
+  // WHY A DAY CAN HOLD NOTHING, SAID AS IT IS. driver-loads does not read a day that has not happened
+  // (a planned load for Friday is not "no load"), and a day it could not read is not an empty one.
+  const dayRead = (j.days || []).find((x) => x.date === st.date);
+  if (dayRead?.source === 'future') {
+    return note(<>{st.route} runs {day}, which has not happened yet. A load opens here from the day it runs.</>);
+  }
+  if (dayRead?.source === 'unread' && !(j.loads || []).length) {
+    return note(<span className="text-red-800">{day} could not be read, so {st.route}&rsquo;s load cannot be shown. Try again.</span>, null, 'ring-red-200');
+  }
+  if (j.mode === 'driver-week-choose') {
+    // TWO WAYS TO GET HERE, and neither is "there is no load". Several drivers answer to the name —
+    // pick one. Or NONE does: driver-loads folds the alias list (a vendor rename, "Brent  Boyd" →
+    // "Brent  Bryd") before it matches, and this row was never folded, so the load is filed under
+    // another spelling. Then the day's drivers are the list — `drivers`, which the answer carries.
+    const several = (j.candidates || []).length > 1;
+    const list = several ? j.candidates : (j.drivers || []);
+    return note(
+      several
+        ? <>&ldquo;{st.driver}&rdquo; matches {list.length} drivers on {day}. Pick the one who ran {st.route}:</>
+        : list.length
+          ? <>No driver in our records for {day} is called &ldquo;{st.driver}&rdquo; &mdash; a renamed driver is filed under the new name. The drivers who ran loads that day:</>
+          : <>Our records hold no loads at all for {day}, so there is no load to open.</>,
+      list.length ? <div className="flex flex-wrap gap-2">{list.map((d) => (
+        <button key={d.key} type="button" onClick={() => onPickDriver(d.key)} className={pickBtn}>{d.label} · {plural(d.loads, 'load')}</button>
+      ))}</div> : null);
+  }
+  const loads = j.loads || [];
+  const load = (st.chosen && loads.find((l) => l.key === st.chosen)) || loadForRow(loads, st);
+  if (!load) {
+    return note(
+      loads.length
+        ? <>No load named {st.route} for {j.driver?.label || st.driver} on {day} in our records. The loads they ran that day:</>
+        : <>Our records hold no load for {j.driver?.label || st.driver} on {day}, so there is no load to open.</>,
+      loads.length ? <div className="flex flex-wrap gap-2">{loads.map((l) => (
+        <button key={l.key} type="button" onClick={() => onPickLoad(l.key)} className={pickBtn}>{l.name} · {plural(l.stops, 'stop')}</button>
+      ))}</div> : null);
+  }
+  const f = loadFacts(load, j.miles);
+  // A LOAD THAT DOES NOT HOLD THIS ORDER IS SAID TO. Picked by its route name, it is the truck the
+  // row names — but an order moved onto another truck that day (an attempt taken over, a re-plan)
+  // is filed on the one that ended with it, and a rep must not read this load out as its truck.
+  const holds = !st.stopNbr || (load.rows || []).some((r) => r.stopNbr === st.stopNbr);
+  return shell(<>
+    <div className="flex items-start justify-between gap-3 p-3">
+      <div className="min-w-0">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">The load · {day}{f.truck ? ` · ${f.truck}` : ''}</div>
+        <div className="font-semibold text-slate-900 break-words">{load.name} &mdash; {j.driver?.label || st.driver}</div>
+        <div className="text-xs text-slate-600 break-words">
+          {plural(load.stops, 'stop')} · {f.delivered} delivered{f.outNow ? ` · ${f.outNow}` : ''}{f.exceptions ? ` · ${f.exceptions}` : ''} · {f.window} · {f.miles} · {f.freight}
+        </div>
+      </div>
+      {closeBtn}
+    </div>
+    {!holds && (
+      <div className="mx-3 mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+        This order is not on {load.name} in {day}&rsquo;s records. This is the load the row names; do not read it out as the order&rsquo;s truck.
+      </div>
+    )}
+    <div className="border-t border-slate-200 bg-slate-50">
+      <LoadDetail load={load} yard={j.yard} stacked={stacked} milesWhy={f.milesWhy} onOrder={onOrder} renderDetail={renderDetail} markNbr={st.stopNbr} />
+    </div>
+  </>);
+}
+
 const STOP_LOOKUP_LAST = 'dd_stop_lookup_last';
 const STOP_LOOKUP_RANGE = 'dd_stop_lookup_range';
 
@@ -40106,7 +40263,7 @@ function StopLookupScreen() {
   // How many of the year's orders are listed. Starts short because the year is read for its
   // COUNTS; a rep who wants the list asks for more.
   const [yearOrdersShown, setYearOrdersShown] = useState(20);
-  const [detail, setDetail] = useState(null);       // { stopNbr, date } | null
+  const [detail, setDetail] = useState(null);       // { stopNbr, date, where } | null
   const [detailData, setDetailData] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailErr, setDetailErr] = useState(null);
@@ -40143,6 +40300,20 @@ function StopLookupScreen() {
   // on the button that was pressed, not on both. Both stay disabled while either runs: there is
   // one answer area, and two searches racing into it would show whichever finished last.
   const [busy, setBusy] = useState(null);         // 'order' | 'place' | null
+  // WHAT IS BEING READ, IN WORDS, and which chooser row asked for it (v1.99.10). The status line that
+  // carries it stays at the top of the view wherever the page is scrolled: Chad tapped a business on a
+  // phone and "nothing happens" — the read was running, and its only sign was a button off screen.
+  const [busyNote, setBusyNote] = useState('');
+  const [openingKey, setOpeningKey] = useState(null);
+  // ONE LOAD OPEN UNDER ONE ROW (v1.99.10) — { key, date, route, driver, stopNbr, loading, err, data,
+  // chosen }. Its own request counter: a slow answer for a row the rep has since closed or left must
+  // not open under whatever is on screen now.
+  const [rowLoad, setRowLoad] = useState(null);
+  const rowLoadReqRef = useRef(0);
+  // Set for the one openOrder call a tap INSIDE a row's load makes, so the order opens there.
+  const orderInLoadRef = useRef(false);
+  const detailRef = useRef(null);
+  detailRef.current = detail;
   // RECENT LOOKUPS on this device — see src/lib/stop-lookup-recent.js for what is kept and why.
   const [recent, setRecent] = useState(() => {
     try { return parseRecent(localStorage.getItem(STOP_LOOKUP_RECENT)); } catch { return []; }
@@ -40213,6 +40384,8 @@ function StopLookupScreen() {
     const term = String(raw ?? '').trim();
     if (!term) return;
     setLoading(true); setBusy('order'); setErr(null); setPromptMsg(null);
+    setBusyNote(opts.note || `Looking up \u201c${term}\u201d…`); setOpeningKey(opts.opening || null);
+    rowLoadReqRef.current += 1; setRowLoad(null);
     // An open editor belongs to the customer that WAS on screen. Carrying it across a new
     // search is how a dock's hours get typed onto somebody else's dock.
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
@@ -40287,11 +40460,17 @@ function StopLookupScreen() {
     const id = String(stopNbr ?? '').trim();
     const day = String(date ?? '').trim();
     if (!id || !day) return;
+    // WHERE IT WAS TAPPED (v1.99.10): under its row, or inside a load opened under a row. One order
+    // can be in both places at once — a customer with two orders on one truck — and it opens in the
+    // one that was tapped, never both (two panels meant two priced timeline buttons for one order).
+    const where = orderInLoadRef.current ? 'load' : 'row';
+    orderInLoadRef.current = false;
+    if (detail && detail.stopNbr === id && detail.date === day && (detail.where || 'row') !== where) { setDetail({ ...detail, where }); return; }
     // TAPPING THE OPEN ONE AGAIN CLOSES IT. Inline, the row IS the control — an expanded panel
     // with no way back but a Close button four hundred pixels down the page is how an
     // accordion becomes a trap.
     if (detail && detail.stopNbr === id && detail.date === day) { closeOrder(); return; }
-    setDetail({ stopNbr: id, date: day });
+    setDetail({ stopNbr: id, date: day, where });
     setDetailLoading(true); setDetailErr(null); setDetailData(null);
     const req = ++detailReqRef.current;
     try {
@@ -40330,6 +40509,7 @@ function StopLookupScreen() {
   const renderOrderPanel = useCallback((stopNbr, date, opts = {}) => {
     if (!detail) return null;
     if (detail.stopNbr !== String(stopNbr ?? '').trim() || detail.date !== String(date ?? '').trim()) return null;
+    if ((detail.where || 'row') !== (opts.where || 'row')) return null;
     const pro = detailData?.stop?.pro || detail.stopNbr;
     return (
       <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={opts.stacked ?? isMobile} onTimelineSpent={timelineSpent}
@@ -40510,10 +40690,63 @@ function StopLookupScreen() {
   }, [editDock, editDraft, editWas, editSeed, notesGate.reason]);
 
   /** The rep picked one of several matching businesses. */
+  // THE CHOOSER'S OWN QUESTION is re-asked with the pick — `data.query`, never whatever the box holds
+  // now: a box edited after the list appeared sent the new word with the old business's key, and the
+  // answer was for neither. (The line above is an anchor: customer-notes-edit-dock-race.test.mjs cuts
+  // saveEdit out of this file at it.)
   const pickCustomer = useCallback((m) => {
+    // The business already opening ignores a second tap (that restarted its ten-second read). A
+    // DIFFERENT business replaces it: run() drops the older answer, so a mis-tap costs nothing.
+    if (busy === 'order' && openingKey === m.nameKey) return;
     setNameKey(m.nameKey);
-    run(q, { range, nameKey: m.nameKey, year: yearOn ? today.slice(0, 4) : null });
-  }, [run, q, range, yearOn, today]);
+    run(data?.query || q, { range, nameKey: m.nameKey, year: yearOn ? today.slice(0, 4) : null, note: `Opening ${m.name}…`, opening: m.nameKey });
+  }, [run, data, q, range, yearOn, today, busy, openingKey]);
+
+  // Closing a load closes an order opened inside it too — nothing is left open where no one can see it.
+  const closeRowLoad = useCallback(() => {
+    rowLoadReqRef.current += 1; setRowLoad(null);
+    if (detailRef.current?.where === 'load') closeOrder();
+  }, [closeOrder]);
+  const openOrderInLoad = useCallback((stopNbr, date) => { orderInLoadRef.current = true; openOrder(stopNbr, date); }, [openOrder]);
+  const renderOrderInLoad = useCallback((stopNbr, date, o = {}) => renderOrderPanel(stopNbr, date, { ...o, where: 'load' }), [renderOrderPanel]);
+
+  /**
+   * THE LOAD A ROW RODE ON, opened under that row (v1.99.10). Chad, 2026-09-30: "doesn't show me the
+   * load". Asked of driver-loads for that one driver and that one day — Firestore and the load-miles
+   * cache, never NuVizz — and picked out by loadForRow. Tapping the same route again closes it.
+   * `over.driverKey` is the second ask, when the row's driver name matched two people.
+   */
+  const openRowLoad = useCallback(async (row, over = {}) => {
+    if (!row?.key || !row.date || !row.driver) return;
+    if (!over.driverKey && rowLoad?.key === row.key) { closeRowLoad(); return; }
+    if (driverGate.reason) { setErr(driverGate.reason); return; }
+    const req = ++rowLoadReqRef.current;
+    setRowLoad({ ...row, loading: true, err: null, data: null, chosen: null });
+    const p = new URLSearchParams({ from: row.date, to: row.date });
+    if (over.driverKey) p.set('key', over.driverKey); else p.set('driver', row.driver);
+    try {
+      const r = await apiFetch(`/.netlify/functions/driver-loads?${p.toString()}`);
+      const j = await r.json();
+      if (req !== rowLoadReqRef.current) return;
+      if (!j.ok) throw new Error(j.error || 'the load could not be read');
+      setRowLoad((cur) => (cur && cur.key === row.key ? { ...cur, loading: false, data: j } : cur));
+    } catch (e) {
+      if (req === rowLoadReqRef.current) setRowLoad((cur) => (cur && cur.key === row.key ? { ...cur, loading: false, err: String(e.message || e) } : cur));
+    }
+  }, [rowLoad, closeRowLoad, driverGate.reason]);
+
+  /** The panel under the row that holds it, and null for every other row — the renderOrderPanel shape. */
+  const renderRowLoad = useCallback((key) => {
+    if (!rowLoad || rowLoad.key !== key) return null;
+    return (
+      <RowLoadPanel st={rowLoad} stacked={isMobile} onClose={closeRowLoad}
+        onPickDriver={(driverKey) => openRowLoad(rowLoad, { driverKey })}
+        onPickLoad={(k) => setRowLoad((cur) => (cur ? { ...cur, chosen: k } : cur))}
+        onOrder={openOrderInLoad} renderDetail={renderOrderInLoad} />
+    );
+  }, [rowLoad, isMobile, closeRowLoad, openRowLoad, openOrderInLoad, renderOrderInLoad]);
+  // Below dispatcher Driver's loads is refused, so the route stays the plain text it always was.
+  const loadHandler = driverGate.reason ? null : openRowLoad;
 
   /** A new window on a customer already on screen: re-read, keep the customer. */
   const changeRange = useCallback((nextSel) => {
@@ -40547,6 +40780,7 @@ function StopLookupScreen() {
     const f = { ...EMPTY_PLACE, ...(fields || {}) };
     if (!placeQueryUsable(placeQuery(f))) { setErr('Type a street address, a city or a ZIP to search by.'); return; }
     setLoading(true); setBusy('place'); setErr(null); setPromptMsg(null); closeOrder();
+    setBusyNote('Searching those addresses…'); setOpeningKey(null); rowLoadReqRef.current += 1; setRowLoad(null);
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     try { localStorage.setItem(STOP_LOOKUP_PLACE, JSON.stringify(f)); } catch { /* a remembered box is a convenience */ }
     const req = ++drvReqRef.current;
@@ -40588,6 +40822,7 @@ function StopLookupScreen() {
     if (driverGate.reason) { setErr(driverGate.reason); return; }
     const wk = periodRange(sel?.period || 'today', today, sel) || { from: today, to: today };
     setLoading(true); setBusy('driver'); setErr(null); setPromptMsg(null); closeOrder(); setOpenLoad(null);
+    setBusyNote('Reading the driver\u2019s loads…'); setOpeningKey(null); rowLoadReqRef.current += 1; setRowLoad(null);
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     const typed = String(name ?? '').trim();
     try { localStorage.setItem(STOP_LOOKUP_DRIVER, typed); } catch { /* a remembered box is a convenience */ }
@@ -40647,8 +40882,8 @@ function StopLookupScreen() {
    *  must not wipe an address search that is still on screen beside it. */
   const clearOrder = useCallback(() => {
     setQ(''); setErr(null);
-    if (data && !['place', 'driver-week', 'driver-week-choose'].includes(data.mode)) { setData(null); closeOrder(); }
-  }, [data, closeOrder]);
+    if (data && !['place', 'driver-week', 'driver-week-choose'].includes(data.mode)) { setData(null); closeOrder(); closeRowLoad(); }
+  }, [data, closeOrder, closeRowLoad]);
   const clearDriver = useCallback(() => {
     setDrvName(''); setErr(null);
     try { localStorage.setItem(STOP_LOOKUP_DRIVER, ''); } catch { /* convenience */ }
@@ -40656,13 +40891,23 @@ function StopLookupScreen() {
   }, [data, closeOrder]);
   const clearPlace = useCallback(() => {
     setPlace(EMPTY_PLACE); setErr(null);
-    if (data?.mode === 'place') { setData(null); closeOrder(); }
-  }, [data, closeOrder]);
+    if (data?.mode === 'place') { setData(null); closeOrder(); closeRowLoad(); }
+  }, [data, closeOrder, closeRowLoad]);
 
   const d = data?.mode === 'stop' ? data.dossier : null;
 
   return (
     <div ref={scrollerRef} className="flex-1 overflow-y-auto bg-slate-50">
+      {/* WHAT IS BEING READ, AT THE TOP OF THE VIEW WHEREVER THE PAGE IS SCROLLED (v1.99.10). Zero
+          height and sticky, so it lays over the page instead of pushing it down while it shows. */}
+      {busy && (
+        <div className="sticky top-0 z-20 h-0 flex justify-center pointer-events-none">
+          <div role="status" aria-live="polite" data-lookup-busy=""
+            className="mt-2 mx-4 inline-flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-full bg-slate-900/90 px-3 py-1.5 text-xs font-semibold text-white shadow-lg">
+            <RefreshCw size={13} className="animate-spin shrink-0" /><span className="truncate">{busyNote || 'Looking…'}</span>
+          </div>
+        </div>
+      )}
       <div className={`${SCREEN_DASH} px-4 py-5 sm:px-6 sm:py-8 space-y-5 sm:space-y-6`}>
         {/* THE LITERAL "Stop lookup" STAYS IN THE BODY. verify-desktop-layout.mjs proves the
             screen arrived with document.body.innerText.includes('Stop lookup') — rename it
@@ -40703,7 +40948,7 @@ function StopLookupScreen() {
         )}
 
         {data?.mode === 'place' && (
-          <PlaceResults data={data} stacked={isMobile} onOrder={openOrder} renderDetail={renderOrderPanel}
+          <PlaceResults data={data} stacked={isMobile} onOrder={openOrder} renderDetail={renderOrderPanel} onLoad={loadHandler} renderLoad={renderRowLoad}
             rowsShown={placeRowsShown} onMore={() => setPlaceRowsShown((n) => n + PLACE_PAGE)} onNarrow={narrowPlace}
             ledgerOpen={ledgerOpen} onToggleLedger={() => setLedgerOpen((x) => !x)} />
         )}
@@ -40712,7 +40957,8 @@ function StopLookupScreen() {
           <div className="space-y-4">
             <CustomerRangeBar sel={sel} setSel={changeRange} range={data.window || range} today={today} stacked={isMobile}
               yearOn={!!data.year} onYear={showYear} />
-            <CustomerChooser matches={data.matches} query={data.query} onPick={pickCustomer} incomplete={data.complete === false} />
+            <CustomerChooser matches={data.matches} query={data.query} onPick={pickCustomer} incomplete={data.complete === false}
+              openingKey={busy === 'order' ? openingKey : null} />
           </div>
         )}
 
@@ -40778,8 +41024,8 @@ function StopLookupScreen() {
               {v.days.length > 0
                 ? <div className="space-y-4">
                   {v.days.map((day) => (isMobile
-                    ? <CustomerDayCards key={day.date} day={day} onPro={openOrder} renderDetail={renderOrderPanel} />
-                    : <CustomerDayTable key={day.date} day={day} onPro={openOrder} renderDetail={renderOrderPanel} />))}
+                    ? <CustomerDayCards key={day.date} day={day} onPro={openOrder} renderDetail={renderOrderPanel} onLoad={loadHandler} renderLoad={renderRowLoad} />
+                    : <CustomerDayTable key={day.date} day={day} onPro={openOrder} renderDetail={renderOrderPanel} onLoad={loadHandler} renderLoad={renderRowLoad} />))}
                 </div>
                 : v.complete !== false && (
                   <div className="rounded-xl border bg-white p-6 text-center">
@@ -40873,8 +41119,8 @@ function StopLookupScreen() {
             )}
 
           {!!d.days.length && (isMobile
-            ? <StopDayListMobile days={d.days} onOpen={openOrder} renderDetail={renderOrderPanel} />
-            : <StopDayTable days={d.days} onOpen={openOrder} renderDetail={renderOrderPanel} />)}
+            ? <StopDayListMobile days={d.days} onOpen={openOrder} renderDetail={renderOrderPanel} onLoad={loadHandler} renderLoad={renderRowLoad} />
+            : <StopDayTable days={d.days} onOpen={openOrder} renderDetail={renderOrderPanel} onLoad={loadHandler} renderLoad={renderRowLoad} />)}
 
           {!!d.addressChanges.length && (
             <div className="space-y-2">
