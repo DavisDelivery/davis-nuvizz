@@ -264,7 +264,7 @@ export function attributeAttempts(
     const hit = fromPlan ? null : holderFor(holders, nbr);
     const p = fromPlan || (hit ? planRecordFromHolder(hit, nbr) : { stopNbr: nbr });
     const item = buildAttemptItem(p, cur, date, detectedAt);
-    item.attributedFrom = fromPlan ? 'plan' : hit ? (hit.via === 'stop' ? 'holder' : 'holder-original') : null;
+    item.attributedFrom = fromPlan ? 'plan' : hit ? 'holder' : null;
     if (hit) item.holderFrozen = !!hit.rec.frozenAt;
     items.push(item);
   }

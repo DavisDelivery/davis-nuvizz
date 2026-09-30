@@ -22,6 +22,12 @@
 //   4. The last dispatch inside that window is the answer. No dispatch that day → the last Davis
 //      driver event (pickup, arrival, departure, exception) inside it. Nothing at all → no answer,
 //      and none is invented.
+//   5. (v1.99.8) A "Stop Dispatched" names a driver ONLY when the same person also has driver-app
+//      activity in the window — a pickup, an arrival, a departure, a confirmation. Staff can dispatch
+//      a load from the portal, and the event then carries THEIR name: the first backfill run named
+//      Freddy Perez (customer service, never on any plan, roster or board) for 007173373 on 9/9, a
+//      stop on the CHAD holding route, which the roster shows as a draft with no driver and 0 trips.
+//      In every real timeline read so far the driver's own dispatch arrives with their pickups.
 // `atCustomer` says whether that driver recorded a Stop Arrival at the customer that day. In the
 // five-stop test only one of the five had one: the order was on the truck, the door was never
 // reached. That is worth knowing before an "attempt" is charged as one.
@@ -63,6 +69,8 @@ const isUnplan = (e: TimelineEvent) => /^stop unplanned$/i.test(clean(e.name));
 // Events only a driver produces, out on the road. Planning, unplanning, creating and updating are
 // dispatcher and customer-service actions and are deliberately absent.
 const DROVE_IT = /(arrival|depart|confirmation|dispatched|delivered|delivery|pod|signature|exception)/i;
+// What only the driver's app produces: DROVE_IT without the dispatch itself (rule 5).
+const onTheRoad = (e: TimelineEvent) => DROVE_IT.test(clean(e.name)) && !isDispatch(e);
 
 /**
  * PURE. The driver assigned the order on `dueDate` (YYYY-MM-DD), from its timeline. Null when the
@@ -77,8 +85,9 @@ export function dueDayDriver(events: TimelineEvent[] | null | undefined, dueDate
   const firstDispatch = day.find((x) => isDispatch(x.e) && isDavis(x.e) && clean(x.e.user));
   const unplan = firstDispatch ? day.find((x) => isUnplan(x.e) && x.at >= firstDispatch.at) : undefined;
   const inWindow = day.filter((x) => !unplan || x.at <= unplan.at);
-  const dispatches = inWindow.filter((x) => isDispatch(x.e) && isDavis(x.e) && clean(x.e.user));
-  const driven = inWindow.filter((x) => DROVE_IT.test(clean(x.e.name)) && isDavis(x.e) && clean(x.e.user));
+  const driven = inWindow.filter((x) => onTheRoad(x.e) && isDavis(x.e) && clean(x.e.user));
+  const onRoad = new Set(driven.map((x) => clean(x.e.user)));
+  const dispatches = inWindow.filter((x) => isDispatch(x.e) && isDavis(x.e) && onRoad.has(clean(x.e.user)));
   const pick = dispatches.length ? dispatches[dispatches.length - 1] : driven[driven.length - 1];
   if (!pick) return null;
   // Ends trimmed, inner spacing kept: NuVizz's own names carry double spaces ("Christopher  Garrett")
@@ -102,69 +111,58 @@ export function dueDayDriver(events: TimelineEvent[] | null | undefined, dueDate
 /** "007174789-1" → "007174789". */
 export const originalOf = (stopNbr: any): string => String(stopNbr ?? '').trim().replace(/-\d+$/, '');
 
-export interface BackfillGroup {
-  date: string; original: string; rows: string[];
-  // v1.99.7 — a row of the SAME order that day already names the driver (the 8:30 freeze, the day's
-  // record or an earlier backfill). One order, one failure: that answer is this row's too, and it
-  // costs no NuVizz call. Absent → the group needs its timeline read.
-  sibling?: { stopNbr: string; driverName: string | null; driverUserName: string | null; driverKey: string | null; loadNbr: string | null; routeName: string | null; source: string };
-}
+/** A "-1" / "-2" stop: a DUPLICATE ORDER (v1.102.4), never the original's failure. */
+export const isCopy = (stopNbr: any): boolean => /-\d+$/.test(String(stopNbr ?? '').trim());
+
+export interface BackfillGroup { date: string; original: string; rows: string[] }
 
 /**
- * PURE. Which attempts the backfill looks up: rows the evening join left without a driver and no
- * earlier backfill has already read (`timelineCheckedAt`). An original stop and its "-N" copies on
- * the same day are ONE group — one timeline read answers all of them, because the copy's failure is
- * the original's. Oldest day first, so a run that stops early leaves a clean line behind it.
+ * PURE. Which attempts the backfill looks up: an ORIGINAL stop's own row that the evening join left
+ * without a driver and no earlier backfill has already read (`timelineCheckedAt`). Oldest day first,
+ * so a run that stops early leaves a clean line behind it.
  *
- * A group whose order already has a named row that day carries it as `sibling` and needs no read:
- * the dry run of 2026-09-30 found 27 of 96 groups were exactly that — a "-1" (or "-2") copy listed
- * beside a row the 8:30 freeze had already named — and reading their timelines would have spent 27
- * calls to learn what the list already said.
+ * v1.102.4 — "-1" AND "-2" ARE NEVER LOOKED UP AND NEVER ANSWERED FROM THE ORIGINAL. Chad, 2026-10-01:
+ * "-1 and -2 are duplicate orders and have nothing to do with the original driver." Before, a copy rode
+ * with its original (one read named both) and a copy beside a named original took that name for free
+ * ("sibling", v1.99.7). Both charged the original's driver with a duplicate; both are gone, and
+ * revertCopies (below) takes back what they wrote.
  */
-export function backfillGroups(days: Array<{ date: string; items: any[] }>, opts: { recheck?: boolean } = {}): BackfillGroup[] {
-  const groups = new Map<string, BackfillGroup>();
+export function backfillGroups(days: Array<{ date: string; items: any[] }>, opts: { recheck?: boolean; stop?: string } = {}): BackfillGroup[] {
+  // A recheck (a rule change) re-reads answers the backfill itself wrote, so it does not skip them as
+  // "matched" — every other named row (the 8:30 freeze, the day's record) is never re-read.
+  const fromBackfill = (it: any) => it?.attributedFrom === 'timeline';
+  const only = opts.stop ? originalOf(opts.stop) : null;
+  const out: BackfillGroup[] = [];
   for (const { date, items } of [...(days || [])].sort((a, b) => a.date.localeCompare(b.date))) {
-    // Named rows of each order that day; the original stop's own row is preferred over a copy's.
-    const named = new Map<string, any>();
     for (const it of items || []) {
-      if (!it?.stopNbr || !it.matched || !String(it.originalDriverName || it.originalDriverUserName || '').trim()) continue;
-      const o = originalOf(it.stopNbr);
-      const prev = named.get(o);
-      if (!prev || (String(it.stopNbr) === o && String(prev.stopNbr) !== o)) named.set(o, it);
-    }
-    for (const it of items || []) {
-      if (!it?.stopNbr || it.matched) continue;
+      if (!it?.stopNbr || isCopy(it.stopNbr)) continue;
+      if (it.matched && !(opts.recheck && fromBackfill(it))) continue;
       if (it.timelineCheckedAt && !opts.recheck) continue;
-      const original = originalOf(it.stopNbr);
-      const key = `${date}|${original}`;
-      if (!groups.has(key)) {
-        const sib = named.get(original);
-        groups.set(key, {
-          date, original, rows: [],
-          ...(sib ? { sibling: {
-            stopNbr: String(sib.stopNbr),
-            driverName: sib.originalDriverName ?? null, driverUserName: sib.originalDriverUserName ?? null,
-            driverKey: sib.originalDriverKey ?? null, loadNbr: sib.originalLoadNbr ?? null, routeName: sib.routeName ?? null,
-            source: String(sib.attributedFrom || 'plan'),
-          } } : {}),
-        });
-      }
-      groups.get(key)!.rows.push(String(it.stopNbr));
+      const nbr = String(it.stopNbr);
+      if (only && nbr !== only) continue;
+      out.push({ date, original: nbr, rows: [nbr] });
     }
   }
-  return [...groups.values()];
+  return out;
 }
 
 /**
  * PURE. The field-masked write for one attempts row. With an answer: the driver, `matched`, and
  * where it came from (`attributedFrom: 'timeline'`, never mistaken for the 8:30 freeze). Without
- * one: only that the timeline was read and held nobody, so the next run does not spend a call on
- * it again. The row's route and load are left alone — every event on a timeline carries the stop's
- * CURRENT route (the redelivery's), so the timeline cannot say which route it was on that day.
+ * one: that the timeline was read and held nobody (so no call is spent on it again), and any earlier
+ * answer cleared. The row's route and load are left alone — every event on a timeline carries the
+ * stop's CURRENT route (the redelivery's), so the timeline cannot say which route it was on that day.
  */
-export function attributionPatch(answer: DueDayAnswer | null, via: 'stop' | 'original', lookedUpAt: string): Record<string, any> {
+export function attributionPatch(answer: DueDayAnswer | null, lookedUpAt: string): Record<string, any> {
   if (!answer) {
-    return { timelineCheckedAt: lookedUpAt, timeline: { answer: null, reason: 'no Davis driver on the due day', via, lookedUpAt } };
+    // Cleared explicitly, not just left: on a recheck (v1.99.8) this row may hold an earlier run's
+    // answer, and an answer the rule no longer gives must not survive it. On a row that never had
+    // one, these are the values it already holds.
+    return {
+      originalDriverName: null, originalDriverUserName: null, originalDriverKey: null,
+      matched: false, attributedFrom: null,
+      timelineCheckedAt: lookedUpAt, timeline: { answer: null, reason: 'no Davis driver on the due day', via: 'stop', lookedUpAt },
+    };
   }
   return {
     originalDriverName: answer.driver,
@@ -176,25 +174,44 @@ export function attributionPatch(answer: DueDayAnswer | null, via: 'stop' | 'ori
     timeline: {
       answer: answer.driver, basis: answer.basis, dispatchedAt: answer.dispatchedAt,
       atCustomer: answer.atCustomer, unplannedAt: answer.unplannedAt, laterDrivers: answer.laterDrivers,
-      via, lookedUpAt,
+      via: 'stop', lookedUpAt,
     },
   };
 }
 
+/** How a "-N" row came to carry its ORIGINAL's driver before v1.102.4, or null if it did not. */
+export function copyTookOriginal(it: any): string | null {
+  if (!it || !isCopy(it.stopNbr)) return null;
+  if (it.attributedFrom === 'sibling') return 'sibling';                                   // v1.99.7 backfill, free
+  if (it.attributedFrom === 'holder-original') return 'holder-original';                   // v1.99.0 evening join
+  if (it.attributedFrom === 'timeline' && it.timeline?.via === 'original') return 'timeline-original'; // v1.99.6 backfill
+  return null;
+}
+
+export interface CopyRevert { date: string; stopNbr: string; was: string | null; from: string }
+
+/** PURE. Every "-N" row in the range that carries its original's driver — what revertCopies clears. */
+export function copyRevertPlan(days: Array<{ date: string; items: any[] }>): CopyRevert[] {
+  const out: CopyRevert[] = [];
+  for (const { date, items } of [...(days || [])].sort((a, b) => a.date.localeCompare(b.date))) {
+    for (const it of items || []) {
+      const from = copyTookOriginal(it);
+      if (from) out.push({ date, stopNbr: String(it.stopNbr), was: it.originalDriverName ?? null, from });
+    }
+  }
+  return out;
+}
+
 /**
- * PURE. The write for a row answered by a named row of the same order that day. The sibling's route
- * and load ride along: they are the same freeze record's (or the day's record's) answer for the same
- * failure, not a timeline's current-route guess.
+ * PURE. Puts a "-N" row back to what the evening join wrote for it before any of the above: no driver,
+ * no route, no load (a join with no record writes exactly those nulls — buildAttemptItem). What it
+ * had, and why it was taken back, is kept on the row so the change can be read later.
  */
-export function siblingPatch(sib: NonNullable<BackfillGroup['sibling']>, at: string): Record<string, any> {
+export function copyRevertPatch(r: CopyRevert, at: string): Record<string, any> {
   return {
-    originalDriverName: sib.driverName,
-    originalDriverUserName: sib.driverUserName,
-    originalDriverKey: sib.driverKey,
-    originalLoadNbr: sib.loadNbr,
-    routeName: sib.routeName,
-    matched: true,
-    attributedFrom: 'sibling',
-    sibling: { stopNbr: sib.stopNbr, source: sib.source, at },
+    originalDriverName: null, originalDriverUserName: null, originalDriverKey: null,
+    originalLoadNbr: null, routeName: null,
+    matched: false, attributedFrom: null, sibling: null,
+    copyReverted: { at, was: r.was, from: r.from, reason: 'a -1/-2 is a duplicate order and has nothing to do with the original driver (Chad, 2026-10-01)' },
   };
 }
