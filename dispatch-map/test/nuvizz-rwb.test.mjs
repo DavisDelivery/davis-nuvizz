@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops } from '../netlify/functions/lib/nuvizz-rwb.mts';
-import { runCommitBoardRwb } from '../netlify/functions/lib/nuvizz-write.mts';
+import { runCommitBoardRwb, runNewRoute } from '../netlify/functions/lib/nuvizz-write.mts';
 import { rawStopExecStatus, isExecutedStopStatus } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 
 const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };
@@ -38,7 +38,7 @@ async function withRwb(over, fn) {
 // set the load's stops to exactly the entry's trip order, like the real portal — so the
 // post-save membership+ORDER verify sees the save. Pass applySave:false to simulate the
 // Jul 9 DAWSONVILLE portal behavior: SUCCESS answered, nothing applied.
-function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {}, stopSeqs = {}, stopAddrs = {}, idAlias = {}, stopExecStatuses = {} } = {}) {
+function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {}, stopSeqs = {}, stopAddrs = {}, idAlias = {}, stopExecStatuses = {}, createBody = null, createStatus = 200 } = {}) {
   const calls = [];
   const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: { seq: 1 } } });
   const loadJson = () => ({ Load: {
@@ -77,6 +77,12 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
           return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 10, duration: 20, schStartTime: { dttm: 'Jul 2, 2026' } }]);
         }
         if (url.includes('resequenceRoute')) return J({ responseCode: 200, message: 'SUCCESS' });
+        // ── the portal's route create (v1.98.5) — the answer names THIS file's test load, so the
+        // attach that follows reads it through the same load/info as every other test here.
+        if (url.includes('buildEmptyRouteJson')) return J({ defaultProfileRef: '625bb549938c3b055c6b66ab', lattitude: 34.14838, longitude: -83.95948, profilesData: [] });
+        if (url.includes('addNewRoutePlan')) return J(createBody ?? { responseCode: 200, message: 'Success', routes: [{ id: HEXID, rteNbr: 'DAVIS000000123', name: 'TEST', status: '01' }] }, createStatus);
+        // The v7 create — what production answers today (the deliverItLoad NPE, HTTP 500).
+        if (url.includes('/routePlan/update/')) return J({ error: 'Internal Server Error', message: '<DeliverItLoadResponse><Status>99</Status><Errors><Error>Cannot invoke DeliverItLoad.getCompanyCode() because deliverItLoad is null</Error></Errors></DeliverItLoadResponse>' }, 500);
         if (url.includes('saveComparedRouteData')) {
           if (applySave && loadStops) {
             try {
@@ -1256,4 +1262,97 @@ test('runCommitBoardRwb: FAILS LOUDLY when a removal is accepted but never appli
     assert.match(String(r.loads[0].error || ''), /KEPT stop B/i);
     assert.match(String(r.loads[0].error || ''), /removal was accepted but the stop never left/i);
   });
+});
+
+// ── ＋ NEW ROUTE THROUGH THE PORTAL'S OWN CREATE (v1.98.5) ─────────────────────────────────────
+// Chad, 2026-09-30: "HERE IS A HAR FOR CREATING A ROUTE." The v7 create answers every ＋ New route
+// with the deliverItLoad NPE; the portal makes the route EMPTY with addNewRoutePlan and the card's
+// orders then ride the same RWB save an existing load gets. Switched on explicitly
+// (NUVIZZ_ROUTE_CREATE_RWB) until one live create has landed.
+async function withCreateSwitch(value, fn) {
+  const prev = process.env.NUVIZZ_ROUTE_CREATE_RWB;
+  if (value === undefined) delete process.env.NUVIZZ_ROUTE_CREATE_RWB; else process.env.NUVIZZ_ROUTE_CREATE_RWB = value;
+  try { return await fn(); } finally { if (prev === undefined) delete process.env.NUVIZZ_ROUTE_CREATE_RWB; else process.env.NUVIZZ_ROUTE_CREATE_RWB = prev; }
+}
+const NEW_ROUTE = { loadNbr: 'TEST-0930', routeName: 'TEST', date: '2026-09-30', orderedStopNbrs: ['A', 'B'], pacing: { tries: 1, waitMs: 0, sleep: async () => {} } };
+
+test('runNewRoute (portal create): the route is made empty, then the card\'s orders ride the RWB save', async () => {
+  await withCreateSwitch('on', () => withRwb({}, async () => {
+    const loadStops = { value: [] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runNewRoute(requester, NEW_ROUTE, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.error || r.steps?.slice(-1)));
+    assert.equal(r.engine, 'rwb');
+    assert.equal(r.loadNbr, 'DAVIS000000123', 'the load number NuVizz gave the new route');
+    assert.equal(r.loadId, HEXID);
+    assert.equal(r.stopsAttached, 2);
+    assert.deepEqual(loadStops.value, ['A', 'B'], 'both orders are on the new route, in card order');
+    const creates = calls.filter((c) => c.url.includes('addNewRoutePlan'));
+    assert.equal(creates.length, 1, 'one create, never retried');
+    const entry = JSON.parse(String(creates[0].body.get('manualBuildJsonData')));
+    assert.equal(entry.length, 1);
+    assert.equal(entry[0].routePlanName, 'TEST');
+    assert.equal(entry[0].routeDate, '09/30/2026');
+    assert.equal('driver' in entry[0], false, 'no driver object is sent');
+    assert.equal(String(creates[0].body.get('isPlanningMode')), 'true');
+    assert.equal(calls.some((c) => c.url.includes('/routePlan/update/')), false, 'the v7 create is not touched');
+    assert.equal(calls.some((c) => c.url.includes('/load/info/TEST-0930')), false, 'no collision read on a number the portal will not use');
+    assert.ok(calls.some((c) => c.url.includes('saveComparedRouteData')), 'the orders were sequenced by the RWB save');
+  }));
+});
+
+test('runNewRoute (portal create): a name already in use is refused, nothing is added', async () => {
+  await withCreateSwitch('on', () => withRwb({}, async () => {
+    const loadStops = { value: [] };
+    const { requester, calls } = makeRequester({ loadStops, createBody: { responseCode: 200, message: '{"DuplicateRouteName":["TEST"]}' } });
+    const r = await runNewRoute(requester, NEW_ROUTE, CREDS);
+    assert.equal(r.ok, false);
+    assert.equal(r.exists, true);
+    assert.match(r.error, /already has a route named TEST — open it from the Routes panel/);
+    assert.equal(calls.some((c) => c.url.includes('addStopsToRouteAfterValidation')), false);
+    assert.deepEqual(loadStops.value, []);
+  }));
+});
+
+test('runNewRoute (portal create): made but not filled says so — load number, and do NOT create it again', async () => {
+  await withCreateSwitch('on', () => withRwb({}, async () => {
+    const loadStops = { value: [] };
+    const { requester } = makeRequester({ loadStops, saveBody: { responseCode: 500, message: 'boom' } });
+    const r = await runNewRoute(requester, NEW_ROUTE, CREDS);
+    assert.equal(r.ok, false, 'orders that did not attach are not a saved route');
+    assert.equal(r.created, true);
+    assert.equal(r.loadNbr, 'DAVIS000000123');
+    assert.match(r.error, /route TEST WAS created in NuVizz \(DAVIS000000123\), but its 2 order\(s\) did not attach/);
+    assert.match(r.error, /do NOT create it again/);
+  }));
+});
+
+test('runNewRoute: switch off (the default) keeps the v7 create, byte for byte', async () => {
+  await withCreateSwitch(undefined, () => withRwb({}, async () => {
+    const { requester, calls } = makeRequester({ loadStops: { value: [] } });
+    const r = await runNewRoute(requester, NEW_ROUTE, CREDS);
+    // This fake answers load/info for ANY number, so the v7 path stops at its own first step — the
+    // collision read on the card's derived number — which is exactly what proves it is the v7 path.
+    assert.equal(r.ok, false);
+    assert.ok(calls.some((c) => c.url.includes('/load/info/TEST-0930')), 'the v7 collision read ran');
+    assert.match(r.error, /load TEST-0930 already exists in NuVizz/);
+    assert.equal(calls.some((c) => c.url.includes('addNewRoutePlan')), false, 'the portal create did not');
+  }));
+  for (const v of ['off', 'nope', '']) {
+    await withCreateSwitch(v, () => withRwb({}, async () => {
+      const { requester, calls } = makeRequester({ loadStops: { value: [] } });
+      await runNewRoute(requester, NEW_ROUTE, CREDS);
+      assert.equal(calls.some((c) => c.url.includes('addNewRoutePlan')), false, `NUVIZZ_ROUTE_CREATE_RWB=${JSON.stringify(v)} fails closed`);
+    }));
+  }
+});
+
+test('runNewRoute (portal create): switched on without a portal sign-in refuses before any call', async () => {
+  await withCreateSwitch('on', () => withRwb({ NUVIZZ_RWB_USER: '', NUVIZZ_RWB_PASS: '' }, async () => {
+    const { requester, calls } = makeRequester({ loadStops: { value: [] } });
+    const r = await runNewRoute(requester, NEW_ROUTE, CREDS);
+    assert.equal(r.ok, false);
+    assert.match(r.error, /portal sign-in is not ready/);
+    assert.equal(calls.length, 0, 'nothing sent anywhere');
+  }));
 });
