@@ -91,6 +91,7 @@ export function timeWindowSequence({
   rosterRows = null,
   defaultSlots = null,   // detectDefaultSlots(board) — keeps the vendor's creation stamp from posing as an appointment
   maxEvals = TIME_WINDOW_MAX_EVALS,
+  countCollapsed = true, // routePreflight's own option — the card's badges and this search read one clock
 } = {}) {
   const ids = (Array.isArray(order) ? order : []).map((v) => String(v)).filter(Boolean);
   const lookup = stopById instanceof Map ? stopById : new Map();
@@ -117,7 +118,7 @@ export function timeWindowSequence({
   }
 
   const pfArgs = {
-    stopById: lookup, notes, routeKey, servedDate, dayKey, depot, travel, rosterRows,
+    stopById: lookup, notes, routeKey, servedDate, dayKey, depot, travel, rosterRows, countCollapsed,
     ...(departMin != null ? { departMin } : {}),
     ...(departureSource ? { departureSource } : {}),
   };
