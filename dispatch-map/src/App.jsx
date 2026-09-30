@@ -50,7 +50,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -208,7 +208,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.97.0';
+const APP_VERSION = '1.98.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -262,6 +262,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.98.0', 'RETURN TO WAREHOUSE: A SEPARATE RE-SEQUENCE FOR A TRUCK THAT COMES BACK TO BUFORD, AND IT INVENTS NO NEW SHAPE. Chad, after v1.96.0 made Shortest distance count the drive home: \u201cNot every driver returns to warehouse but even if this driver did this would still be absolutely awful optimization. Make shortest work like it did then you can create another optimization around returning to the warehouse.\u201d v1.97.0 put Shortest distance back byte for byte; this is the other optimization, a new line on the Compare card\u2019s menu. WHAT WAS AWFUL, read off his two screens: the shortest round trip is free to start and finish anywhere, and used it. TRAILER 3 started mid-corridor at Lithonia, ran to the far end of Conyers and came back west over I-20 past its own start (117 road miles, against 102 for the corridor walked once), and SAMUEL finished three stops from where it began. SO THE NEW OPTION STARTS FROM SHORTEST DISTANCE and only trades it for an order this menu already draws (Shortest distance the other way round, Loop either way round, Farthest first, Closest first) when that order gets the truck home at least a mile AND 1.5% sooner, the drive home counted, on the distances the card is using, and its picture is clean: it does not cross itself, drive a road twice, drive past a stop to come back for it, or split a town more than Shortest distance does. The feedback line says which order it used and what it saved, or that it kept Shortest distance. TESTED ON 1,120 REAL ROUTES from 20 board days (Sep 1\u201329), every route with six or more stops, scored in real road miles from a free public road router with the drive home counted, every reference run exactly as the card runs it. Straight line, the card\u2019s default: 122.2 \u2192 120.6 mi a route (\u22121.35%); shorter on 284, the same on 804, longer on 32 (5 by more than 5 mi, all the straight line not seeing a road, a blindness Shortest distance shares). Road box ticked: 120.4 \u2192 118.9 (\u22121.3%); longer on none. It never drew a fault Shortest distance does not already draw, in either mode, and removed one on 16 routes (straight line) and 43 (road). It keeps Shortest distance\u2019s order on 7 routes in 10; when it switches it is nearly always to a Loop that passed every check, and the median saving is 3.4 straight-line miles. WHAT IT DOES NOT DO, said plainly: on BRENT it keeps the restored Shortest distance order he called \u201cnot a good optimization\u201d \u2014 no order the menu draws is both clean and a mile shorter there on straight lines (ticked, it takes Farthest first, 4.6 road miles shorter). It does not read receiving hours; a stop late on this order is flagged on the card as on every other. The card\u2019s header still shows one-way miles. NOTHING ELSE CHANGES: Shortest distance, Loop and the rest are untouched, and the option is one menu line over one pure function; a one-commit revert removes it. 8 new tests, and a real-browser run on desktop and phone, straight line and road.'],
   ['1.97.0', 'DROPPED 1 PR(S): #1079 (v1.96.0). Chad: "This is awful optimization roll it back to way it was. Make shortest work like it did". Everything else on main is untouched — this reverts only those commits, rather than returning the tree to a moment in time, so every other fix that shipped since stays in. Each drop is a forward commit, so `git revert` of it puts the PR back. CODE ONLY: Firestore and anything already sent to NuVizz are untouched.'],
   ['1.95.0', 'THE 5:30P OPEN-ORDERS EMAIL TO CUSTOMER SERVICE. Chad: “I want to send them an email of everything that’s been undelivered that is planned, not unplanned … at 5:30,” after a normal scan at 5:25, to customer service and him. Weekdays from 5:30p ET it lists every planned order not delivered yet, one row per PRO: customer, address, route and driver, and whether it is not delivered yet, out for delivery / on site, or attempted and not delivered (a refusal or exception). Delivered, cancelled and unplanned orders are left out, as are CHAD and ULINE APPT (the email names them in one line so nothing is hidden). It uses the same planned / delivered rules as the 6:30 report, so the two cannot disagree about what is open. It WAITS for the 5:25 scan: it sends as soon as both lists have been pulled since 5:20, and if the scan has not landed by 5:45 it sends anyway and says how old the board is. Once a day, stamped only after the mailer confirms; a failed send is recorded and retried by the next firing before 6:00. Nothing is sent on a day with nothing planned. Recipients: Diagnostics → Alert recipients → “5:30p open orders”, customer service always on it (OPEN_ORDERS_TO is the env fallback). Dry run, sends nothing: /.netlify/functions/open-orders-email (add ?email=1 to see the email). 0 NuVizz calls. The 6:30 report is unchanged. PUT IT BACK: OPEN_ORDERS_EMAIL=off in Netlify (takes effect on the next deploy), or revert this commit.'],
   ['1.94.1', 'A NORMAL SCAN AT 5:25P AND 6:20P, SO THE EVENING EMAILS READ A FRESH BOARD. Chad: “at 5:25, I want to run a refresh scan so that everything and all the data is fresh” and “make sure that before 630 is sent a normal scan is done at 620. No forced scans here just the normal scans where it’s just a few nuvizz calls.” Weekdays at 5:25p and 6:20p the scanner now treats the planned/unplanned and completed lists as due, so that fire takes the same scheduled list scan as every other one: two NuVizz calls, never the forced number-probe scan. The weekend blackout, the 10-minute anti-thrash floor, the daily ceiling and the breaker all still apply; if the floor holds the 5:25 fire back, the next fire inside the following 20 minutes catches it, and a scan in the five minutes before the pin already counts. The roster is not pinned. The 6:30p report itself is unchanged. nuvizz-scan-config?explain=1 now shows the pins and whether one is firing (0 calls). PUT IT BACK: SCAN_PINS=off in Netlify (takes effect on the next deploy), or revert this commit.'],
@@ -21535,7 +21536,7 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
 // state; this is a planning overlay (it does not mutate the board).
 // Human labels for the re-sequence strategies (shared by the card's applied-strategy line and the
 // "Re-sequenced …" toast).
-const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse', windows: 'Time windows — fewest late', manual: 'Manual order' };
+const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest distance', home: 'Return to warehouse', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse', windows: 'Time windows — fewest late', manual: 'Manual order' };
 
 // ── Live dispatch (beta) ─────────────────────────────────────────────────────
 // The routes-panel write surface: assign a driver to a load + dispatch it to NuVizz.
@@ -21914,6 +21915,11 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
             <option value="" disabled>Re-sequence…</option>
             {route.strategy === 'manual' && <option value="manual" disabled>Manual order (edited)</option>}
             <option value="min">Shortest distance</option>
+            {/* Chad, 2026-09-30: "Make shortest work like it did then you can create another
+                optimization around returning to the warehouse". Shortest distance with the drive
+                home counted, drawn only from orders this menu already makes (lib/routing-select.js
+                returnToWarehouse). */}
+            <option value="home">Return to warehouse (round trip)</option>
             <option value="farthest">Farthest first</option>
             <option value="closest">Closest first</option>
             <option value="reverse">Reverse</option>
@@ -25091,7 +25097,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       setLastAction(timeWindowSummary(res, loadDisplayName(key) || 'load'));
       return;
     }
-    const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
+    // Return to warehouse reports WHICH order it used and what that saved (returnPickSummary).
+    const homePick = strategy === 'home' ? returnToWarehouse(pts, ROUTING_DEPOT) : null;
+    const newOrder = (homePick ? homePick.order : resequence(pts, ROUTING_DEPOT, strategy)).map((s) => s.id);
     const resolved = new Set(newOrder);
     const applyOrder = (ids, suffix) => setWbRoutes((prev) => prev.map((x) => {
       if (x.key !== key) return x;
@@ -25103,7 +25111,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // only ever replace it a moment later — so the dropdown never feels slower than it did, and
     // a slow or failed matrix leaves a working card rather than an empty one.
     applyOrder(newOrder, 'crow');
-    setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy}`);
+    setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy}${homePick ? ` — ${returnPickSummary(homePick, 'straight-line')}` : ''}`);
 
     // ── REAL ROAD DISTANCES (opt-in) ──────────────────────────────────────────────────────
     // Chad, on a 23-stop JEAN card sequenced Shortest distance: "Logic is still not fixed."
@@ -25131,9 +25139,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
           setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances unavailable, straight-line order kept`);
           return;
         }
-        const roadOrder = resequenceOnMatrix(pts, cost, strategy).map((s) => s.id);
+        const roadPick = strategy === 'home' ? returnToWarehouseOnMatrix(pts, cost) : null;
+        const roadOrder = (roadPick ? roadPick.order : resequenceOnMatrix(pts, cost, strategy)).map((s) => s.id);
         applyOrder(roadOrder, 'road');
-        setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} · real road distances`);
+        setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} · real road distances${roadPick ? ` — ${returnPickSummary(roadPick, 'road')}` : ''}`);
       } catch (e) {
         setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances failed (${String(e?.message || e).slice(0, 60)}), straight-line order kept`);
       }

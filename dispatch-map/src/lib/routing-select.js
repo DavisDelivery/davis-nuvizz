@@ -681,6 +681,7 @@ export function resequenceOnMatrix(stops, cost, strategy, mode = SWEEP_MODE) {
   const arr = Array.isArray(stops) ? stops : [];
   if (arr.length < 2) return [...arr];
   if (strategy === 'reverse') return [...arr].reverse();
+  if (strategy === 'home') return returnToWarehouseOnMatrix(arr, cost).order;
   // WHICH STOPS THE MATRIX CAN ACTUALLY SCORE. A node needs a finite cost to and from the
   // depot, and to and from every other node that survives. It is a pairwise question, not a
   // per-row one: one unreachable address puts a NaN in EVERY other stop's row, so a naive
@@ -708,6 +709,249 @@ export function resequenceOnMatrix(stops, cost, strategy, mode = SWEEP_MODE) {
   return [...order, ...unusable].map((k) => arr[k - 1]);
 }
 
+// ── RETURN TO THE WAREHOUSE (Chad, 2026-09-30) ───────────────────────────────
+//
+// v1.96.0 made Shortest distance count the drive home. Chad, on SAMUEL: "This is awful
+// optimization roll it back to way it was. Not every driver returns to warehouse but even if this
+// driver did this would still be absolutely awful optimization. Make shortest work like it did
+// then you can create another optimization around returning to the warehouse" — and on TRAILER 3,
+// "more awful shortest optimization roll it back way it was then fix". v1.97.0 put Shortest
+// distance back byte for byte. This is the separate option, for a truck that comes back to Buford.
+//
+// WHAT WAS AWFUL, read off his two screens. The shortest ROUND TRIP is free to begin and end
+// anywhere, and it used that freedom. TRAILER 3 started in the middle of the I-20 corridor at
+// Lithonia, ran east to the far end of Conyers, then came back west over the same road past where
+// it had started, out to Decatur: 117 road miles, where walking the corridor once end to end is
+// 102. SAMUEL finished three stops from where it began, so one neighbourhood was worked at 8am and
+// again at the end of the day. Fewer miles on paper, and a day no dispatcher would draw.
+//
+// SO THIS OPTION INVENTS NO NEW SHAPE. It starts from Shortest distance's own order, the one he
+// asked to have back, and only trades it for an order another option on this menu already draws —
+// Shortest distance run the other way round, Loop either way round, Farthest first, Closest
+// first — when that order:
+//   1. makes the whole day, the drive home included, shorter by at least a mile AND 1.5%,
+//      measured on the distances the card is using (straight line, or the road matrix when the
+//      box is ticked);
+//   2. does not cross itself;
+//   3. does not drive a road twice — a leg that runs back along an earlier one, within 0.4 mi,
+//      for more than 1.5 mi or 15% of the route (the TRAILER 3 shape);
+//   4. does not drive past a stop and come back for it later;
+//   5. does not split a town (TOWN_RADIUS_METERS, chained) more often than Shortest distance does.
+// Anything it can put on a card is something the menu can already draw; what it adds is picking
+// the one that gets the truck home soonest without looking wrong. When nothing clears that bar,
+// the card gets Shortest distance, and the feedback line says so.
+//
+// MEASURED ON 1,120 REAL ROUTES from 20 board days (2026-09-01 .. 09-29), every route with six or
+// more stops, scored in REAL road miles (a free public road router) with the drive home counted:
+// see the v1.98.0 changelog row for the numbers. On the road matrix it was never longer than
+// Shortest distance on any of them; it never drew a fault Shortest distance does not already draw.
+//
+// Straight lines between stops, as the card draws them — the only picture a dispatcher judges by.
+// The drive in and the drive home are left out: every candidate starts and ends at a stop, and
+// the dashed lines to Buford are a direction, not a road.
+const MI_M = 1609.344;
+export const RETURN_MIN_SAVING_METERS = MI_M;      // Shortest distance stands unless a mile …
+export const RETURN_MIN_SAVING_SHARE = 0.015;      // … AND 1.5% of the day is saved
+const REDRIVE_NEAR_M = 0.4 * MI_M;                 // a leg this close to an earlier one, running along it …
+const REDRIVE_LIMIT_M = 1.5 * MI_M;                // … for this far (or 15% of the route) is a road driven twice
+const REDRIVE_LIMIT_SHARE = 0.15;
+const PASS_NEAR_M = 0.3 * MI_M;                    // passing this close to a stop …
+const PASS_CLEAR_M = 0.75 * MI_M;                  // … that is not a neighbour of either end of that leg
+
+/**
+ * PURE. What a dispatcher would object to in the picture of `points` (stops in visiting order,
+ * each { lat, lng }), measured on straight stop-to-stop legs.
+ * @returns {{ crossesItself: boolean, redriveMeters: number, pathMeters: number, drivesPast: boolean }}
+ */
+export function routeShapeFaults(points) {
+  const P = (Array.isArray(points) ? points : []).filter(mappable);
+  const out = { crossesItself: false, redriveMeters: 0, pathMeters: 0, drivesPast: false };
+  if (P.length < 3) {
+    if (P.length === 2) out.pathMeters = haversineMeters(P[0], P[1]);
+    return out;
+  }
+  // A local flat projection in metres, centred on the route — the distances are a few miles.
+  const lat0 = P.reduce((a, p) => a + p.lat, 0) / P.length;
+  const kx = Math.cos((lat0 * Math.PI) / 180) * 111320, ky = 110540;
+  const xy = P.map((p) => [p.lng * kx, p.lat * ky]);
+  const legs = [];
+  for (let i = 1; i < xy.length; i++) {
+    const a = xy[i - 1], b = xy[i];
+    legs.push({ a, b, dx: b[0] - a[0], dy: b[1] - a[1], len: Math.hypot(b[0] - a[0], b[1] - a[1]) });
+  }
+  out.pathMeters = legs.reduce((s, l) => s + l.len, 0);
+  const toSeg = (p, l) => {
+    const q = l.dx * l.dx + l.dy * l.dy;
+    let t = q ? ((p[0] - l.a[0]) * l.dx + (p[1] - l.a[1]) * l.dy) / q : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p[0] - l.a[0] - t * l.dx, p[1] - l.a[1] - t * l.dy);
+  };
+  const side = (a, b, c) => Math.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+  // 2. Crossing itself: two stop legs that are not neighbours properly intersect.
+  for (let i = 0; i < legs.length && !out.crossesItself; i++) {
+    for (let j = i + 2; j < legs.length; j++) {
+      const L = legs[i], M = legs[j];
+      const o1 = side(L.a, L.b, M.a), o2 = side(L.a, L.b, M.b), o3 = side(M.a, M.b, L.a), o4 = side(M.a, M.b, L.b);
+      if (o1 && o2 && o3 && o4 && o1 !== o2 && o3 !== o4) { out.crossesItself = true; break; }
+    }
+  }
+  // 3. Driving a road twice: sample each leg every ~0.1 mi; a sample within REDRIVE_NEAR_M of an
+  // earlier, non-adjacent leg that runs along it (|cos| > 0.7, either direction) is re-driven.
+  // A U whose two arms are a mile apart scores nothing; the TRAILER 3 order scores its return.
+  for (let i = 2; i < legs.length; i++) {
+    const L = legs[i];
+    if (L.len < 0.3 * MI_M) continue;
+    const steps = Math.max(2, Math.ceil(L.len / (0.1 * MI_M)));
+    for (let s = 0; s < steps; s++) {
+      const t = (s + 0.5) / steps, p = [L.a[0] + t * L.dx, L.a[1] + t * L.dy];
+      for (let j = 0; j <= i - 2; j++) {
+        const M = legs[j];
+        if (M.len < 0.3 * MI_M) continue;
+        const cos = (L.dx * M.dx + L.dy * M.dy) / (L.len * M.len);
+        if (Math.abs(cos) > 0.7 && toSeg(p, M) < REDRIVE_NEAR_M) { out.redriveMeters += L.len / steps; break; }
+      }
+    }
+  }
+  // 4. Driving past a stop: an earlier leg passed within PASS_NEAR_M of it, and it is not simply a
+  // neighbour of where that leg started or finished.
+  const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+  for (let i = 2; i < xy.length && !out.drivesPast; i++) {
+    for (let j = 0; j < i - 1; j++) {
+      const M = legs[j];
+      if (toSeg(xy[i], M) < PASS_NEAR_M && dist(xy[i], M.a) > PASS_CLEAR_M && dist(xy[i], M.b) > PASS_CLEAR_M) { out.drivesPast = true; break; }
+    }
+  }
+  return out;
+}
+
+// How many times the order leaves a town and comes back to it later.
+function townSplits(order, townOf) {
+  const runs = order.map((k) => townOf.get(k)).filter((v, i, a) => i === 0 || v !== a[i - 1]);
+  return runs.length - new Set(runs).size;
+}
+
+/**
+ * PURE, node level. `base` is Shortest distance's order and `candidates` are [{ source, order }]
+ * drawn by the menu's other options — all over the same node indices, node 0 the depot. `cost` is
+ * the matrix the card is using; `crow` a straight-line matrix over the same nodes (towns are what
+ * the map shows); `pointOf(k)` a node's { lat, lng }. Returns the order to use and why.
+ */
+export function pickReturnOrder(base, candidates, cost, crow, pointOf) {
+  const baseMeters = loopPathCost(base, cost);
+  const towns = townsOf([...base].sort((a, b) => a - b), crow, TOWN_RADIUS_METERS);
+  const townOf = new Map();
+  towns.forEach((t, i) => t.forEach((k) => townOf.set(k, i)));
+  const baseSplits = townSplits(base, townOf);
+  const want = new Set(base);
+  const clean = (order) => {
+    const f = routeShapeFaults(order.map(pointOf));
+    return !f.crossesItself && !f.drivesPast
+      && f.redriveMeters < Math.max(REDRIVE_LIMIT_M, REDRIVE_LIMIT_SHARE * f.pathMeters)
+      && townSplits(order, townOf) <= baseSplits;
+  };
+  let best = null;
+  for (const c of candidates || []) {
+    const o = c?.order;
+    if (!Array.isArray(o) || o.length !== base.length || new Set(o).size !== o.length || !o.every((k) => want.has(k))) continue;
+    const m = loopPathCost(o, cost);
+    if (!Number.isFinite(m) || m >= (best ? best.meters : baseMeters) - 1e-6) continue;
+    if (!clean(o)) continue;
+    best = { order: o, source: c.source, meters: m };
+  }
+  if (best && baseMeters - best.meters >= Math.max(RETURN_MIN_SAVING_METERS, RETURN_MIN_SAVING_SHARE * baseMeters)) {
+    return { order: [...best.order], source: best.source, meters: best.meters, baseMeters };
+  }
+  return { order: [...base], source: 'min', meters: baseMeters, baseMeters };
+}
+
+// Canonical order of placed stops — the answer is a function of the stop SET, as the sweep is.
+const byPosition = (a, b) => (a.lat - b.lat) || (a.lng - b.lng) || String(a.id).localeCompare(String(b.id));
+
+/**
+ * Return to the warehouse on straight lines — the card's instant order. Same contract as
+ * resequence(): a permutation of `stops`, stops with no position riding at the end in their own
+ * order. Also says which order it used and what the round trip measured, so the card can say so.
+ * @returns {{ order: object[], source: string, meters: number, baseMeters: number }}
+ */
+export function returnToWarehouse(stops, depot) {
+  const arr = Array.isArray(stops) ? stops : [];
+  const placed = arr.filter(mappable).sort(byPosition);
+  const unplaced = arr.filter((s) => !mappable(s));
+  if (placed.length < 2 || !mappable(depot)) return { order: [...arr], source: 'none', meters: 0, baseMeters: 0 };
+  const idx = new Map(placed.map((s, i) => [s, i + 1]));
+  const nodes = (list) => list.map((s) => idx.get(s));
+  const crow = distanceMatrix([depot, ...placed]);
+  const min = nodes(twoOpt(nearestNeighbor(placed, depot), depot));
+  const loop = nodes(twoOptLoop(nearestNeighbor(placed, depot), depot));
+  const candidates = [
+    { source: 'min-reversed', order: [...min].reverse() },
+    { source: 'loop', order: loop },
+    { source: 'loop-reversed', order: [...loop].reverse() },
+    { source: 'farthest', order: nodes(farthestFirst(placed, depot)) },
+    { source: 'closest', order: nodes(closestFirst(placed, depot)) },
+  ];
+  const pick = pickReturnOrder(min, candidates, crow, crow, (k) => placed[k - 1]);
+  return { ...pick, order: [...pick.order.map((k) => placed[k - 1]), ...unplaced] };
+}
+
+/**
+ * Return to the warehouse on a cost MATRIX (the road box). `stops` and `cost` as
+ * resequenceOnMatrix(); the stops' own positions draw the picture. Nodes the matrix cannot
+ * score, or that have no position to judge the picture by, ride at the END in their own order.
+ * @returns {{ order: object[], source: string, meters: number, baseMeters: number }}
+ */
+export function returnToWarehouseOnMatrix(stops, cost) {
+  const arr = Array.isArray(stops) ? stops : [];
+  if (arr.length < 2) return { order: [...arr], source: 'none', meters: 0, baseMeters: 0 };
+  const all = arr.map((_, i) => i + 1);
+  const finite = (a, b) => Number.isFinite(cost?.[a]?.[b]);
+  let keep = all.filter((k) => mappable(arr[k - 1]) && Array.isArray(cost?.[k]) && finite(0, k) && finite(k, 0));
+  for (let guard = 0; guard < all.length; guard++) {
+    const next = keep.filter((k) => keep.every((j) => j === k || (finite(k, j) && finite(j, k))));
+    if (next.length === keep.length) break;
+    keep = next;
+  }
+  const keepSet = new Set(keep);
+  const tail = all.filter((k) => !keepSet.has(k));
+  if (keep.length < 2) return { order: [...arr], source: 'none', meters: 0, baseMeters: 0 };
+  // Canonical: renumber the kept nodes by position, so the answer is a function of the stop set.
+  const canon = [...keep].sort((a, b) => byPosition(arr[a - 1], arr[b - 1]));
+  const orig = [0, ...canon];                                   // canonical node -> input node
+  const C = orig.map((a) => orig.map((b) => cost[a][b]));
+  const nodes = canon.map((_, i) => i + 1);
+  const pointOf = (k) => arr[orig[k] - 1];
+  // Straight-line distances between stops, for the towns (node 0's row is never read).
+  const crow = orig.map((a) => orig.map((b) => (a === 0 || b === 0 || a === b ? 0 : haversineMeters(arr[a - 1], arr[b - 1]))));
+  const min = improveOrder(nnFromDepot(nodes, C), C, openPathCost);
+  const loop = improveOrder(nnFromDepot(nodes, C), C, loopPathCost);
+  const candidates = [
+    { source: 'min-reversed', order: [...min].reverse() },
+    { source: 'loop', order: loop },
+    { source: 'loop-reversed', order: [...loop].reverse() },
+    { source: 'farthest', order: SWEEP_MODE === 'pure' ? pureSweepNodes(nodes, C, 'homeward') : townSweepNodes(nodes, C, 'homeward') },
+    { source: 'closest', order: SWEEP_MODE === 'pure' ? pureSweepNodes(nodes, C, 'outward') : townSweepNodes(nodes, C, 'outward') },
+  ];
+  const pick = pickReturnOrder(min, candidates, C, crow, pointOf);
+  return { ...pick, order: [...pick.order.map((k) => orig[k]), ...tail].map((k) => arr[k - 1]) };
+}
+
+// What the card's feedback line says after a Return-to-warehouse pick — which order it used and
+// what that saved, so a dispatcher can tell "kept Shortest distance" from "switched to Loop"
+// without comparing two cards by eye. `basis` names the distances it was measured on.
+const RETURN_SOURCE_NAMES = {
+  'min-reversed': 'Shortest distance run the other way round',
+  loop: 'Loop',
+  'loop-reversed': 'Loop run the other way round',
+  farthest: 'Farthest first',
+  closest: 'Closest first',
+};
+export function returnPickSummary(pick, basis = 'straight-line') {
+  if (!pick || pick.source === 'none') return '';
+  if (pick.source === 'min') return "kept Shortest distance's order: nothing that looks right gets the truck home a mile sooner";
+  const saved = Math.max(0, (Number(pick.baseMeters) - Number(pick.meters)) / MI_M);
+  return `${RETURN_SOURCE_NAMES[pick.source] || pick.source}'s order, ${saved.toFixed(1)} ${basis} mi shorter round trip than Shortest distance`;
+}
+
 // Re-sequence one route's stops by strategy. 'reverse' flips the current order;
 // the others are computed fresh from depot + positions.
 //   loop     — nearest-neighbour seed + closed-loop 2-opt → U-shape (down one side,
@@ -715,6 +959,8 @@ export function resequenceOnMatrix(stops, cost, strategy, mode = SWEEP_MODE) {
 //   min      — nearest-neighbour seed + open-path 2-opt → shortest one-way distance.
 //   farthest — far stop first, then the shortest sweep home (see above).
 //   closest  — near stop first, then the shortest sweep out to the far stop.
+//   home     — return to the warehouse: Shortest distance, unless another order this menu
+//              draws gets the truck home a mile and 1.5% sooner without looking wrong (above).
 export function resequence(stops, depot, strategy) {
   const arr = Array.isArray(stops) ? stops : [];
   if (arr.length < 2) return [...arr];
@@ -724,6 +970,7 @@ export function resequence(stops, depot, strategy) {
     case 'farthest': return farthestFirst(arr, depot);
     case 'loop': return twoOptLoop(nearestNeighbor(arr, depot), depot);
     case 'min': return twoOpt(nearestNeighbor(arr, depot), depot);
+    case 'home': return returnToWarehouse(arr, depot).order;
     default: return [...arr];
   }
 }

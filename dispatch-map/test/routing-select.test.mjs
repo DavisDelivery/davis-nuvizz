@@ -709,3 +709,210 @@ test('loop on a matrix is scored as a round trip, min as a one-way path', () => 
   const loop = resequenceOnMatrix(JEFF, (() => { const p = [BUFORD, ...JEFF]; return p.map((a) => p.map((b) => haversineMeters(a, b))); })(), 'loop');
   assert.deepEqual([...ids(loop)].sort(), [...ids(JEFF)].sort());
 });
+
+// ── RETURN TO THE WAREHOUSE (Chad, 2026-09-30) ───────────────────────────────
+// "Make shortest work like it did then you can create another optimization around returning to
+// the warehouse." The option starts from Shortest distance and only trades it for an order the menu
+// already draws when that order is clean AND gets the truck home a mile and 1.5% sooner.
+import {
+  returnToWarehouse, returnToWarehouseOnMatrix, pickReturnOrder, routeShapeFaults, returnPickSummary,
+  RETURN_MIN_SAVING_METERS, RETURN_MIN_SAVING_SHARE,
+} from '../src/lib/routing-select.js';
+
+const HOME_DEPOT = { lat: 34.147791, lng: -83.960911 };
+const at = (rows) => rows.map(([id, city, lat, lng]) => ({ id, city, lat, lng }));
+const geometry = (list) => list.map((s) => `${s.lat},${s.lng}`).join(';');
+const crowOf = (stops, depot = HOME_DEPOT) => { const p = [depot, ...stops]; return p.map((a) => p.map((b) => haversineMeters(a, b))); };
+const roundTrip = (list, depot = HOME_DEPOT) => { let t = haversineMeters(depot, list[0]); for (let i = 1; i < list.length; i++) t += haversineMeters(list[i - 1], list[i]); return t + haversineMeters(list.at(-1), depot); };
+const clean = (f) => !f.crossesItself && !f.drivesPast && f.redriveMeters < Math.max(1.5 * 1609.344, 0.15 * f.pathMeters);
+
+// TRAILER 3, 2026-09-30, in the order his card showed with real road distances ticked — the one he
+// called "more awful": in at Lithonia, east to the end of Conyers, back west past the start to Decatur.
+const TRAILER3_CARD = at([
+  ['007183911', 'LITHONIA', 33.70493, -84.12513], ['007184300', 'CONYERS', 33.68983, -84.06407],
+  ['007183825', 'CONYERS', 33.69115, -84.05816], ['007183814', 'CONYERS', 33.6921, -84.05419],
+  ['007183855', 'CONYERS', 33.67064, -83.97682], ['007184296', 'CONYERS', 33.66454, -83.98085],
+  ['007183950', 'CONYERS', 33.66454, -83.98085], ['007183904', 'CONYERS', 33.65656, -83.97922],
+  ['007184450', 'CONYERS', 33.65323, -83.97873], ['007183867', 'CONYERS', 33.65967, -83.99658],
+  ['007184237', 'CONYERS', 33.67611, -84.04115], ['007183844', 'LITHONIA', 33.69851, -84.08127],
+  ['007184181', 'LITHONIA', 33.71619, -84.12093], ['007183816', 'DECATUR', 33.70847, -84.18357],
+]);
+// GEORGE L, 2026-09-01: Buford, Cumming and Alpharetta — a route where Loop's order is clean and
+// comes home 3.8 straight-line miles sooner than Shortest distance's.
+const GEORGE_L = at([
+  ['007170246', 'BUFORD', 34.10917, -84.01099], ['007170311', 'CUMMING', 34.15456, -84.16379],
+  ['007169971', 'CUMMING', 34.15906, -84.15827], ['007170106', 'CUMMING', 34.17495, -84.16347],
+  ['007170259', 'CUMMING', 34.17495, -84.16347], ['007170307', 'CUMMING', 34.16827, -84.18526],
+  ['007170195', 'ALPHARETTA', 34.15158, -84.25315], ['007169791', 'ALPHARETTA', 34.12384, -84.21906],
+  ['007170469', 'ALPHARETTA', 34.11854, -84.20828], ['007170178', 'ALPHARETTA', 34.11821, -84.2018],
+  ['007169915', 'CUMMING', 34.11123, -84.19436], ['007170472', 'ALPHARETTA', 34.10739, -84.21002],
+  ['007169861', 'ALPHARETTA', 34.10227, -84.21171], ['007170020', 'ALPHARETTA', 34.10276, -84.22224],
+]);
+
+test('return to warehouse — TRAILER 3: the order Chad called awful is caught, and the option walks the I-20 corridor once', () => {
+  const rejected = routeShapeFaults(TRAILER3_CARD);
+  assert.equal(rejected.crossesItself, true, 'his card crosses itself');
+  assert.equal(rejected.drivesPast, true, 'his card drives past a stop and comes back for it');
+  const pick = returnToWarehouse(TRAILER3_CARD, HOME_DEPOT);
+  assert.equal(pick.order.length, 14);
+  assert.ok(clean(routeShapeFaults(pick.order)), 'a clean corridor sweep');
+  assert.ok(roundTrip(pick.order) < roundTrip(TRAILER3_CARD) - 1609.344, 'and a shorter day than his card');
+  // Nothing clears the bar here, so it IS Shortest distance — the order he asked to have back.
+  assert.equal(pick.source, 'min');
+  assert.equal(geometry(pick.order), geometry(resequence(TRAILER3_CARD, HOME_DEPOT, 'min')));
+  assert.equal(geometry(resequence(TRAILER3_CARD, HOME_DEPOT, 'home')), geometry(pick.order));
+});
+
+test('return to warehouse — GEORGE L: a clean Loop that comes home 3.8 miles sooner replaces Shortest distance, and says so', () => {
+  const pick = returnToWarehouse(GEORGE_L, HOME_DEPOT);
+  assert.equal(pick.source, 'loop');
+  const min = resequence(GEORGE_L, HOME_DEPOT, 'min');
+  assert.equal(geometry(pick.order), geometry(resequence(GEORGE_L, HOME_DEPOT, 'loop')), 'an order the menu already draws');
+  const saved = roundTrip(min) - roundTrip(pick.order);
+  assert.ok(saved >= Math.max(RETURN_MIN_SAVING_METERS, RETURN_MIN_SAVING_SHARE * roundTrip(min)), 'it cleared the bar');
+  assert.ok(Math.abs(saved / 1609.344 - 3.85) < 0.05, `saved ${saved / 1609.344} mi`);
+  assert.ok(clean(routeShapeFaults(pick.order)));
+  assert.equal(returnPickSummary(pick), "Loop's order, 3.8 straight-line mi shorter round trip than Shortest distance");
+});
+
+test('return to warehouse — a shorter order is REFUSED when it crosses itself, drives a road twice, drives past a stop, or splits a town', () => {
+  // Six stops in two towns ten miles apart; node 0 the depot. `fake` makes any listed order the
+  // cheapest by far, so only the shape rules can stop it.
+  const P = [null, { lat: 33.7, lng: -84.0 }, { lat: 33.71, lng: -84.0 }, { lat: 33.72, lng: -84.0 },
+    { lat: 33.7, lng: -84.18 }, { lat: 33.71, lng: -84.18 }, { lat: 33.72, lng: -84.18 }];
+  P[0] = HOME_DEPOT;
+  const crow = P.map((a) => P.map((b) => haversineMeters(a, b)));
+  const base = [1, 2, 3, 6, 5, 4];                                  // one town, then the other
+  const fake = (good) => {
+    const c = crow.map((row) => row.map((v) => v * 10));
+    const seq = [0, ...good, 0];
+    for (let i = 1; i < seq.length; i++) c[seq[i - 1]][seq[i]] = 1;
+    return c;
+  };
+  const split = [1, 4, 2, 5, 3, 6];                                 // town A, B, A, B … and it crosses
+  assert.equal(pickReturnOrder(base, [{ source: 'loop', order: split }], fake(split), crow, (k) => P[k]).source, 'min');
+  const reversedTown = [1, 3, 2, 6, 5, 4];                          // doubles back inside town A
+  const r = pickReturnOrder(base, [{ source: 'loop', order: reversedTown }], fake(reversedTown), crow, (k) => P[k]);
+  assert.equal(r.source, 'loop', 'a clean alternative that saves real miles IS taken');
+  // A saving under a mile is not worth changing the order Chad asked to have back; a mile and
+  // 1.5% is. The leg 1 -> 3 is used by the alternative and not by the base, so moving its cost
+  // sets the saving exactly.
+  const withSaving = (meters) => {
+    const c = crow.map((row) => [...row]);
+    c[1][3] -= loopPathCost(reversedTown, crow) - (loopPathCost(base, crow) - meters);
+    assert.ok(Math.abs(loopPathCost(base, c) - loopPathCost(reversedTown, c) - meters) < 1e-6);
+    return pickReturnOrder(base, [{ source: 'loop', order: reversedTown }], c, crow, (k) => P[k]).source;
+  };
+  const bar = Math.max(RETURN_MIN_SAVING_METERS, RETURN_MIN_SAVING_SHARE * loopPathCost(base, crow));
+  assert.equal(withSaving(0.5 * 1609.344), 'min', 'half a mile: Shortest distance stands');
+  assert.equal(withSaving(bar - 1), 'min', 'just under the bar: Shortest distance stands');
+  assert.equal(withSaving(bar + 1), 'loop', 'just over it: the clean shorter day wins');
+  // Candidates that are not a permutation of the base are ignored, never trusted.
+  assert.equal(pickReturnOrder(base, [{ source: 'loop', order: [1, 2, 3] }, { source: 'loop', order: [1, 1, 2, 3, 4, 5] }], fake([1, 2, 3]), crow, (k) => P[k]).source, 'min');
+});
+
+test('routeShapeFaults: the pictures a dispatcher objects to, and the ones he does not', () => {
+  const line = (pts) => pts.map(([lat, lng]) => ({ lat, lng }));
+  // A bow-tie crosses itself.
+  assert.equal(routeShapeFaults(line([[33.7, -84.0], [33.75, -83.95], [33.75, -84.0], [33.7, -83.95]])).crossesItself, true);
+  // Out along a road and straight back along it (arms 0.05 mi apart) drives it twice …
+  const hairpin = routeShapeFaults(line([[33.70, -84.00], [33.70, -84.05], [33.70, -84.10], [33.7007, -84.10], [33.7007, -84.05], [33.7007, -84.00]]));
+  assert.ok(hairpin.redriveMeters > 2 * 1609.344, `hairpin re-drives ${hairpin.redriveMeters} m`);
+  // … a U whose arms are a mile and a half apart does not.
+  const u = routeShapeFaults(line([[33.70, -84.00], [33.70, -84.05], [33.70, -84.10], [33.72, -84.10], [33.72, -84.05], [33.72, -84.00]]));
+  assert.equal(u.redriveMeters, 0);
+  assert.equal(u.crossesItself, false);
+  // Driving straight past a stop and coming back for it at the end.
+  assert.equal(routeShapeFaults(line([[33.70, -84.00], [33.70, -84.04], [33.70, -84.10], [33.72, -84.10], [33.70005, -84.07]])).drivesPast, true);
+  // Degenerate input never throws.
+  assert.deepEqual(routeShapeFaults([]), { crossesItself: false, redriveMeters: 0, pathMeters: 0, drivesPast: false });
+  assert.equal(routeShapeFaults(null).crossesItself, false);
+  assert.equal(routeShapeFaults([{ lat: NaN, lng: 1 }, { lat: 33.7, lng: -84 }]).pathMeters, 0);
+});
+
+test('return to warehouse never makes the day longer than Shortest distance, and never draws a fault Shortest distance does not', () => {
+  let seed = 20260930;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  let switched = 0;
+  for (let card = 0; card < 150; card++) {
+    const n = 6 + Math.floor(rnd() * 22);
+    const lat0 = 33.5 + rnd() * 0.5, lng0 = -84.6 + rnd() * 0.6;
+    const stops = Array.from({ length: n }, (_, i) => ({ id: `c${card}s${i}`, lat: lat0 + rnd() * 0.15, lng: lng0 + rnd() * 0.18 }));
+    const min = resequence(stops, HOME_DEPOT, 'min');
+    const pick = returnToWarehouse(stops, HOME_DEPOT);
+    assert.equal(new Set(pick.order.map((s) => s.id)).size, n, 'every stop exactly once');
+    assert.ok(roundTrip(pick.order) <= roundTrip(min) + 1e-6, `card ${card}: never a longer day`);
+    if (pick.source !== 'min') {
+      switched++;
+      assert.ok(clean(routeShapeFaults(pick.order)), `card ${card}: a switch is always to a clean picture`);
+      assert.ok(roundTrip(min) - roundTrip(pick.order) >= RETURN_MIN_SAVING_METERS - 1e-6);
+    } else {
+      assert.equal(geometry(pick.order), geometry(min), `card ${card}: otherwise it IS Shortest distance`);
+    }
+  }
+  assert.ok(switched > 10 && switched < 140, `it does switch sometimes and keep sometimes (${switched}/150)`);
+});
+
+test('return to warehouse: the same stops in any order give the same answer, on straight lines and on a one-way road matrix', () => {
+  const shuffles = (list) => [list, [...list].reverse(), list.filter((_, i) => i % 2).concat(list.filter((_, i) => !(i % 2))), [...list.slice(5), ...list.slice(0, 5)]];
+  for (const stops of [GEORGE_L, TRAILER3_CARD]) {
+    const want = geometry(returnToWarehouse(stops, HOME_DEPOT).order);
+    for (const s of shuffles(stops)) assert.equal(geometry(returnToWarehouse(s, HOME_DEPOT).order), want);
+    // A road matrix read in the driving direction: going west costs 8% more than going east.
+    const road = (list) => { const p = [HOME_DEPOT, ...list]; return p.map((a) => p.map((b) => haversineMeters(a, b) * 1.3 * (b.lng < a.lng ? 1.08 : 1))); };
+    const wantRoad = geometry(returnToWarehouseOnMatrix(stops, road(stops)).order);
+    for (const s of shuffles(stops)) assert.equal(geometry(returnToWarehouseOnMatrix(s, road(s)).order), wantRoad);
+  }
+});
+
+test('return to warehouse on a road matrix: never longer than Shortest distance on that matrix; a stop it cannot score or place rides at the end', () => {
+  const road = (list) => { const p = [HOME_DEPOT, ...list]; return p.map((a) => p.map((b) => haversineMeters(a, b) * 1.3 * (b.lat > a.lat ? 1.05 : 1))); };
+  for (const stops of [GEORGE_L, TRAILER3_CARD]) {
+    const cost = road(stops);
+    const pick = returnToWarehouseOnMatrix(stops, cost);
+    const min = resequenceOnMatrix(stops, cost, 'min');
+    const idx = (list) => list.map((s) => stops.indexOf(s) + 1);
+    assert.ok(loopPathCost(idx(pick.order), cost) <= loopPathCost(idx(min), cost) + 1e-6);
+    assert.deepEqual(resequenceOnMatrix(stops, cost, 'home').map((s) => s.id), pick.order.map((s) => s.id));
+  }
+  // One unreachable address (a NaN row and column) and one stop with no position.
+  const stops = [...GEORGE_L.slice(0, 8), { id: 'NOPIN' }, GEORGE_L[8]];
+  const cost = road(stops.map((s) => (s.lat == null ? GEORGE_L[0] : s)));
+  cost[3] = cost[3].map(() => NaN); cost.forEach((row) => { row[3] = NaN; });
+  const out = returnToWarehouseOnMatrix(stops, cost).order.map((s) => s.id);
+  assert.equal(out.length, stops.length);
+  assert.deepEqual(out.slice(-2).sort(), [GEORGE_L[2].id, 'NOPIN'].sort(), 'both ride at the end');
+});
+
+test('return to warehouse: degenerate cards behave, and a stop with no map position rides at the end', () => {
+  assert.deepEqual(returnToWarehouse([], HOME_DEPOT).order, []);
+  assert.deepEqual(returnToWarehouse(null, HOME_DEPOT).order, []);
+  assert.deepEqual(returnToWarehouse([GEORGE_L[0]], HOME_DEPOT).order, [GEORGE_L[0]]);
+  assert.equal(returnToWarehouse(GEORGE_L.slice(0, 2), HOME_DEPOT).order.length, 2);
+  assert.deepEqual(resequence([], HOME_DEPOT, 'home'), []);
+  assert.deepEqual(returnToWarehouseOnMatrix([], []).order, []);
+  // No depot position: nothing to measure a round trip from — the card keeps its order.
+  assert.deepEqual(returnToWarehouse(GEORGE_L, { lat: null, lng: null }).order.map((s) => s.id), GEORGE_L.map((s) => s.id));
+  const withHole = [...GEORGE_L.slice(0, 5), { id: 'NOPIN', lat: null, lng: null }, ...GEORGE_L.slice(5)];
+  const out = returnToWarehouse(withHole, HOME_DEPOT).order;
+  assert.equal(out.length, withHole.length);
+  assert.equal(out.at(-1).id, 'NOPIN');
+  assert.equal(returnPickSummary(null), '');
+  assert.equal(returnPickSummary({ source: 'none' }), '');
+  assert.match(returnPickSummary({ source: 'min', meters: 5, baseMeters: 5 }), /kept Shortest distance's order/);
+  assert.equal(returnPickSummary({ source: 'farthest', meters: 100000, baseMeters: 104828 }, 'road'), "Farthest first's order, 3.0 road mi shorter round trip than Shortest distance");
+});
+
+test('return to warehouse: 150 stops (the selection cap) come back whole, in the same order every time', () => {
+  let seed = 150;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const stops = Array.from({ length: 150 }, (_, i) => ({ id: `s${i}`, lat: 33.70 + rnd() * 0.22, lng: -84.40 + rnd() * 0.26 }));
+  const t0 = Date.now();
+  const a = returnToWarehouse(stops, HOME_DEPOT).order.map((s) => s.id);
+  const ms = Date.now() - t0;
+  assert.equal(new Set(a).size, 150);
+  assert.deepEqual(returnToWarehouse([...stops].reverse(), HOME_DEPOT).order.map((s) => s.id), a);
+  // It runs Shortest distance and Loop both (~0.25 s and ~0.5 s here on their own at 150), so it
+  // costs about what those two cost together. A generous ceiling for a shared CI runner.
+  assert.ok(ms < 6000, `150 stops took ${ms} ms`);
+});
