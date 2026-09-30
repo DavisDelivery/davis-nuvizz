@@ -65,6 +65,16 @@ export function rwbConfigReady(auth?: RwbAuth | null): boolean {
   return !!c.username && !!c.password;
 }
 
+/** Where the Route Workbench calls go — the sign-in host and the portal base, never the login
+ *  itself. For the dry run (v1.98.5): NUVIZZ_RWB_PORTAL_BASE is its own setting, tied to nothing
+ *  else, so "the UAT site" only tests on NuVizz's UAT tenant if this says uat.nuvizz.com — and
+ *  that has to be readable before a call is spent finding out. */
+export function rwbHosts(): { loginHost: string; portalHost: string; portalBase: string } {
+  const c = rwbConfig();
+  const host = (u: string) => { try { return new URL(u).host; } catch { return String(u || ''); } };
+  return { loginHost: host(c.loginBase), portalHost: host(c.portalBase), portalBase: c.portalBase };
+}
+
 /**
  * A PERSON'S OWN NuVizz portal login, for the Route Workbench calls made on their behalf
  * (Chad, 2026-09-26: "...with their personal nuvizz login information instead of every
