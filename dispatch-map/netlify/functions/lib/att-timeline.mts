@@ -102,23 +102,53 @@ export function dueDayDriver(events: TimelineEvent[] | null | undefined, dueDate
 /** "007174789-1" → "007174789". */
 export const originalOf = (stopNbr: any): string => String(stopNbr ?? '').trim().replace(/-\d+$/, '');
 
-export interface BackfillGroup { date: string; original: string; rows: string[] }
+export interface BackfillGroup {
+  date: string; original: string; rows: string[];
+  // v1.99.7 — a row of the SAME order that day already names the driver (the 8:30 freeze, the day's
+  // record or an earlier backfill). One order, one failure: that answer is this row's too, and it
+  // costs no NuVizz call. Absent → the group needs its timeline read.
+  sibling?: { stopNbr: string; driverName: string | null; driverUserName: string | null; driverKey: string | null; loadNbr: string | null; routeName: string | null; source: string };
+}
 
 /**
  * PURE. Which attempts the backfill looks up: rows the evening join left without a driver and no
  * earlier backfill has already read (`timelineCheckedAt`). An original stop and its "-N" copies on
  * the same day are ONE group — one timeline read answers all of them, because the copy's failure is
  * the original's. Oldest day first, so a run that stops early leaves a clean line behind it.
+ *
+ * A group whose order already has a named row that day carries it as `sibling` and needs no read:
+ * the dry run of 2026-09-30 found 27 of 96 groups were exactly that — a "-1" (or "-2") copy listed
+ * beside a row the 8:30 freeze had already named — and reading their timelines would have spent 27
+ * calls to learn what the list already said.
  */
 export function backfillGroups(days: Array<{ date: string; items: any[] }>, opts: { recheck?: boolean } = {}): BackfillGroup[] {
   const groups = new Map<string, BackfillGroup>();
   for (const { date, items } of [...(days || [])].sort((a, b) => a.date.localeCompare(b.date))) {
+    // Named rows of each order that day; the original stop's own row is preferred over a copy's.
+    const named = new Map<string, any>();
+    for (const it of items || []) {
+      if (!it?.stopNbr || !it.matched || !String(it.originalDriverName || it.originalDriverUserName || '').trim()) continue;
+      const o = originalOf(it.stopNbr);
+      const prev = named.get(o);
+      if (!prev || (String(it.stopNbr) === o && String(prev.stopNbr) !== o)) named.set(o, it);
+    }
     for (const it of items || []) {
       if (!it?.stopNbr || it.matched) continue;
       if (it.timelineCheckedAt && !opts.recheck) continue;
       const original = originalOf(it.stopNbr);
       const key = `${date}|${original}`;
-      if (!groups.has(key)) groups.set(key, { date, original, rows: [] });
+      if (!groups.has(key)) {
+        const sib = named.get(original);
+        groups.set(key, {
+          date, original, rows: [],
+          ...(sib ? { sibling: {
+            stopNbr: String(sib.stopNbr),
+            driverName: sib.originalDriverName ?? null, driverUserName: sib.originalDriverUserName ?? null,
+            driverKey: sib.originalDriverKey ?? null, loadNbr: sib.originalLoadNbr ?? null, routeName: sib.routeName ?? null,
+            source: String(sib.attributedFrom || 'plan'),
+          } } : {}),
+        });
+      }
       groups.get(key)!.rows.push(String(it.stopNbr));
     }
   }
@@ -148,5 +178,23 @@ export function attributionPatch(answer: DueDayAnswer | null, via: 'stop' | 'ori
       atCustomer: answer.atCustomer, unplannedAt: answer.unplannedAt, laterDrivers: answer.laterDrivers,
       via, lookedUpAt,
     },
+  };
+}
+
+/**
+ * PURE. The write for a row answered by a named row of the same order that day. The sibling's route
+ * and load ride along: they are the same freeze record's (or the day's record's) answer for the same
+ * failure, not a timeline's current-route guess.
+ */
+export function siblingPatch(sib: NonNullable<BackfillGroup['sibling']>, at: string): Record<string, any> {
+  return {
+    originalDriverName: sib.driverName,
+    originalDriverUserName: sib.driverUserName,
+    originalDriverKey: sib.driverKey,
+    originalLoadNbr: sib.loadNbr,
+    routeName: sib.routeName,
+    matched: true,
+    attributedFrom: 'sibling',
+    sibling: { stopNbr: sib.stopNbr, source: sib.source, at },
   };
 }

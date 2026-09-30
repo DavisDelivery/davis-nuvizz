@@ -157,3 +157,45 @@ test('no answer: the row is marked read (no second call ever) and stays unattrib
   assert.equal('matched' in p, false);
   assert.equal('originalDriverName' in p, false);
 });
+
+// ── v1.99.7: a copy whose order already has a named row that day is answered from it, free ─────
+import { siblingPatch } from '../netlify/functions/lib/att-timeline.mts';
+
+test('a "-2" copy beside a named "-1" (007160283, 8/17) is answered from the sibling — no timeline read', () => {
+  const days = [{ date: '2026-08-17', items: [
+    { stopNbr: '007160283-1', matched: true, originalDriverName: 'Leroy  Smith', originalDriverUserName: 'Leroy  Smith', originalDriverKey: 'LEROY_SMITH', originalLoadNbr: 'LEROY', routeName: 'LEROY' },
+    { stopNbr: '007160283-2', matched: false },
+  ] }];
+  const [g] = backfillGroups(days);
+  assert.deepEqual(g.rows, ['007160283-2']);
+  assert.equal(g.sibling.stopNbr, '007160283-1');
+  assert.equal(g.sibling.driverName, 'Leroy  Smith');
+  assert.equal(g.sibling.source, 'plan');
+});
+
+test('the original stop\'s own named row is preferred over a named copy as the sibling', () => {
+  const days = [{ date: '2026-09-11', items: [
+    { stopNbr: '007174773-2', matched: true, originalDriverName: 'Copy Driver' },
+    { stopNbr: '007174773', matched: true, originalDriverName: 'Tyrese  Griffin', attributedFrom: 'holder' },
+    { stopNbr: '007174773-1', matched: false },
+  ] }];
+  const [g] = backfillGroups(days);
+  assert.equal(g.sibling.stopNbr, '007174773');
+  assert.equal(g.sibling.driverName, 'Tyrese  Griffin');
+  assert.equal(g.sibling.source, 'holder');
+});
+
+test('a row with no named sibling still needs its timeline (no sibling key)', () => {
+  const [g] = backfillGroups([{ date: '2026-09-25', items: [{ stopNbr: '007182021', matched: false }] }]);
+  assert.equal('sibling' in g, false);
+});
+
+test('the sibling write carries its driver, route and load, and says where it came from', () => {
+  const p = siblingPatch({ stopNbr: '007160283-1', driverName: 'Leroy  Smith', driverUserName: 'Leroy  Smith', driverKey: 'LEROY_SMITH', loadNbr: 'LEROY', routeName: 'LEROY', source: 'plan' }, '2026-09-30T20:00:00Z');
+  assert.equal(p.originalDriverName, 'Leroy  Smith');
+  assert.equal(p.originalLoadNbr, 'LEROY');
+  assert.equal(p.matched, true);
+  assert.equal(p.attributedFrom, 'sibling');
+  assert.deepEqual(p.sibling, { stopNbr: '007160283-1', source: 'plan', at: '2026-09-30T20:00:00Z' });
+  assert.equal('timelineCheckedAt' in p, false, 'no timeline was read');
+});

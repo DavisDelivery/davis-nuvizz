@@ -12,6 +12,8 @@
 //        DRY RUN. Firestore only, ZERO NuVizz calls. Every attempt row in the range with no driver
 //        and no earlier backfill, grouped by original stop (a "-1" copy rides with its original),
 //        and what a run would cost: 1 call per group whose stopId we hold, 2 for one we do not.
+//        v1.99.7: a row whose order already has a named row that day (the 8:30 freeze named the
+//        original, the copy was left blank) is answered from that row — free, listed separately.
 //   POST ?from=…&to=…&confirm=1[&limit=6][&recheck=1]
 //        Reads up to `limit` timelines (default 6, max 8 — a sync function has 26 seconds), oldest
 //        day first, writes each answer onto its rows with a FIELD-MASKED update, and recounts each
@@ -37,7 +39,7 @@ import { requireUser } from './lib/require-user.mts';
 import {
   listAttemptItems, getAttemptsManifest, setAttemptsManifest, recountManifest, attemptsPath,
 } from './lib/attempts-store.mts';
-import { backfillGroups, dueDayDriver, attributionPatch, type BackfillGroup } from './lib/att-timeline.mts';
+import { backfillGroups, dueDayDriver, attributionPatch, siblingPatch, type BackfillGroup } from './lib/att-timeline.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -113,26 +115,43 @@ export default async (req: Request): Promise<Response> => {
     return J(500, { ok: false, error: `could not read the attempts lists: ${e?.message}`, nuvizzCalls: 0 });
   }
   const groups = backfillGroups(days, { recheck });
+  // v1.99.7 — a group whose order already has a named row that day is answered from it, free.
+  const free = groups.filter((g) => g.sibling);
+  const paid = groups.filter((g) => !g.sibling);
 
   if (!run) {
-    const ids = await inPool(groups, 6, stopIdFor);
+    const ids = await inPool(paid, 6, stopIdFor);
     const withId = ids.filter(Boolean).length;
     return J(200, {
       ok: true, dryRun: true, from, to, nuvizzCalls: 0,
       attemptsWithoutDriver: groups.reduce((n, g) => n + g.rows.length, 0),
-      lookups: groups.length,
-      estimatedCalls: withId + 2 * (groups.length - withId),
-      groups: groups.map((g, i) => ({ ...g, stopId: ids[i] })),
+      answeredFreeBySibling: free.length,
+      lookups: paid.length,
+      estimatedCalls: withId + 2 * (paid.length - withId),
+      free: free.map((g) => ({ date: g.date, rows: g.rows, from: g.sibling!.stopNbr, driver: g.sibling!.driverName })),
+      groups: paid.map((g, i) => ({ ...g, stopId: ids[i] })),
     });
   }
 
+  // Free rows first: no NuVizz call, so every run clears all of them.
+  const siblingWritten: any[] = [];
+  const touched = new Set<string>();
+  for (const g of free) {
+    const at = new Date().toISOString();
+    const written: string[] = [];
+    for (const nbr of g.rows) {
+      try { await updateDocFields(`${attemptsPath(TENANT, g.date)}/items/${nbr}`, siblingPatch(g.sibling!, at)); written.push(nbr); } catch { /* left for the next run */ }
+    }
+    if (written.length) touched.add(g.date);
+    siblingWritten.push({ date: g.date, rows: written, from: g.sibling!.stopNbr, driver: g.sibling!.driverName });
+  }
+
   const limit = Math.max(1, Math.min(8, Number(url.searchParams.get('limit')) || 6));
-  const batch = groups.slice(0, limit);
+  const batch = paid.slice(0, limit);
   setCallTrigger('att-backfill');
   const reqr = getNuvizzRequester();
   const before = reqr.getStats().totalThisInstance;
   const results: any[] = [];
-  const touched = new Set<string>();
   for (const g of batch) {
     const stopId = await stopIdFor(g);
     const res = await fetchStopEvents(g.original, stopId, { refresh: false });
@@ -172,12 +191,14 @@ export default async (req: Request): Promise<Response> => {
     } catch (e: any) { console.warn(`[att-backfill] ${date}: manifest recount failed (${e?.message})`); }
   }
   const answered = results.filter((r) => r.ok && r.driver).length;
-  console.log(`[att-backfill] ${from}..${to}: ${results.length} read, ${answered} answered, ${nuvizzCalls} NuVizz call(s), ${groups.length - batch.length} group(s) left`);
+  const remaining = paid.length - results.filter((r) => r.ok).length;
+  console.log(`[att-backfill] ${from}..${to}: ${siblingWritten.length} answered free by a sibling, ${results.length} timeline(s) read, ${answered} answered, ${nuvizzCalls} NuVizz call(s), ${remaining} left`);
   return J(200, {
     ok: true, from, to, nuvizzCalls,
+    answeredFreeBySibling: siblingWritten.length,
     read: results.length, answered, noAnswer: results.filter((r) => r.ok && !r.driver).length,
     notRead: results.filter((r) => !r.ok).length,
-    remaining: groups.length - results.filter((r) => r.ok).length,
-    recounted, results,
+    remaining,
+    recounted, siblings: siblingWritten, results,
   });
 };
