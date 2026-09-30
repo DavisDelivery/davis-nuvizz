@@ -10,6 +10,10 @@
 // load in Compare, re-sequences it WITHOUT saving (Reverse), presses Print manifest, and reads
 // the tickets out of the print bridge — the markup window.print() actually prints.
 //
+// It prints TWICE. First the card as it opened — NuVizz's own order — which must come out exactly as
+// it always did, NuVizz's per-stop ETA line included. Then reversed: the card's order, numbered
+// 1..N down the pages, and no ETA line, because NuVizz's times belong to the order it holds.
+//
 //   node scripts/verify-card-manifest.mjs [distDir]
 //     CHROMIUM_PATH  browser binary   SMOKE_PORT  port (default 8830)
 //     MOBILE=1       the phone layout instead of the desktop one
@@ -52,6 +56,8 @@ const STOPS = NAMES.map((businessName, i) => ({
   loadNbr: 'DAVIS000199001', routeName: 'MANIFEST 1', loadId: 'ld-manifest-1', routeSeq: i + 1,
   driverName: 'TEST DRIVER', driverUserName: 'tdriver',
   matchKey: `manifest_${i}`,
+  // NuVizz's ETA for its own order: 8:10, 9:10, … one an hour down the route.
+  plannedEtaDTTM: `2026-09-30T${String(8 + i).padStart(2, '0')}:10:00`,
 }));
 const NUVIZZ_ORDER = NAMES.slice();
 
@@ -129,6 +135,37 @@ const opened = await cardOrder();
 if (opened && opened.length === 5) ok(`the load opened in Compare with its 5 stops (${opened.map((n) => n.slice(-1)).join(' ')})`);
 else bad(`the Compare card did not open with 5 readable rows (got ${JSON.stringify(opened)})`);
 
+// The tickets the print bridge holds — what window.print() puts on paper (PrintDocModal).
+const readPaper = () => page.evaluate((names) => {
+  const bridge = document.querySelector('.printdoc-bridge');
+  if (!bridge) return null;
+  return [...bridge.querySelectorAll('section.tkt')].map((t) => ({
+    name: names.find((n) => (t.querySelector('.ship-name')?.textContent || '').includes(n)) || null,
+    seq: (t.querySelector('.seq')?.textContent || '').trim(),
+    eta: !!t.querySelector('.next'),
+  }));
+}, NAMES);
+const letters = (arr) => (arr || []).map((n) => (n ? n.slice(-1) : '?')).join(' ');
+const printCard = async () => {
+  await page.getByRole('button', { name: /Print manifest/i }).first().click().catch(() => {});
+  await page.waitForTimeout(1200);
+  return readPaper();
+};
+
+// PRINT 1 — THE CARD AS IT OPENED. Its order is NuVizz's, so the paper must be what it always was.
+const first = await printCard();
+if (!first || first.length !== 5) bad(`first print: expected 5 tickets, got ${JSON.stringify(first)}`);
+else {
+  if (letters(first.map((p) => p.name)) === letters(NUVIZZ_ORDER)) ok(`untouched card prints NuVizz's order, as before: ${letters(first.map((p) => p.name))}`);
+  else bad(`untouched card printed ${letters(first.map((p) => p.name))}, not NuVizz's order`);
+  if (first.map((p) => p.seq).join() === '1,2,3,4,5' && first.every((p) => p.eta)) ok('untouched: NuVizz\'s numbers and every ETA line, as before');
+  else bad(`untouched: numbers ${first.map((p) => p.seq).join(' ')}, ETA lines ${first.filter((p) => p.eta).length}/5`);
+}
+await page.keyboard.press('Escape');
+await page.waitForTimeout(700);
+if (await page.evaluate(() => !document.querySelector('.printdoc-bridge'))) ok('the manifest viewer closes');
+else bad('the manifest viewer did not close — the second print would read the first one');
+
 // RE-SEQUENCE ON SCREEN, SAVE NOTHING. Reverse is a local re-order: no Save, no NuVizz call.
 const picked = await page.evaluate(() => {
   const btn = [...document.querySelectorAll('button')].find((b) => /Print manifest/i.test(b.textContent || ''));
@@ -142,38 +179,31 @@ const picked = await page.evaluate(() => {
 if (picked) await page.selectOption('select[data-verify-reseq="1"]', 'reverse').catch(() => {});
 await page.waitForTimeout(900);
 const onCard = await cardOrder();
-if (onCard && onCard.length === 5 && onCard.join() !== NUVIZZ_ORDER.join()) ok(`re-sequenced on the card, unsaved: ${onCard.map((n) => n.slice(-1)).join(' ')}`);
+if (onCard && onCard.length === 5 && onCard.join() !== NUVIZZ_ORDER.join()) ok(`re-sequenced on the card, unsaved: ${letters(onCard)}`);
 else bad(`the card did not re-sequence (still ${JSON.stringify(onCard)}) — nothing below would mean anything`);
 
-// PRINT.
-await page.getByRole('button', { name: /Print manifest/i }).first().click().catch(() => {});
-await page.waitForTimeout(1200);
-
-// The print bridge is what window.print() puts on paper (PrintDocModal).
-const paper = await page.evaluate((names) => {
-  const bridge = document.querySelector('.printdoc-bridge');
-  if (!bridge) return null;
-  return [...bridge.querySelectorAll('section.tkt')].map((t) => ({
-    name: names.find((n) => (t.querySelector('.ship-name')?.textContent || '').includes(n)) || null,
-    seq: (t.querySelector('.seq')?.textContent || '').trim(),
-  }));
-}, NAMES);
+// PRINT 2 — THE RE-ORDERED CARD.
+const paper = await printCard();
 if (!paper) bad('no print bridge — the manifest viewer did not open');
 else if (paper.length !== 5) bad(`the manifest carries ${paper.length} tickets, not 5`);
 else {
   const printedOrder = paper.map((p) => p.name);
   const want = EXPECT_OLD ? NUVIZZ_ORDER : onCard;
   const label = EXPECT_OLD ? "NuVizz's order (switch off)" : 'the card order, unsaved';
-  if (printedOrder.join() === (want || []).join()) ok(`the paper prints ${label}: ${printedOrder.map((n) => n.slice(-1)).join(' ')}`);
-  else bad(`the paper prints ${printedOrder.map((n) => n?.slice(-1)).join(' ')} — expected ${label}: ${(want || []).map((n) => n.slice(-1)).join(' ')}`);
+  if (printedOrder.join() === (want || []).join()) ok(`the paper prints ${label}: ${letters(printedOrder)}`);
+  else bad(`the paper prints ${letters(printedOrder)} — expected ${label}: ${letters(want)}`);
   const seqs = paper.map((p) => p.seq);
   if (EXPECT_OLD) {
-    // Switched off, each circle carries NuVizz's number for its stop, as it always did.
+    // Switched off, each circle carries NuVizz's number for its stop and its ETA line, as it always did.
     const nuvizzSeq = paper.map((p) => String(NAMES.indexOf(p.name) + 1));
-    if (seqs.join() === nuvizzSeq.join()) ok(`each ticket carries NuVizz's number (${seqs.join(' ')})`);
-    else bad(`ticket numbers ${seqs.join(' ')} are not NuVizz's (${nuvizzSeq.join(' ')})`);
-  } else if (seqs.join() === '1,2,3,4,5') ok('each ticket carries the number its row wears on the card (1 2 3 4 5)');
-  else bad(`ticket numbers read ${seqs.join(' ')} — the card numbers its rows 1 2 3 4 5`);
+    if (seqs.join() === nuvizzSeq.join() && paper.every((p) => p.eta)) ok(`each ticket carries NuVizz's number and ETA line (${seqs.join(' ')})`);
+    else bad(`switch off: numbers ${seqs.join(' ')} (want ${nuvizzSeq.join(' ')}), ETA lines ${paper.filter((p) => p.eta).length}/5`);
+  } else {
+    if (seqs.join() === '1,2,3,4,5') ok('the tickets are numbered 1 2 3 4 5 down the pages, as the card is');
+    else bad(`ticket numbers read ${seqs.join(' ')} — the card's order numbers them 1 2 3 4 5`);
+    if (paper.every((p) => !p.eta)) ok('no ticket carries NuVizz\'s ETA for the order it no longer holds');
+    else bad(`${paper.filter((p) => p.eta).length} ticket(s) still print NuVizz's ETA for the old order`);
+  }
 }
 
 if (process.env.SHOT) { await page.screenshot({ path: process.env.SHOT }); ok(`screenshot ${process.env.SHOT}`); }
