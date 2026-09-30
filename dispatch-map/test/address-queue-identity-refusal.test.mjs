@@ -17,6 +17,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { addressReachedNuvizz } from '../src/lib/nuvizzWrite.js';
+import { plainWriteError, PLAIN_ERRORS_ON } from '../src/lib/write-error.js';
 import { resolveIdentity, publicIdentity } from '../netlify/functions/lib/nuvizz-identity.mts';
 
 const APP = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
@@ -27,8 +28,8 @@ function fnSource(name) {
   return APP.slice(start, next > 0 ? next : undefined);
 }
 // eslint-disable-next-line no-new-func
-const classifyPushResult = new Function('addressReachedNuvizz',
-  `'use strict';\n${fnSource('classifyPushResult')}\nreturn classifyPushResult;`)(addressReachedNuvizz);
+const classifyPushResult = new Function('addressReachedNuvizz', 'plainWriteError', 'PLAIN_ERRORS_ON',
+  `'use strict';\n${fnSource('classifyPushResult')}\nreturn classifyPushResult;`)(addressReachedNuvizz, plainWriteError, PLAIN_ERRORS_ON);
 
 /** What callWrite hands back for nuvizz-write.mts's identity refusal (step 4b). */
 function refusedAnswer(input) {
