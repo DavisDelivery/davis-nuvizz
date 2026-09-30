@@ -32,6 +32,10 @@ export const LEAN_STOP_FIELDS = [
   'first_seen_at', 'arrived_list_dttm',
   'isUnplanned', 'itemsSummary', 'lat', 'listUpdatedDTTM', 'lng', 'loadId',
   'loadNbr', 'loadStopSeq', 'normalizedStatus', 'orderNbr', 'pallets', 'plannedDistanceToNextStop',
+  // The NuVizz load NUMBER of the load a routed order is on (v1.81.6 stores it on every row; this
+  // list forgot it, so the screen never saw it). A Compare card opens on it when the roster cannot
+  // name the load yet — STEVEN 1, 2026-09-30 (lib/wb-stop-load.js).
+  'nuvizzLoadNbr',
   'plannedDurationToNextStop', 'plannedEtaDTTM', 'poRef', 'podDocs', 'primaryPro', 'pro',
   'proCount', 'proNbr', 'pros', 'requestedDate', 'routeName', 'routeSeq',
   'orderInstructions', 'notes_refreshed_at',

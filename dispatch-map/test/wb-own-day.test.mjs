@@ -112,7 +112,8 @@ test('opening a card fetches the earlier day\'s roster with cacheOnly=1, never a
 
 test('the card refuses exactly as before unless the earlier day named the load', () => {
   const body = APP.slice(APP.indexOf('const buildWbCard = useCallback'), APP.indexOf('const ownDayRosterToFetch = useCallback'));
-  assert.match(body, /if \(!loadId && !loadNbr && !ownDayLoad\) \{/);
+  // v1.98.2: the stops' own load number (lib/wb-stop-load.js) is one more source before refusing.
+  assert.match(body, /if \(!loadId && !loadNbr && !ownDayLoad && !stopLoad\) \{/);
   assert.match(body, /WB_OWN_DAY_ROSTER_ON && !rosterEntry0\?\.ambiguous/, 'switch off, or an ambiguous name today → old behaviour');
   assert.match(body, /has no NuVizz load number or id yet, so a Save would be refused\./, 'the original refusal is kept word for word');
   const open = APP.slice(APP.indexOf('const openRouteInWorkbench = useCallback'));
