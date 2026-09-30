@@ -1055,6 +1055,38 @@ export function resequence(stops, depot, strategy) {
   }
 }
 
+// ── A LATE ROAD REPLY LANDS ON THE CARD AS IT IS NOW (Chad, 2026-09-30) ──────
+//
+// With the road box ticked, a re-sequence pick asks Google for a matrix and the road order lands
+// after the reply comes back. That order was computed from the stops the card held AT THE PICK. A
+// stop dragged to another card, or removed, while the reply was out came back with it: the card
+// put the reply's ids first and its own tail after. So the stop sat on two cards and Save sent it
+// on both loads, or it sat in the order and in the card's removals at once and the unplan was
+// never sent. Chad, shown it: "I see bugs one through three, and those look like something I want
+// to fix."
+//
+// PURE. The card's new order: the reply's ids that are STILL on the card, in the reply's order,
+// then every id the card holds that the reply did not place, in the card's order (a stop added
+// while the reply was out, or one the matrix could not score) — never dropped, never doubled. `dropGone` false
+// is the old reading, byte for byte: every reply id first, whether or not it is still on the card.
+export function mergeReplyOrder(replyIds, currentOrder, dropGone = true) {
+  const current = (Array.isArray(currentOrder) ? currentOrder : []).map(String);
+  const reply = Array.isArray(replyIds) ? replyIds : [];
+  const onCard = new Set(current);
+  const head = dropGone ? [...new Set(reply.map(String))].filter((id) => onCard.has(id)) : reply;
+  const done = new Set(head);
+  return [...head, ...current.filter((id) => !done.has(id))];
+}
+
+// THE SWITCH. VITE_ROAD_REPLY_DROPS_MOVED_STOPS — house shape: default on, an off-word (off/0/
+// false/no) turns it off, anything malformed leaves it on. Off puts back the old reading, where a
+// late reply re-adds a stop that was moved or removed while it was out. Build-time, so flipping it
+// is an env change and a redeploy.
+export function roadReplyDropsMovedStopsEnabled(env) {
+  const v = String(env?.VITE_ROAD_REPLY_DROPS_MOVED_STOPS ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
 // Is this stop already committed to a load?
 //
 // Drives the Routing map's muted "already planned" pin. Trusts the board's own isPlanned
