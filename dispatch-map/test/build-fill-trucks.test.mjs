@@ -128,7 +128,7 @@ function areas(pts) {
 const DALTON_FOUR = STOPS.filter((s) => s.group === 'OFF' && s.town === 'DALTON').map((s) => s.stopNbr).sort();
 const SUNDAY = '007185025', FIELDTURF = '007184708';
 const pipeStop = (s, reqs = []) => ({ stopNbr: s.stopNbr, lat: s.lat, lng: s.lng, ...buildFreightFields({ cartons: s.sk, pallets: s.sk, weight: s.lb, weightUOM: 'LB', stopDetails: [] }, { countSkids: true }), equipmentReqs: reqs, ...(s.tr ? { timeRestriction: s.tr } : {}) });
-const chadStops = (stops) => stops.map((s) => pipeStop(s, equipmentReqsFrom(null, { tractorOnlyGreen: true, panelGreen: GREEN.has(s.stopNbr) })));
+const boardStops = (stops) => stops.map((s) => pipeStop(s, equipmentReqsFrom(null, { tractorOnlyGreen: true, panelGreen: GREEN.has(s.stopNbr) })));
 const pipe = (stops, trucks, { strategy = 'MIN_DISTANCE', fillTrucks = true, windowMode = 'advisory' } = {}) => runPipeline({ stops, trucks, depot: dock, strategy, date: D, matrixMode: 'haversine', windowMode, leaveOffEnds: true, fillTrucks },
   { buildMatrix: async (d, pts) => resolveMatrix(d, pts, 'haversine') });
 const onTruck = (p) => new Map(p.routes.flatMap((r) => r.orderedStopIds.map((id) => [id, r.truckId])));
@@ -175,7 +175,7 @@ test('ON 120 PLACEMENTS OF THE SAME 42 STOPS: nothing the old Build carried is l
   for (let seed = 1; seed <= 40; seed++) {
     for (const strategy of ['MIN_DISTANCE', 'FARTHEST_FIRST', 'CLOSEST_FIRST']) {
       const stops = placed(seed);
-      const on = await pipe(chadStops(stops), TRUCKS, { strategy }), off = await pipe(chadStops(stops), TRUCKS, { strategy, fillTrucks: false });
+      const on = await pipe(boardStops(stops), TRUCKS, { strategy }), off = await pipe(boardStops(stops), TRUCKS, { strategy, fillTrucks: false });
       runs++;
       const offLeft = new Set(off.unassigned.map((u) => u.stopId));
       for (const u of on.unassigned) assert.ok(offLeft.has(u.stopId), `seed ${seed} ${strategy}: ${u.stopId} was carried before and is left off now`);
@@ -221,7 +221,7 @@ test('WINDOWS: on Chad\'s board with the four Dalton orders due by 9:00, SCOTT d
   const due = { openMin: 420, closeMin: 540, closedToday: false, sources: ['test'], label: '7:00a–9:00a' };
   const withWindows = stops.map((s) => (DALTON_FOUR.includes(s.stopNbr) ? { ...s, tr: due } : s));
   for (const windowMode of ['advisory', 'strict']) {
-    const p = await pipe(chadStops(withWindows), TRUCKS, { windowMode }), off = await pipe(chadStops(withWindows), TRUCKS, { windowMode, fillTrucks: false });
+    const p = await pipe(boardStops(withWindows), TRUCKS, { windowMode }), off = await pipe(boardStops(withWindows), TRUCKS, { windowMode, fillTrucks: false });
     const scott = new Set(p.routes.find((x) => x.truckId === 'SCOTT').orderedStopIds);
     for (const id of DALTON_FOUR) assert.ok(!scott.has(id), `${windowMode}: ${id} is not on SCOTT`);
     for (const id of DALTON_FOUR) {
