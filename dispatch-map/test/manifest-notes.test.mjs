@@ -1,0 +1,123 @@
+// test/manifest-notes.test.mjs — the printed ticket carries the notes NuVizz lists now (v1.100.3).
+// Chad, 2026-10-01, on the card's faded "Not in NuVizz's latest notes": "do this in the portal but
+// on the print manifest don't put them on there at all." The screen keeps the faded line; the paper
+// leaves it off, and prints the note the latest scan picked up. Every ticket — the route panel's
+// Print Manifest, a Compare card's Print manifest, a single Delivery Ticket — reads its notes
+// through ticketData → ticketNotes, so the REAL builders are lifted out of App.jsx and run here.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { ticketNotes, printedNotes, mergedNotes, manifestScanNotesEnabled, MANIFEST_SCAN_NOTES_ON } from '../src/lib/stop-notes-freshness.js';
+import { liftFromApp, libExports } from './helpers/app-lift.mjs';
+
+const ULINE = (text) => ({ text, type: 'ORD_IN', typeDesc: 'Order Instructions', addedBy: 'INTG ULINE', source: 'Order - Order Instructions', addedOn: '2026-09-28T16:50:22' });
+const OLD = (stop) => {   // what ticketData printed before v1.100.3, kept here word for word
+  const raw = (stop && stop.raw && stop.raw.stop) || {};
+  return (Array.isArray(stop.allComments) && stop.allComments.length)
+    ? stop.allComments.map((c) => ({ text: c.text, by: c.addedBy, on: c.addedOn }))
+    : (raw.comments || []).map((c) => ({ text: c.commentDescription, by: c.addedByName, on: c.addedOn }));
+};
+
+// 007184027 off the stored 2026-09-30 board: ULINE cancelled the order after it was enriched.
+const CANCELLED = {
+  stopNbr: '007184027',
+  orderInstructions: 'SPL-INSTR-TEXT: NO APPT REQUIRED; SPL-INSTR-TEXT: DO NOT BREAKDOWN SKID; SPL-INSTR-TEXT: RESIDENTIAL DELIVERY; SPL-INSTR-TEXT: STRAIGHT TRUCK ONLY; TOTAL-AMOUNT : 59.29; CANCELLED ORDER. STOP & RETURN PER ULINE.',
+  allComments: ['SPL-INSTR-TEXT: NO APPT REQUIRED', 'SPL-INSTR-TEXT: DO NOT BREAKDOWN SKID', 'SPL-INSTR-TEXT: RESIDENTIAL DELIVERY', 'SPL-INSTR-TEXT: STRAIGHT TRUCK ONLY', 'TOTAL-AMOUNT : 59.29'].map(ULINE),
+};
+// A card whose order instruction NuVizz has since dropped (made up — none did on 9/30 or 10/1).
+const DROPPED = {
+  stopNbr: '007199001',
+  orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; TOTAL-AMOUNT : 61.80',
+  allComments: [ULINE('SPL-INSTR-TEXT: EMAIL FOR APPT'), ULINE('SPL-INSTR-TEXT: CALL 30 MIN AHEAD'), ULINE('TOTAL-AMOUNT : 61.80')],
+};
+
+test('a note NuVizz no longer lists is left off the paper — while the card still shows it, faded', () => {
+  const paper = ticketNotes(DROPPED, { on: true });
+  assert.deepEqual(paper.map((c) => c.text), ['SPL-INSTR-TEXT: EMAIL FOR APPT', 'TOTAL-AMOUNT : 61.80']);
+  assert.ok(paper.every((c) => c.by === 'INTG ULINE' && c.on === '2026-09-28T16:50:22'), 'stored notes keep author and time');
+  // The portal is unchanged by this: the same stop draws the dropped note faded on screen.
+  assert.deepEqual(mergedNotes(DROPPED).filter((n) => n.gone).map((n) => n.text), ['SPL-INSTR-TEXT: CALL 30 MIN AHEAD']);
+});
+
+test('2026-09-30, 007184027: the ULINE cancellation the scan picked up is printed on the ticket', () => {
+  const paper = ticketNotes(CANCELLED, { on: true });
+  assert.deepEqual(paper[0], { text: 'CANCELLED ORDER. STOP & RETURN PER ULINE.', by: undefined, on: undefined }, 'no author or time — the list sends none');
+  assert.equal(paper.length, 6, 'the five stored notes stay too');
+  assert.deepEqual(OLD(CANCELLED).map((c) => c.text).includes('CANCELLED ORDER. STOP & RETURN PER ULINE.'), false, 'the old paper never printed it');
+});
+
+test('switch off: every ticket prints exactly what it printed before', () => {
+  const RAW_ONLY = { stopNbr: '9', orderInstructions: 'GATE CODE 4471', raw: { stop: { comments: [{ commentDescription: 'CALL FIRST', addedByName: 'CSR', addedOn: '2026-09-01T10:00:00' }] } } };
+  for (const s of [CANCELLED, DROPPED, RAW_ONLY, { stopNbr: '1' }]) assert.deepEqual(ticketNotes(s, { on: false }), OLD(s), s.stopNbr);
+});
+
+test('a text cut short drops nothing from the paper — absence past the cut proves nothing', () => {
+  const cut = { ...DROPPED, orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; TOTAL-AMOU…' };
+  assert.equal(ticketNotes(cut, { on: true }).filter((c) => /CALL 30 MIN AHEAD/.test(c.text)).length, 1);
+});
+
+test('no scan text, or a label ticket with only a dispatcher note: the paper is what it always was', () => {
+  const label = { stopNbr: 'L1', allComments: [{ text: 'Back door', addedBy: 'Dispatcher', addedOn: '2026-10-01T12:00:00Z' }] };
+  assert.deepEqual(ticketNotes(label, { on: true }), OLD(label));
+  assert.deepEqual(ticketNotes({ allComments: DROPPED.allComments }, { on: true }), OLD({ allComments: DROPPED.allComments }));
+});
+
+test('NuVizz’s raw comments, when there are no stored notes, go through the same rule', () => {
+  const s = { orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT', raw: { stop: { comments: [
+    { commentDescription: 'SPL-INSTR-TEXT: EMAIL FOR APPT', addedByName: 'INTG ULINE', addedOn: 'x' },
+    { commentDescription: 'SPL-INSTR-TEXT: LIFT GATE NEEDED', addedByName: 'INTG ULINE', addedOn: 'x' },
+  ] } } };
+  assert.deepEqual(ticketNotes(s, { on: true }).map((c) => c.text), ['SPL-INSTR-TEXT: EMAIL FOR APPT']);
+});
+
+test('printedNotes is what the card shows, less the faded notes and the plain scan-only ones', () => {
+  for (const s of [CANCELLED, DROPPED, {}, null]) assert.deepEqual(printedNotes(s), mergedNotes(s).filter((n) => !n.gone && (!n.fromScan || n.isNew)));
+});
+
+test('an AVRT order with no stored notes: its price line stays off the ticket, as it always was', () => {
+  const avrt = { stopNbr: 'AVRT-0170416957', orderInstructions: '62.96' };   // off the 9/30 board
+  assert.deepEqual(ticketNotes(avrt, { on: true }), []);
+  assert.deepEqual(ticketNotes(avrt, { on: true }), OLD(avrt));
+  // The card still shows it, plain — only the paper leaves it off.
+  assert.deepEqual(mergedNotes(avrt), [{ text: '62.96', fromScan: true }]);
+});
+
+test('VITE_MANIFEST_SCAN_NOTES: default on, an off-word turns it off, a typo leaves it on', () => {
+  assert.equal(manifestScanNotesEnabled({}), true);
+  assert.equal(manifestScanNotesEnabled(undefined), true);
+  for (const v of ['off', 'OFF', '0', 'false', ' no ']) assert.equal(manifestScanNotesEnabled({ VITE_MANIFEST_SCAN_NOTES: v }), false, v);
+  for (const v of ['offf', 'on', '1', '', 'nope']) assert.equal(manifestScanNotesEnabled({ VITE_MANIFEST_SCAN_NOTES: v }), true, v);
+  assert.equal(MANIFEST_SCAN_NOTES_ON, true, 'in Node both switches read on');
+  // The card's switch puts the paper back too, so the screen and the ticket never disagree on which
+  // notes exist: the constant is the AND of the two.
+  const LIB = readFileSync(new URL('../src/lib/stop-notes-freshness.js', import.meta.url), 'utf8');
+  assert.match(LIB, /export const MANIFEST_SCAN_NOTES_ON = SCAN_NOTES_AUTO_ON && \(/);
+});
+
+// ── the REAL builders, lifted out of App.jsx ────────────────────────────────
+const libs = await libExports(['route-identity.js', 'card-manifest.js', 'stop-notes-freshness.js']);
+const L = liftFromApp({
+  targets: ['buildManifestHtml', 'buildTicketHtml'],
+  inject: { ...libs },
+  exercise: (l) => { l.buildManifestHtml([DROPPED, CANCELLED], 'logo.jpg', 'TEST'); l.buildTicketHtml(DROPPED, 'logo.jpg'); },
+});
+const commentsOf = (html) => [...html.matchAll(/<div class="cmt-t">([^<]*)<\/div>/g)].map((m) => m[1]);
+
+test('the printed manifest: the dropped note is not on the page, the scan’s new note is', () => {
+  const html = L.buildManifestHtml([DROPPED, CANCELLED], 'logo.jpg', 'TEST');
+  const all = commentsOf(html);
+  assert.equal(all.some((t) => /CALL 30 MIN AHEAD/.test(t)), false, 'no faded or struck line — it is simply not printed');
+  assert.ok(all.includes('CANCELLED ORDER. STOP &amp; RETURN PER ULINE.'));
+  assert.doesNotMatch(html, /Not in NuVizz|line-through/);
+});
+
+test('a single Delivery Ticket follows the same rule as the manifest page', () => {
+  assert.deepEqual(commentsOf(L.buildTicketHtml(DROPPED, 'logo.jpg')), ['SPL-INSTR-TEXT: EMAIL FOR APPT', 'TOTAL-AMOUNT : 61.80']);
+});
+
+test('ticketData reads its notes through ticketNotes — the one place the paper’s rule lives', () => {
+  const APP = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const body = APP.slice(APP.indexOf('\nfunction ticketData('), APP.indexOf('\nfunction ticketBody('));
+  assert.match(body, /const comments = ticketNotes\(stop\);/);
+  assert.doesNotMatch(body, /allComments/, 'no second, older reading of the notes left behind');
+});

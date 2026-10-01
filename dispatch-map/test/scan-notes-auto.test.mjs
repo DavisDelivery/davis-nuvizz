@@ -173,7 +173,7 @@ test('an AVRT price-only card draws its note plain — no blue, no “New”', (
 // ── the panel uses the merge, and the Refresh banner steps aside ────────────
 const APP = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 test('StopLiveDetail draws the merged notes when the switch is on, and the old banner only when it is off', () => {
-  assert.match(APP, /import \{ noteFreshness, mergedNotes, SCAN_NOTES_AUTO_ON \} from '\.\/lib\/stop-notes-freshness\.js';/);
+  assert.match(APP, /import \{ noteFreshness, mergedNotes, SCAN_NOTES_AUTO_ON[^}]*\} from '\.\/lib\/stop-notes-freshness\.js';/);
   assert.match(APP, /const notes = SCAN_NOTES_AUTO_ON \? mergedNotes\(stop\) : null;/);
   assert.match(APP, /\{!SCAN_NOTES_AUTO_ON && fresh\.stale && \(/);
   assert.match(APP, /\{notes\?\.length \? \(\s*<StopNotesList comments=\{notes\} \/>\s*\) : !SCAN_NOTES_AUTO_ON && stop\.allComments\?\.length \? \(/);

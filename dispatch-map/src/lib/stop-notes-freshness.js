@@ -163,3 +163,63 @@ export function mergedNotes(stop) {
   const added = scan.filter((_, i) => !used.has(i)).map((text) => (isNew ? { text, fromScan: true, isNew: true } : { text, fromScan: true }));
   return [...added, ...kept];
 }
+
+// ── THE PAPER: CURRENT NOTES ONLY (v1.100.3) ────────────────────────────────
+//
+// Chad, 2026-10-01, on the card's faded "Not in NuVizz's latest notes": "do this in the portal but
+// on the print manifest don't put them on there at all." The screen keeps the faded line, because
+// a dispatcher can weigh it; a driver holding the ticket cannot, so a note NuVizz no longer lists
+// is left off the paper, and a note the latest scan picked up (the card's blue "New") is printed.
+// A stop with no stored notes prints what it always printed (see printedNotes). Every printed ticket —
+// the route panel's Print Manifest, a Compare card's Print manifest, and a single Delivery Ticket —
+// reads its notes through ticketData (App.jsx), which reads them here.
+//
+// THE WAY BACK: VITE_MANIFEST_SCAN_NOTES=off puts the paper back to the stored notes exactly as it
+// printed them before (house shape). VITE_SCAN_NOTES_AUTO=off, which puts back the card, puts back
+// the paper too, so the screen and the ticket can never disagree about which notes exist.
+// Build-time, so a redeploy. Zero NuVizz calls either way.
+
+export function manifestScanNotesEnabled(env) {
+  const v = String(env?.VITE_MANIFEST_SCAN_NOTES ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** The paper's switch as this build reads it — on only while the card's merge is on too. */
+export const MANIFEST_SCAN_NOTES_ON = SCAN_NOTES_AUTO_ON && (() => {
+  try { return manifestScanNotesEnabled(import.meta.env); } catch { return true; }
+})();
+
+/**
+ * PURE. The notes a printed ticket carries: what the card shows, without the ones NuVizz no longer
+ * lists, and with a scan note only where the card calls it New (there are stored notes for it to be
+ * newer than). A stop with NO stored notes prints exactly what it printed before: on the 2026-09-30
+ * board all 30 such stops were AVRT orders whose only note is their price, and a delivery ticket is
+ * signed by the receiver — a rate is not put on it without Chad saying so. Each comes back as the
+ * stored note (author and time kept) or `{ text, fromScan, isNew }` — the list sends no author or
+ * time, so the ticket prints none.
+ */
+export function printedNotes(stop) {
+  return mergedNotes(stop).filter((n) => !n.gone && (!n.fromScan || n.isNew));
+}
+
+/**
+ * PURE (given `on`). The Comments boxes of one printed ticket, as ticketData (App.jsx) prints them:
+ * `{ text, by, on }`. With the paper's switch off this is, line for line, what the ticket always
+ * printed — the stored notes, or NuVizz's raw comments when there are none. With it on, the same
+ * notes go through printedNotes: a note NuVizz no longer lists is left off, and one the card marks
+ * New is added, with no author or time (the list sends none).
+ */
+export function ticketNotes(stop, { on = MANIFEST_SCAN_NOTES_ON } = {}) {
+  const raw = (stop && stop.raw && stop.raw.stop) || {};
+  const hasStored = Array.isArray(stop?.allComments) && stop.allComments.length > 0;
+  if (!on) {
+    return hasStored
+      ? stop.allComments.map((c) => ({ text: c.text, by: c.addedBy, on: c.addedOn }))
+      : (raw.comments || []).map((c) => ({ text: c.commentDescription, by: c.addedByName, on: c.addedOn }));
+  }
+  const stored = hasStored
+    ? stop.allComments
+    : (raw.comments || []).map((c) => ({ text: c.commentDescription, addedBy: c.addedByName, addedOn: c.addedOn }));
+  return printedNotes({ allComments: stored, orderInstructions: stop?.orderInstructions })
+    .map((c) => ({ text: c.text, by: c.addedBy, on: c.addedOn }));
+}
