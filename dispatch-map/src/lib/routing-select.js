@@ -1741,6 +1741,48 @@ export function houseSwitchOn(raw) {
  * @param {Set<string>} [a.trimmed]  ids this plan has already taken out
  * @returns {{ take: string[] }}      the ids to take out of the selection (empty = no change)
  */
+/**
+ * WHAT THE ROUTING MAP PAINTS AS ROUTES: the open Compare cards, the Build's own plan, or nothing.
+ * Chad, 2026-10-01: "if it puts the stops in the compare panel, and I then close out the compare
+ * panel, the stops should not look like they're still on that route on the map, because when I
+ * pull back up the compare panel, it's empty. However, it still shows the route that the system
+ * built on the map with the stops on it."
+ *
+ * PURE. Open cards always win: they are the working set. With no card open, a Build plan that
+ * has never been put on a card still paints, because it is the only place that plan is
+ * visible. Once the plan has been on a card, closing the cards is the dispatcher saying "not
+ * this", so nothing paints: the stops go back to the pins a refresh would show. The result
+ * panel's "Stage onto Compare cards" is the way back.
+ *
+ * @param {object} a
+ * @param {number} a.openCards       how many Compare cards are open
+ * @param {boolean} a.planOnCards    this Build's plan has been put on a card
+ * @param {boolean} [a.enabled=true] the switch; off = the old rule (cards, else the plan)
+ * @returns {'cards'|'plan'|'none'}
+ */
+export function mapRouteSource({ openCards, planOnCards, enabled = true }) {
+  if (Number(openCards) > 0) return 'cards';
+  if (enabled && planOnCards) return 'none';
+  return 'plan';
+}
+
+/**
+ * PURE. Has any stop on the Build's routes reached an open Compare card? That is the moment a
+ * plan counts as put on the cards — by the Build's own auto-stage, by "Stage onto Compare
+ * cards", or by hand.
+ *
+ * @param {Array<{order: Array}>} routes   the Build's routes (routesView)
+ * @param {Array<{order: Array}>} cards    the open Compare cards (wbRoutes)
+ */
+export function buildPlanReachedCards(routes, cards) {
+  if (!Array.isArray(routes) || !routes.length || !Array.isArray(cards) || !cards.length) return false;
+  const onCard = new Set();
+  for (const c of cards) for (const id of (c?.order || [])) onCard.add(String(id));
+  if (!onCard.size) return false;
+  for (const r of routes) for (const id of (r?.order || [])) if (onCard.has(String(id))) return true;
+  return false;
+}
+
 export function selectionAfterBuildStage({ selected, built, onCard, trimmed }) {
   const take = [];
   if (!selected || !selected.size || !onCard || !onCard.size) return { take };
