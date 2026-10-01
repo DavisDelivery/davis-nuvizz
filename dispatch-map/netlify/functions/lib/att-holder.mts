@@ -24,8 +24,8 @@
 //   • a route dispatched at 12:43 PM is recorded at the 12:45 scan;
 //   • a stop moved between drivers before it failed keeps the LAST one, who had it at the door;
 //   • once the marker lands, a same-day re-plan onto another driver cannot overwrite the answer;
-//   • a stop first seen already ATT-marked (a "-N" copy, or an earlier day's failure on today's
-//     board) gets NO record — whoever it is on by then is redelivering it, not who attempted it.
+//   • a stop first seen already ATT-marked (a "-N" duplicate order, or an earlier day's failure on
+//     today's board) gets NO record — whoever it is on by then is redelivering it, not who attempted it.
 //
 // USED ONLY WHERE THE 8:30 FREEZE HAS NO DRIVER. Every attempt the freeze attributes today keeps
 // exactly that attribution; this fills the gaps. NUVIZZ_ATT_HOLDER=off stops both the recording
@@ -129,25 +129,22 @@ export function nextHolders(
 /** "007174789-1" → "007174789". */
 export const originalStopNbr = (stopNbr: any): string => String(stopNbr ?? '').trim().replace(/-\d+$/, '');
 
-export interface HolderHit { rec: HolderRec; via: 'stop' | 'original'; stopNbr: string }
+export interface HolderHit { rec: HolderRec; via: 'stop'; stopNbr: string }
 
 /**
- * PURE. Who had this stop, from the day's holder map.
+ * PURE. Who had this stop, from the day's holder map — ITS OWN record, and nothing else.
  *
- * A "-N" copy carries its original's shipment number, and with it the ATT marker once the order
- * fails — the evening list then holds the original and its copy as two rows for one failure (25
- * such pairs in 08/25 → 09/23). A copy never seen routed before the marker has no record of its
- * own; its failure is the original stop's, so the answer is whoever had the original. Reported as
- * `via: 'original'` so it is never mistaken for a record of the copy itself.
+ * v1.102.4 — A "-1" / "-2" IS A DUPLICATE ORDER, NOT THE ORIGINAL'S FAILURE. Chad, 2026-10-01:
+ * "-1 and -2 are duplicate orders and have nothing to do with the original driver." Until then a
+ * copy with no record of its own was answered from its original stop's record (`via: 'original'`),
+ * which charged the original's driver with a duplicate. A copy is now named only from a record of
+ * its own (its own 8:30 freeze entry, or its own all-day record); otherwise it has no driver.
  */
 export function holderFor(holders: Record<string, HolderRec> | null | undefined, stopNbr: any): HolderHit | null {
   if (!holders) return null;
   const nbr = String(stopNbr ?? '').trim();
   if (!nbr) return null;
-  if (holders[nbr]) return { rec: holders[nbr], via: 'stop', stopNbr: nbr };
-  const orig = originalStopNbr(nbr);
-  if (orig !== nbr && holders[orig]) return { rec: holders[orig], via: 'original', stopNbr: orig };
-  return null;
+  return holders[nbr] ? { rec: holders[nbr], via: 'stop', stopNbr: nbr } : null;
 }
 
 /**

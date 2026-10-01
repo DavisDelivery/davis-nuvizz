@@ -100,14 +100,11 @@ test('the recording test is the 8:30 freeze\'s own: routed AND a driver', () => 
   assert.equal(isRoutedWithDriver(stop({ driverName: null, driverUserName: 'CHEAD' })), true);
 });
 
-test('holderFor: a "-1" copy with no record of its own answers from its original stop, and says so', () => {
+test('holderFor (v1.102.4): a "-1" is a duplicate order — it answers ONLY from its own record, never its original\'s', () => {
   const holders = { '007174789': { driverName: 'Trevarr Howard', driverKey: 'TREVARR_HOWARD', since: 'x', frozenAt: 'y' } };
   assert.equal(originalStopNbr('007174789-1'), '007174789');
-  const direct = holderFor(holders, '007174789');
-  assert.equal(direct.via, 'stop');
-  const copy = holderFor(holders, '007174789-1');
-  assert.equal(copy.via, 'original');
-  assert.equal(copy.rec.driverName, 'Trevarr Howard');
+  assert.equal(holderFor(holders, '007174789').rec.driverName, 'Trevarr Howard');
+  assert.equal(holderFor(holders, '007174789-1'), null, 'Chad: "-1 and -2 are duplicate orders and have nothing to do with the original driver"');
   assert.equal(holderFor(holders, '007999999'), null);
   assert.equal(holderFor(null, '007174789'), null);
   // A copy WITH its own record answers from itself.
@@ -144,12 +141,12 @@ test('join: where the freeze has nothing (dispatched after 8:30), the day\'s rec
   assert.equal(item.holderFrozen, true);
 });
 
-test('join: a "-1" copy is attributed from its original\'s record and labelled as such', () => {
+test('join (v1.102.4): a "-1" duplicate is NOT given its original\'s driver — the original keeps its own', () => {
   const holders = { '007174789': { driverName: 'Trevarr Howard', driverUserName: 'Trevarr Howard', driverKey: 'TREVARR_HOWARD', loadNbr: 'LVILLE', routeName: 'LVILLE', since: 's', frozenAt: 'f' } };
   const items = attributeAttempts([cur('007174789'), cur('007174789-1')], new Map(), holders, '2026-09-11', 'd');
-  assert.deepEqual(items.map((i) => [i.stopNbr, i.originalDriverName, i.attributedFrom]), [
-    ['007174789', 'Trevarr Howard', 'holder'],
-    ['007174789-1', 'Trevarr Howard', 'holder-original'],
+  assert.deepEqual(items.map((i) => [i.stopNbr, i.originalDriverName, i.attributedFrom, i.matched]), [
+    ['007174789', 'Trevarr Howard', 'holder', true],
+    ['007174789-1', null, null, false],
   ]);
 });
 
