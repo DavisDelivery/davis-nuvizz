@@ -174,7 +174,9 @@ test('the Re-sequence handler scores with the SAME route key, departure, travel 
     assert.match(src, /depot: ROUTING_DEPOT/);
   }
   assert.match(win, /defaultSlots: detectDefaultSlots\(stops\)/, 'the board\'s vendor-default slots reach the optimizer');
-  assert.match(APP, /\{COMPARE_TIME_WINDOWS_ON && <option value="windows">Time windows — fewest late<\/option>\}/);
+  // The option is a routing switch read where it is drawn (Diagnostics → Routing switches, v1.102.0),
+  // and stays while it is the card's current order so the select never mislabels it.
+  assert.match(APP, /\{\(compareTimeWindowsOn\(\) \|\| route\.strategy === 'windows'\) && <option value="windows">Time windows — fewest late<\/option>\}/);
 });
 
 // ── BOOKED WINDOWS AND APPOINTMENTS COUNT, NOT RECEIVING HOURS ALONE ─────────

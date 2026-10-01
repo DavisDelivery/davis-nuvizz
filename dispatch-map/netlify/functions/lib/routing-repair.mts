@@ -18,6 +18,7 @@ import type {
   SolverInput, SolverOutput, SolverStop, SolverTruck, BuiltRoute, UnassignedStop,
 } from './routing-types.mts';
 import { assembleRoute, sequence } from './routing-solver.mts';
+import { storedRoutingSwitch } from './routing-switch-cache.mts';
 import {
   computeLoad, capacityFits, capacityBreaches, equipmentOk, windowOk, emptyLoad, REASON, serviceStartSec,
 } from './routing-constraints.mts';
@@ -243,8 +244,12 @@ function windowViolations(ordered: SolverStop[], etas: number[]): string[] {
 // the solver chose for it, which could still take it, ran light.
 // PUT IT BACK: ROUTING_REPAIR_ORIGIN_FIRST=off. House shape: default ON, an explicit
 // off/0/false/no turns it off, anything malformed leaves it ON. meta.recoverOriginFirst says
-// which ran.
-export function repairOriginFirstEnabled(env: Record<string, any> = process.env): boolean {
+// which ran. Set on Diagnostics → Routing switches, the stored value wins (src/lib/routing-switches.js).
+export function repairOriginFirstEnabled(
+  env: Record<string, any> = process.env,
+  stored: boolean | undefined = storedRoutingSwitch('ROUTING_REPAIR_ORIGIN_FIRST'),
+): boolean {
+  if (typeof stored === 'boolean') return stored;
   const v = String(env?.ROUTING_REPAIR_ORIGIN_FIRST ?? '').trim().toLowerCase();
   return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
 }

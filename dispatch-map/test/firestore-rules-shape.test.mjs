@@ -377,9 +377,29 @@ test('THE CUTOVER IS INERT: uncommenting it before the browser signs in denies e
   assert.deepEqual(live, [], `the cutover block has been uncommented (${live.length} live lines). If that is deliberate, delete THIS test in the same commit and say in the PR that VITE_LOGIN_ENABLED is live on the site, that every account exists and has signed in once, and that it was rehearsed on uat-mirror first.`);
   // The live catch-all is split into read and write since the Claude shadow planner landed:
   // reads are open to everything but the server-only list, writes additionally refuse
-  // claude_shadow_*. Both lines have to be there — either one missing is a browser with no
-  // active rule for that operation at all.
-  assert.match(RULES_TEXT, /match \/\{document=\*\*\} \{\s*\n\s*allow read: if !serverOnlyCollection\(document\);\s*\n\s*allow write: if !serverOnlyCollection\(document\) && !shadowCollection\(document\);/, 'the LIVE open block is gone while the cutover block is still commented — that leaves the file with no active ruleset for the browser at all');
+  // claude_shadow_* and the browser-read-only collections (routing_switches). Both lines have
+  // to be there — either one missing is a browser with no active rule for that operation at all.
+  assert.match(RULES_TEXT, /match \/\{document=\*\*\} \{\s*\n\s*allow read: if !serverOnlyCollection\(document\);\s*\n\s*allow write: if !serverOnlyCollection\(document\) && !shadowCollection\(document\) && !browserReadOnlyCollection\(document\);/, 'the LIVE open block is gone while the cutover block is still commented — that leaves the file with no active ruleset for the browser at all');
+});
+
+// ── the routing switches (Diagnostics → Routing switches) ───────────────────
+
+test('routing_switches is READ by the browser and WRITTEN only by its endpoint: the public web config cannot turn a routing rule off for everybody with no name on it', () => {
+  // The browser listens to the one document so a flip reaches every open screen — the scanner
+  // must SEE that read, or the cutover would ship with no grant for it and the listener would
+  // be refused the morning the cutover lands.
+  assert.ok(BROWSER_READS.has('routing_switches'), 'the scanner no longer sees the browser\'s read of routing_switches — keep the collection a `const X = \'…\'` literal (src/lib/routing-switches.js ROUTING_SWITCHES_COLL)');
+  assert.ok(!BROWSER_WRITES.has('routing_switches'), 'the browser writes routing_switches directly — a flip must go through netlify/functions/routing-switches.mts, which gates it admin and stamps who made it');
+  // LIVE block: reads open, writes refused.
+  const fn = RULES_TEXT.match(/function\s+browserReadOnlyCollection\s*\([^)]*\)\s*\{([\s\S]*?)\n\s*\}/);
+  assert.ok(fn, 'browserReadOnlyCollection() is gone from firestore.rules — routing_switches is browser-writable again');
+  assert.match(fn[1], /'routing_switches'/);
+  const live = RULES_TEXT.match(/match \/\{document=\*\*\} \{([\s\S]*?)\n\s*\}/);
+  assert.ok(live && /allow write:[^;]*!browserReadOnlyCollection\(document\)/.test(live[1]), 'the live catch-all no longer refuses browser writes to routing_switches');
+  assert.ok(!/allow read:[^;]*browserReadOnlyCollection/.test(live[1]), 'reads stay open: the live listener needs them');
+  // CUTOVER block: a read grant (or the catch-all denies the listener), and no write.
+  assert.deepEqual(grantedOps('routing_switches', 'read'), ['read'], 'the cutover grants no read on routing_switches — every open screen would stop hearing a flip');
+  assert.deepEqual(grantedOps('routing_switches', 'write'), [], 'the cutover grants a browser write on routing_switches');
 });
 
 // ── the Claude shadow planner ────────────────────────────────────────────────

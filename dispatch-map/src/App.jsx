@@ -9,7 +9,7 @@
 //   M4: live Motive driver overlay (toggle)
 //   M5: route polylines — not implemented this session, see HANDOFF.md
 
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { Loader as GoogleMapsLoader } from '@googlemaps/js-api-loader';
 import { MarkerClusterer } from '@googlemaps/markerclusterer';
@@ -53,7 +53,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, sweepModeFor, mergeReplyOrder, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -166,7 +166,7 @@ import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } fro
 import { dropSide, dropSideClass, dropRight } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel, routingRosterRereadEnabled, rosterRereadApplies } from './lib/roster-freshness.js';
 // Time windows on the Compare card's Re-sequence menu (v1.89.0) — scored by the card's own preflight.
-import { timeWindowSequence, timeWindowSummary, compareTimeWindowsEnabled, timeWindowsMilesCapEnabled } from './lib/time-window-sequence.js';
+import { timeWindowSequence, timeWindowSummary } from './lib/time-window-sequence.js';
 import { detectDefaultSlots } from './lib/time-restrictions.js';
 import { PARSE_SCHEDULE_LABEL, parsePollOverdue } from './lib/manifest-schedule.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
@@ -176,7 +176,11 @@ const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 import { computeStopProgress } from './lib/stop-progress.js';
 import { editorClosedDay, toggleClosedPatch, dropClosedPrints, unusedStoredClosedDays, closedDaysFromOrderEnabled } from './lib/closed-days.js';
-import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, preflightCountsEveryLateStopEnabled, travelForServedDate } from './lib/route-preflight.js';
+import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, travelForServedDate } from './lib/route-preflight.js';
+import {
+  ROUTING_SWITCHES, ROUTING_SWITCHES_COLL, ROUTING_SWITCHES_DOC, routingSwitchOn, resolveRoutingSwitch, storedSetting, handedBackSetting,
+  setStoredRoutingSwitches, mergeStoredRoutingSwitches, newerRoutingSwitches, storedRoutingSwitches, subscribeRoutingSwitches, routingSwitchesVersion,
+} from './lib/routing-switches.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
@@ -218,7 +222,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.101.1';
+const APP_VERSION = '1.102.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -272,6 +276,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.102.0', 'ROUTING SWITCHES YOU CAN FLIP FROM THE APP, WITH THE DATE EACH CHANGE WENT IN. Chad: \u201cI would say we put in the Diagnostics tab \u2026 I would like to have the date that the switch was put in place so I\u2019ll know which ones to toggle on and off if there\u2019s a change made that I don\u2019t like.\u201d Every routing change that can be put back used to be a Netlify environment variable: nobody could see its position from the app, and flipping one meant a redeploy. Now Diagnostics \u2192 Routing switches lists all ten, NEWEST FIRST: what each does, what off puts back, the moment it went live (Eastern, from the merge, with its version and PR), and where its position comes from \u2014 set here, the Netlify value, or the default. A toggle asks first, writes that one switch to the database for everyone, and shows what the database reads back; if the answer does not come back clean the page reads the database again and says where the switch stands NOW, never \u201cnot changed\u201d about a switch that changed. \u201cUse Netlify setting\u201d hands a switch back (and the page keeps who did it, and when). HOW FAST: an open screen hears a browser switch within seconds while it is connected to the database, otherwise on its next reload; server switches are re-read at most every 30 seconds, and a build, a Fill-my-loads plan and a road-box answer each read them ONCE (so one never uses two positions of a switch) and say which page settings they used. ORDER: a switch set on the page wins over Netlify; nothing set leaves every switch exactly where it was before this release. If the database cannot be read, a server that has read it before keeps its last copy, and one that never has runs that request on the Netlify value and says so in its result. The page will not show positions or flip anything while it cannot read them. The browser can read the switches but never write them (firestore.rules) \u2014 a flip goes through the server. ON THE COMPARE CARD: a menu option switched off while a card is using it stays on that card\u2019s menu until the card is re-sequenced, so the menu never names the wrong order; the free straight-line road box does not wait on the database at all. Admin only once sign-in is turned on (until then, like every other setting, anyone with the app can change it). The ten: Time windows\u2019 miles price, Closest first without the town rule, the road box\u2019s unroutable-leg estimate, late badges past 12, a late road reply not reviving a moved stop, Return to warehouse, Time windows in the menu, repair trying a stop\u2019s own truck first, the build\u2019s unroutable-leg estimate, and the build reading receiving hours. 29 new tests, the server ones on a real build, road box, pipeline and Fill-my-loads plan.'],
   ['1.101.1', 'A ROUTE CAN BE TAKEN OUT FROM THE ROUTES-TO-BUILD LIST. Chad, on Step 2 \u00b7 Plan onto\u2019s list of routes to build: \u201cshould be a check box here incase i want to remove.\u201d Each route in that list now has a ticked box beside its name; untick it and the route leaves the build \u2014 the same untick as the load\u2019s row in the list above, which then reads unticked, so the two can never disagree. Tick it again in the list above. Desktop and phone (it is the same panel). Build Panel only: the Route Workbench is not touched. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.101.0', 'A TRUCK WITH ROOM TAKES A WHOLE GROUP OF THE ORDERS LEFT OFF. Chad, on a Build onto CHE, SCOTT and TRAILER 1 (v1.100.0): \u201cworked better but still left orders offf the laods that only one was full and didn\u2019t have any logic to how it left them off the were orders scattered across 3 towns so i would have sent an additional truck to cover this.\u201d REPRODUCED ON THE REAL CODE from the screenshot (the same six orders off, CHE 9, SCOTT 9, TRAILER 1 28): SCOTT, the only box, shed the Dalton end of its run and then Sunday c/o Encore\u2019s 6 pallets, stopping at 9 of 14; its refill then refused each Dalton order ALONE (\u201cno trip across town for one skid\u201d \u2014 65 mi out of its way for one skid). NOW the orders left off are grouped by area (chained within 15 km), and a truck with room takes a WHOLE group of two or more when it fits and costs no more driving per order than 1.5\u00d7 the average stop already on that truck, and makes no delivery on it miss its window (checked on the stop order the Build ships); a customer shut today is in no group. And a group never costs an order the Build without it carried: on a strict Build, where repair takes stops off for their windows and refills the room, the Build without the group is made too, and if any order it carried would come off or move truck, or a skid be lost, that one ships and the job says why. ON HIS BOARD: SCOTT takes the four Dalton orders together and the Calhoun carton on its way (13 skids), and the one order left off is Sunday c/o Encore \u2014 6 pallets the box has no room for \u2014 on all three strategies. On 120 placements of the same 42 stops: nothing the old Build carried is left off, never fewer skids, and wherever SCOTT had room for the Dalton group (7) it now carries it. It never takes part of a town, never takes an order off a truck, never sends a truck across town for one order. SAID PLAINLY: where SCOTT is already full, what is left off can still be in three towns \u2014 fixing that means giving up an order for others, which is yours to decide; and on 600 random overloaded boards it changed 1 plan (+3 skids, nothing worse), because it only acts on a whole group a truck has room for. PUT IT BACK: ROUTING_BUILD_FILL_TRUCKS=off \u2014 the v1.100 Build exactly; every build says which ran and which groups went where (result.buildRules.fillTrucks, result.meta.groupFill). The Build Panel\u2019s server path only; the Compare cards, staging, Save and the map are untouched. Zero NuVizz calls.'],
   ['1.100.3', 'A NOTE NUVIZZ NO LONGER LISTS IS LEFT OFF THE PRINTED TICKET; A NEW ONE IS PRINTED. Chad, on the card’s faded “Not in NuVizz’s latest notes”: “do this in the portal but on the print manifest don’t put them on there at all.” The card keeps the faded, struck-through line, because a dispatcher can weigh it; a driver holding the ticket cannot, so that note is now simply not printed. And the note the card marks blue “New — from the latest scan” is printed, so a ULINE “CANCELLED ORDER. STOP & RETURN PER ULINE.” or a “**DELIVER BY 3:00PM**” added after the order was first read reaches the driver (its by-line reads “From NuVizz’s latest scan” — the scan sends no author or time). This covers every printed ticket: the route panel’s Print Manifest, a Compare card’s Print manifest and a single Delivery Ticket. On a stop with no stored notes, a note that is only an amount stays off the paper — on 9/30 all 30 such stops were AVRT orders whose only note is their price, and those tickets have never printed one (ULINE’s TOTAL-AMOUNT lines print as they always have). ALSO FIXED, on the card and the paper alike: after a Refresh the stored notes can be newer than the scan’s note text, so a note added in NuVizz since the last scan read as removed — the newest note, faded on the card (and it would have been dropped off the ticket). Now nothing is judged removed on a stop whose notes a Refresh (or a note, date or contact edit from the app) has read — the safe side: that stop keeps showing and printing every stored note, as it did before 1.100.2. On the 9/30 board no stop carried such a stamp. MEASURED on the stored boards of 9/30 and 10/1 (1,543 tickets, zero NuVizz calls): 38 tickets gain a note, none loses one. THE WAY BACK, in halves (each a redeploy): VITE_MANIFEST_NEW_NOTES=off stops printing the scan’s notes but still leaves removed ones off; VITE_MANIFEST_SCAN_NOTES=off puts the paper back exactly as before; VITE_SCAN_NOTES_AUTO=off puts back the card and the paper together. Zero NuVizz calls.'],
@@ -1405,18 +1410,56 @@ const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 // The Compare row prints the whole window ("7:00a–2:30p"), not just the binding edge, when both are on
 // file (lib/time-marks.js timeMarkChip). VITE_COMPARE_FULL_WINDOW=off puts back "closes 2:30p". Build-time.
 const COMPARE_FULL_WINDOW_ON = compareFullWindowEnabled(import.meta.env);
+// ── THE ROUTING SWITCHES (lib/routing-switches.js) ───────────────────────────────────────────
+// Set on Diagnostics → Routing switches, else the Netlify value baked into this build, else the
+// default. Each one is READ WHERE IT IS USED, not frozen at load, so a flip on that page reaches an
+// open screen without a reload (useRoutingSwitchesLive keeps the stored copy current). What each
+// switch does, when it went in, and what off puts back is in the registry.
+const rsOn = (name) => routingSwitchOn(name, import.meta.env, { onUat: BENCH_ON });
 // "Time windows" in the Compare card's Re-sequence menu (lib/time-window-sequence.js).
-const COMPARE_TIME_WINDOWS_ON = compareTimeWindowsEnabled(import.meta.env);
-// VITE_TIME_WINDOWS_MILES_CAP=off puts back the Time windows search that never looked at miles.
-const TIME_WINDOWS_MILES_CAP_ON = timeWindowsMilesCapEnabled(import.meta.env);
-// Return to warehouse: on the UAT site always, on production only once VITE_RETURN_TO_WAREHOUSE=on
+const compareTimeWindowsOn = () => rsOn('VITE_COMPARE_TIME_WINDOWS');
+// Time windows' miles price; off puts back the search that never looked at miles.
+const timeWindowsMilesCapOn = () => rsOn('VITE_TIME_WINDOWS_MILES_CAP');
+// Return to warehouse: on the UAT site always, on production only once switched on
 // (lib/routing-select.js returnToWarehouseVisible says why it defaults off).
-const RETURN_TO_WAREHOUSE_ON = returnToWarehouseVisible(import.meta.env, BENCH_ON);
-// VITE_ROAD_REPLY_DROPS_MOVED_STOPS=off puts back a late road reply re-adding a moved or removed stop.
-const ROAD_REPLY_DROPS_MOVED_STOPS_ON = roadReplyDropsMovedStopsEnabled(import.meta.env);
-// The sweep a re-sequence pick runs: Closest first without the town rule unless
-// VITE_CLOSEST_FIRST_WITHOUT_TOWNS=off puts the rule back (sweepModeFor).
-const sweepModeOf = (strategy) => sweepModeFor(strategy, import.meta.env);
+const returnToWarehouseOn = () => rsOn('VITE_RETURN_TO_WAREHOUSE');
+// Off puts back a late road reply re-adding a moved or removed stop.
+const roadReplyDropsMovedStopsOn = () => rsOn('VITE_ROAD_REPLY_DROPS_MOVED_STOPS');
+// The sweep a re-sequence pick runs: Closest first without the town rule unless that switch is off.
+const sweepModeOf = (strategy) => sweepModeFor(strategy, import.meta.env, rsOn('VITE_CLOSEST_FIRST_WITHOUT_TOWNS'));
+// Off puts back a card past the flag cap showing no late badges.
+const preflightCountsEveryLateStopOn = () => rsOn('VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP');
+// Re-render on a flip: a component that draws something a switch decides calls this.
+const useRoutingSwitchesVersion = () => useSyncExternalStore(subscribeRoutingSwitches, routingSwitchesVersion, routingSwitchesVersion);
+// The live copy. Called once, in Shell: listen to the switches document so a flip on the page lands
+// on every open screen within seconds. With no Firestore client, or once the listen fails (Firestore
+// ends a listener on its first error), it is read ONCE through the endpoint and not again until the
+// page reloads — and a refused read is reported (lib/permission-denied.js), never swallowed. Until
+// either answers, every switch reads its Netlify value or default — as before.
+const ROUTING_SWITCHES_URL = '/.netlify/functions/routing-switches';
+function loadRoutingSwitchesOnce() {
+  return apiFetch(ROUTING_SWITCHES_URL, { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => { if (j?.ok) mergeStoredRoutingSwitches(j.stored || {}); })
+    .catch(() => { /* stays on Netlify values and defaults */ });
+}
+function useRoutingSwitchesLive() {
+  useEffect(() => {
+    let unsub = null;
+    if (db) {
+      try {
+        unsub = onSnapshot(
+          doc(db, ROUTING_SWITCHES_COLL, ROUTING_SWITCHES_DOC.id),
+          (snap) => setStoredRoutingSwitches(snap.exists() ? snap.data() : {}),
+          (err) => { reportDenied('routing_switches', err); loadRoutingSwitchesOnce(); },
+        );
+      } catch { loadRoutingSwitchesOnce(); }
+    } else {
+      loadRoutingSwitchesOnce();
+    }
+    return () => { if (unsub) unsub(); };
+  }, []);
+}
 // The Routing screen re-reads the stored roster when a newer scan lands (lib/roster-freshness.js).
 const ROUTING_ROSTER_REREAD_ON = routingRosterRereadEnabled(import.meta.env);
 // The Residential paint brush in the Routing gear (lib/place-mark.js).
@@ -1428,8 +1471,6 @@ const COMPARE_UNREACHABLE_HOURS_ON = compareUnreachableHoursEnabled(import.meta.
 // on the hours line above (lib/route-preflight.js preflightBadgeWords). VITE_COMPARE_UNREACHABLE_LATE=off
 // puts "can't make" back. Build-time.
 const COMPARE_UNREACHABLE_LATE_ON = compareUnreachableLateEnabled(import.meta.env);
-// VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP=off puts back a card past the flag cap showing no late badges.
-const PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON = preflightCountsEveryLateStopEnabled(import.meta.env);
 // A Stop lookup note save writes only the fields the rep changed (lib/customer-note-edit.js).
 // VITE_NOTE_SAVE_CHANGED_ONLY=off puts back the whole-draft write. Build-time, so flipping it is a redeploy.
 const NOTE_SAVE_CHANGED_ONLY_ON = noteSaveChangedOnlyEnabled(import.meta.env);
@@ -18470,10 +18511,210 @@ const DIAG_SECTIONS = [
   { id: 'capture', label: 'Capture health', icon: <FileCheck size={14} />, hint: 'Which of the last 21 days actually sealed a board, and the holes.' },
   { id: 'schedule', label: 'Scan schedule', icon: <Clock size={14} />, hint: 'When the scanner runs and what it may spend. Live — no deploy.' },
   { id: 'alerts', label: 'Alert recipients', icon: <Mail size={14} />, hint: 'Who gets texted and who gets emailed when a stop is going to miss.' },
+  { id: 'routing', label: 'Routing switches', icon: <SlidersHorizontal size={14} />, hint: 'Each routing change, the date it went in, and on or off for everyone. Live — no deploy.' },
   { id: 'quality', label: 'Data quality', icon: <ClipboardList size={14} />, hint: 'M3 stubs — unmatched stops, stale customers, addr2 migration.' },
   { id: 'switches', label: 'This device', icon: <SlidersHorizontal size={14} />, hint: 'The settings this browser remembers, what each one does, and which are not at their default.' },
   { id: 'rollback', label: 'Roll back', icon: <RotateCcw size={14} />, hint: 'Every version this build knows, when it landed, and what going back to it would undo.' },
 ];
+
+
+// ── ROUTING SWITCHES: every routing change, the date it went in, on or off for everyone ──────
+//
+// Chad, 2026-10-01: "I would say we put in the Diagnostics tab … I would like to have the date that
+// the switch was put in place so I'll know which ones to toggle on and off if there's a change made
+// that I don't like."
+//
+// One row per switch in lib/routing-switches.js, NEWEST FIRST, because the question this page
+// answers is "what changed the day the routes went wrong". Each row says what the switch does, what
+// off puts back, the moment it went live (Eastern, from the merge) and where its position comes
+// from — set here, the Netlify value, or the default — so a switch is never on for a reason nobody
+// can see. A flip asks first, writes ONE switch, and shows what the database reads back.
+const fmtSwitchET = (iso) => {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return 'at a time not recorded';
+  return new Date(t).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+};
+const onOff = (on) => (on ? 'ON' : 'OFF');
+function routingSwitchSource(row) {
+  if (row.source === 'page') return `Set here ${fmtSwitchET(row.stored.at)}${row.stored.by ? ` by ${row.stored.by}` : ''}`;
+  const back = row.handedBack ? ` · handed back from this page ${fmtSwitchET(row.handedBack.at)}${row.handedBack.by ? ` by ${row.handedBack.by}` : ''}` : '';
+  if (row.source === 'netlify') return `From Netlify: ${row.def.name}=${row.envValue}${back}`;
+  if (row.source === 'uat') return `The UAT site shows it unless it is set off here${back}`;
+  return `Default — not set anywhere${back}`;
+}
+// Where every switch stands, from one read of the endpoint ({ stored, serverEnv }).
+function routingSwitchRows(read) {
+  return [...ROUTING_SWITCHES]
+    .sort((a, b) => String(b.since).localeCompare(String(a.since)))
+    .map((def) => {
+      const stored = storedSetting(read.stored, def.name);
+      const envValue = def.side === 'browser' ? import.meta.env?.[def.name] : read.serverEnv?.[def.name];
+      // Where it lands if it is handed back: the same resolution with nothing stored.
+      const fallback = resolveRoutingSwitch(def, { envValue, onUat: BENCH_ON });
+      return { def, stored, envValue, fallback, handedBack: handedBackSetting(read.stored, def.name), ...resolveRoutingSwitch(def, { stored, envValue, onUat: BENCH_ON }) };
+    });
+}
+function RoutingSwitchesPanel() {
+  const gate = useRoleGate('admin');
+  // `read` is the last answer the endpoint gave; null until one arrives. `readOk` is whether the
+  // LAST attempt to read succeeded — a position is only shown, and a flip only offered, while it is.
+  const [state, setState] = useState({ loading: true, error: null, readOk: false, persistent: null, read: null });
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState(null);
+
+  const load = useCallback(async () => {
+    setState((s) => ({ ...s, loading: true }));
+    try {
+      const r = await apiFetch(ROUTING_SWITCHES_URL, { cache: 'no-store' });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      const read = { stored: j.stored || {}, serverEnv: j.serverEnv || {} };
+      setState({ loading: false, error: null, readOk: true, persistent: j.persistent !== false, read });
+      // This browser's Compare cards use the same positions the page shows (newest entry wins).
+      mergeStoredRoutingSwitches(read.stored);
+      return read;
+    } catch (e) {
+      setState((s) => ({ ...s, loading: false, readOk: false, error: String(e?.message || e) }));
+      return null;
+    }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // What the page shows: its own read, moved forward by any newer flip the live listener has heard
+  // since (newest entry wins, switch by switch) — so the page and this browser's cards agree, and a
+  // toggle never flips from a stale position while the listener is running.
+  const liveV = useRoutingSwitchesVersion();
+  const rows = useMemo(() => routingSwitchRows({
+    stored: newerRoutingSwitches(state.read?.stored, storedRoutingSwitches()),
+    serverEnv: state.read?.serverEnv || {},
+  }), [state.read, liveV]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // on: true / false sets it here; null hands it back to its Netlify setting (or default).
+  const write = async (row, on) => {
+    const what = on === null
+      ? `Hand back to its Netlify setting for everyone?\n\n${row.def.label}\n\nIt will be ${onOff(row.fallback.on)} (${row.fallback.source === 'netlify' ? `Netlify: ${row.def.name}=${row.envValue}` : row.fallback.source === 'uat' ? 'the UAT site rule' : 'the default'}).`
+      : `Turn ${onOff(on)} for everyone?\n\n${row.def.label}\n\n${on ? row.def.on : row.def.off}`;
+    if (!window.confirm(what)) return;
+    setBusy(row.def.name);
+    setMsg(null);
+    try {
+      const r = await apiFetch(ROUTING_SWITCHES_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: row.def.name, on }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      const read = { stored: j.stored || {}, serverEnv: j.serverEnv || state.read?.serverEnv || {} };
+      setState({ loading: false, error: null, readOk: true, persistent: true, read });
+      // This screen at once; every other open screen through useRoutingSwitchesLive.
+      mergeStoredRoutingSwitches(read.stored);
+      const now = routingSwitchRows(read).find((x) => x.def.name === row.def.name);
+      setMsg({ ok: true, text: `${row.def.label} — ${on === null ? `handed back to Netlify: ${onOff(now?.on)}` : `now ${onOff(on)}`}, read back from the database.` });
+    } catch (e) {
+      // A failed answer is not proof nothing changed (a timeout can land; a write can succeed and
+      // its read-back fail). Read the document again and say what it holds NOW.
+      const read = await load();
+      const now = read && routingSwitchRows(read).find((x) => x.def.name === row.def.name);
+      setMsg({
+        ok: false,
+        text: `Could not confirm the change — ${String(e?.message || e)}. ${now
+          ? `Read again from the database: ${row.def.label} is ${onOff(now.on)} (${now.source === 'page' ? 'set here' : 'not set here'}).`
+          : 'Reading the switches again failed too, so where this switch stands is not known — try again.'}`,
+      });
+      // (load() has already folded the re-read into this browser's copy.)
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const known = state.readOk && !state.loading;
+  const setHere = known ? rows.filter((r) => r.source === 'page') : [];
+  const canFlip = gate.allowed && known && state.persistent === true;
+
+  return (
+    <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-200">
+        <h3 className="font-bold text-slate-900">Routing switches</h3>
+        <p className="text-[13px] text-slate-600 mt-1">
+          Every change to the route optimizers that can be put back, <b>newest first</b>, with the date it went
+          in. A switch set here is the same for everyone and wins over its Netlify setting; <b>Use Netlify
+          setting</b> hands it back.
+        </p>
+        <p className="text-[12px] text-slate-500 mt-1">
+          <b>How fast a flip lands.</b> <i>This browser</i> switches: an open screen hears it within seconds
+          while it is connected to the database, otherwise on its next reload. <i>Server</i> switches: the
+          server re-reads them at most every 30 seconds, so a build or road-box request in that half-minute
+          can still use the old position; while the server cannot read them it keeps the last copy it read
+          (or, with none, uses Netlify) — and each build records which page settings it honoured.
+        </p>
+      </div>
+
+      <div className={`px-4 py-2.5 text-[13px] border-b ${!known
+        ? (state.error ? 'bg-rose-50 border-rose-200 text-rose-900' : 'bg-slate-50 border-slate-200 text-slate-700')
+        : setHere.length ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-emerald-50 border-emerald-200 text-emerald-900'}`}>
+        {state.loading ? 'Reading the switches…'
+          : state.error ? <><b>Could not read the switches</b> — {state.error}. Where each one stands cannot be shown, and none can be flipped, until they read. <button type="button" onClick={() => { setMsg(null); load(); }} className="underline font-semibold">Try again</button></>
+            : !state.persistent ? <><b>This deploy has no database</b> — switches show their Netlify setting or default and cannot be set here.</>
+              : setHere.length
+                ? <><b>{setHere.length} switch{setHere.length === 1 ? ' is' : 'es are'} set on this page</b> — {setHere.map((r) => r.def.label).join('; ')}.</>
+                : <><b>No switch is set on this page.</b> Every one is at its Netlify setting or default.</>}
+      </div>
+      {!gate.allowed && <div className="px-4 py-2 text-[12px] text-slate-600 border-b border-slate-200">Only an admin can flip these. {gate.reason}</div>}
+      {msg && <div role="status" className={`px-4 py-2 text-[13px] border-b ${msg.ok ? 'bg-emerald-50 text-emerald-900 border-emerald-200' : 'bg-rose-50 text-rose-900 border-rose-200'}`}>{msg.text}</div>}
+
+      <ul className="divide-y divide-slate-100">
+        {rows.map((r) => (
+          <li key={r.def.name} data-routing-switch={r.def.name} className={`px-4 py-3 ${known && !r.on ? 'bg-slate-50' : ''}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  {r.def.where} · <span className={r.def.side === 'server' ? 'text-indigo-700' : 'text-slate-500'}>{r.def.side === 'server' ? 'Server' : 'This browser'}</span>
+                </div>
+                <div className="font-semibold text-slate-800 text-[14px]">{r.def.label}</div>
+                {known ? <>
+                  <div className="text-[13px] text-slate-600 mt-0.5"><b className="text-slate-700">{r.on ? 'On now:' : 'Off now:'}</b> {r.on ? r.def.on : r.def.off}</div>
+                  <div className="text-[12px] text-slate-500 mt-0.5"><b className="text-slate-600">{r.on ? 'Off would:' : 'On would:'}</b> {r.on ? r.def.off : r.def.on}</div>
+                </> : <>
+                  <div className="text-[13px] text-slate-600 mt-0.5"><b className="text-slate-700">On:</b> {r.def.on}</div>
+                  <div className="text-[12px] text-slate-500 mt-0.5"><b className="text-slate-600">Off:</b> {r.def.off}</div>
+                </>}
+                <div className="text-[12px] text-slate-700 mt-1">
+                  Went in <b>{fmtSwitchET(r.def.since)}</b> · v{r.def.version} · PR #{r.def.pr}
+                </div>
+                <div className={`text-[12px] mt-0.5 ${known && r.source === 'page' ? 'text-amber-800 font-semibold' : 'text-slate-500'}`}>
+                  {known ? routingSwitchSource(r) : state.loading ? 'Reading…' : 'Not read — position unknown'}
+                </div>
+                {known && r.source === 'page' && (
+                  <button type="button" disabled={!canFlip || busy != null} onClick={() => write(r, null)}
+                    className="tap-target mt-1 text-[12px] font-semibold text-indigo-700 underline disabled:opacity-50 disabled:no-underline">
+                    Use Netlify setting ({onOff(r.fallback.on)})
+                  </button>
+                )}
+                <div className="text-[10px] text-slate-400 mt-1 font-mono break-all">{r.def.name}</div>
+              </div>
+              <div className="shrink-0 flex flex-col items-end gap-1">
+                {known ? (
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={r.on}
+                    aria-label={r.def.label}
+                    disabled={!canFlip || busy != null}
+                    onClick={() => write(r, !r.on)}
+                    className={`tap-target relative w-[52px] h-[30px] rounded-full transition-colors disabled:opacity-50 ${r.on ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                  >
+                    <span className={`absolute top-[3px] left-[3px] w-[24px] h-[24px] rounded-full bg-white shadow transition-transform ${r.on ? 'translate-x-[22px]' : ''}`} />
+                  </button>
+                ) : <span className="w-[52px] h-[30px] rounded-full border border-dashed border-slate-300" aria-hidden="true" />}
+                <span className="text-[11px] font-bold text-slate-600">{busy === r.def.name ? 'Saving…' : known ? onOff(r.on) : '?'}</span>
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
 
 
 // ── THIS DEVICE: the per-device switches, and what a wrong one looks like ────
@@ -18673,6 +18914,7 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
     capture: <CaptureHealthPanel />,
     schedule: <SchedulePanel onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} onSaved={onRefresh} />,
     alerts: <AlertRecipientsPanel />,
+    routing: <RoutingSwitchesPanel />,
     switches: <DeviceSwitchesPanel />,
     // SAME COMPONENT as the footer's ⟲ modal, inline. Chad: "Put the roll back app under the
     // diagnostics tab on mobile as well." A phone has no footer, so before this the only door
@@ -21919,6 +22161,8 @@ function PreflightBanner({ pre, isMobile }) {
 }
 
 function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLocs = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, savedAt = null, failedAt = null, isMobile, liveWrite }) {
+  // The Re-sequence menu's options are routing switches (Diagnostics → Routing switches): redraw on a flip.
+  useRoutingSwitchesVersion();
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -22097,7 +22341,10 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
                 optimization around returning to the warehouse". Shortest distance with the drive
                 home counted, drawn only from orders this menu already makes (lib/routing-select.js
                 returnToWarehouse). */}
-            {RETURN_TO_WAREHOUSE_ON && <option value="home">Return to warehouse (round trip)</option>}
+            {/* Kept while it is the card's CURRENT order even if its switch was turned off since
+                (Diagnostics → Routing switches flips it live): a select whose value has no option
+                shows "Shortest distance" over an order that is not — the #280/#263 bug above. */}
+            {(returnToWarehouseOn() || route.strategy === 'home') && <option value="home">Return to warehouse (round trip)</option>}
             <option value="farthest">Farthest first</option>
             <option value="closest">Closest first</option>
             <option value="reverse">Reverse</option>
@@ -22105,7 +22352,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
             {/* Chad, 2026-09-28: "i need an optimization that uses the time restrictions and trys to
                 make the best route considering those". Orders the card by the receiving hours,
                 scored by the same check as the card's late badges (lib/time-window-sequence.js). */}
-            {COMPARE_TIME_WINDOWS_ON && <option value="windows">Time windows — fewest late</option>}
+            {(compareTimeWindowsOn() || route.strategy === 'windows') && <option value="windows">Time windows — fewest late</option>}
           </select>
         )}
         {/* REAL ROADS, OPT-IN. Every strategy above measures straight lines, which cannot see a
@@ -24291,6 +24538,8 @@ function EngineResultPanel({ result, kind, onDismiss }) {
 }
 
 function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, onOpenShadow = null }) {
+  // The card's late badges read a routing switch: re-judge on a flip (Diagnostics → Routing switches).
+  const routingSwitchesV = useRoutingSwitchesVersion();
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   // Read by the Compare card's open path, which runs off refs (deps []).
   const selectedDateRef = useRef(selectedDate);
@@ -25282,8 +25531,8 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         // The board's vendor-default creation slots, so a system-stamped 9:00–9:30 is not read as
         // a booked appointment (the same suppression the time-restrictions report applies).
         defaultSlots: detectDefaultSlots(stops),
-        countCollapsed: PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON,
-        milesCap: TIME_WINDOWS_MILES_CAP_ON,
+        countCollapsed: preflightCountsEveryLateStopOn(),
+        milesCap: timeWindowsMilesCapOn(),
         ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
       });
       setWbRoutes((prev) => prev.map((x) => (x.key !== key ? x : { ...x, order: res.order, strategy, roadSequenced: false })));
@@ -25299,7 +25548,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // did not place ride after it in the card's order — never dropped.
     const applyOrder = (ids, suffix) => setWbRoutes((prev) => prev.map((x) => {
       if (x.key !== key) return x;
-      return { ...x, order: mergeReplyOrder(ids, x.order, ROAD_REPLY_DROPS_MOVED_STOPS_ON), strategy, roadSequenced: suffix === 'road' };
+      return { ...x, order: mergeReplyOrder(ids, x.order, roadReplyDropsMovedStopsOn()), strategy, roadSequenced: suffix === 'road' };
     }));
     // The straight-line order lands INSTANTLY, exactly as it always has. Road distances (below)
     // only ever replace it a moment later — so the dropdown never feels slower than it did, and
@@ -26135,12 +26384,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         order: r.order, stopById, notes, routeKey,
         servedDate: selectedDate, dayKey: weekdayKeyFromDate(selectedDate),
         depot: ROUTING_DEPOT, travel,
-        countCollapsed: PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON,
+        countCollapsed: preflightCountsEveryLateStopOn(),
         ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
       }));
     }
     return m;
-  }, [wbRoutes, stopById, notes, selectedDate, travelInputs, departTable, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [wbRoutes, stopById, notes, selectedDate, travelInputs, departTable, flagsClockTick, routingSwitchesV]); // eslint-disable-line react-hooks/exhaustive-deps
   const effectiveRouteInfo = wbRoutesColored.length ? wbRouteInfo : routeInfo;
 
   // The plan to persist on Save — engine result with any manual order applied.
@@ -31166,6 +31415,8 @@ function RollbackPanel({ onClose }) {
 }
 
 function Shell() {
+  // The routing switches set on Diagnostics, kept current on this screen (lib/routing-switches.js).
+  useRoutingSwitchesLive();
   // Google sends the browser back to "/" after the Gmail consent screen, with
   // the outcome in the query string (see gmail-auth.mts). Land on the Manifest
   // check tab so the answer is on the screen that asked the question — returning

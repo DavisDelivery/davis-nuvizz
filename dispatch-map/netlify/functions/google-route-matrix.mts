@@ -12,6 +12,8 @@
 
 import { fetchWithTimeout } from './lib/async-util.mts';
 import { requireUser } from './lib/require-user.mts';
+import { storedRoutingSwitch } from './lib/routing-switch-cache.mts';
+import { hydrateRoutingSwitches, routingSwitchesTrail, inRoutingSwitchRequest } from './lib/routing-switches-store.mts';
 
 const ROUTES_URL = 'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix';
 const MAX_ELEMENTS = 600;         // under Google's 625 element cap, with margin
@@ -56,7 +58,13 @@ export function haversineMatrix(depot: LatLng, stops: LatLng[]): Matrix {
 //
 // SCOPE: the BUILD (routing-build-background → resolveMatrix). This switch reverts the build's
 // matrix and nothing else; the Compare card's road box has its own, below.
-export function unroutableEstimateEnabled(env: any = process.env): boolean {
+// Both switches below: set on Diagnostics → Routing switches, the stored value wins over the
+// environment (src/lib/routing-switches.js); not set, or not loaded, the environment decides.
+export function unroutableEstimateEnabled(
+  env: any = process.env,
+  stored: boolean | undefined = storedRoutingSwitch('ROUTE_MATRIX_ESTIMATE_UNROUTABLE'),
+): boolean {
+  if (typeof stored === 'boolean') return stored;
   const v = String(env?.ROUTE_MATRIX_ESTIMATE_UNROUTABLE ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
 }
@@ -70,7 +78,11 @@ export function unroutableEstimateEnabled(env: any = process.env): boolean {
 // ROAD_BOX_ESTIMATE_UNROUTABLE=off puts back the old reading for the card alone (the build keeps
 // its own switch above). House shape: default ON, an explicit off-word turns it off, anything
 // malformed leaves it ON. An env change and a redeploy, like every function env var.
-export function roadBoxUnroutableEstimateEnabled(env: any = process.env): boolean {
+export function roadBoxUnroutableEstimateEnabled(
+  env: any = process.env,
+  stored: boolean | undefined = storedRoutingSwitch('ROAD_BOX_ESTIMATE_UNROUTABLE'),
+): boolean {
+  if (typeof stored === 'boolean') return stored;
   const v = String(env?.ROAD_BOX_ESTIMATE_UNROUTABLE ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
 }
@@ -141,6 +153,7 @@ export async function buildMatrixViaGoogle(depot: LatLng, stops: LatLng[], apiKe
 export async function resolveMatrix(depot: LatLng, stops: LatLng[], mode: 'haversine' | 'google' = 'haversine', opts: MatrixOpts = {}): Promise<{ matrix: Matrix; source: 'google' | 'haversine' }> {
   if (stops.length > MAX_STOPS) throw new Error(`selection too large: ${stops.length} stops (max ${MAX_STOPS})`);
   if (mode === 'google') {
+    await hydrateRoutingSwitches();   // ROUTE_MATRIX_ESTIMATE_UNROUTABLE, read in buildMatrixViaGoogle
     const key = process.env.GOOGLE_ROUTES_API_KEY;
     if (key) {
       try { return { matrix: await buildMatrixViaGoogle(depot, stops, key, opts), source: 'google' }; }
@@ -153,8 +166,13 @@ export async function resolveMatrix(depot: LatLng, stops: LatLng[], mode: 'haver
 }
 
 // HTTP handler: POST { depot, stops, mode? } → { matrix, source }. Defaults to the
-// free haversine estimate; pass mode:'google' to bill live Google drive-times.
-export default async function handler(req: Request): Promise<Response> {
+// free haversine estimate; pass mode:'google' to bill live Google drive-times. One read of the
+// routing switches per request (lib/routing-switches-store.mts).
+export default function handler(req: Request): Promise<Response> {
+  return inRoutingSwitchRequest(() => roadBoxHandler(req));
+}
+
+async function roadBoxHandler(req: Request): Promise<Response> {
   if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
   // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
   const gate = await requireUser(req, { role: 'dispatcher' });
@@ -166,10 +184,15 @@ export default async function handler(req: Request): Promise<Response> {
   const mode = body?.mode === 'google' || body?.matrixMode === 'google' ? 'google' : 'haversine';
   if (!depot || !stops) return new Response(JSON.stringify({ error: 'depot and stops required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   try {
+    // ROAD_BOX_ESTIMATE_UNROUTABLE (set on Diagnostics → Routing switches) only matters on Google
+    // distances, so only that mode waits on the switches document: the free straight-line box
+    // answers exactly as fast as it did before the page existed.
+    if (mode === 'google') await hydrateRoutingSwitches();
     // The only caller is the Compare card's road-distance re-sequence: an unroutable leg takes the
     // road estimate unless ROAD_BOX_ESTIMATE_UNROUTABLE is off (see above).
     const { matrix, source } = await resolveMatrix(depot, stops, mode, { estimateUnroutable: roadBoxUnroutableEstimateEnabled() });
-    return new Response(JSON.stringify({ matrix, source, available: isGoogleRoutesEnabled() }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    // `switches`: whether this answer honoured the page's settings (lib/routing-switches-store.mts).
+    return new Response(JSON.stringify({ matrix, source, available: isGoogleRoutesEnabled(), ...(mode === 'google' ? { switches: routingSwitchesTrail() } : {}) }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (e: any) {
     return new Response(JSON.stringify({ error: e?.message }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }

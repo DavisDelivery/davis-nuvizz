@@ -100,6 +100,9 @@ export const SURFACE_LABELS = {
   'nuvizz_ops/manifest_check_latest': "the overnight manifest check's result",
   'customer_notes:location_override': 'a moved pin (the corrected delivery location)',
   'customer_notes:auto_scan': 'the auto-scanner writing hours and restrictions',
+  // The live listen on Diagnostics → Routing switches. The screen still reads them once through the
+  // server, so what is missing is a flip reaching this screen without a reload.
+  routing_switches: 'routing-switch changes made on Diagnostics as they happen (this screen will not pick one up until it reloads)',
 };
 
 export function surfaceLabel(key) {
