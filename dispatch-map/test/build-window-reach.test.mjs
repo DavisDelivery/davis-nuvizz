@@ -1,16 +1,16 @@
-// test/build-window-reach.test.mjs — A DOCK THE TRUCK CANNOT REACH BEFORE IT CLOSES NEVER SETS THE RUN
-// (routing-repair windowAwareOrder, ROUTING_BUILD_WINDOW_REACH).
+// test/build-window-reach.test.mjs — STRICT: A DOCK THE TRUCK CANNOT REACH BEFORE IT CLOSES COMES OFF FIRST
+// (routing-repair, ROUTING_BUILD_WINDOW_REACH).
 //
 // Found by an adversarial review of the measured-departure change (Chad, 2026-10-01: RASHEED
 // "typically leaves" around 12:10). A dock that closes before the truck can get there — even driving
 // to it first — was inserted like any other window: first, because it is least late there. It
 // dragged the run to it and pushed docks that COULD be made past their close, so a strict Build took
-// deliverable orders off with "appointment window cannot be met". Now strict takes such a dock off
-// first and names the clock; advisory keeps it as early as it can go without costing a reachable
-// dock (a near miss stays a near miss). A truck with no such dock gets exactly the order it always
-// did, and the Build without the fix is made too: it ships instead whenever it is better on what a
-// dispatcher counts. A second review measured the first, wider version of this change making routes
-// hundreds of km longer for the same result; every guarantee below is pinned because of that.
+// deliverable orders off with "appointment window cannot be met". Strict now takes such a dock off
+// first and names the clock; the rest of the run is ordered exactly as before; and the strict Build
+// without the fix is made too and ships instead when it carries more. ADVISORY IS NOT CHANGED: two
+// wider versions that also moved shut docks in advisory failed independent reviews (a dock missed by
+// minutes became a refusal; routes hundreds of km longer), and where a shut dock should ride is a
+// dispatch call not yet made. Every guarantee below is pinned because of that.
 //
 // Pins are Buford-area town centres with small offsets; the real pipeline on straight-line drive
 // times, no network.
@@ -36,6 +36,7 @@ const run = (stops, trucks, extra) => runPipeline({
 const km = (r) => r.routes.reduce((a, x) => a + x.legs.reduce((b, l) => b + l.distanceMeters, 0), 0) / 1000;
 const orders = (r) => r.routes.reduce((a, x) => a + x.orderedStopIds.length, 0);
 const late = (r) => r.routes.reduce((a, x) => a + (x.windowViolatedIds || []).length, 0);
+const skids = (r) => r.routes.reduce((a, x) => a + x.load.skids, 0);
 const hm = (sec) => new Date(sec * 1000).toISOString().slice(11, 16);
 
 // One truck leaving at 12:10: Snellville and Conyers close at noon (no order can make them), four
@@ -75,14 +76,6 @@ const NEARMISS = [
   S('N1', 33.992, -83.720, 1, null), S('N2', 34.117, -83.572, 1, null),
 ];
 
-test('a near miss stays a near miss (advisory): the 8:30 dock is still first, four minutes late — not moved to the end', async () => {
-  const before = await run(NEARMISS, [box('RASHEED')], { windowMode: 'advisory' });
-  const r = await run(NEARMISS, [box('RASHEED')], { windowMode: 'advisory', windowReach: true });
-  assert.deepEqual(r.routes[0].orderedStopIds, before.routes[0].orderedStopIds);
-  assert.equal(r.routes[0].orderedStopIds[0], 'EARLY');
-  assert.equal(hm(r.routes[0].etas[0]), '08:34');
-});
-
 test('strict at 08:00 says when the truck could get there, not just that it cannot', async () => {
   const r = await run(NEARMISS, [box('RASHEED')], { windowMode: 'strict', windowReach: true });
   assert.deepEqual(r.unassigned, [{ stopId: 'EARLY', reasons: ['appointment window cannot be met — it closes 8:30a; leaving at 8:00a, RASHEED gets there 8:34a at the earliest'] }]);
@@ -108,8 +101,8 @@ function board(seed) {
   return { stops, trucks: Array.from({ length: nT }, (_, i) => box(`T${i}`)) };
 }
 
-test('NEVER WORSE, 40 random boards × 3 strategies × 08:00 and 12:10 × strict and advisory', async () => {
-  let better = 0;
+test('NEVER WORSE (strict) AND UNCHANGED (advisory): 40 random boards × 3 strategies × 08:00 and 12:10', async () => {
+  let more = 0;
   for (let seed = 1; seed <= 40; seed++) {
     const b = board(seed);
     for (const strategy of ['MIN_DISTANCE', 'CLOSEST_FIRST', 'FARTHEST_FIRST']) for (const departHHMM of ['08:00', '12:10']) {
@@ -119,32 +112,36 @@ test('NEVER WORSE, 40 random boards × 3 strategies × 08:00 and 12:10 × strict
       assert.ok(late(sn) <= late(so), `${tag} strict: more late`);
       if (late(sn) === late(so)) {
         assert.ok(orders(sn) >= orders(so), `${tag} strict: ${orders(sn)} orders against ${orders(so)}`);
-        if (orders(sn) === orders(so)) assert.ok(km(sn) <= km(so) + 1e-6, `${tag} strict: longer for the same orders`);
+        if (orders(sn) === orders(so)) assert.ok(skids(sn) >= skids(so), `${tag} strict: fewer skids for the same orders`);
       }
+      if (orders(sn) > orders(so)) more++;
       const ao = await run(b.stops, b.trucks, { strategy, departHHMM, windowMode: 'advisory' });
       const an = await run(b.stops, b.trucks, { strategy, departHHMM, windowMode: 'advisory', windowReach: true });
-      assert.ok(late(an) <= late(ao), `${tag} advisory: ${late(an)} late against ${late(ao)}`);
-      if (late(an) === late(ao)) assert.ok(km(an) <= km(ao) + 1e-6, `${tag} advisory: longer for the same misses`);
-      if (orders(sn) > orders(so) || late(an) < late(ao)) better++;
+      assert.deepEqual({ r: an.routes, u: an.unassigned }, { r: ao.routes, u: ao.unassigned }, `${tag} advisory changed`);
     }
   }
-  assert.ok(better > 0, 'it changed nothing for the better — the test no longer exercises it');
+  assert.ok(more > 0, 'no strict Build carried more — the test no longer exercises it');
 });
 
-test('ADVISORY, one truck at 08:00 (board 12): the shut docks stop setting the run — one dock fewer missed and 150 km less', async () => {
-  const b = board(12);
-  const o = await run(b.stops, b.trucks, { windowMode: 'advisory' });
-  const n = await run(b.stops, b.trucks, { windowMode: 'advisory', windowReach: true });
-  assert.equal(late(o), 3);
-  assert.equal(late(n), 2);
-  assert.ok(km(n) < km(o) - 100, `${km(n).toFixed(0)} km against ${km(o).toFixed(0)}`);
-  assert.equal(n.meta.windowReachUndone, undefined);
+test('freight on the truck beats miles saved: an 18-skid box leaving 10:40 keeps its 4-skid appointment (reviewer’s board)', async () => {
+  // Taking the shut docks off first lets repair keep a 1-skid order instead of the 4-skid one at the
+  // same order count, 43 km shorter. The guard ships the plan that carries the freight.
+  const rows = [['B0', 33.9633, -84.1488, 2, ['09:00', null]], ['B1', 34.2751, -84.4786, 2, null], ['B2', 34.2161, -84.5149, 4, ['11:00', '13:00']],
+    ['B3', 33.9736, -84.0223, 1, ['08:00', '14:00']], ['B4', 33.6253, -83.8395, 3, ['06:00', '07:00']], ['B5', 34.0698, -84.2924, 1, ['08:00', '14:00']], ['B6', 34.1395, -83.7955, 4, ['06:00', '08:30']]];
+  const stops = rows.map(([id, lat, lng, sk, w]) => S(id, lat, lng, sk, w));
+  const truck = [{ ...box('T0'), maxSkids: 18 }];
+  const extra = { strategy: 'MIN_TIME', departHHMM: '10:40', windowMode: 'strict', fillTrucks: false };
+  const before = await run(stops, truck, extra);
+  const r = await run(stops, truck, { ...extra, windowReach: true });
+  assert.equal(orders(r), orders(before));
+  assert.ok(skids(r) >= skids(before), `${skids(r)} skids against ${skids(before)}`);
+  assert.ok(r.routes[0].orderedStopIds.includes('B2'), 'the 4-skid appointment rides');
 });
 
 test('when the old Build is better, it ships — exactly — and the job says so', async () => {
   for (let seed = 1; seed <= 300; seed++) {
     const b = board(seed);
-    for (const windowMode of ['strict', 'advisory']) for (const departHHMM of ['08:00', '12:10']) {
+    for (const windowMode of ['strict']) for (const departHHMM of ['08:00', '12:10']) {
       const r = await run(b.stops, b.trucks, { departHHMM, windowMode, windowReach: true });
       if (!r.meta.windowReachUndone) continue;
       const plain = await run(b.stops, b.trucks, { departHHMM, windowMode });
@@ -154,6 +151,12 @@ test('when the old Build is better, it ships — exactly — and the job says so
     }
   }
   assert.fail('no board in 300 tripped the guard — the test no longer exercises it');
+});
+
+test('a dock that closes the minute the truck leaves reads as a clock, not a contradiction', async () => {
+  const stops = [S('AT9', 33.956, -83.988, 1, ['06:00', '09:00']), S('N1', 34.207, -84.140, 1, null)];
+  const r = await run(stops, [box('RASHEED')], { departHHMM: '09:00', windowMode: 'strict', windowReach: true });
+  assert.match(r.unassigned[0].reasons[0], /^appointment window cannot be met — it closes 9:00a; leaving at 9:00a, RASHEED gets there 9:\d\da at the earliest$/);
 });
 
 test('the switch is house shape, and the background hands it to the pipeline', () => {
