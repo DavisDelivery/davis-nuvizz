@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   ROUTING_SWITCHES, ROUTING_SWITCH_NAMES, ROUTING_SWITCHES_PATH, routingSwitchDef, resolveRoutingSwitch,
-  storedSetting, setStoredRoutingSwitches, routingSwitchOn, subscribeRoutingSwitches, routingSwitchesVersion,
+  storedSetting, handedBackSetting, setStoredRoutingSwitches, routingSwitchOn, subscribeRoutingSwitches, routingSwitchesVersion,
 } from '../src/lib/routing-switches.js';
 import { sweepModeFor, SWEEP_MODE } from '../src/lib/routing-select.js';
 import { setRoutingSwitchCache, storedRoutingSwitch } from '../netlify/functions/lib/routing-switch-cache.mts';
@@ -88,6 +88,14 @@ test("the browser's copy: empty until loaded, a flip notifies, and the page wins
   assert.equal(routingSwitchOn('VITE_RETURN_TO_WAREHOUSE', {}, { onUat: true }), true);
   assert.equal(storedSetting({ X: set(false) }, 'X').on, false);
   assert.equal(storedSetting(null, 'X'), undefined);
+  // A switch handed back to Netlify ({ on: null }) resolves as never set, and is still on record.
+  const back = { VITE_CLOSEST_FIRST_WITHOUT_TOWNS: { on: null, at: '2026-10-01T15:00:00.000Z', by: 'dispatcher-a' } };
+  assert.equal(storedSetting(back, 'VITE_CLOSEST_FIRST_WITHOUT_TOWNS'), undefined);
+  assert.equal(handedBackSetting(back, 'VITE_CLOSEST_FIRST_WITHOUT_TOWNS').by, 'dispatcher-a');
+  assert.equal(handedBackSetting({ X: set(false) }, 'X'), undefined);
+  setStoredRoutingSwitches(back);
+  assert.equal(routingSwitchOn('VITE_CLOSEST_FIRST_WITHOUT_TOWNS', env), false, 'handed back: the build value again');
+  setStoredRoutingSwitches({});
 });
 
 test("the server's readers: stored wins, nothing stored reads the environment exactly as before", () => {
@@ -113,28 +121,58 @@ test("the server's readers: stored wins, nothing stored reads the environment ex
   }
 });
 
-test('every server path that reads a server switch loads the stored switches first', () => {
-  // A path that skipped the load would honour Netlify while the page said otherwise — a switch
-  // whose position cannot be trusted. These are the four readers' only callers (grep-checked).
-  const has = (f, ...needles) => { const src = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8'); for (const n of needles) assert.ok(src.includes(n), `${f}: ${n}`); };
-  has('netlify/functions/google-route-matrix.mts', 'await hydrateRoutingSwitches();   // ROUTE_MATRIX_ESTIMATE_UNROUTABLE', 'await hydrateRoutingSwitches();   // ROAD_BOX_ESTIMATE_UNROUTABLE');
-  has('netlify/functions/routing-build-background.mts', 'await hydrateRoutingSwitches();');
-  has('netlify/functions/lib/routing-pipeline.mts', 'await hydrateRoutingSwitches();');
-  has('netlify/functions/lib/routing-cleanup-core.mts', 'await hydrateRoutingSwitches();');
-  // And the module the browser bundle pulls in never imports the Firestore client.
+test('the module the browser bundle pulls in never imports the Firestore client', () => {
+  // routing-time-windows.mts is imported by the app; its reader consults the pure cache only.
+  // (That each server path loads the document BEFORE its switch is read is pinned by behaviour, in
+  // routing-switches-wiring.test.mjs — a real build, road box, pipeline and cleanup.)
   const tw = readFileSync(new URL('../netlify/functions/lib/routing-time-windows.mts', import.meta.url), 'utf8');
   assert.ok(!/routing-switches-store|firestore\.mts/.test(tw), 'routing-time-windows.mts stays browser-safe');
 });
 
-test('the app reads each browser switch where it is used, not frozen at load', () => {
-  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+// THE APP'S WIRING. React components cannot run in these node tests, so these pin the exact lines
+// the behaviour depends on — each one a mistake an earlier draft could make and still pass a
+// looser check (an adversarial review proved the first version of this test did exactly that).
+const APP = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+
+test('every browser switch is read where it is used, through the stored copy — none frozen at load', () => {
   for (const s of ROUTING_SWITCHES.filter((x) => x.side === 'browser')) {
-    assert.ok(app.includes(`rsOn('${s.name}')`), `${s.name} is read through the switches`);
+    assert.ok(APP.includes(`rsOn('${s.name}')`), `${s.name} is read through the switches`);
   }
   for (const frozen of ['COMPARE_TIME_WINDOWS_ON', 'TIME_WINDOWS_MILES_CAP_ON', 'RETURN_TO_WAREHOUSE_ON', 'ROAD_REPLY_DROPS_MOVED_STOPS_ON', 'PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON']) {
-    assert.ok(!app.includes(frozen), `${frozen} is gone`);
+    assert.ok(!APP.includes(frozen), `${frozen} is gone`);
   }
-  assert.ok(app.includes("{ id: 'routing', label: 'Routing switches'"), 'the Diagnostics tab exists');
-  assert.ok(app.includes('routing: <RoutingSwitchesPanel />'), 'and renders its panel');
-  assert.ok(app.includes('useRoutingSwitchesLive();'), 'the live copy is loaded in Shell');
+});
+
+test('a flip REDRAWS what it decides: the Compare card subscribes, and the late-badge memo depends on the switches', () => {
+  const card = APP.slice(APP.indexOf('function RoutingWorkbenchCard('));
+  const body = card.slice(card.indexOf('{', card.indexOf(') {')) + 1, card.indexOf('\n  const ') > 0 ? card.indexOf('\n  const ') : 400);
+  assert.match(body, /^\s*(\/\/[^\n]*\n\s*)*useRoutingSwitchesVersion\(\);/, 'RoutingWorkbenchCard subscribes to the switches as its first statement (the menu options are switches)');
+  // wbPreflight (the late badges) is a MEMO: without the version in its deps a flip leaves stale
+  // badges. (wbResequence is a handler — it reads the switch when it runs, so it needs no dep.)
+  const memo = APP.match(/const wbPreflight = useMemo\(\(\) => \{(?:(?!\n {2}\}, \[)[\s\S])*?\n {2}\}, \[([^\]]*)\]\);/);
+  assert.ok(memo, 'the Compare preflight memo is where it was');
+  assert.ok(memo[0].includes('countCollapsed: preflightCountsEveryLateStopOn(),'), 'and it reads the late-badge switch');
+  assert.ok(memo[1].split(',').map((x) => x.trim()).includes('routingSwitchesV'), `the late-badge memo re-runs on a flip: deps [${memo[1]}]`);
+  assert.match(APP, /const routingSwitchesV = useRoutingSwitchesVersion\(\);/);
+});
+
+test('a menu option switched off LIVE stays while it is the card\'s current order — the select never mislabels a card (#280/#263)', () => {
+  assert.match(APP, /\{\(returnToWarehouseOn\(\) \|\| route\.strategy === 'home'\) && <option value="home">/);
+  assert.match(APP, /\{\(compareTimeWindowsOn\(\) \|\| route\.strategy === 'windows'\) && <option value="windows">/);
+});
+
+test('the live copy listens to the one document, reports a refused read, and falls back to one read through the endpoint', () => {
+  assert.ok(APP.includes('useRoutingSwitchesLive();'), 'the live copy is loaded in Shell');
+  assert.match(APP, /onSnapshot\(\s*doc\(db, ROUTING_SWITCHES_COLL, ROUTING_SWITCHES_DOC\.id\),/);
+  assert.match(APP, /\(err\) => \{ reportDenied\('routing_switches', err\); loadRoutingSwitchesOnce\(\); \}/, 'a refused listen is reported (lib/permission-denied.js), not swallowed');
+  // No browser write: a flip goes through the endpoint (and firestore.rules refuses the browser).
+  assert.ok(!/(setDoc|updateDoc|deleteDoc)\(\s*doc\(db, ROUTING_SWITCHES/.test(APP));
+});
+
+test('the Diagnostics tab exists, renders the panel, and the phone layout guard opens it', () => {
+  assert.ok(APP.includes("{ id: 'routing', label: 'Routing switches'"), 'the Diagnostics tab exists');
+  assert.ok(APP.includes('routing: <RoutingSwitchesPanel />'), 'and renders its panel');
+  const guard = readFileSync(new URL('../scripts/verify-mobile-layout.mjs', import.meta.url), 'utf8');
+  assert.match(guard, /\['Routing switches', \/routing switches\/i, \/How fast a flip lands\/i\]/);
+  assert.ok(APP.includes('How fast a flip lands'), 'the text the guard proves the section by is on the page');
 });

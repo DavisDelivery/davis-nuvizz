@@ -60,7 +60,7 @@ import type { TruckCapabilities } from './routing-types.mts';
 import { pickReferences } from './routing-reference.mts';
 import { serviceTimeAsOf } from './routing-service-times.mts';
 import { liveStopToAssignStop, liveMatchKey, modalWarehouseOf, LIVE_SOLVER_MS } from './routing-draft-core.mts';
-import { hydrateRoutingSwitches } from './routing-switches-store.mts';
+import { hydrateRoutingSwitches, routingSwitchesTrail } from './routing-switches-store.mts';
 import { dayReceivingWindow, closedDayTier, fmtMin } from '../../../src/lib/board-flags.js';
 
 // The dispatcher's truck classes and the engine's are DIFFERENT VOCABULARIES:
@@ -255,6 +255,9 @@ export interface CleanupResult {
   // Which rule set actually ran — read off the switch at solve time, never assumed.
   rules: 'build' | 'engine';
   rules_detail?: { tractor_only_green: boolean; window_mode: 'strict' | 'advisory'; time_restrictions: boolean };
+  // Which switches set on Diagnostics → Routing switches this plan honoured, and whether the
+  // server could read them (lib/routing-switches-store.mts). Stamped by runCleanup.
+  routing_switches?: ReturnType<typeof routingSwitchesTrail>;
   tenant: string;
   date: string;
   engine_version: string;
@@ -1527,7 +1530,7 @@ export async function runCleanup(
   const inputs = await loadPlanInputs(tenant, date, stamped.filter((s: any) => s?.isUnplanned === true));
   return {
     ok: true,
-    plan: buildCleanupPlan(tenant, date, {
+    plan: withSwitchTrail(buildCleanupPlan(tenant, date, {
       cfg, inputs, liveStops: stamped, meta, trucks, excludeStopNbrs,
       rules: fillMyLoadsBuildRules() ? 'build' : 'engine',
       tractorOnlyGreen: ruleOpts.tractorOnlyGreen === true,
@@ -1535,6 +1538,10 @@ export async function runCleanup(
       // The panel's green, only while ROUTING_BUILD_GREEN_MATCHES_PANEL is on — the switch
       // that governs the Build button's reading of it, so both buttons move together.
       panelGreenStopNbrs: buildRulesSwitches().greenMatchesPanel ? (ruleOpts.panelGreenStopNbrs ?? null) : null,
-    }),
+    })),
   };
+}
+
+function withSwitchTrail(plan: CleanupResult): CleanupResult {
+  return { ...plan, routing_switches: routingSwitchesTrail() };
 }

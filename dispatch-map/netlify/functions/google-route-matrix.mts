@@ -13,7 +13,7 @@
 import { fetchWithTimeout } from './lib/async-util.mts';
 import { requireUser } from './lib/require-user.mts';
 import { storedRoutingSwitch } from './lib/routing-switch-cache.mts';
-import { hydrateRoutingSwitches } from './lib/routing-switches-store.mts';
+import { hydrateRoutingSwitches, routingSwitchesTrail } from './lib/routing-switches-store.mts';
 
 const ROUTES_URL = 'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix';
 const MAX_ELEMENTS = 600;         // under Google's 625 element cap, with margin
@@ -179,11 +179,15 @@ export default async function handler(req: Request): Promise<Response> {
   const mode = body?.mode === 'google' || body?.matrixMode === 'google' ? 'google' : 'haversine';
   if (!depot || !stops) return new Response(JSON.stringify({ error: 'depot and stops required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   try {
-    await hydrateRoutingSwitches();   // ROAD_BOX_ESTIMATE_UNROUTABLE, set on Diagnostics → Routing switches
+    // ROAD_BOX_ESTIMATE_UNROUTABLE (set on Diagnostics → Routing switches) only matters on Google
+    // distances, so only that mode waits on the switches document: the free straight-line box
+    // answers exactly as fast as it did before the page existed.
+    if (mode === 'google') await hydrateRoutingSwitches();
     // The only caller is the Compare card's road-distance re-sequence: an unroutable leg takes the
     // road estimate unless ROAD_BOX_ESTIMATE_UNROUTABLE is off (see above).
     const { matrix, source } = await resolveMatrix(depot, stops, mode, { estimateUnroutable: roadBoxUnroutableEstimateEnabled() });
-    return new Response(JSON.stringify({ matrix, source, available: isGoogleRoutesEnabled() }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    // `switches`: whether this answer honoured the page's settings (lib/routing-switches-store.mts).
+    return new Response(JSON.stringify({ matrix, source, available: isGoogleRoutesEnabled(), ...(mode === 'google' ? { switches: routingSwitchesTrail() } : {}) }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (e: any) {
     return new Response(JSON.stringify({ error: e?.message }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }

@@ -25,7 +25,12 @@
 // reads to find "the change I don't like". PURE: no imports, safe in the browser bundle and in a
 // Netlify function alike.
 
-export const ROUTING_SWITCHES_DOC = { collection: 'routing_switches', id: 'davis' };
+// A plain string literal on purpose: test/firestore-rules-shape.test.mjs reads the browser's call
+// sites off the source and resolves `const X = '…'`, so the rules guard sees this collection.
+// READ-ONLY TO THE BROWSER (firestore.rules browserReadOnlyCollection): a flip goes through the
+// routing-switches endpoint, where it is gated admin and stamped with who made it.
+export const ROUTING_SWITCHES_COLL = 'routing_switches';
+export const ROUTING_SWITCHES_DOC = { collection: ROUTING_SWITCHES_COLL, id: 'davis' };
 export const ROUTING_SWITCHES_PATH = `${ROUTING_SWITCHES_DOC.collection}/${ROUTING_SWITCHES_DOC.id}`;
 
 const OFF_WORDS = ['off', '0', 'false', 'no'];
@@ -118,6 +123,16 @@ export const routingSwitchDef = (name) => BY_NAME.get(name) || null;
 export function storedSetting(doc, name) {
   const v = doc?.[name];
   return v && typeof v === 'object' && typeof v.on === 'boolean' ? v : undefined;
+}
+
+/**
+ * A switch HANDED BACK on the page ("Use the Netlify setting") is stored as { on: null, at, by }:
+ * it resolves exactly like a switch never set (storedSetting ignores it), and the page can still
+ * say who handed it back and when. Returns that entry, or undefined.
+ */
+export function handedBackSetting(doc, name) {
+  const v = doc?.[name];
+  return v && typeof v === 'object' && v.on === null ? v : undefined;
 }
 
 /**

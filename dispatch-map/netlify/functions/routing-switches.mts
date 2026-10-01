@@ -8,9 +8,12 @@
 //
 // GET  → what is stored for each switch (who set it, when), plus the SERVER switches' environment
 //        values, which the browser cannot see. Free: one Firestore read, zero NuVizz calls.
-// POST → { name, on } sets ONE switch. Admin only (inert until AUTH_REQUIRED=true on the site,
-//        the repo-wide posture). Field-masked, so two people flipping two switches both keep their
-//        flip; the response is READ BACK from the document — never report an intent as an outcome.
+// POST → { name, on } sets ONE switch; { name, on: null } HANDS IT BACK to its Netlify setting (or
+//        default). Admin only (inert until AUTH_REQUIRED=true on the site, the repo-wide posture).
+//        Field-masked, so two people flipping two switches both keep their flip; the response is
+//        READ BACK from the document — never report an intent as an outcome. A write that failed
+//        and a write that landed but could not be read back are DIFFERENT answers (`written`), so
+//        the page never says "not changed" about a switch that changed for everyone.
 import { requireUser } from './lib/require-user.mts';
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { readRoutingSwitches, writeRoutingSwitch } from './lib/routing-switches-store.mts';
@@ -55,16 +58,29 @@ export default async (req: Request): Promise<Response> => {
     try { body = await req.json(); } catch { return J({ ok: false, error: 'invalid JSON' }, 400); }
     const name = String(body?.name ?? '');
     if (!routingSwitchDef(name)) return J({ ok: false, error: `unknown switch: ${name.slice(0, 80) || '(none)'}` }, 400);
-    if (typeof body?.on !== 'boolean') return J({ ok: false, error: '`on` must be true or false' }, 400);
+    if (typeof body?.on !== 'boolean' && body?.on !== null) return J({ ok: false, error: '`on` must be true, false, or null (hand it back to Netlify)' }, 400);
+    const on: boolean | null = body.on;
+    const want = on === null ? 'handed back to Netlify' : on ? 'on' : 'off';
 
     // THE PRINCIPAL, NOT THE BODY: the page prints "set … by X", so a caller-supplied name would
     // turn an audit line into an assertion by whoever made the request.
     const by = String(gate.user?.username || 'unauthenticated').slice(0, 120);
-    await writeRoutingSwitch(name, body.on, by);
-    const stored = await readRoutingSwitches();
+    try {
+      await writeRoutingSwitch(name, on, by);
+    } catch (e: any) {
+      // Firestore refused or the call failed. A timeout CAN still have landed — the page re-reads
+      // the document after any failure and shows where the switch really stands.
+      return J({ ok: false, written: false, error: `the write failed: ${e?.message || e}` }, 502);
+    }
+    let stored: Record<string, any>;
+    try {
+      stored = await readRoutingSwitches();
+    } catch (e: any) {
+      return J({ ok: false, written: true, error: `the database accepted the change but could not be read back to confirm it (${e?.message || e})` }, 502);
+    }
     const saved = stored?.[name];
-    if (!saved || saved.on !== body.on) {
-      return J({ ok: false, error: `the switch did not read back as ${body.on ? 'on' : 'off'} — nothing changed`, stored, serverEnv: serverEnv() }, 500);
+    if (!saved || saved.on !== on) {
+      return J({ ok: false, written: true, error: `the switch did not read back as ${want}`, stored, serverEnv: serverEnv() }, 500);
     }
     return J({ ok: true, persistent: true, saved: name, stored, serverEnv: serverEnv() });
   } catch (e: any) {

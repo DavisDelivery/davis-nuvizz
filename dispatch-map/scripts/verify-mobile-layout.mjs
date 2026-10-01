@@ -266,6 +266,8 @@ const PROBES = {
     ['Capture health', /capture health/i, /21-day|sealed|Capture health/i],
     ['Scan schedule', /scan schedule/i, /Scan Schedule/i],
     ['Alert recipients', /alert recipients/i, /Alert recipients/i],
+    // ADDED v1.102.0 with the section itself, so the guard opens it at 390 and 360 from day one.
+    ['Routing switches', /routing switches/i, /How fast a flip lands/i],
     ['Data quality', /data quality/i, /Unmatched Stops Today/i],
     ['API calls', /api calls/i, /NuVizz API Calls/i],
     // ADDED v1.43.0. 'This device' shipped in v1.42.0 with NO probe, so the guard never opened it

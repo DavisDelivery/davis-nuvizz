@@ -286,12 +286,26 @@ service cloud.firestore {
       return document[0].matches('claude_shadow_.+');
     }
 
+    // ── READ BY THE BROWSER, WRITTEN ONLY BY A FUNCTION ──
+    //
+    // routing_switches holds the switches Chad flips on Diagnostics → Routing switches
+    // (dispatch-map/src/lib/routing-switches.js). The browser LISTENS to it, so a flip reaches
+    // every open screen; it never writes it. A flip goes through
+    // dispatch-map/netlify/functions/routing-switches.mts, which gates it admin, writes one
+    // field and stamps who made it — through the service account, which bypasses these rules.
+    // A browser write grant here would be the way around that endpoint's gate: anyone holding
+    // the public web config could turn a routing rule off for everybody with no name on it.
+    // Same shape and same reason as shadowCollection() above.
+    function browserReadOnlyCollection(document) {
+      return document[0] in ['routing_switches'];
+    }
+
     // ── THE LIVE BLOCK — open for everything else, matching the console ──
     // Do not tighten this on its own. The cutover is one atomic swap: this block
     // out, the block below in, once the browser is actually signing in.
     match /{document=**} {
       allow read: if !serverOnlyCollection(document);
-      allow write: if !serverOnlyCollection(document) && !shadowCollection(document);
+      allow write: if !serverOnlyCollection(document) && !shadowCollection(document) && !browserReadOnlyCollection(document);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -531,6 +545,10 @@ service cloud.firestore {
     // here would be the bypass around that endpoint's own gate, which is finding 5
     // of the audit exactly.
     // match /nuvizz_ops/manifest_check_latest { allow read: if canRead(); allow write: if false; }
+    //
+    // The routing switches. Written by netlify/functions/routing-switches.mts (admin-gated).
+    //   read onSnapshot on the one document (App.jsx useRoutingSwitchesLive)
+    // match /routing_switches/{doc}        { allow read: if canRead(); allow write: if false; }
     //
     // ── claude_shadow_*: no grant, on purpose ─────────────────────────────
     // The Claude shadow tab reads through its own function, never through the

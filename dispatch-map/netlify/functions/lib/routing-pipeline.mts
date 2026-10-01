@@ -24,7 +24,7 @@ import { deriveGeometryForStops, type GeometryAssist } from './freight-geometry.
 import { parseIntentResponse, parseGeometryAssist } from './routing-intent.mts';
 import { solveRouting } from './routing-solver.mts';
 import { repair, runClockFor } from './routing-repair.mts';
-import { hydrateRoutingSwitches } from './routing-switches-store.mts';
+import { hydrateRoutingSwitches, routingSwitchesTrail } from './routing-switches-store.mts';
 import type { StopTimeRestriction } from './routing-time-windows.mts';
 
 export interface PipelineStopInput {
@@ -325,6 +325,8 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
     meta: {
       ...repaired.meta, depot, departEpochSec, serviceMin,
       matrixMode, matrixSource, googleElementCount, estimatedCostUsd,
+      // Which switches set on Diagnostics this build honoured, and whether it could read them.
+      routingSwitches: routingSwitchesTrail(),
     },
     generatedAt: new Date().toISOString(),
   };
