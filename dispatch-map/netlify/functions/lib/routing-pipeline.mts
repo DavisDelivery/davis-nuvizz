@@ -61,6 +61,7 @@ export interface PipelineRequest {
   matrixMode?: MatrixMode;  // 'haversine' (default, free) | 'google' (paid opt-in)
   windowMode?: WindowMode;  // 'advisory' (default, flag) | 'strict' (spill on unmet window)
   leaveOffEnds?: boolean;   // full trucks give up the end of their run, not the middle (routing-assign-ends)
+  fillTrucks?: boolean;     // with leaveOffEnds: trucks with room fill; what is left off is one group (routing-fill-leftover)
 }
 
 export interface PipelineDeps {
@@ -249,6 +250,7 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
     departEpochSec,
     windowMode: req.windowMode === 'strict' ? 'strict' : DEFAULT_WINDOW_MODE,
     leaveOffEnds: req.leaveOffEnds === true,
+    fillTrucks: req.fillTrucks === true,
   };
 
   // ── P3 solve + P4 repair (deterministic) ──

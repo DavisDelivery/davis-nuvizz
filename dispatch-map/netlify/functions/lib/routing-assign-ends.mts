@@ -36,9 +36,14 @@
 //   5. Room left on a truck is filled with stops that came off, but only ones that cost it no more
 //      driving than its average stop — never a trip across town for one skid. A stop left off that
 //      a truck able to carry it drives past goes on that truck — straight on if it has room, else
-//      in exchange for stops off the beginning or end of its run, never for fewer skids or fewer
-//      pounds. The two repeat until nothing moves, so a stop an exchange freed is offered again.
-//   6. What is left is listed, and EVERY listed stop says why: either the trucks that could carry
+//      in exchange for stops off the beginning or end of its run, never for fewer skids. The two
+//      repeat until nothing moves, so a stop an exchange freed is offered again.
+//   6. ROUTING_BUILD_FILL_TRUCKS (on by default): when anything is left off, the plan is settled so
+//      a truck with room takes what it can carry and what is left off is ONE group — the run one
+//      more truck would make (lib/routing-fill-leftover.mts). Chad, 2026-09-30, on a Build where
+//      this file's step 5 left SCOTT at 9 of 14 and the left-off orders in three towns. Off, the
+//      plan is exactly steps 1–5.
+//   7. What is left is listed, and EVERY listed stop says why: either the trucks that could carry
 //      it are full, or the nearest truck with room would have to drive N miles out of its way.
 //
 // MEASURED, and not flattering — by four independent verifiers on boards and yardsticks the
@@ -55,6 +60,7 @@ import type { SolverStop, SolverTruck, UnassignedStop } from './routing-types.mt
 import {
   truckCanCarry, capacityFits, capacityBreaches, equipmentOk, loadFraction, emptyLoad, addLoad, computeLoad, REASON,
 } from './routing-constraints.mts';
+import { settleLeftOff } from './routing-fill-leftover.mts';
 
 function haversineM(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
   const R = 6371000, toRad = (d: number) => (d * Math.PI) / 180;
@@ -108,6 +114,9 @@ export interface EndsAssignment {
   leftOffAtEnds: string[];
   /** Stops moved off a full truck onto another truck that could carry them and had room. */
   movedToRoom: Array<{ stopId: string; from: string; to: string }>;
+  /** ROUTING_BUILD_FILL_TRUCKS: what the fill-and-group step did (lib/routing-fill-leftover.mts);
+   *  null when it did not run (switched off, or nothing was left off). */
+  settled: { moves: number; evals: number; capped: boolean; leftOffStops: number; extraTruckKm: number } | null;
 }
 
 // `runOrder` puts one truck's stops in the order that truck will drive them (routing-solver passes
@@ -115,6 +124,7 @@ export interface EndsAssignment {
 export function assignLeavingOffEnds(
   stops: SolverStop[], trucks: SolverTruck[], depot: { lat: number; lng: number },
   runOrder?: (stops: SolverStop[]) => SolverStop[],
+  opts?: { fillTrucks?: boolean },
 ): EndsAssignment {
   const byTruck = new Map<string, SolverStop[]>();
   const loadOf = new Map<string, ReturnType<typeof emptyLoad>>();
@@ -151,8 +161,10 @@ export function assignLeavingOffEnds(
   const cost = (s: SolverStop, t: SolverTruck) => distToTruck(s, t) + BALANCE_M * loadFraction(loadOf.get(t.id)!, t);
   // ── 0. A stop no selected truck can EVER carry is listed with why, as before. ──
   const pool: SolverStop[] = [];
+  const noTruck: SolverStop[] = [];
   for (const s of stops) {
     if (capableOf.get(s.id)!.length) { pool.push(s); continue; }
+    noTruck.push(s);
     const reasons = new Set<string>();
     for (const t of trucks) for (const r of truckCanCarry(s, t).reasons) reasons.add(r);
     unassigned.push({ stopId: s.id, reasons: [REASON.noTruckFits, ...reasons] });
@@ -218,7 +230,7 @@ export function assignLeavingOffEnds(
     (claims.get(home.id) ?? claims.set(home.id, []).get(home.id)!).push(u);
   }
 
-  // ── 3. Every truck takes on everything in its ground at once, so each one's real demand is
+  // ── 2b. Every truck takes on everything in its ground at once, so each one's real demand is
   //    known before anything moves. ──
   for (const t of trucks) {
     const claimed = claims.get(t.id);
@@ -240,7 +252,7 @@ export function assignLeavingOffEnds(
     return farthestFirst(run[0], run[last]) <= 0 ? 0 : last;
   };
 
-  // ── 4. A stop on a truck with more than it holds that ANOTHER truck can carry and has room for
+  // ── 3. A stop on a truck with more than it holds that ANOTHER truck can carry and has room for
   //    (after that truck's own freight) goes there, nearest ground first — freight a trailer could
   //    take never pushes box-only freight off a box. ──
   for (let guard2 = 0; guard2 < stops.length + 5; guard2++) {
@@ -261,7 +273,7 @@ export function assignLeavingOffEnds(
     movedToRoom.push({ stopId: mv.id, from: from!.id, to: to!.id });
   }
 
-  // ── 5. Still more than it holds: in the order the truck will drive them, a stop comes off the
+  // ── 3b. Still more than it holds: in the order the truck will drive them, a stop comes off the
   //    BEGINNING or the END of the run — whichever of the two costs the truck more driving — one at
   //    a time, until it fits. Never a stop between two it keeps. ──
   const cameOff: SolverStop[] = [];
@@ -277,7 +289,7 @@ export function assignLeavingOffEnds(
     setStops(t, mine);
   }
 
-  // ── 6. THE SEAM. Two trucks swap a stop each when each stop sits nearer the middle of the other
+  // ── 4. THE SEAM. Two trucks swap a stop each when each stop sits nearer the middle of the other
   //    truck's ground than its own — so one truck does not reach back past another's stops to the
   //    ones it grew into last. Swaps only (loads stay what capacity allowed), equipment and
   //    capacity hard, and only a swap that shortens the total by more than SEAM_MIN_M. ──
@@ -352,8 +364,8 @@ export function assignLeavingOffEnds(
   //    place in that truck's run is between two of its stops, less than ON_THE_WAY_M out of the
   //    way — goes on that truck: straight on when it has room, otherwise in exchange for stops off
   //    the beginning or end of that run (the costlier end first), so what is left off is an end,
-  //    not a neighbour. Never for fewer skids or fewer pounds; and a stop a truck gave up here is
-  //    never put back on it, so this settles.
+  //    not a neighbour. Never for fewer skids; and a stop a truck gave up here is never put back
+  //    on it, so this settles. (A pounds guard was tried and measured worse — v1.92.0.)
   const ON_THE_WAY_M = 3000;
   const gaveUp = new Set<string>();   // `${stopId}|${truckId}`
   const noHoles = (): boolean => {
@@ -371,9 +383,8 @@ export function assignLeavingOffEnds(
             setStops(T, [...run, L]);
           } else {
             // Which ends come off: up to END_TRIES from the start and END_TRIES from the end — the
-            // combination that lets L on, trades away no more skids AND no more pounds than L
-            // brings (a weight-bound truck must not lose freight to a light stop), keeps the
-            // truck fullest, and of those saves the most driving.
+            // combination that lets L on, trades away no more skids than L brings, keeps the truck
+            // fullest, and of those saves the most driving.
             const END_TRIES = 4;
             let bestCut: { k: number; m: number; skids: number; saved: number } | null = null;
             for (let k = 0; k <= Math.min(END_TRIES, run.length); k++) {
@@ -384,7 +395,7 @@ export function assignLeavingOffEnds(
                 if (capacityBreaches(addLoad(computeLoad(keep), L), T).length) continue;
                 const gone = computeLoad(cut);
                 if (gone.skids > (L.skids || 0)) continue;             // never trade skids away
-                                const saved = runLength(run) - runLength(keep);
+                const saved = runLength(run) - runLength(keep);
                 if (!bestCut || gone.skids < bestCut.skids || (gone.skids === bestCut.skids && saved > bestCut.saved)) bestCut = { k, m, skids: gone.skids, saved };
               }
             }
@@ -412,7 +423,19 @@ export function assignLeavingOffEnds(
     if (!noHoles()) break;
   }
 
-  // ── 6. What is left is listed, and every listed stop says WHY. ──
+  // ── 6. ROUTING_BUILD_FILL_TRUCKS: a truck with room takes what it can carry, and what is left
+  //    off is ONE group — the run one more truck would make (lib/routing-fill-leftover.mts). This
+  //    is what Chad asked for on 2026-09-30, and it overrides 5a's "no trip across town for one
+  //    skid" whenever something is left off; a board that fits is exactly as above. ──
+  let settled: EndsAssignment['settled'] = null;
+  if (opts?.fillTrucks && leftOff.length) {
+    const s = settleLeftOff(byTruck, leftOff, trucks, depot, noTruck);
+    for (const t of trucks) setStops(t, s.byTruck.get(t.id) || []);
+    leftOff.splice(0, leftOff.length, ...[...s.leftOff].sort(farthestFirst));
+    settled = { moves: s.moves, evals: s.evals, capped: s.capped, leftOffStops: s.leftOff.length + noTruck.length, extraTruckKm: Math.round(s.leftOffTourM / 100) / 10 };
+  }
+
+  // ── 7. What is left is listed, and every listed stop says WHY. ──
   const spillReason = (s: SolverStop): string[] => {
     const capable = capableOf.get(s.id)!;
     const withRoom = capable.filter((t) => capacityFits(loadOf.get(t.id)!, s, t).ok);
@@ -437,5 +460,5 @@ export function assignLeavingOffEnds(
   };
   for (const s of leftOff) { unassigned.push({ stopId: s.id, reasons: spillReason(s) }); leftOffAtEnds.push(s.id); }
 
-  return { byTruck, unassigned, leftOffAtEnds, movedToRoom };
+  return { byTruck, unassigned, leftOffAtEnds, movedToRoom, settled };
 }

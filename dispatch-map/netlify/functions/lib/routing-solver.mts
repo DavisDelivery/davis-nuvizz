@@ -530,7 +530,7 @@ export function solveRouting(input: SolverInput): SolverOutput {
     ? assignLeavingOffEnds(stops, trucks, input.depot, (list) => {
       const byIdx = new Map(list.map((x) => [indexById.get(x.id)!, x] as const));
       return sequence([...byIdx.keys()], strategy, matrix).map((n) => byIdx.get(n)!);
-    })
+    }, { fillTrucks: input.fillTrucks === true })
     : null;
   const { byTruck, unassigned } = ends ?? assign(stops, trucks, input.depot);
 
@@ -576,7 +576,7 @@ export function solveRouting(input: SolverInput): SolverOutput {
     meta: {
       engine: 'deterministic', strategy, truckCount: trucks.length, stopCount: stops.length,
       assignment: ends ? 'ends' : 'legacy',
-      ...(ends ? { endsLeftOff: ends.leftOffAtEnds.length, endsMovedToRoom: ends.movedToRoom.length } : {}),
+      ...(ends ? { endsLeftOff: ends.leftOffAtEnds.length, endsMovedToRoom: ends.movedToRoom.length, fillTrucks: input.fillTrucks === true, leftOffGroup: ends.settled } : {}),
     },
   };
 }
