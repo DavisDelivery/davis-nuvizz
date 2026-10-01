@@ -53,7 +53,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn, selectionAfterBuildStage, mapRouteSource, buildPlanReachedCards } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn, selectionAfterBuildStage, planStopsOnCards, planRouteInfo, planRoutesToPaint } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -272,7 +272,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.101.4', 'CLOSING A BUILD\u2019S COMPARE CARDS TAKES ITS ROUTE OFF THE MAP. Chad: \u201cif it puts the stops in the compare panel, and I then close out the compare panel, the stops should not look like they\u2019re still on that route on the map, because when I pull back up the compare panel, it\u2019s empty. However, it still shows the route that the system built on the map with the stops on it. Now, if I refresh the page, all that goes away.\u201d WHY: the map painted \u201copen cards, else the Build\u2019s plan\u201d. Since v1.19.0 a Build puts its routes on the cards by itself, so closing the last card fell straight back to the plan: the same stops numbered, in the route colour and joined by a line, under an empty Compare panel. NOW: once a Build\u2019s plan has been on a card, closing the cards stops the map painting it. Its stops go back to the pins a refresh shows. A plan never put on a card (Trucks mode) still paints, and the result panel\u2019s \u201cStage onto Compare cards\u201d brings the cards and the paint back. A new Build starts fresh. One rule feeds the numbered pins and the lines, so they cannot disagree (lib/routing-select.js mapRouteSource, 11 tests). This is the map-paint half of v1.33.0, which was reverted with the rest of that PR on Sep 15; it is back because Chad asked for it by name, and nothing else from v1.33.0 is. Send/Save, staging, the cards, the selection tools and what a card counts are not changed. 0 NuVizz calls. PUT IT BACK: VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN=off (build-time, a redeploy).'],
+  ['1.101.4', 'CLOSING A BUILD\u2019S COMPARE CARDS TAKES ITS ROUTE OFF THE MAP. Chad: \u201cif it puts the stops in the compare panel, and I then close out the compare panel, the stops should not look like they\u2019re still on that route on the map, because when I pull back up the compare panel, it\u2019s empty. However, it still shows the route that the system built on the map with the stops on it. Now, if I refresh the page, all that goes away.\u201d WHY: with no card open the map paints the Build\u2019s plan. Since v1.19.0 a Build puts its routes on the cards by itself, so closing the last card fell straight back to the plan: the same stops numbered, in the route colour and joined by a line, under an empty Compare panel. NOW: a Build\u2019s stop that has been on a Compare card stops showing on the Build\u2019s route once its card closes. It goes back to the pin a refresh shows. Remembered per stop, so a stop that never reached a card (the workbench was full, a Trucks-mode route nobody staged) still paints with its number and line. The result panel\u2019s \u201cStage onto Compare cards\u201d brings the cards, and so the paint, back. A new Build starts fresh. One rule feeds the numbered pins and the lines, so they cannot disagree (lib/routing-select.js planStopsOnCards / planRouteInfo / planRoutesToPaint, 13 tests). This is the map-paint half of v1.33.0, which was reverted with the rest of that PR on Sep 15; it is back because Chad asked for it by name, and nothing else from v1.33.0 is. Send/Save, staging, the cards, the selection tools and what a card counts are not changed. 0 NuVizz calls. PUT IT BACK: VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN=off (build-time, a redeploy).'],
   ['1.101.3', '＋ NEW ROUTE NOW CREATES THE ROUTE THE PORTAL’S WAY, IN PRODUCTION. Chad: “switch the new way to create a load on.” WHY HE STILL COULD NOT CREATE ONE: the portal-style create built from his HAR (1.98.5) shipped switched off, and production was still on the old v7 create — the dry run read engine “v7”, and both of his ＋ New route tries on 9/30 (8:25 and 9:54 PM) died on NuVizz’s “deliverItLoad is null”, the old create’s failure. NUVIZZ_ROUTE_CREATE_RWB=on was set on the production site on 10/1, and took effect with the 7:12 AM deploy — verified, not assumed: production’s dry run then read the portal create (engine rwb). It signs in at login.nuvizz.com and creates on portal.nuvizz.com (read off the dry run, zero NuVizz calls). EVERY NEW ROUTE IS CREATED AS STRAIGHT TRUCK (NuVizz vehicle type 475, the only one the HAR shows) until the tractor’s number is known; a tractor route needs its vehicle type changed in the portal. PUT IT BACK: NUVIZZ_ROUTE_CREATE_RWB=off in Netlify and a redeploy. No code change in this release beyond this row, which records the switch.'],
   ['1.101.2', 'AFTER A BUILD PUTS ITS ROUTES ON THE COMPARE CARDS, THE SELECTION HOLDS ONLY WHAT IT LEFT OFF. Chad, on a Build onto CRUMPTON and RASHEED: \u201call that should be left on the selection table is the orders it did not put on the route.\u201d The Build\u2019s staging never touched the selection, so all 23 orders he gave it stayed selected after 19 of them were on the two cards. The chip read \u201cPUT ON CRUMPTON (23)\u201d, all 28 skids for a 14-skid box, and a Discard left all 23 highlighted orange until a refresh. Now, once an order the Build routed is on an open card, it leaves the selection, so the Selected table, step 1\u2019s tally and the chips count only the orders still to plan. A Build again with the cards open fills only the room they have left. An order the Build routed that is not on a card stays selected (its card closed, or the workbench was full). An order is taken out once per plan, so one selected again by hand stays selected. Discard keeps the selection as it now is. The staging, the cards, Send/Save and the map are not changed; this only writes the selection (lib/routing-select.js selectionAfterBuildStage, 10 tests). 0 NuVizz calls. PUT IT BACK: VITE_ROUTING_BUILD_TRIMS_SELECTION=off (build-time, a redeploy).'],
   ['1.101.1', 'A ROUTE CAN BE TAKEN OUT FROM THE ROUTES-TO-BUILD LIST. Chad, on Step 2 \u00b7 Plan onto\u2019s list of routes to build: \u201cshould be a check box here incase i want to remove.\u201d Each route in that list now has a ticked box beside its name; untick it and the route leaves the build \u2014 the same untick as the load\u2019s row in the list above, which then reads unticked, so the two can never disagree. Tick it again in the list above. Desktop and phone (it is the same panel). Build Panel only: the Route Workbench is not touched. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
@@ -20228,18 +20228,16 @@ const BUILD_TRIMS_SELECTION = (() => {
   try { return houseSwitchOn(import.meta.env.VITE_ROUTING_BUILD_TRIMS_SELECTION); } catch { return true; }
 })();
 
-// Once a Build's plan has been on a Compare card, does closing the cards stop the map painting
-// that plan? ON by default (v1.101.4). Chad: "if it puts the stops in the compare panel, and I
+// Does a Build's stop that has been on a Compare card stop showing on the Build's route once the
+// card closes? ON by default (v1.101.4). Chad: "if it puts the stops in the compare panel, and I
 // then close out the compare panel, the stops should not look like they're still on that route
 // on the map". PUT IT BACK: VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN=off and the map goes back to
-// drawing the Build's plan (numbered pins AND lines) whenever no card is open. One switch for
-// both, so pins and lines cannot disagree. Anything malformed leaves it ON. Build-time, so it
+// drawing the Build's whole plan (numbered pins AND lines) whenever no card is open. One switch
+// for both, so pins and lines cannot disagree. Anything malformed leaves it ON. Build-time, so it
 // costs a redeploy either way.
 const CLOSED_CARDS_CLEAR_PLAN = (() => {
   try { return houseSwitchOn(import.meta.env.VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN); } catch { return true; }
 })();
-// The map's "no route here" — one stable Map, so the marker effect does not redraw for nothing.
-const NO_ROUTE_INFO = new Map();
 
 // Live-write (beta) gate — the routes-panel driver-assign + dispatch UI. UNLIKE the
 // routing beta this defaults OFF (live writes are opt-in): enable with env
@@ -26082,12 +26080,33 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     });
   }, [baseResult, viewing, routeState, stopById]);
 
+  // A BUILD'S STOPS THAT HAVE BEEN ON A CARD STOP SHOWING ON ITS ROUTE ONCE THE CARD CLOSES
+  // (v1.101.4). Chad: "if it puts the stops in the compare panel, and I then close out the compare
+  // panel, the stops should not look like they're still on that route on the map … it still shows
+  // the route that the system built on the map with the stops on it." With no card open the map
+  // paints the plan, and since v1.19.0 a Build stages itself, so closing its cards fell straight
+  // back to the plan: the same stops numbered, coloured and joined by a line under an empty
+  // Compare panel. Remembered PER STOP, per Build: a stop that has been on a card leaves the
+  // plan's pins and lines; one that never reached a card (workbench full, a Trucks-mode route
+  // nobody staged) still paints. A new Build starts fresh. The rules are lib/routing-select.js
+  // planStopsOnCards / planRouteInfo / planRoutesToPaint. VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN=off
+  // puts it back: nothing is ever remembered, so the whole plan paints exactly as before.
+  const [planOnCards, setPlanOnCards] = useState({ jobId: null, ids: [] });
+  useEffect(() => {
+    if (!CLOSED_CARDS_CLEAR_PLAN || viewing || !job?.id || job?.status !== 'done') return;
+    const jobId = String(job.id);
+    const already = planOnCards.jobId === jobId ? planOnCards.ids : [];
+    const fresh = planStopsOnCards(routesView, wbRoutes, already);
+    if (fresh.length) setPlanOnCards({ jobId, ids: [...already, ...fresh] });
+  }, [viewing, job?.id, job?.status, routesView, wbRoutes, planOnCards]);
+  const planHidden = useMemo(
+    () => new Set((!viewing && job?.id && planOnCards.jobId === String(job.id)) ? planOnCards.ids : []),
+    [viewing, job?.id, planOnCards],
+  );
+  const planPaintRoutes = useMemo(() => planRoutesToPaint(routesView, planHidden), [routesView, planHidden]);
+
   // stopId -> { color, seq } for the numbered route markers (panel & map match).
-  const routeInfo = useMemo(() => {
-    const m = new Map();
-    routesView.forEach((rv) => rv.order.forEach((id, idx) => m.set(String(id), { color: rv.color, seq: idx + 1 })));
-    return m;
-  }, [routesView]);
+  const routeInfo = useMemo(() => planRouteInfo(routesView, planHidden), [routesView, planHidden]);
 
   // Compare-panel routes on the map ("not seeing my route optimizations in the compare panel").
   // Each open card gets a stable palette color; its stops are numbered + linked by a depot-anchored
@@ -26167,27 +26186,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     }
     return m;
   }, [wbRoutes, stopById, notes, selectedDate, travelInputs, departTable, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
-  // WHAT THE MAP PAINTS AS ROUTES (v1.101.4). Chad: "if it puts the stops in the compare panel,
-  // and I then close out the compare panel, the stops should not look like they're still on that
-  // route on the map … it still shows the route that the system built on the map with the stops
-  // on it." The old rule read "open cards, else the Build's plan". Since v1.19.0 a Build stages
-  // itself, so closing its cards fell straight back to the plan: the same stops numbered,
-  // coloured and joined by a line, while the Compare panel read empty. Now a plan that has been
-  // on a card stops painting once the cards close; one never staged still paints. The rule is
-  // lib/routing-select.js mapRouteSource. VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN=off puts it back.
-  const [planOnCardsJobId, setPlanOnCardsJobId] = useState(null);
-  useEffect(() => {
-    if (viewing || !job?.id || job?.status !== 'done') return;
-    const jobId = String(job.id);
-    if (planOnCardsJobId === jobId) return;
-    if (buildPlanReachedCards(routesView, wbRoutes)) setPlanOnCardsJobId(jobId);
-  }, [viewing, job?.id, job?.status, routesView, wbRoutes, planOnCardsJobId]);
-  const mapRouteSrc = mapRouteSource({
-    openCards: wbRoutesColored.length,
-    planOnCards: !viewing && !!job?.id && planOnCardsJobId === String(job.id),
-    enabled: CLOSED_CARDS_CLEAR_PLAN,
-  });
-  const effectiveRouteInfo = mapRouteSrc === 'cards' ? wbRouteInfo : (mapRouteSrc === 'plan' ? routeInfo : NO_ROUTE_INFO);
+  const effectiveRouteInfo = wbRoutesColored.length ? wbRouteInfo : routeInfo;
 
   // The plan to persist on Save — engine result with any manual order applied.
   const editedResultForSave = useMemo(() => {
@@ -27035,14 +27034,13 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
 
   // Route polylines (one per route, depot-anchored), drawn in the CURRENT order so any reorder
   // redraws the path live. While the Compare panel has routes open it draws THOSE (the working set
-  // the dispatcher is tuning); otherwise it draws the engine Build result (routesView), unless
-  // that plan has already been on a card (mapRouteSrc 'none', v1.101.4): then it draws nothing,
-  // the same rule as the numbered pins above.
+  // the dispatcher is tuning); otherwise it draws the engine Build result, less any of its stops
+  // that have been on a card (planPaintRoutes, v1.101.4), the same rule as the numbered pins.
   useEffect(() => {
     if (!google || !mapRef.current) return;
     polylinesRef.current.forEach((p) => p.setMap(null));
     polylinesRef.current = [];
-    const toDraw = mapRouteSrc === 'cards' ? wbRoutesColored : (mapRouteSrc === 'plan' ? routesView : []);
+    const toDraw = wbRoutesColored.length ? wbRoutesColored : planPaintRoutes;
     if (!toDraw.length) return;
     toDraw.forEach((rv) => {
       // The leading depot point is the "stem-out" leg (terminal → first stop); omit it when the
@@ -27054,7 +27052,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       pl.setMap(mapRef.current);
       polylinesRef.current.push(pl);
     });
-  }, [google, routesView, wbRoutesColored, mapRouteSrc, vStopById, mapReady, routeHideStem]);
+  }, [google, planPaintRoutes, wbRoutesColored, vStopById, mapReady, routeHideStem]);
 
   // Satellite-view toggle — swap the map base between hybrid imagery and the plain roadmap without
   // re-initialising the map (which would drop markers/listeners). mapReady re-applies it after a

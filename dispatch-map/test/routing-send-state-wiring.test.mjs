@@ -106,9 +106,10 @@ test('THE REVERTED v1.33.0 CHIP DOES NOT COME BACK WITH IT', () => {
   assert.ok(!/cardSendState/.test(code), 'the reverted per-card chip rule is back');
   // The MAP-PAINT half of v1.33.0 came back on 2026-10-01 because Chad asked for it by name: "if
   // it puts the stops in the compare panel, and I then close out the compare panel, the stops
-  // should not look like they're still on that route on the map". It is its own rule
-  // (mapRouteSource) behind VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN, pinned in
-  // test/closed-cards-clear-plan.test.mjs. The v1.33.0 names stay gone.
+  // should not look like they're still on that route on the map". It is its own per-stop rule
+  // (planStopsOnCards / planRouteInfo / planRoutesToPaint) behind
+  // VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN, pinned in test/closed-cards-clear-plan.test.mjs. The
+  // v1.33.0 names stay gone.
   assert.ok(!/routePaintSource|planStaged/.test(code), 'the v1.33.0 map-paint names are back');
   assert.equal((code.match(/savedMark\(/g) || []).length, 1, 'savedMark is read somewhere other than the card');
 });
