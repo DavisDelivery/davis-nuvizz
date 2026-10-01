@@ -1723,6 +1723,38 @@ export function houseSwitchOn(raw) {
 }
 
 /**
+ * AFTER A BUILD PUTS ITS ROUTES ON COMPARE CARDS, THE SELECTION HOLDS ONLY WHAT IT LEFT OFF.
+ * Chad, 2026-10-01: "all that should be left on the selection table is the orders it did not
+ * put on the route". The Build's staging never wrote the selection, so every order it was given
+ * stayed selected — 19 of his 23 already on the CRUMPTON and RASHEED cards — and the card chip
+ * read "PUT ON CRUMPTON (23)", all 28 skids, for a 14-skid box.
+ *
+ * PURE. Which selected orders to take out: the Build routed them AND they now sit on an open
+ * card. An order not on a card (its card closed, or the workbench was full) stays selected,
+ * because nothing else is holding it. `trimmed` is what this plan already took out, so an order
+ * the dispatcher selects again by hand is never taken out a second time.
+ *
+ * @param {object} a
+ * @param {Set<string>} a.selected   the selection now
+ * @param {Iterable} a.built         every stop id on the Build's routes
+ * @param {Set<string>} a.onCard     every stop id on an open Compare card
+ * @param {Set<string>} [a.trimmed]  ids this plan has already taken out
+ * @returns {{ take: string[] }}      the ids to take out of the selection (empty = no change)
+ */
+export function selectionAfterBuildStage({ selected, built, onCard, trimmed }) {
+  const take = [];
+  if (!selected || !selected.size || !onCard || !onCard.size) return { take };
+  const seen = new Set();
+  for (const raw of built || []) {
+    const id = String(raw);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (selected.has(id) && onCard.has(id) && !(trimmed && trimmed.has(id))) take.push(id);
+  }
+  return { take };
+}
+
+/**
  * Split the stops inside a box / lasso / viewport into what the selection may take and
  * what it must leave, with the reason for each.
  *
