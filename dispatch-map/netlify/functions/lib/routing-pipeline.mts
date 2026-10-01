@@ -287,27 +287,30 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
 
   // ── P3 solve + P4 repair (deterministic) ──
   let { solved, repaired } = solveAndRepair(solverInput);
-  // THE WINDOW-ORDER FIX NEVER COSTS AN ORDER, OR ADDS A LATE STOP, THE BUILD WITHOUT IT AVOIDED
-  // (ROUTING_BUILD_WINDOW_REACH). Measured over 800 random Builds it carries more orders on 98 and
-  // fewer late stops on 480 — but a different window order on one truck can, rarely, hand another
-  // truck a stop that then crowds out one of its own (6 of 800 strict Builds carried one order
-  // fewer, 1 of 800 advisory had one more late stop). So the Build without it is made too, and it
-  // ships instead whenever it carries more orders (strict: then more skids) or runs fewer late
-  // stops (advisory) without running more late; meta.windowReachUndone says so.
+  // THE WINDOW-ORDER FIX NEVER COSTS AN ORDER, A DOCK OR A MILE THE BUILD WITHOUT IT SAVED
+  // (ROUTING_BUILD_WINDOW_REACH). It only changes a truck that has a dock it cannot reach before the
+  // close, but moving that dock can move another truck's stops through repair. So the Build without
+  // it is made too, and that plan ships instead when it is better on what a dispatcher counts —
+  // strict: fewer late stops, then more orders, then less driving, then more skids; advisory: fewer
+  // late stops, then less driving, then fewer minutes late. meta.windowReachUndone says when it did.
   if (solverInput.windowReach) {
     const plain = solveAndRepair({ ...solverInput, windowReach: false });
     const orders = (out: SolverOutput) => out.routes.reduce((a, r) => a + r.orderedStopIds.length, 0);
     const skidsOf = (out: SolverOutput) => out.routes.reduce((a, r) => a + (r.load?.skids || 0), 0);
     const lateOf = (out: SolverOutput) => out.routes.reduce((a, r) => a + (r.windowViolatedIds || []).length, 0);
-    // Strict: the old plan wins only when it is no more late AND carries more (orders, then skids)
-    // — a strict Build that ships a late stop is the bug, not the bar (the old order can ship one:
-    // measured, a 3:00p dock reached at 3:07p, which this fix does not).
-    const worse = solverInput.windowMode === 'strict'
-      ? lateOf(plain.repaired) <= lateOf(repaired)
-        && (orders(plain.repaired) > orders(repaired) || (orders(plain.repaired) === orders(repaired) && skidsOf(plain.repaired) > skidsOf(repaired)))
-      : lateOf(plain.repaired) < lateOf(repaired);
-    if (worse) {
-      const undone = { ordersWith: orders(repaired), ordersWithout: orders(plain.repaired), lateWith: lateOf(repaired), lateWithout: lateOf(plain.repaired) };
+    const metres = (out: SolverOutput) => out.routes.reduce((a, r) => a + r.legs.reduce((b, l) => b + (l.distanceMeters || 0), 0), 0);
+    const closeOf = new Map(solverInput.stops.map((x) => [x.id, x.timeWindow?.endSec ?? null] as const));
+    const lateSec = (out: SolverOutput) => out.routes.reduce((a, r) => a + r.orderedStopIds.reduce((b, id, i) => {
+      const close = closeOf.get(id);
+      return close != null && (r.windowViolatedIds || []).includes(id) ? b + Math.max(0, r.etas[i] - close) : b;
+    }, 0), 0);
+    const score = (out: SolverOutput) => (solverInput.windowMode === 'strict'
+      ? [lateOf(out), -orders(out), metres(out), -skidsOf(out)]
+      : [lateOf(out), metres(out), lateSec(out)]);
+    const a = score(plain.repaired), b = score(repaired);
+    const k = a.findIndex((x, n) => x !== b[n]);
+    if (k >= 0 && a[k] < b[k]) {
+      const undone = { ordersWith: orders(repaired), ordersWithout: orders(plain.repaired), lateWith: lateOf(repaired), lateWithout: lateOf(plain.repaired), kmWith: Math.round(metres(repaired) / 1000), kmWithout: Math.round(metres(plain.repaired) / 1000) };
       solved = plain.solved;
       repaired = { ...plain.repaired, meta: { ...plain.repaired.meta, windowReachUndone: undone } };
     }

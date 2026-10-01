@@ -66,62 +66,73 @@ function timeline(ordered: SolverStop[], indexById: Map<string, number>, matrix:
 // off the truck (strict). Deterministic. O(W·N²) for W windowed stops — trivial under the
 // 150-stop selection cap.
 //
-// REACH (ROUTING_BUILD_WINDOW_REACH, `reach`). Two things the rule above got wrong, both found by
-// running a truck leaving at noon through it:
-//   1. A dock that closes before the truck can get there — even driving to it first — still went
-//      in first (it is the least late there), dragged the run to it and pushed stops that COULD
-//      be made past their close. Strict then took a deliverable order off with "appointment window
-//      cannot be met". Now such a stop sets nothing: it rides where the strategy order puts it,
-//      its lateness is not scored, and strict takes it off first, saying why (unreachableIn).
-//   2. Placing windows one at a time could leave a dock the truck COULD make late (below).
+// REACH (ROUTING_BUILD_WINDOW_REACH, `reach`). A dock that closes before the truck can get there —
+// even driving to it first — was inserted like any other window: first, because it is least late
+// there. It dragged the run to it and pushed docks that COULD be made past their close, so a strict
+// Build took deliverable orders off with "appointment window cannot be met" (measured on a truck
+// leaving at noon). With reach, a truck that has such a dock gets a second order too: the docks it
+// can reach placed exactly as before, then each one it cannot reach where it costs them nothing.
+// That order ships only when it misses fewer reachable docks, or misses as many and leaves the
+// unreachable one no later and drives less — so a near miss stays a near miss (a phone call), and a
+// dock already shut never drags the run. Strict takes such a dock off first, saying why
+// (unreachableIn). A truck with no such dock gets exactly the order it always did.
 function windowAwareOrder(stops: SolverStop[], indexById: Map<string, number>, matrix: SolverInput['matrix'], depart: number, strategy: SolverInput['strategy'], reach = false): SolverStop[] {
   const node = (s: SolverStop) => indexById.get(s.id)!;
-  const canReach = (s: SolverStop) => !reach || windowReachable(s, node(s), matrix, depart);
-  const windowed = stops.filter((s) => hasWindow(s) && canReach(s))
-    .sort((a, b) => (a.timeWindow!.endSec - b.timeWindow!.endSec) || (a.timeWindow!.startSec - b.timeWindow!.startSec));
-  const rest = stops.filter((s) => !hasWindow(s) || !canReach(s));
+  const byDeadline = (a: SolverStop, b: SolverStop) => (a.timeWindow!.endSec - b.timeWindow!.endSec) || (a.timeWindow!.startSec - b.timeWindow!.startSec);
   const byNode = new Map(stops.map((s) => [indexById.get(s.id)!, s]));
-  const base: SolverStop[] = sequence(rest.map(node), strategy, matrix).map((n) => byNode.get(n)!);
+  const base: SolverStop[] = sequence(stops.filter((s) => !hasWindow(s)).map(node), strategy, matrix).map((n) => byNode.get(n)!);
   const dist = matrix.distanceMeters;
-  const fns = {
-    timeline: (cand: SolverStop[]) => timeline(cand, indexById, matrix, depart),
-    closeOf: (s: SolverStop) => (hasWindow(s) && canReach(s) ? s.timeWindow!.endSec : null),
-    added: (prev: SolverStop | null, w: SolverStop, next: SolverStop | null) => {
-      const p = prev ? node(prev) : 0;
-      return dist[p][node(w)] + (next ? dist[node(w)][node(next)] - dist[p][node(next)] : 0);
-    },
+  const added = (prev: SolverStop | null, w: SolverStop, next: SolverStop | null) => {
+    const p = prev ? node(prev) : 0;
+    return dist[p][node(w)] + (next ? dist[node(w)][node(next)] - dist[p][node(next)] : 0);
   };
-  const greedy = insertByWindow(base, windowed, fns);
-  if (!reach || !windowed.length) return greedy;
-  // 2. ONE WINDOW AT A TIME CAN PAINT ITSELF INTO A CORNER. Three 2:00p docks in one town, a
-  //    truck leaving at noon: the first two went in after an unwindowed stop, used up the slack
-  //    the third needed, and strict took a deliverable order off. So when the one-at-a-time order
-  //    leaves a dock it COULD make late, the appointments-first order is built too — the windows
-  //    in deadline order, then every other stop slotted where it adds the least driving without
-  //    making an appointment later — and it ships only when it is LESS late. Nothing that is on
-  //    time today is touched.
-  // How late an order runs, as a dispatcher counts it: how many docks it misses, then by how much.
-  // A miss is a miss — two stops five minutes late are not better than one an hour late.
-  const lateOf = (order: SolverStop[]) => {
-    const { etas } = timeline(order, indexById, matrix, depart);
-    let n = 0, sec = 0;
-    order.forEach((x, i) => { if (hasWindow(x) && canReach(x) && etas[i] > x.timeWindow!.endSec) { n++; sec += etas[i] - x.timeWindow!.endSec; } });
-    return n * 1e7 + sec;
+  const timelineOf = (cand: SolverStop[]) => timeline(cand, indexById, matrix, depart);
+  // THE ORDER AS IT ALWAYS WAS: every window inserted, earliest deadline first.
+  const asBefore = insertByWindow(base, stops.filter(hasWindow).sort(byDeadline), {
+    timeline: timelineOf, closeOf: (s) => (hasWindow(s) ? s.timeWindow!.endSec : null), added,
+  });
+  if (!reach) return asBefore;
+  const unreachable = stops.filter((s) => hasWindow(s) && !windowReachable(s, node(s), matrix, depart)).sort(byDeadline);
+  if (!unreachable.length) return asBefore;
+  const out = new Set(unreachable);
+  // THE ORDER WITHOUT THEM SETTING IT: the docks the truck can reach placed exactly as before, then
+  // each one it cannot reach where it costs the reachable docks nothing (fewest missed, then fewest
+  // minutes late), then where it is itself least late, then least driving.
+  let order = insertByWindow(base, stops.filter((s) => hasWindow(s) && !out.has(s)).sort(byDeadline), {
+    timeline: timelineOf, closeOf: (s) => (hasWindow(s) && !out.has(s) ? s.timeWindow!.endSec : null), added,
+  });
+  const judge = (cand: SolverStop[]) => {
+    const { etas } = timelineOf(cand);
+    let missed = 0, lateSec = 0, unreachableLate = 0, metres = 0, p = 0;
+    cand.forEach((x, k) => {
+      metres += dist[p][node(x)]; p = node(x);
+      if (!hasWindow(x)) return;
+      const over = Math.max(0, etas[k] - x.timeWindow!.endSec);
+      if (out.has(x)) unreachableLate += over;
+      else if (over > 0) { missed++; lateSec += over; }
+    });
+    // fewest reachable docks missed; then the shut dock no later (a near miss stays a near miss);
+    // then less driving; and only then fewer minutes late on docks that are missed either way —
+    // never more miles to shave minutes off a delivery that is late regardless.
+    return [missed, unreachableLate, metres + dist[p][0], lateSec];
   };
-  const greedyLate = lateOf(greedy);
-  if (!greedyLate) return greedy;
-  let firsts = insertByWindow([], windowed, fns);
-  for (const r of base) {
-    let best: { pos: number; late: number; added: number } | null = null;
-    for (let pos = 0; pos <= firsts.length; pos++) {
-      const cand = [...firsts.slice(0, pos), r, ...firsts.slice(pos)];
-      const late = lateOf(cand);
-      const added = fns.added(pos === 0 ? null : firsts[pos - 1], r, pos < firsts.length ? firsts[pos] : null);
-      if (!best || late < best.late || (late === best.late && added < best.added)) best = { pos, late, added };
+  for (const u of unreachable) {
+    let best: { pos: number; score: number[] } | null = null;
+    for (let pos = 0; pos <= order.length; pos++) {
+      const cand = [...order.slice(0, pos), u, ...order.slice(pos)];
+      const sc = judge(cand);
+      if (!best || lexLess(sc, best.score)) best = { pos, score: sc };
     }
-    firsts = [...firsts.slice(0, best!.pos), r, ...firsts.slice(best!.pos)];
+    order = [...order.slice(0, best!.pos), u, ...order.slice(best!.pos)];
   }
-  return lateOf(firsts) < greedyLate ? firsts : greedy;
+  // It ships only when it is better on that same scale (a dock the old order reached four minutes
+  // after its close, a phone call, stays four minutes, not five hours); a tie keeps the old order.
+  return lexLess(judge(order), judge(asBefore)) ? order : asBefore;
+}
+
+function lexLess(a: number[], b: number[]): boolean {
+  for (let k = 0; k < a.length; k++) { if (a[k] !== b[k]) return a[k] < b[k]; }
+  return false;
 }
 
 // Can a truck leaving the dock at `depart` reach this stop before its window closes, even if it
@@ -143,7 +154,14 @@ function clockLabel(sec: number): string {
 function unreachableIn(stops: SolverStop[], truck: SolverTruck, input: SolverInput, indexById: Map<string, number>, depart: number): Array<{ stop: SolverStop; reason: string }> {
   return stops
     .filter((s) => hasWindow(s) && !windowReachable(s, indexById.get(s.id)!, input.matrix, depart))
-    .map((s) => ({ stop: s, reason: `${REASON.windowUnsatisfiable} — it closes ${clockLabel(s.timeWindow!.endSec)}, before ${truck.label || truck.id} can get there leaving at ${clockLabel(depart)}` }));
+    .map((s) => {
+      const close = s.timeWindow!.endSec, who = truck.label || truck.id;
+      const earliest = depart + input.matrix.durationSec[0][indexById.get(s.id)!];
+      const why = depart >= close
+        ? `it closes ${clockLabel(close)}, before ${who} leaves at ${clockLabel(depart)}`
+        : `it closes ${clockLabel(close)}; leaving at ${clockLabel(depart)}, ${who} gets there ${clockLabel(earliest)} at the earliest`;
+      return { stop: s, reason: `${REASON.windowUnsatisfiable} — ${why}` };
+    });
 }
 
 /**
@@ -193,28 +211,8 @@ export function insertByWindow<S>(
 // real window on the truck, the window-aware insertion above; otherwise the dispatcher's
 // chosen strategy order untouched (windows are then irrelevant to validity, capacity is
 // order-free).
-// ONE TRUCK, ONE SET OF STOPS, ONE RUN (with ROUTING_BUILD_WINDOW_REACH). The window order can
-// answer differently for the same stops handed in a different order (equal deadlines keep the
-// order they are given). Repair checks a run, then assembles the route from the checked order — so
-// an order-sensitive answer could ship a run other than the one it checked (measured: a strict
-// Build shipping a stop a minute late). So the first answer for a set of stops on a clock is kept,
-// per Build, and every later ask for that set gets the same run. The first answer is computed
-// exactly as before, from the order the stops were handed in.
-const windowOrders = new WeakMap<SolverInput, Map<string, SolverStop[]>>();
-
 function orderForTruck(stops: SolverStop[], input: SolverInput, indexById: Map<string, number>): SolverStop[] {
-  if (stops.some(hasWindow) && input.windowReach === true) {
-    const depart = input.departEpochSec ?? 0;
-    let memo = windowOrders.get(input);
-    if (!memo) { memo = new Map(); windowOrders.set(input, memo); }
-    const key = `${depart}|${stops.map((s) => s.id).sort().join('\u0001')}`;
-    const seen = memo.get(key);
-    if (seen) return seen;
-    const run = windowAwareOrder(stops, indexById, input.matrix, depart, input.strategy, true);
-    memo.set(key, run);
-    return run;
-  }
-  if (stops.some(hasWindow)) return windowAwareOrder(stops, indexById, input.matrix, input.departEpochSec ?? 0, input.strategy);
+  if (stops.some(hasWindow)) return windowAwareOrder(stops, indexById, input.matrix, input.departEpochSec ?? 0, input.strategy, input.windowReach === true);
   const byNode = new Map(stops.map((s) => [indexById.get(s.id)!, s]));
   const nodes = stops.map((s) => indexById.get(s.id)!);
   return sequence(nodes, input.strategy, input.matrix).map((n) => byNode.get(n)!);

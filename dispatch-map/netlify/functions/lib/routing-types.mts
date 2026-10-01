@@ -151,7 +151,7 @@ export interface SolverInput {
   fillTrucks?: boolean;
   /** THE WINDOW ORDER READS THE CLOCK THE TRUCK IS ON (routing-repair windowAwareOrder,
    *  ROUTING_BUILD_WINDOW_REACH): a dock the truck cannot reach before it closes never sets the
-   *  run order, and a wait at a dock is weighed against the drive it saves. Absent → the old rule. */
+   *  run order, and strict takes it off first, naming the clock. Absent → the old rule. */
   windowReach?: boolean;
 }
 

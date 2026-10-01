@@ -55,8 +55,8 @@ export function buildRules(env: Record<string, any> = process.env): BuildRules {
     // a step of the ends rule: with that switched off it cannot run, so it does not say it did
     fillTrucks: leaveOffEnds && switchOn(env, 'ROUTING_BUILD_FILL_TRUCKS'),
     // The window order reads the clock the truck is on: a dock it cannot reach before the close
-    // never sets the run, and waiting at a dock is weighed against the drive it saves
-    // (routing-repair windowAwareOrder). Off: the old insertion rule, exactly.
+    // never sets the run, and strict takes it off first, naming the clock (routing-repair
+    // windowAwareOrder). Off: the old insertion rule, exactly.
     windowReach: switchOn(env, 'ROUTING_BUILD_WINDOW_REACH'),
   };
 }
