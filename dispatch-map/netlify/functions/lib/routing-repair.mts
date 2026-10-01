@@ -83,6 +83,45 @@ function windowAwareOrder(stops: SolverStop[], indexById: Map<string, number>, m
   });
 }
 
+// A DOCK THE TRUCK CANNOT REACH BEFORE IT CLOSES (ROUTING_BUILD_WINDOW_REACH, strict only). Such a
+// dock — shut before the truck can get there even driving to it first — went into the window
+// order like any other: FIRST, because it is least late there. It dragged the run to it and pushed
+// docks that could be made past their close, and strict then took those deliverable orders off with
+// "appointment window cannot be met" (measured on a truck leaving at noon: a 2:00p dock reached at
+// 12:14 by going there first came off because two noon docks pulled the run south). Strict now
+// takes such a dock off FIRST, saying when it closes and when the truck could get there; the rest
+// of the run is ordered exactly as before. Advisory is not changed: where a shut dock should ride
+// when it stays on the truck is a dispatch call (a phone-call miss against a refusal), not yet made.
+//
+// Can a truck leaving the dock at `depart` reach this stop before its window closes, even if it
+// drives there first? If not, no order makes it.
+function windowReachable(s: SolverStop, idx: number, matrix: SolverInput['matrix'], depart: number): boolean {
+  if (!hasWindow(s)) return true;
+  return depart + matrix.durationSec[0][idx] <= s.timeWindow!.endSec;
+}
+
+// "12:10p" on the Build's UTC-anchored clock (the same clock the windows are on).
+function clockLabel(sec: number): string {
+  const d = new Date(sec * 1000);
+  const h = d.getUTCHours(), m = d.getUTCMinutes();
+  return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')}${h < 12 ? 'a' : 'p'}`;
+}
+
+// The stops on a truck no order can deliver in their window, each with a reason that names the
+// clock — so the dispatcher sees WHY, not just "cannot be met".
+function unreachableIn(stops: SolverStop[], truck: SolverTruck, input: SolverInput, indexById: Map<string, number>, depart: number): Array<{ stop: SolverStop; reason: string }> {
+  return stops
+    .filter((s) => hasWindow(s) && !windowReachable(s, indexById.get(s.id)!, input.matrix, depart))
+    .map((s) => {
+      const close = s.timeWindow!.endSec, who = truck.label || truck.id;
+      const earliest = depart + input.matrix.durationSec[0][indexById.get(s.id)!];
+      const why = depart > close
+        ? `it closes ${clockLabel(close)}, before ${who} leaves at ${clockLabel(depart)}`
+        : `it closes ${clockLabel(close)}; leaving at ${clockLabel(depart)}, ${who} gets there ${clockLabel(earliest)} at the earliest`;
+      return { stop: s, reason: `${REASON.windowUnsatisfiable} — ${why}` };
+    });
+}
+
 /**
  * THE INSERTION RULE, shared. Each windowed stop — in the order given, which callers make
  * earliest-deadline first — goes in at the position that (1) leaves every windowed stop on
@@ -274,6 +313,15 @@ export function repair(input: SolverInput, output: SolverOutput, opts?: { origin
     // trap routing-solver's Phase 3 documents). n passes suffice; +2 is slack.
     const maxIters = stops.length + 2;
     let guard = 0;
+    // A STRICT stop no order can make in time comes off FIRST, saying why — before it can steer
+    // the window order and push a stop that could be made past its close (ROUTING_BUILD_WINDOW_REACH).
+    if (enforceWindows && input.windowReach === true) {
+      for (const { stop, reason } of unreachableIn(stops, truck, input, indexById, depart)) {
+        stops = stops.filter((s) => s.id !== stop.id);
+        unassigned.push({ stopId: stop.id, reasons: [reason] });
+        spilledFrom.set(stop.id, truck.id);
+      }
+    }
     while (stops.length && guard++ < maxIters) {
       const ordered = orderForTruck(stops, input, indexById);
       const etas = etasFor(ordered, indexById, input.matrix, depart);
@@ -356,7 +404,7 @@ export function repair(input: SolverInput, output: SolverOutput, opts?: { origin
   return {
     routes,
     unassigned: dedupeUnassigned(stillUnassigned),
-    meta: { ...output.meta, repaired: true, recoverOriginFirst: originFirst },
+    meta: { ...output.meta, repaired: true, recoverOriginFirst: originFirst, ...(input.windowReach === true && enforceWindows ? { windowReach: true } : {}) },
   };
 }
 

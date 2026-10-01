@@ -43,7 +43,7 @@ function switchOn(env: Record<string, any> | undefined, name: string): boolean {
   return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
 }
 
-export interface BuildRules { countSkids: boolean; greenMatchesPanel: boolean; countsExisting: boolean; leaveOffEnds: boolean; fillTrucks: boolean }
+export interface BuildRules { countSkids: boolean; greenMatchesPanel: boolean; countsExisting: boolean; leaveOffEnds: boolean; fillTrucks: boolean; windowReach: boolean }
 
 export function buildRules(env: Record<string, any> = process.env): BuildRules {
   const leaveOffEnds = switchOn(env, 'ROUTING_BUILD_LEAVE_OFF_ENDS');
@@ -54,6 +54,9 @@ export function buildRules(env: Record<string, any> = process.env): BuildRules {
     leaveOffEnds,
     // a step of the ends rule: with that switched off it cannot run, so it does not say it did
     fillTrucks: leaveOffEnds && switchOn(env, 'ROUTING_BUILD_FILL_TRUCKS'),
+    // Strict: a dock the truck cannot reach before it closes comes off first, naming the clock, so
+    // it never steers the window order (routing-repair). Off: exactly the old repair.
+    windowReach: switchOn(env, 'ROUTING_BUILD_WINDOW_REACH'),
   };
 }
 

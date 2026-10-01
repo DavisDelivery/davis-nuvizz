@@ -200,6 +200,9 @@ export default async function handler(req: Request): Promise<Response> {
       // A truck with room takes a whole group of the orders left off when it is worth the trip
       // (ROUTING_BUILD_FILL_TRUCKS, lib/routing-assign-ends.mts step 6).
       fillTrucks: rules.fillTrucks,
+      // Strict: a dock the truck cannot reach before it closes comes off first, naming the clock
+      // (ROUTING_BUILD_WINDOW_REACH).
+      windowReach: rules.windowReach,
     };
     // P4 FIX: overall watchdog. If the pipeline somehow overruns, reject with a
     // clear, client-actionable message so the UI stops polling.

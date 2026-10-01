@@ -342,7 +342,8 @@ test('THE WIRING: the Build passes the switch to the pipeline, the pipeline the 
   assert.match(bg, /fillTrucks: rules\.fillTrucks,/);
   const pipeSrc = readFileSync(new URL('../netlify/functions/lib/routing-pipeline.mts', import.meta.url), 'utf8');
   assert.match(pipeSrc, /fillTrucks: req\.fillTrucks === true,/);
-  assert.match(pipeSrc, /\{ runClock: runClockFor\(solverInput\) \}/);
+  // solveAndRepair builds one input (it runs twice when the window-order fix is on: v1.102.2)
+  assert.match(pipeSrc, /\{ runClock: runClockFor\(input\) \}/);
   const solver = readFileSync(new URL('../netlify/functions/lib/routing-solver.mts', import.meta.url), 'utf8');
   assert.match(solver, /\{ fillTrucks: input\.fillTrucks === true, runClock: opts\?\.runClock \}/);
   const ends = readFileSync(new URL('../netlify/functions/lib/routing-assign-ends.mts', import.meta.url), 'utf8');
