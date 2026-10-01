@@ -216,8 +216,10 @@ export const MANIFEST_NEW_NOTES_ON = MANIFEST_SCAN_NOTES_ON && (() => {
   try { return manifestNewNotesEnabled(import.meta.env); } catch { return true; }
 })();
 
-/** A note that is nothing but an amount — "56.06", "**166.32**", "$59.99". */
-const PRICE_ONLY = /^[*\s$]*\d{1,7}(?:[.,]\d{1,2})?[*\s]*$/;
+/** A note that is nothing but an amount in dollars and cents — "56.06", "**166.32**", "$59.99" —
+ *  the shape of every AVRT price on the 2026-09-30 board. A bare whole number ("4471", a gate code)
+ *  is not an amount, and prints. */
+const PRICE_ONLY = /^[*\s$]*\d{1,7}[.,]\d{2}[*\s]*$/;
 
 /**
  * PURE. The notes a printed ticket carries: what the card shows, less the ones NuVizz no longer

@@ -172,6 +172,10 @@ test('a New Order sent with no notes, then given a real one in NuVizz: the paper
   for (const p of ['56.06', '**166.32**', '$59.99', ' 77.22 ']) assert.deepEqual(ticketNotes({ orderInstructions: p }, { on: true }), [], p);
   // An amount WITH words is a note ("$59.99 JOSH 770-…" on RA58610778 is a contact line) and prints.
   assert.equal(ticketNotes({ orderInstructions: '$59.99 CALL JOSH' }, { on: true }).length, 1);
+  // A bare whole number is not dollars and cents — a gate or door code prints.
+  for (const code of ['4471', '10', '#4471']) assert.equal(ticketNotes({ orderInstructions: code }, { on: true }).length, 1, code);
+  // Every AVRT price on the 9/30 board has two decimals and stays off.
+  for (const p of ['56.06', '**166.32**', '62.96', '67.62', '77.22', '106.92', '59.00', '91.48', '58.21']) assert.deepEqual(ticketNotes({ orderInstructions: p }, { on: true }), [], p);
 });
 
 test('the scan’s note says where it came from on the paper; stored notes keep their author', () => {
