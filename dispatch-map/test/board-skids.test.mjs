@@ -10,14 +10,14 @@ test('skids are summed from cartons (NuVizz totalCartons), never from pallets (t
     { cartons: 4, pallets: 90, volume: 2, weight: 1000.4, isUnplanned: false },
     { cartons: 3, pallets: 50, volume: 0, weight: 500, isUnplanned: true },
   ]);
-  assert.deepEqual(t, { stops: 2, skids: 7, routedSkids: 4, unroutedSkids: 3, unroutedStops: 1, loose: 2, weight: 1500 });
+  assert.deepEqual(t, { stops: 2, skids: 7, routedSkids: 4, unroutedSkids: 3, unroutedStops: 1, carryoverStops: 0, carryoverSkids: 0, loose: 2, weight: 1500 });
 });
 
 test('a stop with no skid count, a junk count or a null row adds nothing and does not throw', () => {
   const t = sumBoardSkids([{ cartons: null }, { cartons: 'x' }, { cartons: -2 }, null, { cartons: '5' }]);
   assert.equal(t.skids, 5);
   assert.equal(t.stops, 4);
-  assert.deepEqual(sumBoardSkids(undefined), { stops: 0, skids: 0, routedSkids: 0, unroutedSkids: 0, unroutedStops: 0, loose: 0, weight: 0 });
+  assert.deepEqual(sumBoardSkids(undefined), { stops: 0, skids: 0, routedSkids: 0, unroutedSkids: 0, unroutedStops: 0, carryoverStops: 0, carryoverSkids: 0, loose: 0, weight: 0 });
 });
 
 test('the endpoint counts the day the map shows: cancelled freight is not skids, and it spends no NuVizz call', async () => {
@@ -69,4 +69,34 @@ test('a malformed date is refused before any read', async () => {
   const handler = (await import('../netlify/functions/board-skids.mts')).default;
   const res = await handler(new Request('https://x.netlify.app/.netlify/functions/board-skids?date=../../x'));
   assert.equal(res.status, 400);
+});
+
+test('carryDays=7 ("7 days back") adds only freight from the prior week that is STILL unrouted — the map\'s own carry-over', async () => {
+  const day = '2026-10-05';
+  const prior = '2026-10-01';
+  const fake = installFirestoreFake({
+    [`nuvizz_stop_index/davis__${day}`]: { count: 1, last_scanned_at: '2026-10-02T17:00:00Z' },
+    [`nuvizz_stop_index/davis__${day}/stops/A`]: { stopNbr: 'A', cartons: 10, isUnplanned: true, normalizedStatus: 'UNPLANNED' },
+    // Thursday: one order nobody routed (it carries), one that ran on Thursday's truck and one delivered (neither carries)
+    [`nuvizz_stop_index/davis__${prior}/stops/D`]: { stopNbr: 'D', cartons: 5, isUnplanned: true, isPlanned: false, normalizedStatus: 'UNPLANNED' },
+    [`nuvizz_stop_index/davis__${prior}/stops/E`]: { stopNbr: 'E', cartons: 8, isUnplanned: false, isPlanned: true, loadNbr: 'MARCUS', normalizedStatus: 'PLANNED' },
+    [`nuvizz_stop_index/davis__${prior}/stops/F`]: { stopNbr: 'F', cartons: 7, isUnplanned: false, isPlanned: true, normalizedStatus: 'DELIVERED' },
+    // eight days back is outside the window
+    [`nuvizz_stop_index/davis__2026-09-27/stops/G`]: { stopNbr: 'G', cartons: 9, isUnplanned: true, isPlanned: false, normalizedStatus: 'UNPLANNED' },
+  });
+  try {
+    const handler = (await import('../netlify/functions/board-skids.mts')).default;
+    const day0 = await (await handler(new Request(`https://x.netlify.app/.netlify/functions/board-skids?date=${day}`))).json();
+    assert.equal(day0.skids, 10, 'without carryDays: the day alone');
+    assert.equal(day0.carryDays, 0);
+    const wk = await (await handler(new Request(`https://x.netlify.app/.netlify/functions/board-skids?date=${day}&carryDays=7`))).json();
+    assert.equal(wk.carryDays, 7);
+    assert.equal(wk.skids, 15, 'the day (10) + Thursday\'s unrouted order (5)');
+    assert.equal(wk.carryoverSkids, 5);
+    assert.equal(wk.carryoverStops, 1);
+    assert.equal(wk.unroutedSkids, 15);
+    assert.deepEqual(fake.log.other, [], '0 NuVizz calls');
+  } finally {
+    fake.restore();
+  }
 });
