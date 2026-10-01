@@ -18,6 +18,7 @@ const APP_PATH = new URL('../src/App.jsx', import.meta.url);
 const NEEDED = [
   'RESTRICTION_ICONS', 'UNKNOWN_RESTRICTION', 'RESTRICTION_ALIASES',
   'resolveRestrictionKey', '__ttFriendlyConflictLogged', 'getRestrictionBadgeKeys',
+  'restrCellParts',   // v1.100.1: the one list the words, the sort key and the icons come from
   'restrCellText',
 ];
 
