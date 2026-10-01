@@ -147,6 +147,12 @@ export interface SolverInput {
   // hole in the middle (lib/routing-assign-ends.mts). The Build sets it from
   // ROUTING_BUILD_LEAVE_OFF_ENDS; absent → the original assignment.
   leaveOffEnds?: boolean;
+  /** with leaveOffEnds: a truck with room takes a whole group of left-off orders (routing-assign-ends step 6) */
+  fillTrucks?: boolean;
+  /** STRICT: A DOCK THE TRUCK CANNOT REACH BEFORE IT CLOSES COMES OFF FIRST (routing-repair,
+   *  ROUTING_BUILD_WINDOW_REACH), naming the clock, so it never steers the window order. Advisory is
+   *  not changed. Absent → the old rule. */
+  windowReach?: boolean;
 }
 
 export interface SolverOutput {

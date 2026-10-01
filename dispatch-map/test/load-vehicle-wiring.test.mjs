@@ -110,3 +110,16 @@ test('the build target carries the conflict it is shown with — one resolve, no
   const m = /const planTargets = useMemo\(\(\) => \{([\s\S]*?)\n  \}, \[planPickRows/.exec(code);
   assert.ok(/vehicleAssigned: v\.assigned, vehicleConflict: v\.conflict/.test(m[1]), 'the list would re-derive the conflict separately from the build');
 });
+
+// Chad, on the routes-to-build list: "should be a check box here incase i want to remove".
+test('A ROUTE CAN BE TAKEN OUT FROM THE ROUTES-TO-BUILD LIST — a ticked box that unticks the same load the picker ticks', () => {
+  const m = /data-plan-build-list=([\s\S]*?)<\/ul>/.exec(code);
+  assert.ok(m, 'the routes-to-build list is gone');
+  const row = m[1];
+  assert.ok(/<input type="checkbox" checked aria-label=\{`Build \$\{t\.display\}`\} data-plan-build-remove=\{t\.display\}/.test(row), 'a row has no ticked checkbox');
+  // the SAME Set the picker's rows write — so the route leaves the build and reads unticked above
+  assert.ok(/onChange=\{\(\) => setPlanTargetKeys\(\(prev\) => \{ const n = new Set\(prev\); n\.delete\(t\.rowKey\); return n; \}\)\}/.test(row), 'unticking does not take this load out of the build');
+  assert.ok(/onChange=\{\(\) => setPlanTargetKeys\(\(prev\) => \{ const n = new Set\(prev\); n\.has\(r\.rowKey\) \? n\.delete\(r\.rowKey\) : n\.add\(r\.rowKey\); return n; \}\)\}/.test(code), 'the picker no longer writes the same Set');
+  // the build target list is read from that Set, so a removed route is not built
+  assert.ok(/if \(!planTargetKeys\.has\(r\.rowKey\) \|\| r\.ambiguous\) continue;/.test(code), 'the build does not read its routes from the ticked Set');
+});
