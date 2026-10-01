@@ -41,7 +41,7 @@ import { readViewportSize } from './lib/viewport.js';
 import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
 import { manifestIssues, manifestHeadline, manifestProvenance, manifestFreshness, loadStored, saveStored } from './lib/manifest-check-view.js';
-import { noteFreshness } from './lib/stop-notes-freshness.js';
+import { noteFreshness, mergedNotes, SCAN_NOTES_AUTO_ON } from './lib/stop-notes-freshness.js';
 import { stopHandlingFlags, itemHandlingFlags, stopNeedsTractor, tallyHandlingFlags, HANDLING_FLAGS } from './lib/handling-flags.js';
 // The bottom grid's Restrictions cell draws its icons (v1.100.1); VITE_GRID_RESTRICTION_ICONS=off puts back words only.
 import { GRID_RESTRICTION_ICONS_ON } from './lib/grid-icons.js';
@@ -218,7 +218,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.100.1';
+const APP_VERSION = '1.100.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -272,6 +272,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.100.2', 'A NEW NOTE FROM NUVIZZ SHOWS ON THE CARD WITHOUT A REFRESH. Chad, on ROBERT BOSCH (PRO 007183226) showing the amber “NuVizz has newer instructions than these — tap Refresh”: “IF there are new notes picked up in the normal scans not enrichment then use them i shouldn’t have to refresh to get them you know what they are so if some are added or deleted just auto use them.” The normal scans carry every order’s note text, free, on every pass; the full notes (who wrote it, when) come only from the one detail read, so the card used to keep showing the old ones and ask for a Refresh. NOW the card merges the two every time it draws: a note the scan carries that the stored notes do not shows straight away, on top, marked “New — from the latest scan” (the scan sends no author or time — Refresh still pulls them); the stored notes keep their author and time; and an order instruction the latest scan no longer carries is shown faded and struck through, “Not in NuVizz’s latest notes”, rather than hidden — the scan’s one-line text is known to carry less than the full notes, so a note missing from it is not proof NuVizz deleted it, and a hidden real instruction is a missed delivery. Other kinds of note (pre-visit, general, a dispatcher’s own) are left as they were. On a stop with no stored notes at all (an AVRT order, whose only note is its price) the scan’s note shows plain, “From NuVizz’s latest scan”, never “New”; and when the text was cut short nothing is struck through. MEASURED on the stored boards of 9/30 and 10/1 (1,543 stops, zero NuVizz calls): 33 cards gain a real note they were not showing — 18 of them, like “CANCELLED ORDER. STOP & RETURN PER ULINE.” and “refused”, too short for the old banner to ever ask — and nothing is struck through. The amber banner is gone; there is nothing left for it to ask. VITE_SCAN_NOTES_AUTO=off puts back the old notes and the banner (a redeploy). Zero NuVizz calls.'],
   ['1.100.1', 'THE RESTRICTIONS COLUMN NOW SHOWS ITS ICONS. Chad, on the bottom grid: “under restrictions can we put icons as well in there if they have any special icons.” Each customer restriction in the cell now has the same icon its map pin, sidebar chip and Legend row use — the red slashed truck for No T/T, the liftgate arrow, the appointment mark, Box only — beside the word it always had. An order’s handling flag shows its own mark where it has one: the stacker’s yellow H. DO NOT DOUBLE STACK has no icon anywhere in the app, so it stays the word DNDS rather than getting an invented one. Same order as before (the customer’s restrictions first, then the order’s flags), and the column still sorts on the words, read off the same list the icons are drawn from, so an icon can never show something the words do not say. VITE_GRID_RESTRICTION_ICONS=off puts back words only (a redeploy). Zero NuVizz calls.'],
   ['1.100.0', 'MORE → PERFORMANCE: ARE WE AHEAD OR BEHIND RIGHT NOW, AND HOW ARE THE DAYS, WEEKS AND MONTHS GOING. Chad: “I wanted to build a stock performance UI under the more tab … to track performance over days, weeks, months … and also like interday to track the number of stops that we’ve done compared to other days or like the daily average at that point in time to let us know if we’re behind or ahead of schedule.” It had never been started — nothing for it on main, on any branch or in any PR. NOW, under More on the desktop and the phone: TODAY’S PACE — stops delivered so far against a typical day AT THE SAME MINUTE (the median of the last 8 of today’s weekday, or of the last 20 weekdays for the week after a holiday, with the middle half of those days drawn as a band), judged at the board’s last scan, and called Ahead / On pace / Behind only once 4 comparison days exist; four tiles (delivered today, share of today’s board done, delivered per day and completion, each against a named comparison); the trend by day, week or month with a moving average; where the stops ended up; the average by weekday; and every day and every route as rows — sorted, searched, paged — where a ticked day is drawn over today, a holiday can be left out of the typical day, and rows copy out. Counted exactly as the 6:30 report counts: planned only, 90 and 91 both delivered, cancelled orders out of the total, CHAD and appointment routes left out. HOW: each night’s capture now also writes one small pace digest per sealed day (pace_days — 288 five-minute buckets and the route rows), and today is worked out live from the board. Days sealed before this shipped have no digest yet: the screen shows them as gaps, never zeros, and an admin builds them from its History card (ten days a step). ZERO NuVizz calls on every path. PUT IT BACK: STOP_PACE=off in Netlify switches off the screen’s read, the nightly digest and the rebuild together; reverting this commit removes all of it. 64 new tests; the phone, tablet and desktop layout guards all measure the screen.'],
   ['1.99.10', 'STOP LOOKUP: A TAPPED BUSINESS SAYS IT IS OPENING, AND A ROW\u2019S ROUTE OPENS ITS LOAD. Chad, on a phone with \u201c22 businesses match \u2018master\u2019\u201d: \u201cclicking this and nothing happens doens\u2019t show me the load \u2026 i want you to build this entire screen and test everything in it.\u201d The tap was working \u2014 a customer takes about ten seconds to read \u2014 but its only sign was \u201cLooking\u2026\u201d on the search button, a screen above on a phone, and a second tap started the read over. NOW: the tapped business says \u201cOpening \u2014 reading their deliveries\u2026\u201d with a spinner and ignores a second tap (tapping a different business switches to that one instead of waiting), and a dark line at the top of the view says what is being read (\u201cOpening MASTER WINDOW SYSTEMS\u2026\u201d) wherever the page is scrolled \u2014 for every search on this screen, not just this one. THE LOAD: on a customer\u2019s row, an order\u2019s day and an address result, the route (FRANK \u00b7 stop 15) is now a link. It opens that load under the row \u2014 the map, every stop in delivery order, this order marked \u2014 and the customer stays on screen; tap it again to close. It reads the same records as Driver\u2019s loads (no NuVizz call). If two drivers share the name it asks which; if the driver was renamed (the name on the row matches nobody that day) it lists who ran loads that day instead of saying there is no load; if none of their loads carries the route it lists that day\u2019s loads to pick, never picks one for you; if the load it opens does not hold this order (moved to another truck that day) it says so above the load; a day that has not happened says the load has not run yet. An order tapped inside the load opens there, once. Below dispatcher the route stays plain text, as Driver\u2019s loads is. Also: a business picked after the search box was edited now opens the business you picked. TESTED: a new check taps every control on Stop lookup on a phone and a desktop with every answer made to arrive late, and fails any tap that changes nothing on screen within a quarter second; it fails on the code before this. THE WAY BACK: one commit; a revert puts the screen back.'],
@@ -9287,12 +9288,24 @@ function StopNotesList({ comments }) {
       <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Notes</div>
       <div className="space-y-1.5">
         {rows.map((c, i) => {
+          // v1.100.2: a note only the latest scan carries has no author or time to show (the list
+          // does not send them) — blue and "New" only when there are stored notes for it to be newer
+          // than; one the latest scan no longer carries is faded rather than hidden. See mergedNotes
+          // (lib/stop-notes-freshness.js) for why absence is not proof.
+          if (c.fromScan) {
+            return (
+              <div key={i} data-note={c.isNew ? 'scan' : 'scan-only'} className={c.isNew ? 'rounded bg-blue-50 border border-blue-200 px-2 py-1' : 'rounded bg-slate-50 border border-slate-200 px-2 py-1'}>
+                <div className="text-xs text-slate-800 whitespace-pre-wrap break-words leading-snug">{c.text}</div>
+                <div className={'text-[10px] mt-0.5 ' + (c.isNew ? 'text-blue-700' : 'text-slate-500')}>{c.isNew ? 'New — from the latest scan' : 'From NuVizz’s latest scan'}</div>
+              </div>
+            );
+          }
           const label = c.typeDesc || COMMENT_TYPE_LABEL[c.type] || c.type || 'Note';
           const meta = [c.addedBy, c.source, c.addedOn && fmtNoteTime(c.addedOn)].filter(Boolean).join(' · ');
           return (
-            <div key={i} className="rounded bg-slate-50 border border-slate-200 px-2 py-1">
-              <div className="text-xs text-slate-800 whitespace-pre-wrap break-words leading-snug">{c.text}</div>
-              <div className="text-[10px] text-slate-500 mt-0.5">{label}{meta ? ` — ${meta}` : ''}</div>
+            <div key={i} data-note={c.gone ? 'gone' : 'stored'} className={'rounded bg-slate-50 border border-slate-200 px-2 py-1' + (c.gone ? ' opacity-60' : '')}>
+              <div className={'text-xs whitespace-pre-wrap break-words leading-snug ' + (c.gone ? 'text-slate-500 line-through' : 'text-slate-800')}>{c.text}</div>
+              <div className="text-[10px] text-slate-500 mt-0.5">{c.gone ? 'Not in NuVizz’s latest notes — ' : ''}{label}{meta ? ` — ${meta}` : ''}</div>
             </div>
           );
         })}
@@ -9600,6 +9613,10 @@ function StopLiveDetail({ stop, onRefreshed }) {
   // presenting weeks-old text as current.
   const fresh = noteFreshness(stop);
   const cleaned = cleanInstructions(stop.signalSources?.orderInstructions);
+  // v1.100.2 — Chad: "IF there are new notes picked up in the normal scans not enrichment then use
+  // them i shouldn't have to refresh to get them". The scan's notes are merged in as they arrive
+  // (mergedNotes), so the banner asking for a Refresh has nothing left to say.
+  const notes = SCAN_NOTES_AUTO_ON ? mergedNotes(stop) : null;
   return (
     <div className="pt-1 space-y-2">
       <div>
@@ -9608,7 +9625,7 @@ function StopLiveDetail({ stop, onRefreshed }) {
         </button>
       </div>
       {refreshErr && <div className="text-[11px] text-amber-700">Couldn’t refresh: {refreshErr}</div>}
-      {fresh.stale && (
+      {!SCAN_NOTES_AUTO_ON && fresh.stale && (
       <div className="mt-1 mb-1 rounded border border-amber-300 bg-amber-50 px-2 py-1.5">
         <div className="text-[11px] font-semibold text-amber-800">NuVizz has newer instructions than these</div>
         <div className="text-[11px] text-amber-900 mt-0.5 whitespace-pre-wrap break-words">{fresh.liveText}</div>
@@ -9617,7 +9634,9 @@ function StopLiveDetail({ stop, onRefreshed }) {
         </div>
       </div>
     )}
-    {stop.allComments?.length ? (
+    {notes?.length ? (
+        <StopNotesList comments={notes} />
+      ) : !SCAN_NOTES_AUTO_ON && stop.allComments?.length ? (
         <StopNotesList comments={stop.allComments} />
       ) : cleaned ? (
         <div className="pt-1">
