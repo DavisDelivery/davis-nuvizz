@@ -111,8 +111,17 @@ export const SCAN_NOTES_AUTO_ON = (() => {
 })();
 
 const SPL_PREFIX = /^\s*SPL-INSTR-TEXT\s*:?\s*/i;
+/** Normalized for matching a note to itself: any script's letters and digits kept (a note in Korean
+ *  has a key; accents folded, so "café" and "cafe" match), other symbols dropped, and whitespace
+ *  collapsed AFTER the drop so "CALL AHEAD ; LIFTGATE" does not keep a double space. */
+const keyNorm = (v) => String(v ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
+  .replace(/[^\p{L}\p{N}\s:.,%$&/#-]/gu, '').replace(/\s+/g, ' ').trim();
 /** A note's identity for matching: no SPL prefix, no trailing separators, normalized. */
-const noteKey = (t) => norm(String(t ?? '').replace(SPL_PREFIX, '')).replace(/[\s.;,]+$/, '');
+const noteKey = (t) => keyNorm(String(t ?? '').replace(SPL_PREFIX, '')).replace(/[\s.;,]+$/, '');
+/** The words alone — for telling a note split at a separator from a note removed. */
+const wordsOf = (k) => String(k ?? '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+/** Has this text any letter or digit in any script? "…" and "***" have none. */
+const HAS_CONTENT = /[\p{L}\p{N}]/u;
 
 /** The scan's one-line note text, split back into its notes (the list joins them with "; "). */
 export function scanNoteEntries(text) {
@@ -159,16 +168,19 @@ export function mergedNotes(stop) {
   // The safe side: such a stop shows and prints every stored note, exactly as before v1.100.2.
   const storedNewer = !!stop?.notes_refreshed_at;
   const scanKeys = scan.map(noteKey);
-  const joined = scanKeys.join(' ');
+  const joinedWords = wordsOf(scanKeys.join(' '));
   const used = new Set();
   const kept = stored.map((c) => {
     const k = noteKey(c.text);
+    // A note with no letter or digit in it ("***") cannot be matched, so it is never judged.
+    if (!k) return { ...c };
     const j = scanKeys.findIndex((sk, i) => !used.has(i) && sameNote(sk, k));
     if (j >= 0) { used.add(j); return { ...c }; }
-    // A note that itself holds "; " reaches the scan as two entries. Word for word it is still
-    // there, so it is not gone, and its pieces are not new notes.
-    if (holdsWords(joined, k)) {
-      scanKeys.forEach((sk, i) => { if (!used.has(i) && holdsWords(k, sk)) used.add(i); });
+    // A note that itself holds "; " (or " ; ", ".;") reaches the scan as two entries. Word for
+    // word it is still there, so it is not gone, and its pieces are not new notes.
+    const kw = wordsOf(k);
+    if (kw && holdsWords(joinedWords, kw)) {
+      scanKeys.forEach((sk, i) => { if (!used.has(i) && holdsWords(kw, wordsOf(sk))) used.add(i); });
       return { ...c };
     }
     return isOrderInstruction(c) && !cut && !storedNewer ? { ...c, gone: true } : { ...c };
@@ -181,7 +193,7 @@ export function mergedNotes(stop) {
   const storedKeys = stored.map((c) => noteKey(c.text)).filter(Boolean);
   const fragment = (i) => {
     const k = scanKeys[i];
-    if (!k) return true;
+    if (!k) return !HAS_CONTENT.test(scan[i]);   // "…" alone is nothing; any real text is kept
     if (!cut || i !== scan.length - 1) return false;
     const label = k.replace(/\s*:$/, '');   // "TOTAL-AMOUNT :…" is the label and its colon, cut
     return storedKeys.some((sk) => sk.startsWith(k)) || CUT_LABELS.some((l) => l.startsWith(label));

@@ -230,3 +230,19 @@ test('a cut text’s leftover fragment is not a note — not on the card, not on
   // A complete short note that ends exactly at the cut is kept too.
   assert.ok(mergedNotes({ ...DROPPED, orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; refused…' }).some((n) => n.text === 'refused…'));
 });
+
+// ── the last review round: a note's key in any script, and a note split at an odd separator ──
+test('a note in another script, or split at " ; " / ".;", is matched to itself — never faded, never lost from the paper', () => {
+  const show = (s) => ({ card: mergedNotes(s).map((n) => (n.gone ? '[GONE] ' : n.fromScan ? '[scan] ' : '') + n.text), paper: ticketNotes(s, { on: true }).map((c) => c.text) });
+  const korean = show({ orderInstructions: 'SPL-INSTR-TEXT: NO APPT REQUIRED; 후문으로 배달', allComments: [ULINE('SPL-INSTR-TEXT: NO APPT REQUIRED'), ULINE('후문으로 배달')] });
+  assert.deepEqual(korean, { card: ['SPL-INSTR-TEXT: NO APPT REQUIRED', '후문으로 배달'], paper: ['SPL-INSTR-TEXT: NO APPT REQUIRED', '후문으로 배달'] });
+  assert.deepEqual(show({ orderInstructions: '후문으로 배달' }).paper, ['후문으로 배달'], 'a scan-only note in another script prints');
+  for (const t of ['CALL AHEAD ; LIFTGATE', 'NO STACK.; FRAGILE', 'CALL BOB, ; DOCK 4']) {
+    assert.deepEqual(show({ orderInstructions: t, allComments: [ULINE(t)] }), { card: [t], paper: [t] }, t);
+  }
+  // A note with no letter or digit cannot be matched, so it is never judged; accents fold.
+  assert.deepEqual(show({ orderInstructions: 'NO APPT', allComments: [ULINE('NO APPT'), ULINE('***')] }).paper, ['NO APPT', '***']);
+  assert.deepEqual(show({ orderInstructions: 'DELIVER TO CAFE', allComments: [ULINE('DELIVER TO CAFÉ')] }).paper, ['DELIVER TO CAFÉ']);
+  // And a real deletion is still a deletion.
+  assert.deepEqual(show({ orderInstructions: 'NO APPT', allComments: [ULINE('NO APPT'), ULINE('CALL 30 MIN AHEAD')] }), { card: ['NO APPT', '[GONE] CALL 30 MIN AHEAD'], paper: ['NO APPT'] });
+});
