@@ -31,7 +31,7 @@ import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
 import { cardManifestPages, stopOrdersAgree } from './lib/card-manifest.js';
-import { CARD_SAVES_KEY, cardSaveIds, recordCardOutcome, pruneCardSaves, earlierOutcome } from './lib/card-saves.js';
+import { CARD_SAVES_KEY, cardSaveIds, recordCardOutcome, mergeCardSaves, pruneCardSaves, earlierOutcome, sameRunOrder } from './lib/card-saves.js';
 import { snapshotSharedWindows, snapshotStopTimeliness, snapshotOnTime } from './lib/driver-snapshot-timeliness.js';
 import { scrubStop } from './lib/debug-capture-scrub.js';
 import { routeLoadLine, podPhotoFetchOffer, podPhotoPullOutcome, podSectionVisible, isPodImageExt, foldFreshStop, stopRecordIdentity, trackStopRecord } from './lib/stop-card-sections.js';
@@ -265,7 +265,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.99.0', 'A ROUTE THAT WAS SAVED, CLOSED AND BROUGHT BACK NOW CARRIES A GREEN ✓. Chad: “I want saved route to always carry a green check mark if it has saved previously say if a route was closed out and re brought up but keep the message as is for a route that just saved.” WHY IT WAS BLANK. The “✓ SENT 7:42 AM” mark on a Compare card lives in the workbench’s memory and is wiped the moment the card closes — on purpose, because it says the card MATCHES what was sent, and a reopened card is rebuilt from the board. So a route saved at 7:42, closed and brought back at 9:00 looked exactly like one nobody had ever sent. NOW: every confirmed save is also recorded against the LOAD — its load id and its real load number, never its route name, because names repeat every day (Friday’s MARCUS is not Monday’s). A card brought back with no stamp of its own this session reads that record and carries a green ✓; hover it for when it was saved. It is earned in exactly the two places the ✓ SENT and ✗ DID NOT SAVE marks are earned — a write NuVizz confirmed, and a refusal read back off the result — so it can never claim a save that did not happen. It goes the moment you change the card, the same as ✓ SENT, until you send again; and a load whose latest send was refused gets no ✓. UNCHANGED: a card that just saved still says “✓ SENT 7:42 AM”, and one that just failed still says “✗ DID NOT SAVE”. Zero NuVizz calls. WHAT IT DOES NOT KNOW: the record lives in this browser — it survives closing the card, a page reload and a restart, for a week — but a route saved on another dispatcher’s device carries no ✓ here. That is the cheap direction to be wrong in: a missing ✓ costs a re-send, a false one is freight nobody drives. PUT IT BACK: VITE_CARD_SAVED_BEFORE=off and a redeploy; anything else, a typo included, leaves it on. 12 new rule tests, each rule proven to bite by breaking it, plus 3 wiring tests pinning that the record has the same two writers as the marks. A new real-browser check (verify:card-saved-before, desktop and phone, in CI) opens a load, changes it, presses Send to NuVizz (stubbed — no NuVizz call is possible from it), reads “✓ SENT”, closes the card, reopens it and reads the ✓, edits it (the ✓ goes), reloads the page (it comes back), and opens a load nobody saved (nothing). Built with the switch off, the reopened card says nothing.'],
+  ['1.99.0', 'A ROUTE THAT WAS SAVED, CLOSED AND BROUGHT BACK NOW CARRIES A GREEN ✓. Chad: “I want saved route to always carry a green check mark if it has saved previously say if a route was closed out and re brought up but keep the message as is for a route that just saved.” WHY IT WAS BLANK. The “✓ SENT 7:42 AM” mark on a Compare card lives in the workbench’s memory and is wiped the moment the card closes — on purpose, because it says the card MATCHES what was sent, and a reopened card is rebuilt from the board. So a route saved at 7:42, closed and brought back at 9:00 looked exactly like one nobody had ever sent. NOW: every confirmed save is also recorded against the LOAD NuVizz wrote — its load id and real load number, never its route name, because names repeat every day (Friday’s MARCUS is not Monday’s) — together with the stops and order it carried. A card brought back with no stamp of its own this session carries a green ✓ while it still shows exactly those stops in that order; on a phone the ✓ carries the time (the clock today, the day if earlier), on a desktop hover it for when. It is earned only where ✓ SENT and ✗ DID NOT SAVE are earned — a write NuVizz confirmed, a refusal read back off the result — so it cannot claim a save that did not happen. IT IS WITHHELD WHEN: you change the card (until you send again); the load’s latest outcome on record was a refusal; the save CANCELLED the route (emptying a card and saving cancels the load — that is recorded as a cancellation, so the dead load never wears a ✓); or the card no longer shows what was sent — a later scan that picked up a portal edit, a board that missed the save, a stop now staged on another card. Two orders at one dock may come back from a scan in either order and still count as a match. A save NuVizz redirected to a same-named twin load is recorded on the twin it wrote, never on the empty one the card was opened on. UNCHANGED: a card that just saved still says “✓ SENT 7:42 AM”, and one that just failed still says “✗ DID NOT SAVE”. Zero NuVizz calls. WHAT IT DOES NOT KNOW: the record lives in this browser — every tab of it, merged so one tab can never erase another’s refusal, kept a week — but a route saved on another dispatcher’s device carries no ✓ here, and a change in NuVizz the board has not picked up yet cannot be seen. A missing ✓ costs a re-send; a false one is freight nobody drives. PUT IT BACK: VITE_CARD_SAVED_BEFORE=off and a redeploy; anything else, a typo included, leaves it on. An adversarial review of the first cut found the cancelled-route, twin-load, two-tab and changed-since cases; each is fixed and pinned by a test that was proven to fail when the fix is removed. 18 rule tests and 8 wiring tests. A new real-browser check (verify:card-saved-before, desktop and phone, in CI) opens a load the way real cards open (route name on the stops, number and id from the roster), changes it, presses Send to NuVizz (stubbed — no NuVizz call is possible from it), reads “✓ SENT”, closes and reopens it (✓), edits it (gone), reloads (back), lets a later scan show the route changed (gone), and opens a load nobody saved (nothing). Built with the switch off, the reopened card says nothing.'],
   ['1.98.2', 'A LOAD BUILT IN THE PORTAL OPENS IN COMPARE AS SOON AS ITS ORDERS ARE ON THE BOARD — ON THE LOAD NUMBER THEY CARRY. Chad, with STEVEN 1 in the Routes panel and the card refusing: “STEVEN1 HOW CAN IT NOT FIND THE LOAD I LITERALLY SHOWED IT TO YOU IN DISPATCH MAP. THE MANUAL REFRESH BUTTON WHICH I HAD HIT BEFORE SHOULD OF PICKED UP THE LOAD AND LOAD NUMBER WITH THE ROSTER SCAN.” READ OFF THE SCAN LOG, NOT REASONED: the two manual refreshes ran at 5:12 and 5:29 AM and each did pull the roster; STEVEN 1 was built in the portal at 5:49 (the timestamp inside its load id); the 6:00 and 6:15 scans put its 17 orders on the board with its load number DAVIS000205171 on every one; the next roster pull was 6:30. So the refresh could not have seen it — and the card never needed the roster: a card asked ONLY the roster, by name, because list rows carry no load id, and the load number on every order (captured since 1.81.6) was never read. Worse, the board feed did not even send it to the screen — the lean field list forgot it. NOW the feed sends it, and when the roster, a load id and the earlier-day look-back all come up empty, the card opens on the number its own orders carry. Two different numbers under one route name refuse and name both; an order our own Save just moved does not vote until the next scan re-reads it (it can still carry its old load’s number for those few minutes). A card that opened before opens exactly as before. Zero NuVizz calls. VITE_WB_STOP_LOADNBR=off puts back the old refusal (a redeploy). 12 new tests; two deliberate breaks each turned a test red.'],
   ['1.98.1', 'A COMPARE CARD’S PRINTED MANIFEST NOW FOLLOWS THE CARD — SAVED OR NOT. Chad: “why my print manifest doesn’t match the order my deliveries are in in route work bench until a nuvizz save has occurred — to me it should always match even if a save hasn’t occurred,” then “I want my manifest to always match what is in dispatch map.” THE CAUSE WAS ONE LINE. Print manifest handed its stops over in the card’s order and the manifest builder threw that order away, re-sorting by NuVizz’s stop sequence. Before a Save every stop still carries the sequence of the load it came off, so the paper printed the OLD route. A confirmed Save stamps the new sequence onto the stops, and the same re-sort then happened to agree with the screen — which is why saving looked like it fixed the manifest. On a brand-new route no stop has a sequence at all, and the re-sort fell back to a map chain starting from the most north-west stop: an order nobody chose, with every ticket’s circle printed blank. NOW, ON A RE-ORDERED CARD: the pages come out in the card’s order; each circle carries the stop number that order earns, counted the way NuVizz and the driver’s handheld count them, so two orders at one dock share a number (the card’s rows read 3 and 4, the paper and the handheld 3 and 3, and the stop after them is 4 on both rather than one ahead); and the “Next Stop” time at the foot of each ticket is left off, because it is NuVizz’s ETA for that stop worked out for the order NuVizz holds, and on a re-ordered page it would tell a driver to reach his first stop last. ON A CARD STILL IN NUVIZZ’S ORDER the paper is byte for byte what it printed before — NuVizz’s numbers, its ETAs, the same cover — except that a stop NuVizz has not numbered yet gets its number instead of a blank circle. The cover (route name, origin, driver) is read the old way on every card, so a stop dragged in from another load cannot put that load’s driver on it. UNCHANGED: the route detail panel’s Print Manifest, single delivery tickets, Save, the map and the card itself. Zero NuVizz calls. WHAT IT DOES NOT DO: the Driver line names the load’s current driver, not one picked on the card and not yet saved; nothing on the paper says the order has not been saved yet; and a stop the board can no longer find is left off the paper (its number stays taken) with a warning that shows on desktop but, as before, not on a phone. PUT IT BACK: VITE_MANIFEST_IN_CARD_ORDER=off and a redeploy; anything else, a typo included, leaves it on. 21 new tests run the real manifest builder and read the printed pages back, and each rule was proven to bite by breaking it. A new real-browser check (verify:card-manifest, desktop and phone, in CI) prints a real card as opened — unchanged, NuVizz’s order and ETAs — then reverses it WITHOUT saving and prints again: E D C B A, numbered 1 to 5, no ETA lines. Built with the switch off, the same check reproduces the reported bug exactly — card E D C B A, paper A B C D E.'],
   ['1.98.0', 'RETURN TO WAREHOUSE: A RE-SEQUENCE FOR A TRUCK THAT COMES BACK TO BUFORD, TESTED ON 1,120 REAL ROUTES AND BY EYE ON EVERY ONE WHERE IT CHANGES THE ORDER, AND SHIPPED SWITCHED OFF ON PRODUCTION UNTIL CHAD SAYS. Chad, after v1.96.0 made Shortest distance count the drive home: \u201cNot every driver returns to warehouse but even if this driver did this would still be absolutely awful optimization. Make shortest work like it did then you can create another optimization around returning to the warehouse.\u201d Then: \u201cTest it throughly.\u201d v1.97.0 put Shortest distance back byte for byte; this is the other optimization, one new line on the Compare card\u2019s menu. WHAT WAS AWFUL, read off his two screens: the shortest round trip is free to start and finish anywhere, and used it. TRAILER 3 started mid-corridor at Lithonia, ran to the far end of Conyers and came back west over I-20 past its own start (117 road miles, against 102 for the corridor walked once); SAMUEL finished three stops from where it began. SO IT INVENTS NO NEW SHAPE. It starts from Shortest distance\u2019s order and only trades it for an order this menu already draws (Shortest distance the other way round, Loop either way round, Farthest first, Closest first) when that order gets the truck home at least a mile AND 1.5% sooner, the drive home counted, on the distances the card is using, and its picture is clean: it does not cross itself, drive a road twice, drive past a stop and come back for it, split a town more than Shortest distance does, come back to a neighbourhood it left three miles behind, drive IN past a stop it serves later, close on its own first stop, or double back along a corridor (TRAILER 3 itself). The feedback line says which order it used and the round-trip saving, drive home included and marked as a straight-line estimate when it is one, or that it kept Shortest distance. HOW IT WAS TESTED. 1,120 real routes from 20 board days (Sep 1\u201329, every route with six or more stops, read from the cached boards: no NuVizz calls), scored in real road miles from a free public road router with the drive home counted, every reference run exactly as the card runs it. Every route where the first version differed from Shortest distance (607 pictures) was drawn beside Shortest distance and judged by eye against the shapes Chad has rejected: 405 better, 88 the same, 36 worse, 78 awful. The last four checks above were built from those 78 (three tuned on Sep 1\u201315 and confirmed on Sep 16\u201329, the corridor one from a stress test of corridors lying across the Buford direction). An adversarial code review and 13,000 seeded stress runs found no order that drops or doubles a stop, depends on the order stops were listed in, or makes the round trip longer than Shortest distance on the distances used. RESULT. Straight line (the card\u2019s default): 122.2 \u2192 120.8 mi a route (\u22121.15%); shorter on 239, the same on 852, longer by more than half a mile on 29 (the straight line not seeing a road, as Shortest distance does not either). Road box ticked: 120.4 \u2192 119.1 (\u22121.14%), longer on none. It never drew a fault Shortest distance does not already draw. It keeps Shortest distance\u2019s order on three routes in four; when it switches it is nearly always to a clean Loop, a median 3.4 straight-line miles shorter. Of the 78 awful pictures, 52 are now Shortest distance again and 24 remain; 31 good switches were given up to get there. WHY IT IS OFF ON PRODUCTION: 24 of its 502 switches (about 1 in 21) still draw a picture a reviewer called awful. Whether that is good enough is Chad\u2019s call. It is always on at the UAT site, to try against seeded orders; VITE_RETURN_TO_WAREHOUSE=on (and a redeploy) turns it on for production, and anything else, a typo included, leaves it off. WHAT IT DOES NOT DO: on BRENT it keeps the Shortest distance order he called \u201cnot a good optimization\u201d on straight lines (no order the menu draws is both clean and a mile shorter there; ticked, it takes Farthest first, 4.6 road miles shorter). It does not read receiving hours. The card header still shows one-way miles. Nothing else changes; a one-commit revert removes it. 11 new tests, and a real-browser run on desktop and phone, straight line and road, switched off, switched on and on UAT.'],
@@ -21934,7 +21934,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
                     // a check needs to read as one at a glance; the worded chips keep theirs.
                     mk.kind === 'saved-before' ? (isMobile ? 'text-[14px] leading-none py-0.5' : 'text-[12px] leading-none py-px') : (isMobile ? 'text-[10px]' : 'text-[9px]')}`}
                 >
-                  {mk.label}
+                  {isMobile && mk.kind === 'saved-before' && mk.short ? `${mk.label} ${mk.short}` : mk.label}
                 </span>
               );
             })()}
@@ -22301,24 +22301,43 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, tract
   // (lib/card-saves.js), so a route that was saved, closed and brought back still wears its ✓.
   // Written ONLY inside markSaved and markSaveFailed, beside the two stamps above.
   const [cardSaves, setCardSaves] = useState(() => (CARD_SAVED_BEFORE ? pruneCardSaves(safeReadJSON(CARD_SAVES_KEY, {})) : {}));
+  // keys → each card's record. `idsByKey[k]`, when given, is the load NuVizz actually WROTE (the
+  // write's own result, or a create's) and is used INSTEAD of the card's: after a retarget the card
+  // still names the empty twin it was opened on. A save records the order the card carried, so a
+  // reopened card can be held to it (sameRunOrder). Read-merge-write against what is stored NOW, so
+  // a second tab's refusal is merged in rather than overwritten by this tab's older copy.
   const rememberCardOutcome = (keys, kind, at, idsByKey = {}) => {
-    if (!CARD_SAVED_BEFORE) return;
-    const ids = [...new Set(keys.flatMap((k) => {
+    if (!CARD_SAVED_BEFORE || !keys.length) return;
+    let next = mergeCardSaves(pruneCardSaves(safeReadJSON(CARD_SAVES_KEY, {})), cardSaves);
+    let wrote = false;
+    for (const k of keys) {
       const r = wbRoutes.find((x) => x.key === k);
-      return [...cardSaveIds(r), ...cardSaveIds(idsByKey[k])];
-    }))];
-    if (!ids.length) return;
-    setCardSaves((prev) => {
-      const next = pruneCardSaves(recordCardOutcome(prev, ids, kind, at));
-      safeWriteJSON(CARD_SAVES_KEY, next);
-      return next;
-    });
+      const given = cardSaveIds(idsByKey[k]);
+      const ids = given.length ? given : cardSaveIds(r);
+      if (!ids.length) continue;
+      next = recordCardOutcome(next, ids, kind, at, r?.order);
+      wrote = true;
+    }
+    if (!wrote) return;
+    next = pruneCardSaves(next);
+    safeWriteJSON(CARD_SAVES_KEY, next);
+    setCardSaves(next);
   };
-  // What the load's record says, for a card to show only when it has no stamp of its own.
+  // Another tab on this device wrote the record: take its stamps too.
+  useEffect(() => {
+    if (!CARD_SAVED_BEFORE || typeof window === 'undefined') return undefined;
+    const onStorage = (e) => { if (e.key === CARD_SAVES_KEY) setCardSaves((prev) => pruneCardSaves(mergeCardSaves(prev, safeReadJSON(CARD_SAVES_KEY, {})))); };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+  // What the load's record says, for a card to show only when it has no stamp of its own — and only
+  // while it still shows the stops, in the order, that the save carried.
+  const dockOfStop = (id) => { const st = lookup.get(String(id)); return st ? placeKeyOfStop(st) : `#${id}`; };
   const earlierSaveProps = (r) => {
     if (!CARD_SAVED_BEFORE) return {};
     const e = earlierOutcome(cardSaves, cardSaveIds(r));
-    return { earlierSavedAt: e.savedAt, earlierFailedAt: e.failedAt };
+    const shows = e.savedAt && sameRunOrder(e.order, r.order, dockOfStop);
+    return { earlierSavedAt: shows ? e.savedAt : null, earlierFailedAt: e.failedAt };
   };
   const [confirm, setConfirm] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -22562,9 +22581,10 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, tract
     if (pending.length) await sendPendingCreates(pending);
   };
 
-  // idsByKey: a load's identity when the card does not carry it yet — a ＋ New route learns its
-  // load id and number from the create's own result, one line before this runs.
-  const markSaved = (keys, idsByKey = {}) => {
+  // idsByKey: the load NuVizz actually wrote, from the write's own result — a ＋ New route learns its
+  // load id and number from the create, and a retargeted save names the twin it landed on.
+  // cancelledKeys: saves that emptied and CANCELLED their load — ok, but not a load holding a route.
+  const markSaved = (keys, idsByKey = {}, cancelledKeys = []) => {
     setBaselines((prev) => {
       const n = { ...prev };
       for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
@@ -22576,7 +22596,9 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, tract
     // outcome. A wiring test pins that this stays the single writer.
     const at = Date.now();
     setSavedAtByKey((prev) => { const n = { ...prev }; for (const k of keys) n[k] = at; return n; });
-    rememberCardOutcome(keys, 'saved', at, idsByKey);
+    const cancelled = new Set(cancelledKeys);
+    rememberCardOutcome(keys.filter((k) => !cancelled.has(k)), 'saved', at, idsByKey);
+    rememberCardOutcome(keys.filter((k) => cancelled.has(k)), 'cancelled', at, idsByKey);
   };
 
   // THE MIRROR, AND THE ONLY PLACE A CARD EARNS ITS ✗. Chad: "what about a card that says
@@ -22621,10 +22643,21 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, tract
       // the TWIN's identity — the server now echoes what we SENT, which always joins.
       ?? toKey.get('nbr:' + String(l.requestedLoadNbr)) ?? toKey.get('id:' + String(l.requestedLoadId)) ?? null;
     const okKeys = resLoads.filter((l) => l.ok).map(keyOf).filter(Boolean);
+    // Which load each confirmed result actually wrote, and which saves cancelled their load — so the
+    // reopened-card record is kept against the right load and never ticks a cancelled one.
+    const savedIdsByKey = {};
+    const cancelledKeys = [];
+    for (const l of resLoads) {
+      if (!l.ok) continue;
+      const k = keyOf(l);
+      if (!k) continue;
+      savedIdsByKey[k] = { loadId: l.loadId, loadNbr: l.loadNbr };
+      if ((l.steps || []).some((st) => st.cancelledRoute)) cancelledKeys.push(k);
+    }
     let boardSyncMissing = 0; // stops the board write-through couldn't find on ANY recent day's cache
     let boardSyncFinished = 0; // stops the write-through left as they were because the board already held them finished
     if (okKeys.length) {
-      markSaved(okKeys);
+      markSaved(okKeys, savedIdsByKey, cancelledKeys);
       setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; });
       // Clear each saved route's `removed` list — otherwise a later edit re-sends the already-unplanned
       // stops (a stale removeStopNbrs) on the next Save. Via a prop: wbRoutes' setter lives in

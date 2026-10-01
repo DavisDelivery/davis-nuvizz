@@ -1476,12 +1476,13 @@ const stampOf = (v) => { const t = Number(v); return Number.isFinite(t) && t > 0
 // kept past a close. They only speak when the card has no stamp of its own: a card that just
 // saved keeps its "✓ SENT 7:42 AM" exactly as it was, and a card that just failed keeps its ✗.
 // The reopened card gets the plain green ✓ — withdrawn by an edit on the same rule as the tick
-// above, and never earned if the load's latest send on record was refused (a tie goes to the
-// refusal there too: no check on a load that may not be in NuVizz).
-export function savedMark({ savedAt = null, failedAt = null, dirty = false, earlierSavedAt = null, earlierFailedAt = null } = {}) {
+// above, and never earned if the load's latest outcome on record was a refusal or a cancellation
+// (a tie goes to that outcome too: no check on a load that may not be in NuVizz). The caller
+// passes earlierSavedAt only while the card still shows what that save carried (sameRunOrder).
+export function savedMark({ savedAt = null, failedAt = null, dirty = false, earlierSavedAt = null, earlierFailedAt = null, now = Date.now() } = {}) {
   const ok = stampOf(savedAt);
   const bad = stampOf(failedAt);
-  if (!ok && !bad) return earlierSaveMark({ savedAt: earlierSavedAt, failedAt: earlierFailedAt, dirty });
+  if (!ok && !bad) return earlierSaveMark({ savedAt: earlierSavedAt, failedAt: earlierFailedAt, dirty, now });
 
   // THE MOST RECENT OBSERVED OUTCOME WINS, and a TIE GOES TO THE ✗. Both stamps are written
   // only where the result is read, so the later one is the later truth. On the knife edge the
@@ -1517,19 +1518,23 @@ export function savedMark({ savedAt = null, failedAt = null, dirty = false, earl
 
 const NO_MARK = { show: false, kind: 'none', label: '', title: '', clock: '' };
 
-function earlierSaveMark({ savedAt = null, failedAt = null, dirty = false } = {}) {
+function earlierSaveMark({ savedAt = null, failedAt = null, dirty = false, now = Date.now() } = {}) {
   const ok = stampOf(savedAt);
   const bad = stampOf(failedAt);
-  // Never saved, or the latest send on record was refused: claim nothing.
+  // Never saved, or the latest outcome on record was a refusal or a cancellation: claim nothing.
   if (!ok || bad >= ok) return NO_MARK;
   const clock = fmtClockMs(ok);
   if (dirty) return { show: false, kind: 'stale', label: '', title: '', clock };
+  const day = fmtDayMs(ok);
   return {
     show: true,
     kind: 'saved-before',
     label: '✓',
     clock,
-    title: `Saved to NuVizz at ${clock} (${fmtDayMs(ok)}) on this device, and NuVizz confirmed the write. The card has been closed and reopened since, so it was rebuilt from the board. Change anything on it and the check goes until you send again.`,
+    // A phone has no hover, so its chip carries the when: the clock today, the day otherwise —
+    // a check from last night must not read like one from five minutes ago.
+    short: day && day === fmtDayMs(now) ? clock : day,
+    title: `Saved to NuVizz at ${clock} on ${day} from this device, and NuVizz confirmed the write. This card still shows exactly the stops, in the order, that save carried. It cannot see a change made in the NuVizz portal or on another device that the board has not picked up yet. Change anything on it and the check goes until you send again.`,
   };
 }
 

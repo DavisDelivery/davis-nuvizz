@@ -84,7 +84,7 @@ test('ONLY A CONFIRMED WRITE STAMPS savedAt — markSaved is its one writer', ()
   // The whole guarantee behind the tick. markSaved runs on a confirmed write and nowhere
   // else; any other setter would let an intent read as an outcome, which is the one
   // failure mode this mark must never have.
-  const m = /const markSaved = \(keys, idsByKey = \{\}\) => \{([\s\S]*?)\n  \};/.exec(code);
+  const m = /const markSaved = \(keys, idsByKey = \{\}, cancelledKeys = \[\]\) => \{([\s\S]*?)\n  \};/.exec(code);
   assert.ok(m, 'markSaved is no longer the save hook');
   assert.ok(/setSavedAtByKey\(/.test(m[1]), 'markSaved no longer records when the write landed');
   const writers = (code.match(/setSavedAtByKey\(/g) || []).length;
@@ -133,31 +133,59 @@ test('THE CHIP SITS JUST LEFT OF THE ✕ — Chad: "can you make those flags to 
 // ── v1.99.0: the LOAD's record, kept past a card closing (lib/card-saves.js) ─────────────────
 // Chad: "I want saved route to always carry a green check mark if it has saved previously say if
 // a route was closed out and re brought up but keep the message as is for a route that just saved."
+const markSavedBody = () => (/const markSaved = \(keys, idsByKey = \{\}, cancelledKeys = \[\]\) => \{([\s\S]*?)\n  \};/.exec(code) || [])[1] || '';
+const markSaveFailedBody = () => (/const markSaveFailed = \(keys\) => \{([\s\S]*?)\n  \};/.exec(code) || [])[1] || '';
+
 test('THE LOAD\'S SAVE RECORD HAS THE SAME TWO WRITERS AS THE STAMPS — markSaved and markSaveFailed', () => {
   // The reopened ✓ inherits the tick's whole guarantee only if it is earned in the same places:
-  // a confirmed write, or a refusal read back. A third caller would let an intent read as an outcome.
+  // a confirmed write, or a refusal read back. A caller anywhere else would let an intent read as an outcome.
   const calls = code.match(/rememberCardOutcome\(/g) || [];   // call sites only — the definition reads `= (`
-  assert.equal(calls.length, 2, `expected exactly markSaved + markSaveFailed, found ${calls.length}`);
-  const saved = /const markSaved = \(keys, idsByKey = \{\}\) => \{([\s\S]*?)\n  \};/.exec(code);
-  assert.ok(saved && /rememberCardOutcome\(keys, 'saved', at, idsByKey\);/.test(saved[1]), 'markSaved does not record the load\'s save');
-  const failed = /const markSaveFailed = \(keys\) => \{([\s\S]*?)\n  \};/.exec(code);
-  assert.ok(failed && /rememberCardOutcome\(keys\.filter\(Boolean\), 'failed', at\);/.test(failed[1]), 'markSaveFailed does not record the refusal');
-  // Only the helper writes the record's storage and its state.
-  assert.equal((code.match(/setCardSaves\(/g) || []).length, 1, 'the record is written somewhere other than rememberCardOutcome');
+  assert.equal(calls.length, 3, `expected markSaved (saved + cancelled) and markSaveFailed, found ${calls.length}`);
+  assert.ok(/rememberCardOutcome\(keys\.filter\(\(k\) => !cancelled\.has\(k\)\), 'saved', at, idsByKey\);/.test(markSavedBody()), 'markSaved does not record the load\'s save');
+  assert.ok(/rememberCardOutcome\(keys\.filter\(\(k\) => cancelled\.has\(k\)\), 'cancelled', at, idsByKey\);/.test(markSavedBody()), 'a save that cancelled its load is not recorded as a cancellation');
+  assert.ok(/rememberCardOutcome\(keys\.filter\(Boolean\), 'failed', at\);/.test(markSaveFailedBody()), 'markSaveFailed does not record the refusal');
   assert.equal((code.match(/safeWriteJSON\(CARD_SAVES_KEY/g) || []).length, 1, 'the record is persisted from more than one place');
+  // State: rememberCardOutcome's write, and the storage listener that only MERGES another tab's.
+  assert.equal((code.match(/setCardSaves\(/g) || []).length, 2, 'the record is set somewhere unexpected');
+});
+
+test('A SAVE THAT CANCELLED ITS ROUTE IS NOT RECORDED AS A SAVE — the cancelled load never wears a ✓', () => {
+  assert.ok(/if \(\(l\.steps \|\| \[\]\)\.some\(\(st\) => st\.cancelledRoute\)\) cancelledKeys\.push\(k\);/.test(code));
+  assert.ok(/markSaved\(okKeys, savedIdsByKey, cancelledKeys\);/.test(code), 'the commit result does not tell markSaved which saves cancelled');
+});
+
+test('THE RECORD NAMES THE LOAD NUVIZZ WROTE — a retargeted save is kept on the twin, not the empty card load', () => {
+  assert.ok(/savedIdsByKey\[k\] = \{ loadId: l\.loadId, loadNbr: l\.loadNbr \};/.test(code), 'the result\'s own load identity is not passed');
+  // …and a given identity REPLACES the card's rather than joining it.
+  assert.ok(/const ids = given\.length \? given : cardSaveIds\(r\);/.test(code), 'the card\'s own (possibly empty-twin) load is recorded too');
 });
 
 test('a ＋ New route records its save under the load the CREATE made, not a card with no id yet', () => {
   assert.ok(/markSaved\(\[r\.key\], \{ \[r\.key\]: \{ loadId: rr\.loadId, loadNbr: rr\.loadNbr \} \}\);/.test(code), 'a created route\'s save is not recorded under its new load');
 });
 
+test('TWO TABS ON ONE DEVICE MERGE THE RECORD — a refusal written in one is never overwritten by the other', () => {
+  assert.ok(/let next = mergeCardSaves\(pruneCardSaves\(safeReadJSON\(CARD_SAVES_KEY, \{\}\)\), cardSaves\);/.test(code), 'a write does not merge what is stored now');
+  assert.ok(/if \(e\.key === CARD_SAVES_KEY\) setCardSaves\(\(prev\) => pruneCardSaves\(mergeCardSaves\(prev, safeReadJSON\(CARD_SAVES_KEY, \{\}\)\)\)\);/.test(code), 'another tab\'s write is not picked up');
+});
+
+test('THE REOPENED ✓ ONLY SPEAKS FOR A CARD THAT STILL SHOWS WHAT WAS SENT', () => {
+  assert.ok(/const shows = e\.savedAt && sameRunOrder\(e\.order, r\.order, dockOfStop\);/.test(code));
+  assert.ok(/return \{ earlierSavedAt: shows \? e\.savedAt : null, earlierFailedAt: e\.failedAt \};/.test(code));
+});
+
 test('the reopened card reads the load\'s record behind the named switch, and the card that just saved is untouched', () => {
   assert.match(code, /const CARD_SAVED_BEFORE = \(\(\) => \{\s*try \{ return houseSwitchOn\(import\.meta\.env\.VITE_CARD_SAVED_BEFORE\); \} catch \{ return true; \}/);
   assert.match(code, /\{\.\.\.earlierSaveProps\(r\)\}/);
   // Switched off: nothing read, nothing written, nothing passed to the card.
-  assert.match(code, /const rememberCardOutcome = \(keys, kind, at, idsByKey = \{\}\) => \{\s*if \(!CARD_SAVED_BEFORE\) return;/);
+  assert.match(code, /const rememberCardOutcome = \(keys, kind, at, idsByKey = \{\}\) => \{\s*if \(!CARD_SAVED_BEFORE \|\| !keys\.length\) return;/);
   assert.match(code, /const earlierSaveProps = \(r\) => \{\s*if \(!CARD_SAVED_BEFORE\) return \{\};/);
   assert.match(code, /useState\(\(\) => \(CARD_SAVED_BEFORE \? pruneCardSaves\(safeReadJSON\(CARD_SAVES_KEY, \{\}\)\) : \{\}\)\)/);
+  assert.match(code, /if \(!CARD_SAVED_BEFORE \|\| typeof window === 'undefined'\) return undefined;/);
   // The session stamps are still pruned when a card closes — "✓ SENT 7:42 AM" still means THIS card.
   assert.ok(/setSavedAtByKey\(\(prev\) => \{[\s\S]*?if \(!liveKeys\.has\(k\)\)/.test(code));
+});
+
+test('a phone, which has no hover, shows WHEN on the reopened ✓; the desktop chip is the bare check', () => {
+  assert.ok(/\{isMobile && mk\.kind === 'saved-before' && mk\.short \? `\$\{mk\.label\} \$\{mk\.short\}` : mk\.label\}/.test(code));
 });

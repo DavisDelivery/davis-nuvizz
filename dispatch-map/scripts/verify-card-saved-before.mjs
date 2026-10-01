@@ -9,7 +9,12 @@
 // bundle, end to end: open a load in Compare, change it, press Send to NuVizz (the write is
 // stubbed — NO NuVizz call is possible from here), see the card say "✓ SENT h:mm" as it always
 // has, close the card, bring it back, and read the green ✓. Then edit it (the ✓ must go), reload
-// the page (it must come back), and open a load nobody saved (it must say nothing).
+// the page (it must come back), let a LATER scan show the route in a different order — changed in
+// NuVizz since the save — and reopen it (no ✓: the card no longer shows what was sent), and open a
+// load nobody saved (it must say nothing).
+//
+// THE CARDS OPEN THE WAY REAL ONES DO: the stops carry the route NAME in loadNbr and no load id, and
+// the card learns its load number and id from the day's roster (stubbed here, as on the board).
 //
 //   node scripts/verify-card-saved-before.mjs [distDir]
 //     CHROMIUM_PATH  browser binary   SMOKE_PORT  port (default 8840)
@@ -40,18 +45,27 @@ const bad = (m) => { fails.push(m); console.error(`  ✗ ${m}`); };
 // TWO LOADS. SAVED 1 is the one that gets sent; OTHER 1 is never sent and must never wear a mark.
 const DEPOT = { lat: 34.147791, lng: -83.960911 };
 const DEG = 1 / 69.055;
-const load = (route, loadNbr, loadId, base) => ['A', 'B', 'C', 'D'].map((L, i) => ({
+const load = (route, base) => ['A', 'B', 'C', 'D'].map((L, i) => ({
   stopNbr: `00${base}${i}0`, pro: `${base}${i}0`, businessName: `${route} CO ${L}`,
   addr1: `${300 + i} ${route.split(' ')[0]} Rd`, city: 'BUFORD', state: 'GA', zip: '30518',
   lat: DEPOT.lat + (6 + i * 5) * DEG, lng: DEPOT.lng + (base % 2 ? 0.05 : -0.05) + (i % 2 ? 0.01 : -0.01),
   cartons: 1, volume: 0, weight: 250,
   status: '10', normalizedStatus: 'PLANNED', stopType: 'DL',
-  loadNbr, routeName: route, loadId, routeSeq: i + 1,
-  driverName: 'TEST DRIVER', driverUserName: 'tdriver', matchKey: `${loadId}_${i}`,
+  loadNbr: route, routeName: route, routeSeq: i + 1,
+  driverName: 'TEST DRIVER', driverUserName: 'tdriver', matchKey: `${route}_${i}`,
 }));
-const SAVED = load('SAVED 1', 'DAVIS000199101', 'ld-saved-1', 71911);
-const OTHER = load('OTHER 1', 'DAVIS000199102', 'ld-other-1', 71912);
-const STOPS = [...SAVED, ...OTHER];
+const SAVED = load('SAVED 1', 71911);
+const OTHER = load('OTHER 1', 71912);
+const ROSTER = [
+  { loadId: 'ld-saved-1', name: 'SAVED 1', loadNbr: 'DAVIS000199101', status: 'Planned', driver: 'TEST DRIVER', trips: 4 },
+  { loadId: 'ld-other-1', name: 'OTHER 1', loadNbr: 'DAVIS000199102', status: 'Planned', driver: 'TEST DRIVER', trips: 4 },
+];
+// What the board serves. `laterScan` = a scan that ran AFTER the save and found SAVED 1 in a
+// different order in NuVizz (someone changed it in the portal) — the plan overlay yields to it.
+let laterScan = false;
+const boardStops = () => (laterScan
+  ? [...SAVED.map((s, i) => ({ ...s, routeSeq: [2, 1, 3, 4][i] })), ...OTHER]
+  : [...SAVED, ...OTHER]);
 
 try { if (!(await stat(DIST)).isDirectory()) throw new Error('nd'); }
 catch { console.error(`no build at ${DIST} — run \`npm run build\` first`); process.exit(1); }
@@ -81,7 +95,14 @@ await context.route('**/.netlify/functions/**', async (route) => {
   const req = route.request();
   const u = req.url();
   const json = (b) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
-  if (u.includes('nuvizz-pull-today-stops')) return json({ ok: true, stops: STOPS, count: STOPS.length, source: 'fixture' });
+  if (u.includes('nuvizz-pull-today-stops')) {
+    const stops = boardStops();
+    return json({ ok: true, stops, count: stops.length, source: 'fixture', ...(laterScan ? { lastScannedAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() } : {}) });
+  }
+  if (u.includes('nuvizz-loads-roster')) {
+    const date = new URL(u).searchParams.get('date');
+    return json({ ok: true, date, source: 'cache', at: `${date}T12:00:00Z`, count: ROSTER.length, loads: ROSTER, shells: null });
+  }
   if (u.includes('route-departures')) return json({ ok: true, published: false, usedByBoard: false, table: null });
   if (u.includes('travel-model')) return json({ ok: true, legs: {}, legCount: 0, googleEnabled: false });
   if (u.includes('/nuvizz-write') && req.method() === 'POST') {
@@ -150,6 +171,9 @@ await page.waitForTimeout(1800);
 m = await markOn('SAVED 1');
 if (writes.length === 1) ok('Send made exactly one (stubbed) commitBoard write');
 else bad(`expected one commitBoard write, saw ${writes.length}`);
+const sent = writes[0]?.payload?.loads?.[0] || {};
+if (sent.loadNbr === 'DAVIS000199101' || sent.loadId === 'ld-saved-1') ok(`the card took its load from the roster (${sent.loadNbr || '—'} / ${sent.loadId || '—'}), as real cards do`);
+else bad(`the save carried no roster identity: ${JSON.stringify({ loadNbr: sent.loadNbr, loadId: sent.loadId })}`);
 if (m.kind === 'sent' && /^✓ SENT \d{1,2}:\d{2} (AM|PM)$/.test(m.text || '')) ok(`the card that just saved keeps its message: "${m.text}"`);
 else bad(`after the save the card reads ${JSON.stringify(m)} — expected "✓ SENT h:mm"`);
 
@@ -163,8 +187,11 @@ m = await markOn('SAVED 1');
 if (EXPECT_OFF) {
   if (m.open && m.kind == null) ok('switch off: the reopened card says nothing, exactly as before');
   else bad(`switch off: the reopened card reads ${JSON.stringify(m)}`);
-} else if (m.kind === 'saved-before' && m.text === '✓') ok('closed and brought back, the route carries the green ✓');
-else bad(`reopened, the card reads ${JSON.stringify(m)} — expected the green ✓`);
+} else if (m.kind === 'saved-before' && (MOBILE ? /^✓ \d{1,2}:\d{2} (AM|PM)$/.test(m.text || '') : m.text === '✓')) {
+  // Desktop: the bare check (when is on hover). Phone: no hover, so the chip carries the time.
+  ok(`closed and brought back, the route carries the green ✓ ("${m.text}")`);
+}
+else bad(`reopened, the card reads ${JSON.stringify(m)} — expected the green ✓${MOBILE ? ' with its time' : ''}`);
 if (process.env.SHOT) { await page.screenshot({ path: process.env.SHOT }); ok(`screenshot ${process.env.SHOT}`); }
 
 if (!EXPECT_OFF) {
@@ -182,9 +209,22 @@ if (!EXPECT_OFF) {
   m = await markOn('SAVED 1');
   if (m.kind === 'saved-before') ok('after a page reload the reopened route still carries the ✓');
   else bad(`after a reload the card reads ${JSON.stringify(m)}`);
+
+  // 6. CHANGED IN NUVIZZ SINCE: a later scan shows the route in another order. The card is rebuilt
+  //    from that board, no longer shows what was sent, and must not vouch for it.
+  await page.getByRole('button', { name: 'Close route SAVED 1' }).first().click().catch(() => {});
+  await page.waitForTimeout(600);
+  laterScan = true;
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(1600);
+  await toRouting();
+  await openLoad('SAVED 1');
+  m = await markOn('SAVED 1');
+  if (m.open && m.kind == null) ok('changed in NuVizz since the save (a later scan), the reopened card carries no ✓');
+  else bad(`after a later scan changed the route, the card reads ${JSON.stringify(m)}`);
 }
 
-// 6. A LOAD NOBODY SAVED SAYS NOTHING — the record is per load, and this is another load.
+// 7. A LOAD NOBODY SAVED SAYS NOTHING — the record is per load, and this is another load.
 await openLoad('OTHER 1');
 m = await markOn('OTHER 1');
 if (m.open && m.kind == null) ok('a load nobody saved carries no mark');
