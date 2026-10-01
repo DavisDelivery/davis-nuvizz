@@ -997,6 +997,35 @@ export async function fetchStopEvents(
   }
 }
 
+/**
+ * ONE request, never more (v1.104.0) — the nightly attempts fill's timeline read (lib/att-fill.mts).
+ *
+ * fetchStopEvents above may spend several calls on one stop: a /stop/info when it has no stopId, the
+ * requester's default retries (up to 4 on a 429/5xx, 1 on a timeout) and a fallback to
+ * /stop/eventinfo when the rich call fails. A job that promises Chad it can never spend more than
+ * ten calls cannot use it. This sends exactly one /event/eventinfo request by stopId with
+ * maxRetries 0 — the requester then returns the first answer, throws on the first network error and
+ * refuses the timeout retry — and reports any failure instead of trying another way.
+ */
+export async function fetchStopEventsOnce(stopId: string | null | undefined): Promise<{ ok: boolean; events?: StopEvent[]; reason?: string }> {
+  if (!scansEnabled()) return { ok: false, reason: 'scans_disabled' };
+  const id = String(stopId ?? '').trim();
+  if (!id) return { ok: false, reason: 'missing stopId' };
+  const { companyCode } = getCreds();
+  const url = `${NUVIZZ_BASE}/event/eventinfo/${encodeURIComponent(companyCode)}?entityType=STOP&entityId=${encodeURIComponent(id)}`;
+  try {
+    const resp = await getNuvizzRequester().request(
+      url,
+      { headers: { Authorization: basicAuthHeader(), Accept: 'application/json' }, maxRetries: 0 },
+      { route: '/event/eventinfo', tenant: companyCode },
+    );
+    if (!resp.ok) return { ok: false, reason: `http_${resp.status}` };
+    return { ok: true, events: normalizeStopEvents(await resp.json()) };
+  } catch (e: any) {
+    return { ok: false, reason: e?.message || 'error' };
+  }
+}
+
 /** A counter the unplanned descent threads through its /stop/info probes so a probe that got NO
  *  ANSWER is distinguishable from "there is no stop with this number" — the descent's twin of
  *  LoadProbeTally. It counts only requests that threw (the call-ceiling breaker refusing it, a
