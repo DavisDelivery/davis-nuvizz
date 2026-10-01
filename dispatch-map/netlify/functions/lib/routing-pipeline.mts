@@ -23,7 +23,8 @@ import {
 import { deriveGeometryForStops, type GeometryAssist } from './freight-geometry.mts';
 import { parseIntentResponse, parseGeometryAssist } from './routing-intent.mts';
 import { solveRouting } from './routing-solver.mts';
-import { repair } from './routing-repair.mts';
+import { repair, windowCostFor } from './routing-repair.mts';
+import { FILL_RULE } from './routing-fill-leftover.mts';
 import type { StopTimeRestriction } from './routing-time-windows.mts';
 
 export interface PipelineStopInput {
@@ -254,7 +255,8 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
   };
 
   // ── P3 solve + P4 repair (deterministic) ──
-  const solved = solveRouting(solverInput);
+  // The fill step plans on straight tours; windowCostFor lets it see the run the repair below will ship.
+  const solved = solveRouting(solverInput, solverInput.fillTrucks ? { windowCost: windowCostFor(solverInput, FILL_RULE.DAY_HOURS) } : undefined);
   const repaired = repair(solverInput, solved);
 
   // ── P5 explain (optional model; else deterministic summary) ──

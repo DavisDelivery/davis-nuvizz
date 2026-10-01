@@ -95,7 +95,9 @@ const realSkids = (ids) => ids.reduce((a, s) => a + SKIDS[WEIGHTS.findIndex((_, 
 test('the Build switches have the house shape: on by default, an explicit off-word turns each off, a typo leaves it ON', () => {
   assert.deepEqual(buildRules({}), ALL_ON);
   for (const k of SWITCHES) {
-    for (const off of ['off', 'OFF ', '0', 'false', 'no']) assert.equal(Object.values(buildRules({ [k]: off })).filter((v) => !v).length, 1, `${k}=${off}`);
+    // the fill step is a step of the ends rule: switching the ends rule off switches it off too
+    const goes = k === 'ROUTING_BUILD_LEAVE_OFF_ENDS' ? 2 : 1;
+    for (const off of ['off', 'OFF ', '0', 'false', 'no']) assert.equal(Object.values(buildRules({ [k]: off })).filter((v) => !v).length, goes, `${k}=${off}`);
     for (const on of ['of', 'yes', 'on', '1', 'maybe']) assert.deepEqual(buildRules({ [k]: on }), ALL_ON, `${k}=${on}`);
   }
 });

@@ -30,7 +30,8 @@
 //   ROUTING_BUILD_FILL_TRUCKS=off          with the ends rule on, a truck with room may leave a stop
 //                                          off rather than drive out of its way, and what is left
 //                                          off is not pulled into one group — the v1.92.0 Build
-//                                          (lib/routing-fill-leftover.mts)
+//                                          (lib/routing-fill-leftover.mts). A step of the ends rule:
+//                                          with LEAVE_OFF_ENDS off it is off too, and says so.
 // The job result carries `buildRules` saying which ran, so the position of each switch can be
 // read off any build rather than remembered.
 //
@@ -46,12 +47,14 @@ function switchOn(env: Record<string, any> | undefined, name: string): boolean {
 export interface BuildRules { countSkids: boolean; greenMatchesPanel: boolean; countsExisting: boolean; leaveOffEnds: boolean; fillTrucks: boolean }
 
 export function buildRules(env: Record<string, any> = process.env): BuildRules {
+  const leaveOffEnds = switchOn(env, 'ROUTING_BUILD_LEAVE_OFF_ENDS');
   return {
     countSkids: switchOn(env, 'ROUTING_BUILD_COUNT_SKIDS'),
     greenMatchesPanel: switchOn(env, 'ROUTING_BUILD_GREEN_MATCHES_PANEL'),
     countsExisting: switchOn(env, 'ROUTING_BUILD_COUNTS_EXISTING'),
-    leaveOffEnds: switchOn(env, 'ROUTING_BUILD_LEAVE_OFF_ENDS'),
-    fillTrucks: switchOn(env, 'ROUTING_BUILD_FILL_TRUCKS'),
+    leaveOffEnds,
+    // a step of the ends rule: with that switched off it cannot run, so it does not say it did
+    fillTrucks: leaveOffEnds && switchOn(env, 'ROUTING_BUILD_FILL_TRUCKS'),
   };
 }
 

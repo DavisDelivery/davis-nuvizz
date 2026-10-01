@@ -39,10 +39,11 @@
 //      in exchange for stops off the beginning or end of its run, never for fewer skids. The two
 //      repeat until nothing moves, so a stop an exchange freed is offered again.
 //   6. ROUTING_BUILD_FILL_TRUCKS (on by default): when anything is left off, the plan is settled so
-//      a truck with room takes what it can carry and what is left off is ONE group — the run one
-//      more truck would make (lib/routing-fill-leftover.mts). Chad, 2026-09-30, on a Build where
-//      this file's step 5 left SCOTT at 9 of 14 and the left-off orders in three towns. Off, the
-//      plan is exactly steps 1–5.
+//      a truck with room takes what it can carry, what is left off is one group — the run one more
+//      truck would make — and no stop a truck drives past is left off for it, each truck scored as
+//      the Build will ship it, windows and the driver's day included (lib/routing-fill-leftover.mts).
+//      Chad, 2026-09-30, on a Build where this file's step 5 left SCOTT at 9 of 14 and the left-off
+//      orders in three towns. Off, the plan is exactly steps 1–5.
 //   7. What is left is listed, and EVERY listed stop says why: either the trucks that could carry
 //      it are full, or the nearest truck with room would have to drive N miles out of its way.
 //
@@ -61,6 +62,7 @@ import {
   truckCanCarry, capacityFits, capacityBreaches, equipmentOk, loadFraction, emptyLoad, addLoad, computeLoad, REASON,
 } from './routing-constraints.mts';
 import { settleLeftOff } from './routing-fill-leftover.mts';
+import type { WindowCost } from './routing-repair.mts';
 
 function haversineM(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
   const R = 6371000, toRad = (d: number) => (d * Math.PI) / 180;
@@ -116,7 +118,7 @@ export interface EndsAssignment {
   movedToRoom: Array<{ stopId: string; from: string; to: string }>;
   /** ROUTING_BUILD_FILL_TRUCKS: what the fill-and-group step did (lib/routing-fill-leftover.mts);
    *  null when it did not run (switched off, or nothing was left off). */
-  settled: { moves: number; evals: number; capped: boolean; leftOffStops: number; extraTruckKm: number } | null;
+  settled: { moves: number; evals: number; capped: boolean; leftOffStops: number; leftOffAreas: number; extraTruckCrowKm: number } | null;
 }
 
 // `runOrder` puts one truck's stops in the order that truck will drive them (routing-solver passes
@@ -124,7 +126,7 @@ export interface EndsAssignment {
 export function assignLeavingOffEnds(
   stops: SolverStop[], trucks: SolverTruck[], depot: { lat: number; lng: number },
   runOrder?: (stops: SolverStop[]) => SolverStop[],
-  opts?: { fillTrucks?: boolean },
+  opts?: { fillTrucks?: boolean; windowCost?: (stops: SolverStop[]) => WindowCost | null; strictWindows?: boolean },
 ): EndsAssignment {
   const byTruck = new Map<string, SolverStop[]>();
   const loadOf = new Map<string, ReturnType<typeof emptyLoad>>();
@@ -425,14 +427,15 @@ export function assignLeavingOffEnds(
 
   // ── 6. ROUTING_BUILD_FILL_TRUCKS: a truck with room takes what it can carry, and what is left
   //    off is ONE group — the run one more truck would make (lib/routing-fill-leftover.mts). This
-  //    is what Chad asked for on 2026-09-30, and it overrides 5a's "no trip across town for one
-  //    skid" whenever something is left off; a board that fits is exactly as above. ──
+  //    is what Chad asked for on 2026-09-30, and it replaces 5a's "no trip across town for one
+  //    skid" with a price per skid whenever something is left off; a board steps 1–5 plan without
+  //    leaving anything off is exactly as above. ──
   let settled: EndsAssignment['settled'] = null;
   if (opts?.fillTrucks && leftOff.length) {
-    const s = settleLeftOff(byTruck, leftOff, trucks, depot, noTruck);
+    const s = settleLeftOff(byTruck, leftOff, trucks, depot, noTruck, { windowCost: opts.windowCost, strict: opts.strictWindows === true });
     for (const t of trucks) setStops(t, s.byTruck.get(t.id) || []);
     leftOff.splice(0, leftOff.length, ...[...s.leftOff].sort(farthestFirst));
-    settled = { moves: s.moves, evals: s.evals, capped: s.capped, leftOffStops: s.leftOff.length + noTruck.length, extraTruckKm: Math.round(s.leftOffTourM / 100) / 10 };
+    settled = { moves: s.moves, evals: s.evals, capped: s.capped, leftOffStops: s.leftOff.length + noTruck.length, leftOffAreas: s.leftOffAreas, extraTruckCrowKm: Math.round(s.leftOffTourM / 100) / 10 };
   }
 
   // ── 7. What is left is listed, and every listed stop says WHY. ──

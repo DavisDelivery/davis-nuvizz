@@ -24,6 +24,7 @@ import {
   truckCanCarry, capacityFits, loadFraction, emptyLoad, addLoad, computeLoad, REASON, serviceStartSec,
 } from './routing-constraints.mts';
 import { assignLeavingOffEnds } from './routing-assign-ends.mts';
+import type { WindowCost } from './routing-repair.mts';
 
 const DEPOT_ID = 'DEPOT';
 
@@ -515,7 +516,9 @@ export function assembleRoute(
   };
 }
 
-export function solveRouting(input: SolverInput): SolverOutput {
+// opts.windowCost: what windows do to a truck's shipped run (routing-repair's windowCostFor), for the
+// fill step — passed in by the pipeline, which owns both halves, so the solver never imports repair.
+export function solveRouting(input: SolverInput, opts?: { windowCost?: (stops: SolverStop[]) => WindowCost | null }): SolverOutput {
   const { stops, trucks, matrix, strategy } = input;
   const idByIndex = new Map<number, string>();
   buildIndex(stops).forEach((idx, id) => idByIndex.set(idx, id));
@@ -530,7 +533,7 @@ export function solveRouting(input: SolverInput): SolverOutput {
     ? assignLeavingOffEnds(stops, trucks, input.depot, (list) => {
       const byIdx = new Map(list.map((x) => [indexById.get(x.id)!, x] as const));
       return sequence([...byIdx.keys()], strategy, matrix).map((n) => byIdx.get(n)!);
-    }, { fillTrucks: input.fillTrucks === true })
+    }, { fillTrucks: input.fillTrucks === true, windowCost: opts?.windowCost, strictWindows: input.windowMode === 'strict' })
     : null;
   const { byTruck, unassigned } = ends ?? assign(stops, trucks, input.depot);
 
