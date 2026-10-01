@@ -1723,6 +1723,70 @@ export function houseSwitchOn(raw) {
 }
 
 /**
+ * A BUILD'S STOPS THAT HAVE BEEN ON A COMPARE CARD STOP SHOWING ON ITS ROUTE ONCE THE CARD CLOSES.
+ * Chad, 2026-10-01: "if it puts the stops in the compare panel, and I then close out the compare
+ * panel, the stops should not look like they're still on that route on the map, because when I
+ * pull back up the compare panel, it's empty. However, it still shows the route that the system
+ * built on the map with the stops on it."
+ *
+ * The map paints the open cards, or with none open the Build's plan. Since a Build stages itself,
+ * closing its cards fell straight back to the plan. Tracked PER STOP, not per Build: a stop the
+ * plan put on a card (or that was put there by hand) no longer reads as on the plan's route; a
+ * stop that never reached a card (the workbench was full, a Trucks-mode route nobody staged)
+ * still does. "Stage onto Compare cards" puts the cards, and so the paint, back.
+ */
+
+/**
+ * PURE. The Build's stops now on an open Compare card that are not in `already`.
+ * @param {Array<{order: Array}>} routes   the Build's routes (routesView)
+ * @param {Array<{order: Array}>} cards    the open Compare cards (wbRoutes)
+ * @param {Iterable<string>} [already]     ids this plan has already had on a card
+ * @returns {string[]}
+ */
+export function planStopsOnCards(routes, cards, already) {
+  const out = [];
+  if (!Array.isArray(routes) || !routes.length || !Array.isArray(cards) || !cards.length) return out;
+  const onCard = new Set();
+  for (const c of cards) for (const id of (c?.order || [])) onCard.add(String(id));
+  if (!onCard.size) return out;
+  const seen = new Set([...(already || [])].map(String));
+  for (const r of routes) {
+    for (const raw of (r?.order || [])) {
+      const id = String(raw);
+      if (onCard.has(id) && !seen.has(id)) { seen.add(id); out.push(id); }
+    }
+  }
+  return out;
+}
+
+/**
+ * PURE. The numbered pins the plan paints: stopId -> { color, seq }, leaving out `hidden`. The seq
+ * is the stop's place on the plan's route, the number the Result panel shows beside it.
+ */
+export function planRouteInfo(routes, hidden) {
+  const m = new Map();
+  for (const r of (Array.isArray(routes) ? routes : [])) {
+    (r?.order || []).forEach((raw, idx) => {
+      const id = String(raw);
+      if (!(hidden && hidden.has(id))) m.set(id, { color: r.color, seq: idx + 1 });
+    });
+  }
+  return m;
+}
+
+/**
+ * PURE. The plan's routes as the map's lines draw them, without `hidden`. A route left with no
+ * stops draws no line. With nothing hidden, the same array comes back, so nothing redraws.
+ */
+export function planRoutesToPaint(routes, hidden) {
+  if (!Array.isArray(routes)) return [];
+  if (!hidden || !hidden.size) return routes;
+  return routes
+    .map((r) => ({ ...r, order: (r?.order || []).filter((id) => !hidden.has(String(id))) }))
+    .filter((r) => r.order.length);
+}
+
+/**
  * AFTER A BUILD PUTS ITS ROUTES ON COMPARE CARDS, THE SELECTION HOLDS ONLY WHAT IT LEFT OFF.
  * Chad, 2026-10-01: "all that should be left on the selection table is the orders it did not
  * put on the route". The Build's staging never wrote the selection, so every order it was given
