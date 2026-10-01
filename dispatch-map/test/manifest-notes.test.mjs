@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ticketNotes, printedNotes, mergedNotes, manifestScanNotesEnabled, MANIFEST_SCAN_NOTES_ON, stampNotesRead, manifestNewNotesEnabled, MANIFEST_NEW_NOTES_ON } from '../src/lib/stop-notes-freshness.js';
 import { liftFromApp, libExports } from './helpers/app-lift.mjs';
+import { notesRefreshDoc } from '../netlify/functions/lib/firestore.mts';
 
 const ULINE = (text) => ({ text, type: 'ORD_IN', typeDesc: 'Order Instructions', addedBy: 'INTG ULINE', source: 'Order - Order Instructions', addedOn: '2026-09-28T16:50:22' });
 const OLD = (stop) => {   // what ticketData printed before v1.100.3, kept here word for word
@@ -145,23 +146,56 @@ const RACE = {
 };
 
 test('after a Refresh the newest note is printed, not dropped — and not faded on the card', () => {
-  const refreshed = { ...RACE, notes_refreshed_at: '2026-10-01T02:20:00.000Z' };
+  // The Refresh read the notes against the scan text the card then held.
+  const refreshed = { ...RACE, notes_refreshed_at: '2026-10-01T02:20:00.000Z', notes_refreshed_scan_text: RACE.orderInstructions };
   assert.ok(ticketNotes(refreshed, { on: true }).some((c) => c.text === 'SPL-INSTR-TEXT: CALL 30 MIN AHEAD'));
   assert.equal(mergedNotes(refreshed).some((n) => n.gone), false);
-  // Without the stamp the same stop is the deletion case, exactly as before.
+  // A stamp written before v1.100.3 recorded no text: it cannot be ordered, so judging stays off.
+  assert.equal(mergedNotes({ ...RACE, notes_refreshed_at: '2026-10-01T02:20:00.000Z' }).some((n) => n.gone), false);
+  // Without any stamp the same stop is the deletion case, exactly as before.
   assert.equal(ticketNotes(RACE, { on: true }).some((c) => /CALL 30 MIN AHEAD/.test(c.text)), false);
+});
+
+test('the stamp lasts only until a later scan changes the text: a note deleted after the Refresh leaves the paper again', () => {
+  // 9:00 Refresh on 007184027 reads the notes against the text then on the board.
+  const atRefresh = { ...CANCELLED, notes_refreshed_at: '2026-10-01T13:00:00.000Z', notes_refreshed_scan_text: CANCELLED.orderInstructions,
+    allComments: [...CANCELLED.allComments, ULINE('CANCELLED ORDER. STOP & RETURN PER ULINE.')] };
+  assert.ok(ticketNotes(atRefresh, { on: true }).some((c) => /CANCELLED ORDER/.test(c.text)));
+  // 11:00 the CSR deletes the cancellation; the 11:15 scan's text no longer carries it.
+  const later = { ...atRefresh, orderInstructions: 'SPL-INSTR-TEXT: NO APPT REQUIRED; SPL-INSTR-TEXT: DO NOT BREAKDOWN SKID; SPL-INSTR-TEXT: RESIDENTIAL DELIVERY; SPL-INSTR-TEXT: STRAIGHT TRUCK ONLY; TOTAL-AMOUNT : 59.29' };
+  assert.equal(ticketNotes(later, { on: true }).some((c) => /CANCELLED ORDER/.test(c.text)), false, 'off the paper');
+  assert.equal(mergedNotes(later).find((n) => /CANCELLED ORDER/.test(n.text)).gone, true, 'faded on the card');
+  // Spacing or case drift in the same text is not a newer scan.
+  assert.equal(mergedNotes({ ...atRefresh, orderInstructions: atRefresh.orderInstructions.toLowerCase() + '  ' }).some((n) => n.gone), false);
 });
 
 test('the card’s live Refresh is stamped the way the server stamps a saved one', () => {
   const at = '2026-10-01T02:20:00.000Z';
-  assert.equal(stampNotesRead({ stopNbr: '1', allComments: RACE.allComments }, at).notes_refreshed_at, at);
-  assert.equal(stampNotesRead({ stopNbr: '1', allComments: [] }, at).notes_refreshed_at, undefined, 'no notes read, no stamp');
-  assert.equal(stampNotesRead({ stopNbr: '1' }, at).notes_refreshed_at, undefined);
-  assert.equal(stampNotesRead({ allComments: RACE.allComments, notes_refreshed_at: 'x' }, at).notes_refreshed_at, 'x', 'a stamp the read carries wins');
-  assert.equal(stampNotesRead(null, at), null);
+  const st = stampNotesRead({ stopNbr: '1', allComments: RACE.allComments }, at, RACE.orderInstructions);
+  assert.equal(st.notes_refreshed_at, at);
+  assert.equal(st.notes_refreshed_scan_text, RACE.orderInstructions);
+  assert.equal(stampNotesRead({ stopNbr: '1', allComments: RACE.allComments }, at, undefined).notes_refreshed_scan_text, '', 'no text on the card is recorded as none');
+  assert.equal(stampNotesRead({ stopNbr: '1', allComments: [] }, at, 'x').notes_refreshed_at, undefined, 'no notes read, no stamp');
+  assert.equal(stampNotesRead({ stopNbr: '1' }, at, 'x').notes_refreshed_at, undefined);
+  assert.equal(stampNotesRead(null, at, 'x'), null);
   const APP = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   const hook = APP.slice(APP.indexOf('\nfunction useLiveStop('), APP.indexOf('\n}', APP.indexOf('\nfunction useLiveStop(')));
-  assert.match(hook, /setFresh\(\(prev\) => foldFreshStop\(prev, stampNotesRead\(d, new Date\(\)\.toISOString\(\)\)\)\);/);
+  assert.match(hook, /scanTextRef\.current = String\(live\?\.orderInstructions \?\? ''\);/);
+  assert.match(hook, /setFresh\(\(prev\) => foldFreshStop\(prev, stampNotesRead\(d, new Date\(\)\.toISOString\(\), scanTextRef\.current\)\)\);/);
+});
+
+test('the server’s Refresh write records the scan text the doc held, and moves only the note fields', () => {
+  const cur = { _id: '007184027', stopNbr: '007184027', routeName: 'WILLIAM', orderInstructions: CANCELLED.orderInstructions, allComments: CANCELLED.allComments };
+  const fresh = { allComments: [...CANCELLED.allComments, ULINE('CANCELLED ORDER. STOP & RETURN PER ULINE.')], routeName: 'SOMEONE ELSE' };
+  const doc = notesRefreshDoc(cur, fresh, '2026-10-01T13:00:00.000Z');
+  assert.equal(doc.notes_refreshed_at, '2026-10-01T13:00:00.000Z');
+  assert.equal(doc.notes_refreshed_scan_text, CANCELLED.orderInstructions);
+  assert.equal(doc.allComments.length, 6);
+  assert.equal(doc.routeName, 'WILLIAM', 'nothing outside the note fields moves');
+  assert.equal('_id' in doc, false);
+  assert.equal(notesRefreshDoc(cur, { allComments: CANCELLED.allComments }, 'x'), null, 'unchanged notes write nothing');
+  assert.equal(notesRefreshDoc(cur, { allComments: [] }, 'x'), null, 'an empty read is not a deletion');
+  assert.equal(notesRefreshDoc(null, fresh, 'x'), null);
 });
 
 // ── the second review round ──────────────────────────────────────────────────
@@ -195,4 +229,12 @@ test('a cut text’s leftover fragment is not a note — not on the card, not on
   assert.equal(mergedNotes({ ...DROPPED, orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; …' }).some((n) => n.fromScan), false);
   // A long tail is still matched to its note by its start, as before.
   assert.equal(mergedNotes({ ...DROPPED, orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; SPL-INSTR-TEXT: CALL 30 MIN AH…' }).some((n) => n.fromScan || n.gone), false);
+  // A label cut mid-word is a fragment even with no stored notes (the pool-only rows that carry cuts have none).
+  assert.deepEqual(mergedNotes({ orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; SPL-INSTR-TE…' }).map((n) => n.text), ['EMAIL FOR APPT']);
+  // The START of a new note is kept — its "…" says it was cut — on the card and on the paper.
+  const cutNew = { orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; SPL-INSTR-TEXT: CANCELLED O…' };
+  assert.deepEqual(mergedNotes(cutNew).map((n) => n.text), ['EMAIL FOR APPT', 'CANCELLED O…']);
+  assert.deepEqual(ticketNotes(cutNew, { on: true }).map((c) => c.text), ['EMAIL FOR APPT', 'CANCELLED O…']);
+  // A complete short note that ends exactly at the cut is kept too.
+  assert.ok(mergedNotes({ ...DROPPED, orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; refused…' }).some((n) => n.text === 'refused…'));
 });

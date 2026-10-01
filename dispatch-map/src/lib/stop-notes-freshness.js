@@ -83,10 +83,9 @@ export function noteFreshness(stop) {
 //     can hold LESS than the rich notes, so a note missing from it is not proof of a deletion,
 //     and a dispatcher who loses a real instruction loses the delivery. Nothing is marked gone
 //     when the text was cut short (the active pool cuts it at 400 characters and adds "…"):
-//     absence past the cut proves nothing. Nor on a stop whose notes a Refresh has read
-//     (notes_refreshed_at, v1.100.3): the stored notes may then be NEWER than the scan text, and
-//     a note added in between would read as removed — the newest note, the one most likely to
-//     matter.
+//     absence past the cut proves nothing. Nor right after a Refresh (v1.100.3): until a later
+//     scan changes the scan text, the stored notes are NEWER than it, and a note added in
+//     between would read as removed — the newest note, the one most likely to matter.
 //   • any other stored note (pre-visit, general, a dispatcher's own) is shown as it was.
 //   • with no scan text, the stored notes are exactly what they were before.
 //
@@ -131,6 +130,9 @@ function sameNote(scanKey, storedKey) {
   return scanKey === storedKey || (scanKey.length >= 12 && storedKey.startsWith(scanKey));
 }
 
+/** The labels NuVizz's list puts in front of a note, as noteKey reads them — a cut can stop inside one. */
+const CUT_LABELS = ['spl-instr-text', 'total-amount'];
+
 /** Whole words: is `inner` inside `outer` without splitting a word ("gate 4" is not in "gate 42")? */
 const holdsWords = (outer, inner) => !!inner && ` ${outer} `.includes(` ${inner} `);
 
@@ -147,13 +149,15 @@ export function mergedNotes(stop) {
   const scan = scanNoteEntries(raw);
   if (!scan.length) return stored.map((c) => ({ ...c }));
   const cut = /…\s*$/.test(raw);
-  // A Refresh read the stored notes AFTER the scan may last have read the list (the board read
-  // strips each row's own scan time, so the two cannot be ordered): a note added between the two
-  // is in the stored notes and not yet in the scan text. Judging it removed would fade the newest
-  // note on the card and drop it off the ticket — so on a stop whose notes a Refresh has read,
-  // nothing is judged removed. For good: the scan carries notes_refreshed_at forward on every
-  // rewrite (mergeEnrich, nuvizz-list.mts), so there is no moment the two become comparable.
-  const storedNewer = !!stop?.notes_refreshed_at;
+  // A Refresh read the stored notes AFTER the scan last read the list: a note added between the
+  // two is in the stored notes and not yet in the scan text, and judging it removed would fade the
+  // newest note on the card and drop it off the ticket. So while the scan text is still the text
+  // the Refresh saw (notes_refreshed_scan_text), nothing is judged removed. Once a later scan
+  // changes it, that text is newer than the notes and judging resumes — a note deleted after the
+  // Refresh leaves the paper again. A stamp with no recorded text (written before v1.100.3) cannot
+  // be ordered at all, so it keeps judging off: the safe side, every stored note shown.
+  const refreshedVs = stop?.notes_refreshed_scan_text;
+  const storedNewer = !!stop?.notes_refreshed_at && (refreshedVs == null || norm(refreshedVs) === norm(raw));
   const scanKeys = scan.map(noteKey);
   const joined = scanKeys.join(' ');
   const used = new Set();
@@ -170,9 +174,17 @@ export function mergedNotes(stop) {
     return isOrderInstruction(c) && !cut && !storedNewer ? { ...c, gone: true } : { ...c };
   });
   const isNew = stored.length > 0;
-  // A cut text's last entry is a fragment by construction ("TOTAL-AMOU…"): one too short to have
-  // matched its stored note is not a note of its own. Nor is an entry with nothing left in it.
-  const fragment = (i) => !scanKeys[i] || (cut && i === scan.length - 1 && scanKeys[i].length < 12);
+  // A cut text's last entry may be the leftover of a note: the start of a stored note too short
+  // to have matched it, or a label cut mid-word ("TOTAL-AMOU…", "SPL-INSTR-TE…") — not a note of
+  // its own. Anything else is kept: it may be the start of a NEW note ("CANCELLED O…"), and its
+  // "…" already says it was cut. An entry with nothing left in it is never a note.
+  const storedKeys = stored.map((c) => noteKey(c.text)).filter(Boolean);
+  const fragment = (i) => {
+    const k = scanKeys[i];
+    if (!k) return true;
+    if (!cut || i !== scan.length - 1) return false;
+    return storedKeys.some((sk) => sk.startsWith(k)) || CUT_LABELS.some((l) => l.startsWith(k));
+  };
   const added = scan.filter((_, i) => !used.has(i) && !fragment(i)).map((text) => (isNew ? { text, fromScan: true, isNew: true } : { text, fromScan: true }));
   return [...added, ...kept];
 }
@@ -257,11 +269,12 @@ export function ticketNotes(stop, { on = MANIFEST_SCAN_NOTES_ON, addNew = MANIFE
 
 /**
  * PURE. A fresh /stop/info read about to be folded onto a card (useLiveStop, App.jsx): when it
- * carries notes, stamp the moment they were read, the same field the server stamps when a Refresh
- * saves them to the board (writeStopNotes, firestore.mts). A stamp the read already carries wins.
+ * carries notes, stamp when they were read and the scan text the card held at that moment — the
+ * same two fields the server stamps when a Refresh saves them to the board (notesRefreshDoc,
+ * firestore.mts).
  */
-export function stampNotesRead(fresh, atISO) {
+export function stampNotesRead(fresh, atISO, scanText) {
   if (!fresh || typeof fresh !== 'object') return fresh;
-  if (!Array.isArray(fresh.allComments) || !fresh.allComments.length || fresh.notes_refreshed_at) return fresh;
-  return { ...fresh, notes_refreshed_at: atISO };
+  if (!Array.isArray(fresh.allComments) || !fresh.allComments.length) return fresh;
+  return { ...fresh, notes_refreshed_at: atISO, notes_refreshed_scan_text: String(scanText ?? '') };
 }
