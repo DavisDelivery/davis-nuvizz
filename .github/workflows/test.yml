@@ -272,11 +272,11 @@ jobs:
       # end — send (stubbed, no NuVizz), "✓ SENT", close, reopen, ✓, edit, reload — both layouts.
       - run: npm run verify:card-saved-before
         env:
-          SMOKE_PORT: '8819'
+          SMOKE_PORT: '8821'
       - run: npm run verify:card-saved-before
         env:
           MOBILE: '1'
-          SMOKE_PORT: '8820'
+          SMOKE_PORT: '8822'
       # WHAT THE LOADS TAB SHOWS. Chad found the rail listing his built routes twice and the
       # empty trailers nowhere; splitDayLoads is unit-tested, but the defect was WIRING — the
       # panel was handed the wrong list — and no unit test can see that. This drives the real
