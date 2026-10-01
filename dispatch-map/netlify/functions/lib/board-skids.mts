@@ -25,6 +25,8 @@ export type BoardSkids = {
   /** of the above, the rows folded in from prior days (carryover:true) */
   carryoverStops: number;
   carryoverSkids: number;
+  /** of the carried-over skids, those already on a route (a prior-day order Saved onto a load) */
+  carryoverRoutedSkids: number;
   loose: number;
   weight: number;
 };
@@ -35,7 +37,7 @@ const n = (v: unknown): number => {
 };
 
 export function sumBoardSkids(stops: any[]): BoardSkids {
-  const out: BoardSkids = { stops: 0, skids: 0, routedSkids: 0, unroutedSkids: 0, unroutedStops: 0, carryoverStops: 0, carryoverSkids: 0, loose: 0, weight: 0 };
+  const out: BoardSkids = { stops: 0, skids: 0, routedSkids: 0, unroutedSkids: 0, unroutedStops: 0, carryoverStops: 0, carryoverSkids: 0, carryoverRoutedSkids: 0, loose: 0, weight: 0 };
   for (const s of Array.isArray(stops) ? stops : []) {
     if (!s || typeof s !== 'object') continue;
     const sk = n(s.cartons);
@@ -43,7 +45,7 @@ export function sumBoardSkids(stops: any[]): BoardSkids {
     out.skids += sk;
     out.loose += n(s.volume);
     out.weight += n(s.weight);
-    if (s.carryover) { out.carryoverSkids += sk; out.carryoverStops += 1; }
+    if (s.carryover) { out.carryoverSkids += sk; out.carryoverStops += 1; if (!s.isUnplanned) out.carryoverRoutedSkids += sk; }
     if (s.isUnplanned) { out.unroutedSkids += sk; out.unroutedStops += 1; } else out.routedSkids += sk;
   }
   out.weight = Math.round(out.weight);

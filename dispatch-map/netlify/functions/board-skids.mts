@@ -17,7 +17,7 @@
 //                     on (src/App.jsx CARRYOVER_DAYS = 7). Chad: "minus 7 days back".
 //
 // Response: { ok, date, carryDays, generated, source, lastScannedAt, stops, skids, routedSkids,
-//             unroutedSkids, unroutedStops, carryoverStops, carryoverSkids, loose, weight }
+//             unroutedSkids, unroutedStops, carryoverStops, carryoverSkids, carryoverRoutedSkids, loose, weight }
 //
 // UNGATED ON PURPOSE, AND IT SAYS ONLY TOTALS. The drivers board holds no dispatch-map
 // session, so a gated read would break it the day AUTH_REQUIRED flips (the open decision
