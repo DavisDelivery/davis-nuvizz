@@ -130,7 +130,7 @@ test('THE CHIP SITS JUST LEFT OF THE ✕ — Chad: "can you make those flags to 
   assert.ok(!/<(button|label|input|select|span)\b/.test(between), `a control crept in between the chip and the ✕: ${between.trim().slice(0, 120)}`);
 });
 
-// ── v1.99.0: the LOAD's record, kept past a card closing (lib/card-saves.js) ─────────────────
+// ── v1.102.0: the LOAD's record, kept past a card closing (lib/card-saves.js) ─────────────────
 // Chad: "I want saved route to always carry a green check mark if it has saved previously say if
 // a route was closed out and re brought up but keep the message as is for a route that just saved."
 const markSavedBody = () => (/const markSaved = \(keys, idsByKey = \{\}, cancelledKeys = \[\]\) => \{([\s\S]*?)\n  \};/.exec(code) || [])[1] || '';

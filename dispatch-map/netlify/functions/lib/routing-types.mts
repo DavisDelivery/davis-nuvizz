@@ -147,6 +147,8 @@ export interface SolverInput {
   // hole in the middle (lib/routing-assign-ends.mts). The Build sets it from
   // ROUTING_BUILD_LEAVE_OFF_ENDS; absent → the original assignment.
   leaveOffEnds?: boolean;
+  /** with leaveOffEnds: a truck with room takes a whole group of left-off orders (routing-assign-ends step 6) */
+  fillTrucks?: boolean;
 }
 
 export interface SolverOutput {

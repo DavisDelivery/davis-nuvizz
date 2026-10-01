@@ -225,12 +225,67 @@ export function placeKeyFromMatchKey(matchKey) {
   return `${street}__${zip}`;
 }
 
+// ── ONE DOCK, TWO SPELLINGS OF ITS DIRECTION (v1.98.3) ──────────────────────
+//
+// Chad, on MYRIAD360 COREWEAVE (PRO 007184400): "Why does this not have my tractor has delivered
+// here flag row?" Read off tractor_locations (zero NuVizz calls): Che Roberts and Victor Fernandez
+// delivered there three times, all tractor-tagged — filed under "2788 OLD TILTON ROAD SOUTHEAST",
+// key …rd_southeast…. The new order reads "2788 OLD TILTON RD SE", key …rd_se…. normStreetOf folds
+// ROAD→rd and NORTH/SOUTH/EAST/WEST→n/s/e/w, but has no rule for the COMPOUND directions, so the
+// same dock split in two and both the panel row (exact key) and the lime check (key or street +
+// ZIP) missed it.
+//
+// THE FOLD LIVES HERE, IN THE TRACTOR QUESTION ONLY — never in normStreetOf. The match key is where
+// customer_notes live (receiving hours, address overrides, pins, opt-outs); changing how it is built
+// would detach every note filed under a "SOUTHEAST" key from its customer (matchKey.js records the
+// LLC incident that nearly did exactly that). Folding only the tractor comparison changes what the
+// lime check can see and nothing that is stored.
+//
+// Folded, whole tokens only: southeast/se, northeast/ne, northwest/nw, southwest/sw, plus the
+// two-word forms normStreetOf already reduced to s_e, n_e, n_w, s_w ("SOUTH EAST" → s_e). The
+// house number, street name and ZIP must still match exactly.
+//
+// THE WAY BACK: VITE_TRACTOR_PLACE_FOLD=off (house shape — default on, an off-word turns it off,
+// anything malformed leaves it on). Build-time, so a redeploy. Off puts back BOTH halves: no fold,
+// and the stop panel's row back on the exact key alone.
+export function tractorPlaceFoldEnabled(env) {
+  const v = String(env?.VITE_TRACTOR_PLACE_FOLD ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** The switch as this build reads it — read HERE, like FORKLIFT_RED_RING_ON, so the App.jsx code
+ *  that uses it carries no import.meta (the unit suite lifts that code out and runs it as a plain
+ *  script). Vite injects import.meta.env at build time; in Node it is absent and the switch reads
+ *  on, as the house shape says. */
+export const TRACTOR_PLACE_FOLD_ON = (() => {
+  try { return tractorPlaceFoldEnabled(import.meta.env); } catch { return true; }
+})();
+
+const COMPOUND_DIRECTIONS = [
+  [/(^|_)(?:southeast|s_e)(?=_|$)/g, '$1se'],
+  [/(^|_)(?:northeast|n_e)(?=_|$)/g, '$1ne'],
+  [/(^|_)(?:northwest|n_w)(?=_|$)/g, '$1nw'],
+  [/(^|_)(?:southwest|s_w)(?=_|$)/g, '$1sw'],
+];
+
+/** PURE. A `${street}__${zip}` place key with its compound directions folded ('' stays ''). */
+export function foldPlaceDirections(placeKey) {
+  const s = String(placeKey || '');
+  const z = s.lastIndexOf('__');
+  if (z < 0) return s;
+  let street = s.slice(0, z);
+  for (const [re, sub] of COMPOUND_DIRECTIONS) street = street.replace(re, sub);
+  return `${street}${s.slice(z)}`;
+}
+
+const placeOf = (pk, fold) => (fold ? foldPlaceDirections(pk) : pk);
+
 /** Place keys of every tractor-delivered location — the street + ZIP half of the lime map. */
-export function tractorPlaceKeys(tractorMap) {
+export function tractorPlaceKeys(tractorMap, { fold = false } = {}) {
   const out = new Set();
   if (!tractorMap || typeof tractorMap.keys !== 'function') return out;
   for (const mk of tractorMap.keys()) {
-    const pk = placeKeyFromMatchKey(mk);
+    const pk = placeOf(placeKeyFromMatchKey(mk), fold);
     if (pk) out.add(pk);
   }
   return out;
@@ -238,13 +293,33 @@ export function tractorPlaceKeys(tractorMap) {
 
 /**
  * HAS A TRACTOR DELIVERED AT THIS STOP? By its own match key, or at the same street + ZIP
- * under any name. → { byKey, byPlace, any }
+ * under any name. → { byKey, byPlace, any }. `fold` must match the one tractorPlaces was built with.
  */
-export function tractorSeenAt(stop, tractorMap, tractorPlaces) {
+export function tractorSeenAt(stop, tractorMap, tractorPlaces, { fold = false } = {}) {
   const byKey = !!(stop?.matchKey && tractorMap && typeof tractorMap.has === 'function' && tractorMap.has(stop.matchKey));
-  const pk = stopPlaceKey(stop);
+  const pk = placeOf(stopPlaceKey(stop), fold);
   const byPlace = !!(pk && tractorPlaces && typeof tractorPlaces.has === 'function' && tractorPlaces.has(pk));
   return { byKey, byPlace, any: byKey || byPlace };
+}
+
+/**
+ * PURE. The tractor_locations entry behind "Tractor has delivered here" on the stop panel — the
+ * same question tractorSeenAt answers for the map, returning the entry so the panel can print its
+ * date. By the stop's own key first; else every entry at the same street + ZIP, the most recent
+ * `last` winning. → { entry, via: 'key' | 'place' } or null.
+ */
+export function tractorEntryAt(stop, tractorMap, { fold = false } = {}) {
+  if (!stop || !tractorMap || typeof tractorMap.get !== 'function') return null;
+  const own = stop.matchKey ? tractorMap.get(stop.matchKey) : null;
+  if (own) return { entry: own, via: 'key' };
+  const pk = placeOf(stopPlaceKey(stop), fold);
+  if (!pk || typeof tractorMap.entries !== 'function') return null;
+  let best = null;
+  for (const [mk, entry] of tractorMap.entries()) {
+    if (!entry || placeOf(placeKeyFromMatchKey(mk), fold) !== pk) continue;
+    if (!best || String(entry.last || '') > String(best.last || '')) best = entry;
+  }
+  return best ? { entry: best, via: 'place' } : null;
 }
 
 // ── "Lime as of board date" (trial switch) ──────────────────────────────────

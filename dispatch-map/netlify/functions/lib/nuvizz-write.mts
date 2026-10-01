@@ -37,7 +37,7 @@ import { isHashLikeId, statusFromCode, isTerminalStatus } from './nuvizz-list.mt
 import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay, readStopDoc, patchStopFields } from './firestore.mts';
 import { completionPatch } from './scan-completions.mts';
 import { finishedGuardEnabled } from './finished-guard.mts';
-import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes } from './nuvizz-rwb.mts';
+import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes, rwbCreateRoute, rwbHosts } from './nuvizz-rwb.mts';
 import { basicAuthFor } from './nuvizz-identity.mts';
 
 const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
@@ -318,8 +318,58 @@ function currentDeliveryStopIds(load: any): string[] {
 // guard refused every edit of a load carrying a mid-route pickup, contradicting the pickup-leg
 // support it sits in front of. Omitted (classic engine) → original behavior.
 function hasUnmodeledDelivery(load: any, modeledNbrs?: Set<string>): boolean {
-  return (load?.stops || []).some((s: any) => String(s?.stopType || '').toUpperCase() !== 'DO' && Number(s?.stopSeq ?? 0) > 1
-    && !(modeledNbrs && s?.stopNbr != null && modeledNbrs.has(String(s.stopNbr))));
+  return unmodeledDeliveries(load, modeledNbrs).length > 0;
+}
+
+export interface UnmodeledStop { stopNbr: string | null; stopType: string | null; stopSeq: number | null; name: string | null }
+
+/**
+ * THE STOPS hasUnmodeledDelivery OBJECTS TO, NAMED (v1.98.4) — one predicate, so the guard and the
+ * words it prints can never disagree.
+ *
+ * Chad: "I WANT THE REAL FIX." MONE was refused at 10:43 and 10:48 PM on 2026-09-28, BRIAN at 8:38
+ * and 8:39 — "load has a non-DO stop in a delivery slot that this card is not sequencing — reorder
+ * skipped (verify in portal)" — and the refusal never said WHICH stop, though the load read in hand
+ * holds its number, its type, its NuVizz position and (in rawStops) the customer. PURE; exported
+ * for tests. A pickup is named from its pickup side (from), anything else from its drop side (to);
+ * no fallback to the other side, which for a pickup would name our own warehouse.
+ */
+export function unmodeledDeliveries(load: any, modeledNbrs?: Set<string>): UnmodeledStop[] {
+  const raw = (Array.isArray(load?.rawStops) ? load.rawStops : []).map((e: any) => e?.stop || e);
+  return (load?.stops || [])
+    .filter((s: any) => String(s?.stopType || '').toUpperCase() !== 'DO' && Number(s?.stopSeq ?? 0) > 1
+      && !(modeledNbrs && s?.stopNbr != null && modeledNbrs.has(String(s.stopNbr))))
+    .map((s: any) => {
+      const stopNbr = s?.stopNbr != null ? String(s.stopNbr) : null;
+      const stopType = s?.stopType ? String(s.stopType) : null;
+      const st = stopNbr ? raw.find((r: any) => r?.stopNbr != null && String(r.stopNbr) === stopNbr) : null;
+      const side = String(stopType || '').toUpperCase() === 'PU' ? st?.from : st?.to;
+      const name = String(side?.address?.name ?? '').trim() || null;
+      const seq = Number(s?.stopSeq);
+      return { stopNbr, stopType, stopSeq: Number.isFinite(seq) ? seq : null, name };
+    });
+}
+
+/** PURE: the stops in words a dispatcher can find in the portal —
+ *  "RA58610778-1-1 (pickup, LOCKHEED MARTIN, NuVizz stop 19)". Three at most, then a count. */
+export function describeUnmodeled(list: UnmodeledStop[]): string {
+  const one = (u: UnmodeledStop) => {
+    const t = String(u.stopType || '').toUpperCase();
+    const kind = t === 'PU' ? 'pickup' : t ? `type ${t}` : 'no stop type';
+    return `${u.stopNbr || '(no stop number)'} (${[kind, u.name, u.stopSeq != null ? `NuVizz stop ${u.stopSeq}` : null].filter(Boolean).join(', ')})`;
+  };
+  const shown = (list || []).slice(0, 3).map(one).join('; ');
+  return (list || []).length > 3 ? `${shown} (+${list.length - 3} more)` : shown;
+}
+
+/** The refusal's words. NUVIZZ_RWB_NAME_UNMODELED=off puts back the original sentence exactly
+ *  (house shape: default on, an off-word turns it off, anything malformed leaves it on). The guard
+ *  itself — what is refused and that nothing is sent — is identical either way. */
+export function unmodeledRefusal(list: UnmodeledStop[], named: boolean): string {
+  const base = 'commitBoard(rwb): load has a non-DO stop in a delivery slot that this card is not sequencing';
+  if (!named || !list?.length) return `${base} — reorder skipped (verify in portal)`;
+  const it = list.length === 1;
+  return `${base} — ${describeUnmodeled(list)}. Nothing was sent: add ${it ? 'it' : 'them'} to the card if ${it ? 'it belongs' : 'they belong'} on this route, or take ${it ? 'it' : 'them'} off the load in the portal, then Save.`;
 }
 
 /**
@@ -1623,8 +1673,13 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     // (a pickup like MUGELE, a return) is a legitimate save, but without this the
     // removed stop still read as an unmodeled non-DO stop and the guard refused it.
     const removeNbrsGuard = Array.isArray(p.L?.removeStopNbrs) ? p.L.removeStopNbrs.map((x: any) => String(x)).filter(Boolean) : [];
-    if (hasUnmodeledDelivery(load, new Set([...p.orderedNbrs, ...removeNbrsGuard]))) {
-      p.result.ok = false; p.result.error = 'commitBoard(rwb): load has a non-DO stop in a delivery slot that this card is not sequencing — reorder skipped (verify in portal)';
+    const unmodeled = unmodeledDeliveries(load, new Set([...p.orderedNbrs, ...removeNbrsGuard]));
+    if (unmodeled.length) {
+      // NAMED (v1.98.4): which stop, what kind, where on the load — and kept on the result, so the
+      // write journal records it too (the refusal used to be the one row that could not say).
+      p.result.ok = false;
+      p.result.unmodeled = unmodeled.slice(0, 10);
+      p.result.error = unmodeledRefusal(unmodeled, envFlag('NUVIZZ_RWB_NAME_UNMODELED', true));
       continue;
     }
     batchNbrs.add(p.loadNbr);
@@ -2361,6 +2416,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       // Membership-confirmed order/removal failures carry NuVizz's OBSERVED delivery order so the
       // client can write the board through with the truth despite the ✗ (SCOTT SHP29379, Jul 10).
       observedOrder: p.result.observedOrder || undefined,
+      // The stops the non-DO guard refused on, named (v1.98.4) — journaled with the op.
+      unmodeled: p.result.unmodeled || undefined,
       // A refused add whose holder already had the stop FINISHED: what the record said and whether
       // the board was told (recordFinishedHolder) — journaled, so "the board still says unplanned"
       // is answerable from nuvizz-write-log alone.
@@ -3053,6 +3110,82 @@ export function routeCreateBlocked(): boolean {
   return /^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ROUTE_CREATE ?? '').trim());
 }
 
+/**
+ * THE PORTAL'S CREATE, SWITCHED ON EXPLICITLY (v1.98.5). NUVIZZ_ROUTE_CREATE_RWB=on sends ＋ New
+ * route through the Route Workbench's own addNewRoutePlan (nuvizz-rwb.mts rwbCreateRoute — the call
+ * Chad captured the portal making) and attaches the card's orders through the SAME save an existing
+ * load gets. Anything else keeps the v7 routePlan/update below, byte for byte.
+ *
+ * DELIBERATELY NOT THE HOUSE SHAPE. A switch that REVERTS a change defaults on; this one TURNS ON a
+ * write path no call has proven yet (whether addNewRoutePlan accepts this app's portal sign-in is the
+ * one thing the capture cannot show), so it ships dark and fails CLOSED: unset, a typo, anything but
+ * an on-word → the old path. One test create — on UAT first — is the gate, and flipping it is a
+ * Netlify environment setting, no code change.
+ */
+export function routeCreateViaRwb(): boolean {
+  return /^(1|true|on|yes)$/i.test(String(process.env.NUVIZZ_ROUTE_CREATE_RWB ?? '').trim());
+}
+
+/**
+ * Which create ＋ New route would make on THIS server, and where it would go — read for ZERO
+ * NuVizz calls. The dry run returns it (nuvizz-write.mts), because a switch whose position cannot
+ * be read is not a switch. `rwbReady` is the RWB engine unblocked AND the portal login set — the
+ * person's own when `creds.rwb` carries one (like every other RWB check in this file), else the
+ * shared one. The dry run has no personal login in hand, so it reports the shared login; the live
+ * call checks the person's, and refuses before any call when it is not ready.
+ */
+export function routeCreateEngine(creds: Partial<Pick<WriteCreds, 'rwb'>> = {}): { engine: 'rwb' | 'v7'; switchName: string; rwbReady: boolean; loginHost: string; portalHost: string } {
+  const { loginHost, portalHost } = rwbHosts();
+  return { engine: routeCreateViaRwb() ? 'rwb' : 'v7', switchName: 'NUVIZZ_ROUTE_CREATE_RWB', rwbReady: rwbConfigReady(creds.rwb), loginHost, portalHost };
+}
+
+/**
+ * The new route, made the portal's way, then filled through runCommitBoardRwb exactly like a Save of
+ * an existing load: the orders the ORDER GUARD just read are added, sequenced in card order, verified
+ * against NuVizz's own read-back, written through to the board, and the staged driver assigned (and
+ * dispatched) — every guard that already protects a Save protects this one. The answer keeps
+ * runNewRoute's contract, so the Compare card reads it with no client change.
+ *
+ * A route that was made but whose orders did not attach is reported as NOT saved, with its load
+ * number and what to do: the card stays a pending create, and a second Save would only meet
+ * NuVizz's DuplicateRouteName — so the words say to open it from the Routes panel instead.
+ */
+async function createRouteViaRwb(requester: RequesterLike, payload: any, creds: WriteCreds,
+  ctx: { nbrs: string[]; reads: Map<string, any>; routeName: string; steps: any[] }): Promise<any> {
+  const { nbrs, reads, routeName, steps } = ctx;
+  const day = isDayString(payload?.date) ? String(payload.date) : etDayString();
+  const made = await rwbCreateRoute(requester, { routeName, date: day }, creds.rwb);
+  steps.push({ op: 'rwb:createRoute', ok: made.ok, result: { calls: made.calls, steps: made.steps, route: made.route ?? null, duplicate: made.duplicate ?? null }, error: made.ok ? null : (made.error || 'failed') });
+  if (!made.ok || !made.route) {
+    return { ok: false, engine: 'rwb', ...(made.duplicate ? { exists: true } : {}), error: `createRoute: ${made.error || 'NuVizz did not create the route'} — nothing was created`, steps };
+  }
+  const { id: loadId, loadNbr } = made.route;
+  const gotName = String(made.route.name ?? '').trim() || routeName;
+  const stopIdsByNbr: Record<string, string> = {};
+  for (const n of nbrs) { const sid = reads.get(n)?.stop?.stopId; if (sid) stopIdsByNbr[n] = String(sid); }
+  const commit = await runCommitBoardRwb(requester, { loads: [{
+    __key: 'new-route', loadNbr, loadId, routeName: gotName, orderedStopNbrs: nbrs, stopIdsByNbr,
+    ...(hasDriverId(payload?.driverId) ? { driverId: payload.driverId, driverName: payload?.driverName ?? null } : {}),
+    ...(payload?.dispatch ? { dispatch: true } : {}),
+  }], date: day, useRwb: true }, creds);
+  const L = (Array.isArray(commit?.loads) ? commit.loads : [])[0] || null;
+  steps.push({ op: 'rwb:attachOrders', ok: !!L?.ok, result: L ? { steps: L.steps, boardSync: L.boardSync ?? null } : null, error: L?.ok ? null : (L?.error || commit?.error || 'no result') });
+  if (!L?.ok) {
+    return { ok: false, engine: 'rwb', created: true, loadNbr, loadId, routeName: gotName,
+      error: `createRoute: route ${gotName} WAS created in NuVizz (${loadNbr}), but its ${nbrs.length} order(s) did not attach — ${L?.error || commit?.error || 'no result'}. Close this card and open ${gotName} from the Routes panel to add them; do NOT create it again.`, steps };
+  }
+  const driverApplied = (L.steps || []).some((s: any) => s.op === 'assignDriver' && s.ok);
+  const dispatched = (L.steps || []).some((s: any) => s.op === 'dispatchLoad' && s.ok);
+  return {
+    ok: true, engine: 'rwb', loadNbr, loadId,
+    routeName: gotName, requestedRouteName: routeName, nameMatched: gotName.toUpperCase() === routeName.toUpperCase(),
+    stopsRequested: nbrs.length, stopsAttached: nbrs.length, allAttached: true,
+    driverApplied, dispatched,
+    ...(L.boardSync ? { boardSync: L.boardSync } : {}),
+    steps,
+  };
+}
+
 export async function runNewRoute(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
   if (routeCreateBlocked()) return { ok: false, blocked: true, error: 'route creation is disabled on this server (NUVIZZ_ROUTE_CREATE=off)' };
   const steps: any[] = [];
@@ -3069,25 +3202,35 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
   const dupes = nbrs.filter((n, i) => nbrs.indexOf(n) !== i);
   if (dupes.length) return { ok: false, error: `createRoute: order ${dupes[0]} appears twice on the card — remove the duplicate and re-Save`, steps };
 
-  // ── 1. COLLISION GUARD — the number must be genuinely free ──────────────────
-  const pre = await fetchLoad(requester, loadNbr, creds);
-  steps.push({ op: 'getLoad', ok: true, result: { found: !!pre.load, httpStatus: pre.httpStatus }, error: null });
-  if (pre.load) {
-    return { ok: false, exists: true, loadNbr, loadId: pre.load.loadId ?? null,
-      error: `createRoute: load ${loadNbr} already exists in NuVizz (${loadDisplayLabel(pre.load)}) — pick a different route name/date, or open that route from the board instead`, steps };
+  // The portal's create (routeCreateViaRwb) — refused up front when its sign-in is not configured,
+  // rather than quietly falling back to the v7 path that has never once worked.
+  const viaRwb = routeCreateViaRwb();
+  if (viaRwb && !rwbConfigReady(creds.rwb)) {
+    return { ok: false, engine: 'rwb', error: 'createRoute: route creation through the Route Workbench is switched on (NUVIZZ_ROUTE_CREATE_RWB) but its portal sign-in is not ready (NUVIZZ_RWB_ENABLED / the NuVizz login) — nothing was created', steps };
   }
-  // WHICH ANSWERS MEAN "FREE". load/info returns 400 — not 404 — for a load number the tenant
-  // does not have. Observed on the first real create (Jul 31): TRAILER-0731 refused itself with
-  // "NuVizz answered 400 to the check" on a number that plainly did not exist. (The STOP
-  // existence gate above sees a true 404, so the two endpoints genuinely differ.) Either way
-  // the read came back with NO LOAD, so there is nothing at that number to overwrite.
-  //
-  // Everything else still refuses: 401/403 (auth), 429 (throttled) and 5xx/network are
-  // "I could not check", and creating on one risks silently editing a live route's header.
-  // A malformed number is safe here too — it simply fails the CREATE below, loudly, having
-  // written nothing.
-  if (pre.httpStatus != null && !LOAD_ABSENT_STATUSES.has(pre.httpStatus)) {
-    return { ok: false, error: `createRoute: could not confirm load ${loadNbr} is free (NuVizz answered ${pre.httpStatus} to the check) — nothing was created; try again`, steps };
+
+  // ── 1. COLLISION GUARD — the number must be genuinely free ──────────────────
+  // (v7 only: the portal numbers the load itself and refuses a name already in use.)
+  const pre = viaRwb ? { load: null, httpStatus: null } : await fetchLoad(requester, loadNbr, creds);
+  if (!viaRwb) {
+    steps.push({ op: 'getLoad', ok: true, result: { found: !!pre.load, httpStatus: pre.httpStatus }, error: null });
+    if (pre.load) {
+      return { ok: false, exists: true, loadNbr, loadId: pre.load.loadId ?? null,
+        error: `createRoute: load ${loadNbr} already exists in NuVizz (${loadDisplayLabel(pre.load)}) — pick a different route name/date, or open that route from the board instead`, steps };
+    }
+    // WHICH ANSWERS MEAN "FREE". load/info returns 400 — not 404 — for a load number the tenant
+    // does not have. Observed on the first real create (Jul 31): TRAILER-0731 refused itself with
+    // "NuVizz answered 400 to the check" on a number that plainly did not exist. (The STOP
+    // existence gate above sees a true 404, so the two endpoints genuinely differ.) Either way
+    // the read came back with NO LOAD, so there is nothing at that number to overwrite.
+    //
+    // Everything else still refuses: 401/403 (auth), 429 (throttled) and 5xx/network are
+    // "I could not check", and creating on one risks silently editing a live route's header.
+    // A malformed number is safe here too — it simply fails the CREATE below, loudly, having
+    // written nothing.
+    if (pre.httpStatus != null && !LOAD_ABSENT_STATUSES.has(pre.httpStatus)) {
+      return { ok: false, error: `createRoute: could not confirm load ${loadNbr} is free (NuVizz answered ${pre.httpStatus} to the check) — nothing was created; try again`, steps };
+    }
   }
 
   // ── 2. ORDER GUARD — every order must be readable, unplanned and unexecuted ──
@@ -3117,6 +3260,8 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
       return { ok: false, error: `createRoute: order ${n} is already ${st} — finished work cannot ride a new route. Remove it and re-Save. Nothing was created`, steps };
     }
   }
+
+  if (viaRwb) return createRouteViaRwb(requester, payload, creds, { nbrs, reads, routeName, steps });
 
   // ── 3. WRITE the header + the references, in card order ─────────────────────
   const r = await fireSingle(requester, 'createRoute', {

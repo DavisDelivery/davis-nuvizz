@@ -303,6 +303,16 @@ jobs:
       - run: npm run verify:shiplify
         env:
           SMOKE_PORT: '8812'
+      # EVERY CONTROL ON STOP LOOKUP, TAPPED (v1.99.10). Chad, 2026-09-30, on a business in the
+      # chooser: "clicking this and nothing happens … i want you to build this entire screen and test
+      # everything in it." The read WAS running; its only sign was a button off the top of the phone.
+      # This drives every control at 390 and 1440 against stubs that answer late, and fails any tap
+      # that changes nothing in view within 250ms, plus what each tap must have asked for or opened.
+      # No request leaves the page; the two NuVizz-priced buttons are tapped against stubs. Fails on
+      # the code before it. Rides the unkeyed build (the load's map says it cannot load, as it should).
+      - run: npm run verify:stop-lookup
+        env:
+          SMOKE_PORT: '8819'
       # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
       # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
       # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk

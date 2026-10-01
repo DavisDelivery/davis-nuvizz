@@ -141,6 +141,40 @@ function etasFor(ordered: SolverStop[], indexById: Map<string, number>, matrix: 
   return timeline(ordered, indexById, matrix, depart).etas;
 }
 
+/** What the clock says about one truck's run as the Build will ship it. */
+export interface RunClock {
+  /** stops that run reaches after their window closes, and (strict) customers shut today — the
+   *  stops repair would take off a strict Build; on an advisory one, the missed closes */
+  late: SolverStop[];
+}
+
+// THE CLOCK FOR STEP 6 OF THE ENDS RULE (routing-assign-ends: a truck with room takes a whole group
+// of left-off orders). That step weighs a group on a truck's run; the run the Build SHIPS is
+// orderForTruck's, which bends round every window on the truck. So before it takes a group it asks
+// what THIS file would make of the run with it: which stops would miss their window. Same matrix,
+// same clock, same order as the flags on the card — one place decides. Null for an empty run, or a
+// stop this Build does not know.
+export function runClockFor(input: SolverInput): (stops: SolverStop[]) => RunClock | null {
+  const indexById = new Map<string, number>();
+  input.stops.forEach((s, k) => indexById.set(s.id, k + 1));
+  const depart = input.departEpochSec ?? 0;
+  const strict = input.windowMode === 'strict';
+  return (stops) => {
+    if (!stops.length || stops.some((s) => !indexById.has(s.id))) return null;
+    if (!stops.some((s) => hasWindow(s) || (strict && s.closedToday))) return { late: [] };
+    // In the order repair will be handed them and will ship them: the solver's sequence, then Phase
+    // A's window order, then the order the route is assembled in (windowAwareOrder keeps equal
+    // deadlines in the order it is given, so asking in any other order can give another answer).
+    const byNode = new Map(stops.map((s) => [indexById.get(s.id)!, s]));
+    const handed = sequence([...byNode.keys()], input.strategy, input.matrix).map((n) => byNode.get(n)!);
+    const ordered = orderForTruck(orderForTruck(handed, input, indexById), input, indexById);
+    const etas = etasFor(ordered, indexById, input.matrix, depart);
+    // Strict: every stop repair would take off. Advisory: only a missed close — a customer shut
+    // today is flagged wherever it rides, so it is no truck's doing.
+    return { late: ordered.filter((s, i) => (strict ? !windowOk(s, etas[i]) : hasWindow(s) && !s.closedToday && !windowOk(s, etas[i]))) };
+  };
+}
+
 // Pick the worst violator in an ordered route, with its spill reason. Capacity /
 // equipment first (structural), then — ONLY when windows are enforced (strict) —
 // the STRICT-window stop with the most lateness. In advisory mode windows never

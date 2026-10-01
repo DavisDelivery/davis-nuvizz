@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Building2, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound, LogOut } from 'lucide-react';
+  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound, LogOut, TrendingUp } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc, arrayUnion, arrayRemove, deleteField,
@@ -42,8 +42,10 @@ import { readViewportSize } from './lib/viewport.js';
 import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
 import { manifestIssues, manifestHeadline, manifestProvenance, manifestFreshness, loadStored, saveStored } from './lib/manifest-check-view.js';
-import { noteFreshness } from './lib/stop-notes-freshness.js';
+import { noteFreshness, mergedNotes, SCAN_NOTES_AUTO_ON, ticketNotes, stampNotesRead } from './lib/stop-notes-freshness.js';
 import { stopHandlingFlags, itemHandlingFlags, stopNeedsTractor, tallyHandlingFlags, HANDLING_FLAGS } from './lib/handling-flags.js';
+// The bottom grid's Restrictions cell draws its icons (v1.100.1); VITE_GRID_RESTRICTION_ICONS=off puts back words only.
+import { GRID_RESTRICTION_ICONS_ON } from './lib/grid-icons.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, usesMapId, keepView } from './lib/map-base-options.js';
 import { map3dEnabled, cameraFor2dView, hintForRange, isCtrlDragStart, dragCrossedThreshold, isEscape, cameraMoved, groundedCamera, cameraGroundPoint, twoDViewFor3dCamera, paint3dControl, control3dSpec, webglUsable, vectorFellBack, MAP3D_BUTTON_CSS, MAP3D_NO_WEBGL, MAP3D_NO_VECTOR } from './lib/map-3d.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
@@ -52,7 +54,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -96,7 +98,7 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUE
 // so the screen can never build a query the server reads differently.
 import { placeParams, placeQuery, placeQueryUsable } from './lib/stop-search.js';
 import { addRecent, parseRecent, recentAgo, recentEntry, recentKindLabel, recentKey } from './lib/stop-lookup-recent.js';
-import { weekOf, weekLabel, addDays, PERIODS, periodRange } from './lib/load-lookup.js';
+import { weekOf, weekLabel, addDays, PERIODS, periodRange, loadForRow } from './lib/load-lookup.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -107,7 +109,7 @@ import { isEstesOrder, ESTES_FILL, ESTES_RING } from './lib/carrier-mark.js';
 // hollow lime dock / forklift pins, and the artwork both are drawn with.
 import {
   resolvePlaceMark, placeNoTractor, placeNoTractorLine, shiplifyPinCandidate, shiplifyPinKind,
-  shiplifyRecordFor, buildShiplifyLookup, tractorPlaceKeys, tractorSeenAt, limeAsOf, shiplifyPanelRows,
+  shiplifyRecordFor, buildShiplifyLookup, tractorPlaceKeys, tractorSeenAt, tractorEntryAt, TRACTOR_PLACE_FOLD_ON, limeAsOf, shiplifyPanelRows,
   limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
   buildingTypeChanged, NO_TRACTOR_PLACE_MARKS, FORKLIFT_RED_RING_ON, FORKLIFT_WITH_CLOCK_ON, nextResidentialPaint, residentialBrushEnabled,
 } from './lib/place-mark.js';
@@ -125,7 +127,7 @@ import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops, hou
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute, resolveRouteOrigin, originLine, newRouteSeed, newRouteSeedNote } from './lib/route-create.js';
-import { clipForToast } from './lib/write-error.js';
+import { clipForToast, plainWriteError, PLAIN_ERRORS_ON } from './lib/write-error.js';
 import UatBench from './components/UatBench.jsx';
 import UatModeBar from './components/UatModeBar.jsx';
 import AccountScreen from './components/AccountScreen.jsx';
@@ -141,6 +143,12 @@ import { tabLoadFailed } from './components/TabLoadFailure.jsx';
 // (components/TabLoadFailure.jsx) — never a white page. scripts/check-shadow-chunk.mjs fails CI
 // if a start-up file the built index.html names carries the Shadow's code.
 const ClaudeShadowScreen = React.lazy(() => import('./shadow/ClaudeShadowScreen.jsx').catch((err) => tabLoadFailed('Shadow', err)));
+// MORE → PERFORMANCE (v1.100.0). Chad, 2026-09-30: "I wanted to build a stock performance UI under the
+// more tab … to track the number of stops that we've done compared to other days or like the daily
+// average at that point in time to let us know if we're behind or ahead of schedule." Its own
+// directory (src/performance/), LAZY for the same reason as the Shadow above: a screen visited on
+// purpose need not ride in the start-up file, and a failed fetch is a line on the tab, not a white page.
+const PerformanceScreen = React.lazy(() => import('./performance/PerformanceScreen.jsx').catch((err) => tabLoadFailed('Performance', err)));
 import { isUatHost } from './lib/mirror-site.js';
 import { mergeDayLoads, splitDayLoads } from './lib/day-loads.js';
 import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
@@ -159,7 +167,7 @@ import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } fro
 import { dropSide, dropSideClass, dropRight } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel, routingRosterRereadEnabled, rosterRereadApplies } from './lib/roster-freshness.js';
 // Time windows on the Compare card's Re-sequence menu (v1.89.0) — scored by the card's own preflight.
-import { timeWindowSequence, timeWindowSummary, compareTimeWindowsEnabled } from './lib/time-window-sequence.js';
+import { timeWindowSequence, timeWindowSummary, compareTimeWindowsEnabled, timeWindowsMilesCapEnabled } from './lib/time-window-sequence.js';
 import { detectDefaultSlots } from './lib/time-restrictions.js';
 import { PARSE_SCHEDULE_LABEL, parsePollOverdue } from './lib/manifest-schedule.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
@@ -169,7 +177,7 @@ const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 import { computeStopProgress } from './lib/stop-progress.js';
 import { editorClosedDay, toggleClosedPatch, dropClosedPrints, unusedStoredClosedDays, closedDaysFromOrderEnabled } from './lib/closed-days.js';
-import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, travelForServedDate } from './lib/route-preflight.js';
+import { routePreflight, preflightBadgeWords, compareUnreachableLateEnabled, preflightCountsEveryLateStopEnabled, travelForServedDate } from './lib/route-preflight.js';
 import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
@@ -211,7 +219,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.99.0';
+const APP_VERSION = '1.102.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -265,7 +273,27 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.99.0', 'A ROUTE THAT WAS SAVED, CLOSED AND BROUGHT BACK NOW CARRIES A GREEN ✓. Chad: “I want saved route to always carry a green check mark if it has saved previously say if a route was closed out and re brought up but keep the message as is for a route that just saved.” WHY IT WAS BLANK. The “✓ SENT 7:42 AM” mark on a Compare card lives in the workbench’s memory and is wiped the moment the card closes — on purpose, because it says the card MATCHES what was sent, and a reopened card is rebuilt from the board. So a route saved at 7:42, closed and brought back at 9:00 looked exactly like one nobody had ever sent. NOW: every confirmed save is also recorded against the LOAD NuVizz wrote — its load id and real load number, never its route name, because names repeat every day (Friday’s MARCUS is not Monday’s) — together with the stops and order it carried. A card brought back with no stamp of its own this session carries a green ✓ while it still shows exactly those stops in that order; on a phone the ✓ carries the time (the clock today, the day if earlier), on a desktop hover it for when. It is earned only where ✓ SENT and ✗ DID NOT SAVE are earned — a write NuVizz confirmed, a refusal read back off the result — so it cannot claim a save that did not happen. IT IS WITHHELD WHEN: you change the card (until you send again); the load’s latest outcome on record was a refusal; the save CANCELLED the route (emptying a card and saving cancels the load — that is recorded as a cancellation, so the dead load never wears a ✓); or the card no longer shows what was sent — a later scan that picked up a portal edit, a board that missed the save, a stop now staged on another card. Two orders at one dock may come back from a scan in either order and still count as a match. A save NuVizz redirected to a same-named twin load is recorded on the twin it wrote, never on the empty one the card was opened on. UNCHANGED: a card that just saved still says “✓ SENT 7:42 AM”, and one that just failed still says “✗ DID NOT SAVE”. Zero NuVizz calls. WHAT IT DOES NOT KNOW: the record lives in this browser — every tab of it, merged so one tab can never erase another’s refusal, kept a week — but a route saved on another dispatcher’s device carries no ✓ here, and a change in NuVizz the board has not picked up yet cannot be seen. A missing ✓ costs a re-send; a false one is freight nobody drives. PUT IT BACK: VITE_CARD_SAVED_BEFORE=off and a redeploy; anything else, a typo included, leaves it on. An adversarial review of the first cut found the cancelled-route, twin-load, two-tab and changed-since cases; each is fixed and pinned by a test that was proven to fail when the fix is removed. 18 rule tests and 8 wiring tests. A new real-browser check (verify:card-saved-before, desktop and phone, in CI) opens a load the way real cards open (route name on the stops, number and id from the roster), changes it, presses Send to NuVizz (stubbed — no NuVizz call is possible from it), reads “✓ SENT”, closes and reopens it (✓), edits it (gone), reloads (back), lets a later scan show the route changed (gone), and opens a load nobody saved (nothing). Built with the switch off, the reopened card says nothing.'],
+  ['1.102.0', 'A ROUTE THAT WAS SAVED, CLOSED AND BROUGHT BACK NOW CARRIES A GREEN ✓. Chad: “I want saved route to always carry a green check mark if it has saved previously say if a route was closed out and re brought up but keep the message as is for a route that just saved.” WHY IT WAS BLANK. The “✓ SENT 7:42 AM” mark on a Compare card lives in the workbench’s memory and is wiped the moment the card closes — on purpose, because it says the card MATCHES what was sent, and a reopened card is rebuilt from the board. So a route saved at 7:42, closed and brought back at 9:00 looked exactly like one nobody had ever sent. NOW: every confirmed save is also recorded against the LOAD NuVizz wrote — its load id and real load number, never its route name, because names repeat every day (Friday’s MARCUS is not Monday’s) — together with the stops and order it carried. A card brought back with no stamp of its own this session carries a green ✓ while it still shows exactly those stops in that order; on a phone the ✓ carries the time (the clock today, the day if earlier), on a desktop hover it for when. It is earned only where ✓ SENT and ✗ DID NOT SAVE are earned — a write NuVizz confirmed, a refusal read back off the result — so it cannot claim a save that did not happen. IT IS WITHHELD WHEN: you change the card (until you send again); the load’s latest outcome on record was a refusal; the save CANCELLED the route (emptying a card and saving cancels the load — that is recorded as a cancellation, so the dead load never wears a ✓); or the card no longer shows what was sent — a later scan that picked up a portal edit, a board that missed the save, a stop now staged on another card. Two orders at one dock may come back from a scan in either order and still count as a match. A save NuVizz redirected to a same-named twin load is recorded on the twin it wrote, never on the empty one the card was opened on. UNCHANGED: a card that just saved still says “✓ SENT 7:42 AM”, and one that just failed still says “✗ DID NOT SAVE”. Zero NuVizz calls. WHAT IT DOES NOT KNOW: the record lives in this browser — every tab of it, merged so one tab can never erase another’s refusal, kept a week — but a route saved on another dispatcher’s device carries no ✓ here, and a change in NuVizz the board has not picked up yet cannot be seen. A missing ✓ costs a re-send; a false one is freight nobody drives. PUT IT BACK: VITE_CARD_SAVED_BEFORE=off and a redeploy; anything else, a typo included, leaves it on. An adversarial review of the first cut found the cancelled-route, twin-load, two-tab and changed-since cases; each is fixed and pinned by a test that was proven to fail when the fix is removed. 18 rule tests and 8 wiring tests. A new real-browser check (verify:card-saved-before, desktop and phone, in CI) opens a load the way real cards open (route name on the stops, number and id from the roster), changes it, presses Send to NuVizz (stubbed — no NuVizz call is possible from it), reads “✓ SENT”, closes and reopens it (✓), edits it (gone), reloads (back), lets a later scan show the route changed (gone), and opens a load nobody saved (nothing). Built with the switch off, the reopened card says nothing.'],
+  ['1.101.0', 'A TRUCK WITH ROOM TAKES A WHOLE GROUP OF THE ORDERS LEFT OFF. Chad, on a Build onto CHE, SCOTT and TRAILER 1 (v1.100.0): \u201cworked better but still left orders offf the laods that only one was full and didn\u2019t have any logic to how it left them off the were orders scattered across 3 towns so i would have sent an additional truck to cover this.\u201d REPRODUCED ON THE REAL CODE from the screenshot (the same six orders off, CHE 9, SCOTT 9, TRAILER 1 28): SCOTT, the only box, shed the Dalton end of its run and then Sunday c/o Encore\u2019s 6 pallets, stopping at 9 of 14; its refill then refused each Dalton order ALONE (\u201cno trip across town for one skid\u201d \u2014 65 mi out of its way for one skid). NOW the orders left off are grouped by area (chained within 15 km), and a truck with room takes a WHOLE group of two or more when it fits and costs no more driving per order than 1.5\u00d7 the average stop already on that truck, and makes no delivery on it miss its window (checked on the stop order the Build ships); a customer shut today is in no group. And a group never costs an order the Build without it carried: on a strict Build, where repair takes stops off for their windows and refills the room, the Build without the group is made too, and if any order it carried would come off or move truck, or a skid be lost, that one ships and the job says why. ON HIS BOARD: SCOTT takes the four Dalton orders together and the Calhoun carton on its way (13 skids), and the one order left off is Sunday c/o Encore \u2014 6 pallets the box has no room for \u2014 on all three strategies. On 120 placements of the same 42 stops: nothing the old Build carried is left off, never fewer skids, and wherever SCOTT had room for the Dalton group (7) it now carries it. It never takes part of a town, never takes an order off a truck, never sends a truck across town for one order. SAID PLAINLY: where SCOTT is already full, what is left off can still be in three towns \u2014 fixing that means giving up an order for others, which is yours to decide; and on 600 random overloaded boards it changed 1 plan (+3 skids, nothing worse), because it only acts on a whole group a truck has room for. PUT IT BACK: ROUTING_BUILD_FILL_TRUCKS=off \u2014 the v1.100 Build exactly; every build says which ran and which groups went where (result.buildRules.fillTrucks, result.meta.groupFill). The Build Panel\u2019s server path only; the Compare cards, staging, Save and the map are untouched. Zero NuVizz calls.'],
+  ['1.100.3', 'A NOTE NUVIZZ NO LONGER LISTS IS LEFT OFF THE PRINTED TICKET; A NEW ONE IS PRINTED. Chad, on the card’s faded “Not in NuVizz’s latest notes”: “do this in the portal but on the print manifest don’t put them on there at all.” The card keeps the faded, struck-through line, because a dispatcher can weigh it; a driver holding the ticket cannot, so that note is now simply not printed. And the note the card marks blue “New — from the latest scan” is printed, so a ULINE “CANCELLED ORDER. STOP & RETURN PER ULINE.” or a “**DELIVER BY 3:00PM**” added after the order was first read reaches the driver (its by-line reads “From NuVizz’s latest scan” — the scan sends no author or time). This covers every printed ticket: the route panel’s Print Manifest, a Compare card’s Print manifest and a single Delivery Ticket. On a stop with no stored notes, a note that is only an amount stays off the paper — on 9/30 all 30 such stops were AVRT orders whose only note is their price, and those tickets have never printed one (ULINE’s TOTAL-AMOUNT lines print as they always have). ALSO FIXED, on the card and the paper alike: after a Refresh the stored notes can be newer than the scan’s note text, so a note added in NuVizz since the last scan read as removed — the newest note, faded on the card (and it would have been dropped off the ticket). Now nothing is judged removed on a stop whose notes a Refresh (or a note, date or contact edit from the app) has read — the safe side: that stop keeps showing and printing every stored note, as it did before 1.100.2. On the 9/30 board no stop carried such a stamp. MEASURED on the stored boards of 9/30 and 10/1 (1,543 tickets, zero NuVizz calls): 38 tickets gain a note, none loses one. THE WAY BACK, in halves (each a redeploy): VITE_MANIFEST_NEW_NOTES=off stops printing the scan’s notes but still leaves removed ones off; VITE_MANIFEST_SCAN_NOTES=off puts the paper back exactly as before; VITE_SCAN_NOTES_AUTO=off puts back the card and the paper together. Zero NuVizz calls.'],
+  ['1.100.2', 'A NEW NOTE FROM NUVIZZ SHOWS ON THE CARD WITHOUT A REFRESH. Chad, on ROBERT BOSCH (PRO 007183226) showing the amber “NuVizz has newer instructions than these — tap Refresh”: “IF there are new notes picked up in the normal scans not enrichment then use them i shouldn’t have to refresh to get them you know what they are so if some are added or deleted just auto use them.” The normal scans carry every order’s note text, free, on every pass; the full notes (who wrote it, when) come only from the one detail read, so the card used to keep showing the old ones and ask for a Refresh. NOW the card merges the two every time it draws: a note the scan carries that the stored notes do not shows straight away, on top, marked “New — from the latest scan” (the scan sends no author or time — Refresh still pulls them); the stored notes keep their author and time; and an order instruction the latest scan no longer carries is shown faded and struck through, “Not in NuVizz’s latest notes”, rather than hidden — the scan’s one-line text is known to carry less than the full notes, so a note missing from it is not proof NuVizz deleted it, and a hidden real instruction is a missed delivery. Other kinds of note (pre-visit, general, a dispatcher’s own) are left as they were. On a stop with no stored notes at all (an AVRT order, whose only note is its price) the scan’s note shows plain, “From NuVizz’s latest scan”, never “New”; and when the text was cut short nothing is struck through. MEASURED on the stored boards of 9/30 and 10/1 (1,543 stops, zero NuVizz calls): 33 cards gain a real note they were not showing — 18 of them, like “CANCELLED ORDER. STOP & RETURN PER ULINE.” and “refused”, too short for the old banner to ever ask — and nothing is struck through. The amber banner is gone; there is nothing left for it to ask. VITE_SCAN_NOTES_AUTO=off puts back the old notes and the banner (a redeploy). Zero NuVizz calls.'],
+  ['1.100.1', 'THE RESTRICTIONS COLUMN NOW SHOWS ITS ICONS. Chad, on the bottom grid: “under restrictions can we put icons as well in there if they have any special icons.” Each customer restriction in the cell now has the same icon its map pin, sidebar chip and Legend row use — the red slashed truck for No T/T, the liftgate arrow, the appointment mark, Box only — beside the word it always had. An order’s handling flag shows its own mark where it has one: the stacker’s yellow H. DO NOT DOUBLE STACK has no icon anywhere in the app, so it stays the word DNDS rather than getting an invented one. Same order as before (the customer’s restrictions first, then the order’s flags), and the column still sorts on the words, read off the same list the icons are drawn from, so an icon can never show something the words do not say. VITE_GRID_RESTRICTION_ICONS=off puts back words only (a redeploy). Zero NuVizz calls.'],
+  ['1.100.0', 'MORE → PERFORMANCE: ARE WE AHEAD OR BEHIND RIGHT NOW, AND HOW ARE THE DAYS, WEEKS AND MONTHS GOING. Chad: “I wanted to build a stock performance UI under the more tab … to track performance over days, weeks, months … and also like interday to track the number of stops that we’ve done compared to other days or like the daily average at that point in time to let us know if we’re behind or ahead of schedule.” It had never been started — nothing for it on main, on any branch or in any PR. NOW, under More on the desktop and the phone: TODAY’S PACE — stops delivered so far against a typical day AT THE SAME MINUTE (the median of the last 8 of today’s weekday, or of the last 20 weekdays for the week after a holiday, with the middle half of those days drawn as a band), judged at the board’s last scan, and called Ahead / On pace / Behind only once 4 comparison days exist; four tiles (delivered today, share of today’s board done, delivered per day and completion, each against a named comparison); the trend by day, week or month with a moving average; where the stops ended up; the average by weekday; and every day and every route as rows — sorted, searched, paged — where a ticked day is drawn over today, a holiday can be left out of the typical day, and rows copy out. Counted exactly as the 6:30 report counts: planned only, 90 and 91 both delivered, cancelled orders out of the total, CHAD and appointment routes left out. HOW: each night’s capture now also writes one small pace digest per sealed day (pace_days — 288 five-minute buckets and the route rows), and today is worked out live from the board. Days sealed before this shipped have no digest yet: the screen shows them as gaps, never zeros, and an admin builds them from its History card (ten days a step). ZERO NuVizz calls on every path. PUT IT BACK: STOP_PACE=off in Netlify switches off the screen’s read, the nightly digest and the rebuild together; reverting this commit removes all of it. 64 new tests; the phone, tablet and desktop layout guards all measure the screen.'],
+  ['1.99.10', 'STOP LOOKUP: A TAPPED BUSINESS SAYS IT IS OPENING, AND A ROW\u2019S ROUTE OPENS ITS LOAD. Chad, on a phone with \u201c22 businesses match \u2018master\u2019\u201d: \u201cclicking this and nothing happens doens\u2019t show me the load \u2026 i want you to build this entire screen and test everything in it.\u201d The tap was working \u2014 a customer takes about ten seconds to read \u2014 but its only sign was \u201cLooking\u2026\u201d on the search button, a screen above on a phone, and a second tap started the read over. NOW: the tapped business says \u201cOpening \u2014 reading their deliveries\u2026\u201d with a spinner and ignores a second tap (tapping a different business switches to that one instead of waiting), and a dark line at the top of the view says what is being read (\u201cOpening MASTER WINDOW SYSTEMS\u2026\u201d) wherever the page is scrolled \u2014 for every search on this screen, not just this one. THE LOAD: on a customer\u2019s row, an order\u2019s day and an address result, the route (FRANK \u00b7 stop 15) is now a link. It opens that load under the row \u2014 the map, every stop in delivery order, this order marked \u2014 and the customer stays on screen; tap it again to close. It reads the same records as Driver\u2019s loads (no NuVizz call). If two drivers share the name it asks which; if the driver was renamed (the name on the row matches nobody that day) it lists who ran loads that day instead of saying there is no load; if none of their loads carries the route it lists that day\u2019s loads to pick, never picks one for you; if the load it opens does not hold this order (moved to another truck that day) it says so above the load; a day that has not happened says the load has not run yet. An order tapped inside the load opens there, once. Below dispatcher the route stays plain text, as Driver\u2019s loads is. Also: a business picked after the search box was edited now opens the business you picked. TESTED: a new check taps every control on Stop lookup on a phone and a desktop with every answer made to arrive late, and fails any tap that changes nothing on screen within a quarter second; it fails on the code before this. THE WAY BACK: one commit; a revert puts the screen back.'],
+  ['1.99.9', 'A ULINE “STRAIGHT TRUCK ONLY” NOTE IS A FULL YELLOW DISC NOW — GREEN SHOWS ONLY WHERE A TRACTOR HAS ACTUALLY DELIVERED. Chad: “i don’t agree with this icon being half green if a tractor has never been there why would it be half green should just be a full yellow advisory.” The half-and-half mark used its green half to mean “nobody has checked this”, but on the map green means a trailer fits, and at a dock no tractor has ever delivered to nothing says one does. NOW: an unconfirmed no (a Uline note, or a scanner’s find) fills solid in the advisory yellow with the slashed truck; a no that someone here ticked stays solid red, so the two cannot be confused; and the yellow keeps a green half only in the one case worth a second look, when a tractor HAS delivered to that dock anyway (yellow beside the bright tractor-delivered lime). The Legend shows all three. Map pins and cluster pins draw the same way. THE WAY BACK: one small commit, so a revert puts the half-and-half mark back.'],
+  ['1.99.8', 'ERRORS NOW READ AS PLAIN SENTENCES. Chad: “Can you make it simple sentence when there is an error that looks less like code.” When a Save, a new route, an address fix or a note was refused, the screen showed the server’s own diagnostic — “commitBoard(rwb): load DAVIS000204039 has 5 stop(s) the board isn’t showing (…) — a declarative RWB save would unplan them. Refresh and retry.” NOW it says what happened and what to do: “Not saved. NuVizz has 5 orders on this route that your screen isn’t showing yet (…). Saving now would take them off the truck — refresh, then Save again.” Every wording was written from a real refusal in the write log (September: 104 failed writes, and every one of them now reads plainly). Route names instead of load numbers, except when two routes share a name (BUFORD on two days). Nothing is claimed that the server did not say, and no instruction is dropped. A message nobody has seen before keeps its own words, with only the code-looking prefix taken off. The full technical text is still in the write log. VITE_PLAIN_ERRORS=off puts back the old words (a redeploy). Zero NuVizz calls.'],
+  ['1.99.7', 'THE ATTEMPTS BACKFILL NO LONGER SPENDS A CALL TO LEARN WHAT THE LIST ALREADY SAYS. Its dry run of 06/26 \u2192 09/29 found 96 orders to look up where 69 were expected: 27 were a \u201c-1\u201d or \u201c-2\u201d copy listed beside a row of the SAME order that the 8:30 freeze had already named, and the backfill would have read each one\u2019s timeline (27 NuVizz calls) to learn that driver again. NOW such a row takes the named row\u2019s driver, route and load directly \u2014 free, marked attributedFrom: sibling \u2014 and only orders nobody named are read. The dry run lists the two separately. Zero NuVizz calls for the free rows; 1 per order for the rest, as before.'],
+  ['1.99.6', 'PAST ATTEMPTS WRITTEN WITH NO DRIVER CAN NOW BE GIVEN THE DRIVER WHO HAD THEM ON THE DAY THEY WERE DUE. Chad: \u201cI want the driver it was assigned to on day it should have delivered not the driver that delivered it the next day late.\u201d Before 1.99.0 nothing in Firestore kept that answer for a route dispatched after the 8:30 freeze; the order\u2019s own NuVizz activity timeline does. NEW: nuvizz-att-backfill. GET ?from=&to= is a free dry run \u2014 every attempt with no driver in the range and what reading them would cost. POST ?from=&to=&confirm=1 reads up to 6 timelines per request and writes the answer onto the attempt (field-masked), marked attributedFrom: timeline. THE RULE (tested on five real timelines, including two the 8:30 freeze had already named correctly): the Davis driver dispatched on the due day, before customer service unplanned it; a later day\u2019s dispatch is the redelivery and is never the answer. Each row also records whether that driver reached the customer that day (atCustomer). A \u201c-1\u201d copy is answered with its original stop \u2014 one timeline read for both. A row already read is never read again. Nothing runs on its own: each run is a POST with confirm=1, and the calls count against the daily ceiling. 1 NuVizz call per order (2 when its stopId is not on file).'],
+  ['1.99.5', 'TIME WINDOWS NOW WEIGHS MILES: A MISSED WINDOW IS WORTH A COUPLE OF MILES, NOT 15 OR 20. Asked what one late stop is worth to the Time windows re-sequence, Chad: \u201cFor the time windows, I mean, a couple of miles is worth it, but not 15 or 20 miles.\u201d Tested on 1,120 real routes with made-up receiving hours, it had taken 390 late stops to 7 for 10.7% more road miles and crossed the route over on 355 cards; it never looked at miles. Now each late stop is priced at 2 of the card header\u2019s miles, and it takes the order with the fewest miles plus that price, never with more late stops than the card. A stop reached before a booked window or a typed opening is treated the same way (never more of them than the card, 2 miles each) \u2014 Chad priced late stops, and pricing an early one the same is this release\u2019s reading, so a booked slot the card makes is not given up to save miles. So a late stop is made when making it costs 2 miles or less against the shortest order that leaves it late. Measured again after a Shortest distance press: 390 late \u2192 250 for 0.1% FEWER road miles, crossing cards 0 \u2192 56; the 243 late stops it no longer chases had cost 9,299 road miles, about 38 a stop. SAID PLAINLY: a far stop that can only be made by driving 20 extra miles is now left late, and the line says why; the menu still reads \u201cTime windows \u2014 fewest late\u201d. The line says the miles now: \u201c1 late \u2192 0 late \u00b7 14.7 \u2192 15.7 mi\u201d. The 2 is one line to move. THE WAY BACK: VITE_TIME_WINDOWS_MILES_CAP=off (a redeploy) puts back the search that never looked at miles. 9 new tests.'],
+  ['1.99.4', 'CLOSEST FIRST WITHOUT THE ONE-TOWN-AT-A-TIME RULE, TO TRY. Asked whether Closest first should keep the Sep 10 \u201cone town at a time\u201d rule \u2014 measured on 1,120 real routes, the rule changes Closest first\u2019s order on 228 of them and there adds 29 self-crossings and removes none \u2014 Chad: \u201cKeep the closest first. Try closest without it on the number four option.\u201d So Closest first on the Compare card\u2019s Re-sequence menu (straight line and road box) and on the Build-result card\u2019s menu is now the plain shortest sweep out from Buford. What it does, measured: on straight lines it changes 228 routes, shorter on 191 (2.1% fewer miles on those), 29 crossings gone and none added, but it now visits a town twice on 161 of them, the shape the rule was written for on JEFF; with the road box, 57 crossings gone and 41 added. By eye it is mixed: NELSON 09-03 and TREVARR 09-17 stop crossing themselves, TRAILER 6 09-16 now drives past its first stops and comes back. Farthest first keeps the town rule; the Build Panel engine and Return to warehouse are untouched. THE WAY BACK: VITE_CLOSEST_FIRST_WITHOUT_TOWNS=off (a redeploy) puts the town rule back on Closest first. 5 new tests.'],
+  ['1.99.3', 'A STOP GOOGLE CANNOT ROUTE NO LONGER COUNTS AS ZERO MILES ON A COMPARE CARD\u2019S ROAD BOX. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 3. With the road box ticked, the card asks Google for road distances between its stops. Where Google had no route for a pair, or left it out of its answer, the card was handed a free 0-mile, 0-minute leg, so that stop looked like the cheapest one on the card and the order was built around it. The route builder has priced such a leg at the straight-line road estimate (1.3 \u00d7 crow-flies) since A5-S27-4; the card now does the same. Every leg Google could drive is still Google\u2019s. Server-only: no screen code changed. THE WAY BACK: ROAD_BOX_ESTIMATE_UNROUTABLE=off (a redeploy) puts the old 0-mile reading back for the card alone; the builder keeps its own switch, ROUTE_MATRIX_ESTIMATE_UNROUTABLE. 3 new tests, 1 updated.'],
+  ['1.99.2', 'EVERY LATE STOP ON A COMPARE CARD GETS ITS BADGE, HOWEVER MANY THERE ARE. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 2. The flag panel folds more than 12 red (25 amber, 40 critical) rows of one kind into a single summary line, and the card\u2019s late check read only rows that name a stop, so the whole batch vanished from the card: thirteen stops each 15 minutes past a typed close showed NO late badge, where twelve showed twelve. Time windows scores orders with the same check and used the gap: on a 30-stop card it reported \u201c23 late \u2192 0 late\u201d for an order that really had 26 late, by making three more stops late to push the card past the cap. Now the card reads the stops behind the summary line too, and Time windows reads them the same way, so the badges and the re-sequence cannot disagree. The board\u2019s flag panel and the alerts are untouched. THE WAY BACK: VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP=off (a redeploy) puts the old reading back for both. 4 new tests.'],
+  ['1.99.1', 'A LATE ROAD REPLY NO LONGER PUTS A STOP BACK ON A CARD IT LEFT. Chad, shown the test report on the route options: \u201cI see bugs one through three, and those look like something I want to fix.\u201d This is bug 1. With the road box ticked, a re-sequence pick lands the straight-line order at once and the road order after Google replies, and that road order was computed from the stops the card held at the pick. A stop dragged to another card, or removed, while the reply was out came back with it: it sat on two cards and Save sent it on both loads, or it sat in the order and the removals at once and its unplan was never sent. Now the road order lands on the card as it is when the reply arrives: only the stops still on it, in the road order, then anything added meanwhile. Nothing else about the re-sequence changes, and a reply that lands on an unchanged card gives exactly the order it always did. THE WAY BACK: VITE_ROAD_REPLY_DROPS_MOVED_STOPS=off (a redeploy) puts the old reading back. 6 new tests.'],
+  ['1.99.0', 'ATTEMPTS NAME THE DRIVER WHO HAD THE ORDER, NOT JUST THE ONE WHO HAD IT AT 8:30. Chad: \u201cWhy are we freezing the snapshot at 8:30 when we have Firestore data all day long of scans that are being ran constantly?\u201d The evening attempts list names a driver by looking each failed stop up in the 8:30 freeze, and the freeze only keeps a stop that had a driver AT 8:30 \u2014 so a route built overnight and dispatched later in the day was missing from it whole, and every failure on it was written with no driver. Order 007182021 on 9/25: planned onto CHRIS HEAD at 1:29 AM, dispatched to Chris Head at 12:43 PM, failed, unplanned at 5:58 PM \u2014 written as Unknown, with six more that day. NOW every 15-minute scan keeps, for each of today\u2019s stops, the driver it was on the last time it was seen routed and not yet marked ATT, and locks that the moment the ATT marker appears, so a same-day re-plan onto the next driver cannot overwrite it. The evening list uses it ONLY where the 8:30 freeze has nothing: every attempt the freeze already names keeps exactly that driver. A \u201c-1\u201d copy with no record of its own is named from its original stop. Each row says where its driver came from (plan / holder / holder-original). See it for any day, free: nuvizz-attempts?date=YYYY-MM-DD&holders=1 \u2014 the day\u2019s record beside every attempt, and whether it agrees with the 8:30 freeze where both named someone. WHAT DID NOT CHANGE: the 8:30 freeze, what it records and who reads it; where any order is filed. Starts with today\u2019s scans; days already past are not filled in by this change. NUVIZZ_ATT_HOLDER=off stops the recording and the fallback together (a Netlify environment setting, no code change). Zero NuVizz calls.'],
+  ['1.98.6', '＋ NEW ROUTE’S SWITCH CAN BE READ, AND SO CAN WHERE IT WOULD GO — BEFORE ANY CALL IS SPENT. Chad said yes to one test route on the UAT site. Before spending it, the code was checked for where that test would land, and it could not say: the portal create goes wherever NUVIZZ_RWB_PORTAL_BASE points, a setting of its own that nothing ties to the site’s other NuVizz address — and the UAT site was built by copying production’s settings (lib/mirror-guard.mts says so). Nothing could read whether NUVIZZ_ROUTE_CREATE_RWB was on either, and with it on the dry run still described the OLD create. NOW a dry run of ＋ New route (zero NuVizz calls) says which create a Save would make (portal or v7), whether the portal sign-in is set, and which NuVizz hosts it would sign in at and create on — and with the switch on, its plan and preview describe the portal create. Off, the old plan is unchanged. Nothing a Save does changes. 7 new tests. Zero NuVizz calls.'],
+  ['1.98.5', '＋ NEW ROUTE CAN NOW CREATE THE ROUTE THE WAY THE PORTAL DOES — BUILT AND READY, SWITCHED OFF UNTIL ONE TEST CREATE LANDS. Chad, after every ＋ New route since Sep 15 died on NuVizz’s “deliverItLoad is null”: “HERE IS A HAR FOR CREATING A ROUTE.” READ OFF THAT CAPTURE: the portal does not use the v7 routePlan/update this app calls (which refuses an empty route and crashes on one with stops). Its Route Workbench reads the route profile (buildEmptyRouteJson), then makes the route EMPTY with one call (addNewRoutePlan) and gets the new load number straight back — SEYMOUR came back as DAVIS000205172. NOW, with the switch on, ＋ New route does exactly that, then puts the card’s orders on the new route through the SAME Save an existing load already gets — added, sequenced in card order, checked against NuVizz’s own read-back, written to the board — and assigns the staged driver after. A name already in use is refused in words (“NuVizz already has a route named TONY — open it from the Routes panel”). A route that is made but whose orders do not attach says so, with its load number, and says not to create it again. WHAT THE CAPTURE COULD NOT SHOW, SAID PLAINLY: whether NuVizz accepts that call from this app’s portal sign-in (every other Route Workbench call here works that way), and the vehicle-type number for a tractor — the capture only shows 475 “Straight Truck”, which all three of its creates used, so every route is created as Straight Truck until that number is known (NUVIZZ_ROUTE_CREATE_VEHICLE_TYPE_ID sets it). HOW TO TURN IT ON: NUVIZZ_ROUTE_CREATE_RWB=on — a Netlify environment setting, no code change; try one route on the UAT site first. Off (the default, and any typo) keeps today’s create exactly. 16 new tests, including SEYMOUR’s request rebuilt field for field from the capture.'],
+  ['1.98.4', 'THE “NON-DO STOP” REFUSAL NOW SAYS WHICH STOP. Chad, after MONE was refused twice on 9/28 (10:43 and 10:48 PM) and BRIAN before it (8:38, 8:39): “I WANT THE REAL FIX.” The refusal said “load has a non-DO stop in a delivery slot that this card is not sequencing — reorder skipped (verify in portal)” and never which one — though the load it had just read from NuVizz held the stop’s number, its type, where it sits on the load and the customer. So a dispatcher at 10:43 PM had to open the portal and hunt. NOW it reads, for example, “… not sequencing — RA58610778-1-1 (pickup, LOCKHEED MARTIN, NuVizz stop 19). Nothing was sent: add it to the card if it belongs on this route, or take it off the load in the portal, then Save.” Three stops named at most, then a count. The write log keeps the named stops on the refused Save’s row, so the next one is a lookup, not a hunt. WHAT DID NOT CHANGE: the guard itself — the same stops refuse, for the same reason, and nothing is sent, because saving the card as shown would take that pickup off the truck. Checked on the way: re-sequencing (Reverse, Shortest…) never drops a stop from a card, so the missing stop was never on the card to begin with. NUVIZZ_RWB_NAME_UNMODELED=off puts the old sentence back exactly (a Netlify environment setting, no code change). Zero NuVizz calls.'],
+  ['1.98.3', '“TRACTOR HAS DELIVERED HERE” NO LONGER MISSES A DOCK BECAUSE ONE ORDER SAYS “SE” AND ANOTHER SAYS “SOUTHEAST”. Chad, on MYRIAD360 COREWEAVE (PRO 007184400): “Why does this not have my tractor has delivered here flag row?” — and, told why, “BUILD IT.” READ OFF THE RECORDS, NOT REASONED: Che Roberts and Victor Fernandez delivered there three times, all tractor-tagged, filed under “2788 OLD TILTON ROAD SOUTHEAST”; the new order reads “2788 OLD TILTON RD SE”. The address matcher already treats ROAD and RD, and NORTH/SOUTH/EAST/WEST and N/S/E/W, as the same — but had no rule for SOUTHEAST/SE, NORTHEAST/NE, NORTHWEST/NW or SOUTHWEST/SW, so one dock read as two places. The panel row checked the exact customer + address key only, and the map’s lime check (which also tries same street + ZIP) missed it too. NOW the tractor question folds those four directions (and their two-word forms, “SOUTH EAST”), and the stop panel’s row asks the same thing the map asks: this customer’s key, then the same street + ZIP under any name. House number, street and ZIP must still match exactly. WHAT IS NOT TOUCHED: the key customer notes are filed under — receiving hours, address fixes, pins and opt-outs stay exactly where they are. The server’s school/church trailer flag still looks up the exact key, as its own notes say it must. VITE_TRACTOR_PLACE_FOLD=off puts both halves back (a redeploy). Zero NuVizz calls.'],
   ['1.98.2', 'A LOAD BUILT IN THE PORTAL OPENS IN COMPARE AS SOON AS ITS ORDERS ARE ON THE BOARD — ON THE LOAD NUMBER THEY CARRY. Chad, with STEVEN 1 in the Routes panel and the card refusing: “STEVEN1 HOW CAN IT NOT FIND THE LOAD I LITERALLY SHOWED IT TO YOU IN DISPATCH MAP. THE MANUAL REFRESH BUTTON WHICH I HAD HIT BEFORE SHOULD OF PICKED UP THE LOAD AND LOAD NUMBER WITH THE ROSTER SCAN.” READ OFF THE SCAN LOG, NOT REASONED: the two manual refreshes ran at 5:12 and 5:29 AM and each did pull the roster; STEVEN 1 was built in the portal at 5:49 (the timestamp inside its load id); the 6:00 and 6:15 scans put its 17 orders on the board with its load number DAVIS000205171 on every one; the next roster pull was 6:30. So the refresh could not have seen it — and the card never needed the roster: a card asked ONLY the roster, by name, because list rows carry no load id, and the load number on every order (captured since 1.81.6) was never read. Worse, the board feed did not even send it to the screen — the lean field list forgot it. NOW the feed sends it, and when the roster, a load id and the earlier-day look-back all come up empty, the card opens on the number its own orders carry. Two different numbers under one route name refuse and name both; an order our own Save just moved does not vote until the next scan re-reads it (it can still carry its old load’s number for those few minutes). A card that opened before opens exactly as before. Zero NuVizz calls. VITE_WB_STOP_LOADNBR=off puts back the old refusal (a redeploy). 12 new tests; two deliberate breaks each turned a test red.'],
   ['1.98.1', 'A COMPARE CARD’S PRINTED MANIFEST NOW FOLLOWS THE CARD — SAVED OR NOT. Chad: “why my print manifest doesn’t match the order my deliveries are in in route work bench until a nuvizz save has occurred — to me it should always match even if a save hasn’t occurred,” then “I want my manifest to always match what is in dispatch map.” THE CAUSE WAS ONE LINE. Print manifest handed its stops over in the card’s order and the manifest builder threw that order away, re-sorting by NuVizz’s stop sequence. Before a Save every stop still carries the sequence of the load it came off, so the paper printed the OLD route. A confirmed Save stamps the new sequence onto the stops, and the same re-sort then happened to agree with the screen — which is why saving looked like it fixed the manifest. On a brand-new route no stop has a sequence at all, and the re-sort fell back to a map chain starting from the most north-west stop: an order nobody chose, with every ticket’s circle printed blank. NOW, ON A RE-ORDERED CARD: the pages come out in the card’s order; each circle carries the stop number that order earns, counted the way NuVizz and the driver’s handheld count them, so two orders at one dock share a number (the card’s rows read 3 and 4, the paper and the handheld 3 and 3, and the stop after them is 4 on both rather than one ahead); and the “Next Stop” time at the foot of each ticket is left off, because it is NuVizz’s ETA for that stop worked out for the order NuVizz holds, and on a re-ordered page it would tell a driver to reach his first stop last. ON A CARD STILL IN NUVIZZ’S ORDER the paper is byte for byte what it printed before — NuVizz’s numbers, its ETAs, the same cover — except that a stop NuVizz has not numbered yet gets its number instead of a blank circle. The cover (route name, origin, driver) is read the old way on every card, so a stop dragged in from another load cannot put that load’s driver on it. UNCHANGED: the route detail panel’s Print Manifest, single delivery tickets, Save, the map and the card itself. Zero NuVizz calls. WHAT IT DOES NOT DO: the Driver line names the load’s current driver, not one picked on the card and not yet saved; nothing on the paper says the order has not been saved yet; and a stop the board can no longer find is left off the paper (its number stays taken) with a warning that shows on desktop but, as before, not on a phone. PUT IT BACK: VITE_MANIFEST_IN_CARD_ORDER=off and a redeploy; anything else, a typo included, leaves it on. 21 new tests run the real manifest builder and read the printed pages back, and each rule was proven to bite by breaking it. A new real-browser check (verify:card-manifest, desktop and phone, in CI) prints a real card as opened — unchanged, NuVizz’s order and ETAs — then reverses it WITHOUT saving and prints again: E D C B A, numbered 1 to 5, no ETA lines. Built with the switch off, the same check reproduces the reported bug exactly — card E D C B A, paper A B C D E.'],
   ['1.98.0', 'RETURN TO WAREHOUSE: A RE-SEQUENCE FOR A TRUCK THAT COMES BACK TO BUFORD, TESTED ON 1,120 REAL ROUTES AND BY EYE ON EVERY ONE WHERE IT CHANGES THE ORDER, AND SHIPPED SWITCHED OFF ON PRODUCTION UNTIL CHAD SAYS. Chad, after v1.96.0 made Shortest distance count the drive home: \u201cNot every driver returns to warehouse but even if this driver did this would still be absolutely awful optimization. Make shortest work like it did then you can create another optimization around returning to the warehouse.\u201d Then: \u201cTest it throughly.\u201d v1.97.0 put Shortest distance back byte for byte; this is the other optimization, one new line on the Compare card\u2019s menu. WHAT WAS AWFUL, read off his two screens: the shortest round trip is free to start and finish anywhere, and used it. TRAILER 3 started mid-corridor at Lithonia, ran to the far end of Conyers and came back west over I-20 past its own start (117 road miles, against 102 for the corridor walked once); SAMUEL finished three stops from where it began. SO IT INVENTS NO NEW SHAPE. It starts from Shortest distance\u2019s order and only trades it for an order this menu already draws (Shortest distance the other way round, Loop either way round, Farthest first, Closest first) when that order gets the truck home at least a mile AND 1.5% sooner, the drive home counted, on the distances the card is using, and its picture is clean: it does not cross itself, drive a road twice, drive past a stop and come back for it, split a town more than Shortest distance does, come back to a neighbourhood it left three miles behind, drive IN past a stop it serves later, close on its own first stop, or double back along a corridor (TRAILER 3 itself). The feedback line says which order it used and the round-trip saving, drive home included and marked as a straight-line estimate when it is one, or that it kept Shortest distance. HOW IT WAS TESTED. 1,120 real routes from 20 board days (Sep 1\u201329, every route with six or more stops, read from the cached boards: no NuVizz calls), scored in real road miles from a free public road router with the drive home counted, every reference run exactly as the card runs it. Every route where the first version differed from Shortest distance (607 pictures) was drawn beside Shortest distance and judged by eye against the shapes Chad has rejected: 405 better, 88 the same, 36 worse, 78 awful. The last four checks above were built from those 78 (three tuned on Sep 1\u201315 and confirmed on Sep 16\u201329, the corridor one from a stress test of corridors lying across the Buford direction). An adversarial code review and 13,000 seeded stress runs found no order that drops or doubles a stop, depends on the order stops were listed in, or makes the round trip longer than Shortest distance on the distances used. RESULT. Straight line (the card\u2019s default): 122.2 \u2192 120.8 mi a route (\u22121.15%); shorter on 239, the same on 852, longer by more than half a mile on 29 (the straight line not seeing a road, as Shortest distance does not either). Road box ticked: 120.4 \u2192 119.1 (\u22121.14%), longer on none. It never drew a fault Shortest distance does not already draw. It keeps Shortest distance\u2019s order on three routes in four; when it switches it is nearly always to a clean Loop, a median 3.4 straight-line miles shorter. Of the 78 awful pictures, 52 are now Shortest distance again and 24 remain; 31 good switches were given up to get there. WHY IT IS OFF ON PRODUCTION: 24 of its 502 switches (about 1 in 21) still draw a picture a reviewer called awful. Whether that is good enough is Chad\u2019s call. It is always on at the UAT site, to try against seeded orders; VITE_RETURN_TO_WAREHOUSE=on (and a redeploy) turns it on for production, and anything else, a typo included, leaves it off. WHAT IT DOES NOT DO: on BRENT it keeps the Shortest distance order he called \u201cnot a good optimization\u201d on straight lines (no order the menu draws is both clean and a mile shorter there; ticked, it takes Farthest first, 4.6 road miles shorter). It does not read receiving hours. The card header still shows one-way miles. Nothing else changes; a one-commit revert removes it. 11 new tests, and a real-browser run on desktop and phone, straight line and road, switched off, switched on and on UAT.'],
@@ -1380,9 +1408,16 @@ const COMPARE_AUTO_HOURS_ON = compareAutoHoursEnabled(import.meta.env);
 const COMPARE_FULL_WINDOW_ON = compareFullWindowEnabled(import.meta.env);
 // "Time windows" in the Compare card's Re-sequence menu (lib/time-window-sequence.js).
 const COMPARE_TIME_WINDOWS_ON = compareTimeWindowsEnabled(import.meta.env);
+// VITE_TIME_WINDOWS_MILES_CAP=off puts back the Time windows search that never looked at miles.
+const TIME_WINDOWS_MILES_CAP_ON = timeWindowsMilesCapEnabled(import.meta.env);
 // Return to warehouse: on the UAT site always, on production only once VITE_RETURN_TO_WAREHOUSE=on
 // (lib/routing-select.js returnToWarehouseVisible says why it defaults off).
 const RETURN_TO_WAREHOUSE_ON = returnToWarehouseVisible(import.meta.env, BENCH_ON);
+// VITE_ROAD_REPLY_DROPS_MOVED_STOPS=off puts back a late road reply re-adding a moved or removed stop.
+const ROAD_REPLY_DROPS_MOVED_STOPS_ON = roadReplyDropsMovedStopsEnabled(import.meta.env);
+// The sweep a re-sequence pick runs: Closest first without the town rule unless
+// VITE_CLOSEST_FIRST_WITHOUT_TOWNS=off puts the rule back (sweepModeFor).
+const sweepModeOf = (strategy) => sweepModeFor(strategy, import.meta.env);
 // The Routing screen re-reads the stored roster when a newer scan lands (lib/roster-freshness.js).
 const ROUTING_ROSTER_REREAD_ON = routingRosterRereadEnabled(import.meta.env);
 // The Residential paint brush in the Routing gear (lib/place-mark.js).
@@ -1394,6 +1429,8 @@ const COMPARE_UNREACHABLE_HOURS_ON = compareUnreachableHoursEnabled(import.meta.
 // on the hours line above (lib/route-preflight.js preflightBadgeWords). VITE_COMPARE_UNREACHABLE_LATE=off
 // puts "can't make" back. Build-time.
 const COMPARE_UNREACHABLE_LATE_ON = compareUnreachableLateEnabled(import.meta.env);
+// VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP=off puts back a card past the flag cap showing no late badges.
+const PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON = preflightCountsEveryLateStopEnabled(import.meta.env);
 // A Stop lookup note save writes only the fields the rep changed (lib/customer-note-edit.js).
 // VITE_NOTE_SAVE_CHANGED_ONLY=off puts back the whole-draft write. Build-time, so flipping it is a redeploy.
 const NOTE_SAVE_CHANGED_ONLY_ON = noteSaveChangedOnlyEnabled(import.meta.env);
@@ -2586,11 +2623,14 @@ function useLimeAsOfToggle() {
 // half of every tractor match key, because a building a tractor served under another customer's
 // name has still had a tractor at it. `known` is false until the record has loaded: "no tractor
 // yet" cannot be claimed from a fetch that is still running or has failed.
+// "RD SE" and "ROAD SOUTHEAST" are one dock to the tractor question (lib/place-mark.js, v1.98.3).
+// VITE_TRACTOR_PLACE_FOLD=off puts back exact-spelling matching AND the stop panel's exact-key row
+// (TRACTOR_PLACE_FOLD_ON is read in lib/place-mark.js).
 const __tractorPlaceCache = new WeakMap();
 function tractorPlacesOf(map) {
   if (!map) return new Set();
   let set = __tractorPlaceCache.get(map);
-  if (!set) { set = tractorPlaceKeys(map); __tractorPlaceCache.set(map, set); }
+  if (!set) { set = tractorPlaceKeys(map, { fold: TRACTOR_PLACE_FOLD_ON }); __tractorPlaceCache.set(map, set); }
   return set;
 }
 function useTractorFacts(boardDate = null) {
@@ -2720,7 +2760,7 @@ function useShiplifyTab(tab, boardDate) {
   return useMemo(() => {
     const lookup = data.lookup || EMPTY_SHIPLIFY_LOOKUP;
     const recordFor = (s) => (on ? (shiplifyRecordFor(lookup, s)?.rec || null) : null);
-    const seenAt = (s) => tractorSeenAt(s, facts.map, facts.places).any;
+    const seenAt = (s) => tractorSeenAt(s, facts.map, facts.places, { fold: TRACTOR_PLACE_FOLD_ON }).any;
     return {
       on, setOn, data, facts, lookup, recordFor, seenAt,
       markerOpts: (s) => ({ shiplifyRec: recordFor(s), shiplifyOn: on, tractorSeen: seenAt(s), tractorKnown: facts.known }),
@@ -4150,14 +4190,27 @@ const BLOCKER_GLYPH_INK = '#111827';
 // site is `tractorDelivered ? LIME : (eligColor || flagHue)` — hand THAT in and a priority
 // flag's purple becomes the "a trailer fits" half, which is the v0.76.5 defect wearing a new
 // coat. Only the proof itself may speak here.
+//
+// AN UNCONFIRMED "NO" IS A FULL YELLOW DISC, AND GREEN APPEARS ONLY WHERE A TRACTOR HAS BEEN.
+// Chad, on a Uline advisory drawn half yellow and half (forest) green at a dock no tractor has
+// ever delivered to: "i don't agree with this icon being half green if a tractor has never
+// been there why would it be half green should just be a full yellow advisory." Right: the
+// green half was there to say "unconfirmed", but on a map green means "a trailer fits", and
+// nothing here says one does. So an advisory blocker fills SOLID in the advisory yellow — the
+// one colour that means "somebody else's note says no, nobody here has checked" — and a
+// confirmed one stays solid in its own colour (red), so the two still cannot be confused. The
+// split survives for the one case worth a second look: an unconfirmed no at a dock a tractor
+// HAS actually delivered to — yellow beside the lime of that proof.
+const ADVISORY_WARN_COLOR = '#f59e0b';   // the Uline advisory amber (RESTRICTION_ICONS.uline_straight_truck)
 function blockerDiscMarkup(cx, cy, r, warnColor, advisory, tractorProven) {
   const top = cy - r, bottom = cy + r;
-  const okHalf = tractorProven ? TRACTOR_DELIVERED_COLOR : ELIG_TRACTOR_COLOR;
-  // Solid when a person has confirmed it; split down the middle when nobody has.
-  const disc = advisory
-    ? `<path d="M${cx} ${top} A${r} ${r} 0 0 0 ${cx} ${bottom} Z" fill="${warnColor}"/>`
-      + `<path d="M${cx} ${top} A${r} ${r} 0 0 1 ${cx} ${bottom} Z" fill="${okHalf}"/>`
-    : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${warnColor}"/>`;
+  const warn = advisory ? ADVISORY_WARN_COLOR : warnColor;
+  // Solid when a person has confirmed it (its own colour) or when nothing argues with the
+  // advisory (yellow); yellow beside lime only when a tractor has delivered here anyway.
+  const disc = advisory && tractorProven
+    ? `<path d="M${cx} ${top} A${r} ${r} 0 0 0 ${cx} ${bottom} Z" fill="${warn}"/>`
+      + `<path d="M${cx} ${top} A${r} ${r} 0 0 1 ${cx} ${bottom} Z" fill="${TRACTOR_DELIVERED_COLOR}"/>`
+    : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${warn}"/>`;
   // The white rim is what keeps a filled disc off the base map. Without it the red half
   // disappears into a brick roof and the green half into a treeline — checked on both.
   return disc + `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="white" stroke-width="${(r * 2.2 / 18).toFixed(2)}"/>`;
@@ -4196,8 +4249,9 @@ function renderBlockerGlyph(restrictionKey, glyphX, glyphY, scale) {
 
 function iconMarkerSvg(restrictions, tint, opts = {}) {
   if (!restrictions || restrictions.length === 0) return null;
-  // Trailer blockers draw a FILLED disc (see blockerDiscMarkup): solid when a person has
-  // confirmed it, half restriction / half green when only a scanner has. Everything else keeps
+  // Trailer blockers draw a FILLED disc (see blockerDiscMarkup): solid in its own colour when a
+  // person has confirmed it, solid yellow when only a scanner or Uline says so, and yellow beside
+  // lime when a tractor has delivered there anyway. Everything else keeps
   // the white disc and coloured ring. Keys are compared RESOLVED so an alias
   // (straight_truck_only → box_truck_only) cannot slip past the set and quietly draw as an
   // ordinary restriction.
@@ -6231,13 +6285,14 @@ function LegendRestrictionIcon({ kind, px = LEGEND_ICON_PX }) {
   return <img src={spec.url} alt="" width={w} height={px} style={{ display: 'block', flex: 'none' }} />;
 }
 
-function LegendMarkerExample({ restrictions, label, advisoryKeys = null, blockerKeys = null }) {
+function LegendMarkerExample({ restrictions, label, advisoryKeys = null, blockerKeys = null, tractorProven = false }) {
   const spec = useMemo(
     () => iconMarkerSvg(restrictions, null, {
       ...(advisoryKeys ? { advisoryKeys } : {}),
       ...(blockerKeys ? { blockerKeys } : {}),
+      ...(tractorProven ? { tractorProven: true } : {}),
     }),
-    [restrictions, advisoryKeys, blockerKeys],
+    [restrictions, advisoryKeys, blockerKeys, tractorProven],
   );
   if (!spec) return null;
   return (
@@ -6332,7 +6387,9 @@ const RESTRICTION_LEGEND_ORDER = Object.keys(RESTRICTION_ICONS).filter((k) => !L
 // Module-level so their identity is stable — LegendMarkerExample memoizes on these, and a
 // fresh array every render would rebuild the data-URI on every keystroke in the filter box.
 const LEGEND_CONFIRMED_EXAMPLE = ['no_tractor_trailer'];
-const LEGEND_ADVISORY_EXAMPLE = new Set(['no_tractor_trailer']);
+const LEGEND_ADVISORY_EXAMPLE = new Set(['uline_straight_truck']);
+const LEGEND_ADVISORY_RESTRICTIONS = ['uline_straight_truck'];
+const LEGEND_ADVISORY_BLOCKER = new Set(['uline_straight_truck']);
 // The legend has to say "this is a trailer blocker" the same way the map does, or the two
 // swatches below draw as ordinary white-disc restrictions and the panel demonstrates a mark
 // that is nowhere on the board.
@@ -6651,15 +6708,24 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true, t
               </div>
               <div className="flex items-center gap-2">
                 <LegendMarkerExample
-                  restrictions={LEGEND_CONFIRMED_EXAMPLE}
-                  blockerKeys={LEGEND_BLOCKER_EXAMPLE}
+                  restrictions={LEGEND_ADVISORY_RESTRICTIONS}
+                  blockerKeys={LEGEND_ADVISORY_BLOCKER}
                   advisoryKeys={LEGEND_ADVISORY_EXAMPLE}
-                  label="Half and half — found automatically (a scanner, or a Uline note). Nobody has checked it, so a tractor may well be fine."
+                  label="Yellow — found automatically (a Uline note, or a scanner). Nobody here has checked it."
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <LegendMarkerExample
+                  restrictions={LEGEND_ADVISORY_RESTRICTIONS}
+                  blockerKeys={LEGEND_ADVISORY_BLOCKER}
+                  advisoryKeys={LEGEND_ADVISORY_EXAMPLE}
+                  tractorProven
+                  label="Yellow and green — the note says no, but a tractor has delivered here. Worth a look."
                 />
               </div>
             </div>
             <p className="text-slate-600 mt-1.5 leading-snug">
-              Ticking the restriction on the stop fills the other half in.
+              Ticking the restriction on the stop makes it solid red.
             </p>
           </div>
         </div>
@@ -6937,7 +7003,7 @@ export function freightSummaryLine(stop) {
 // textLength pins the advance width so the H occupies the same box whichever sans face the
 // device resolves. Colours come from HANDLING_FLAGS so the item row and any other surface
 // showing this flag cannot drift apart.
-function HandlingItemBadge({ flagKey, size = 13 }) {
+function HandlingItemBadge({ flagKey, size = 13, className = 'ml-1 inline-block align-middle flex-shrink-0' }) {
   const def = HANDLING_FLAGS[flagKey];
   if (!def?.badge) return null;
   const { fill, ink, letter } = def.badge;
@@ -6948,7 +7014,7 @@ function HandlingItemBadge({ flagKey, size = 13 }) {
       viewBox="0 0 14 14"
       role="img"
       aria-label={def.label || flagKey}
-      className="ml-1 inline-block align-middle flex-shrink-0"
+      className={className}
     >
       <title>{def.title || def.label || flagKey}</title>
       <circle cx="7" cy="7" r="7" fill={fill} stroke="#ffffff" strokeWidth="1.5" />
@@ -7522,7 +7588,7 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       if (landed && !clean) {
         setPush({ kind: 'warn', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order in NuVizz.'} The write also touched something else on the order, so check it in the portal before the truck goes: ${why}${pinWarn}` });
       } else if (!landed) {
-        setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${why} The driver's manifest still has the old address — fix the order in the portal.${pinWarn}` });
+        setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${plainWriteError(why)} The driver's manifest still has the old address — fix the order in the portal.${pinWarn}` });
       }
       // Logged ONCE, after the vendor half resolves, so the row records what happened rather
       // than what was attempted. `nuvizz` is the outcome: see lib/address-log.js.
@@ -8958,9 +9024,9 @@ function ticketData(stop) {
   const exec = (stop && stop.raw && stop.raw.stopExecutionInfo) || {};
   const toAddr = raw.to?.address || {};
   const contact = stop.contact || raw.to?.contact || {};
-  const comments = (Array.isArray(stop.allComments) && stop.allComments.length)
-    ? stop.allComments.map((c) => ({ text: c.text, by: c.addedBy, on: c.addedOn }))
-    : (raw.comments || []).map((c) => ({ text: c.commentDescription, by: c.addedByName, on: c.addedOn }));
+  // v1.100.3: the notes NuVizz lists now — a note it no longer lists is left off the paper, one the
+  // latest scan picked up is printed (lib/stop-notes-freshness.js ticketNotes; VITE_MANIFEST_SCAN_NOTES=off).
+  const comments = ticketNotes(stop);
   const items = (Array.isArray(stop.stopDetails) && stop.stopDetails.length ? stop.stopDetails : (raw.stopDetails || []));
   const idStr = (it) => {
     const pid = it.productIdentifier ?? it.sku ?? '';
@@ -9052,7 +9118,7 @@ function ticketBody(stop, logoUrl, brandTitle = 'Delivery Ticket', { seqLabel, h
   const commentCells = d.comments.map((c) => `
       <div class="cmt">
         <div class="cmt-t">${bolEsc(c.text)}</div>
-        <div class="cmt-m"><span>~By ${bolEsc(c.by || '')}</span><span>${bolEsc(tktCommentTime(c.on))}</span></div>
+        <div class="cmt-m">${c.fromScan ? '<span>From NuVizz’s latest scan</span><span></span>' : `<span>~By ${bolEsc(c.by || '')}</span><span>${bolEsc(tktCommentTime(c.on))}</span>`}</div>
       </div>`).join('');
   return `
   <div class="brand"><img src="${bolEsc(logoUrl)}" alt="Davis Delivery Service"/><div class="t">${bolEsc(brandTitle)}</div></div>
@@ -9226,12 +9292,24 @@ function StopNotesList({ comments }) {
       <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Notes</div>
       <div className="space-y-1.5">
         {rows.map((c, i) => {
+          // v1.100.2: a note only the latest scan carries has no author or time to show (the list
+          // does not send them) — blue and "New" only when there are stored notes for it to be newer
+          // than; one the latest scan no longer carries is faded rather than hidden. See mergedNotes
+          // (lib/stop-notes-freshness.js) for why absence is not proof.
+          if (c.fromScan) {
+            return (
+              <div key={i} data-note={c.isNew ? 'scan' : 'scan-only'} className={c.isNew ? 'rounded bg-blue-50 border border-blue-200 px-2 py-1' : 'rounded bg-slate-50 border border-slate-200 px-2 py-1'}>
+                <div className="text-xs text-slate-800 whitespace-pre-wrap break-words leading-snug">{c.text}</div>
+                <div className={'text-[10px] mt-0.5 ' + (c.isNew ? 'text-blue-700' : 'text-slate-500')}>{c.isNew ? 'New — from the latest scan' : 'From NuVizz’s latest scan'}</div>
+              </div>
+            );
+          }
           const label = c.typeDesc || COMMENT_TYPE_LABEL[c.type] || c.type || 'Note';
           const meta = [c.addedBy, c.source, c.addedOn && fmtNoteTime(c.addedOn)].filter(Boolean).join(' · ');
           return (
-            <div key={i} className="rounded bg-slate-50 border border-slate-200 px-2 py-1">
-              <div className="text-xs text-slate-800 whitespace-pre-wrap break-words leading-snug">{c.text}</div>
-              <div className="text-[10px] text-slate-500 mt-0.5">{label}{meta ? ` — ${meta}` : ''}</div>
+            <div key={i} data-note={c.gone ? 'gone' : 'stored'} className={'rounded bg-slate-50 border border-slate-200 px-2 py-1' + (c.gone ? ' opacity-60' : '')}>
+              <div className={'text-xs whitespace-pre-wrap break-words leading-snug ' + (c.gone ? 'text-slate-500 line-through' : 'text-slate-800')}>{c.text}</div>
+              <div className="text-[10px] text-slate-500 mt-0.5">{c.gone ? 'Not in NuVizz’s latest notes — ' : ''}{label}{meta ? ` — ${meta}` : ''}</div>
             </div>
           );
         })}
@@ -9539,6 +9617,10 @@ function StopLiveDetail({ stop, onRefreshed }) {
   // presenting weeks-old text as current.
   const fresh = noteFreshness(stop);
   const cleaned = cleanInstructions(stop.signalSources?.orderInstructions);
+  // v1.100.2 — Chad: "IF there are new notes picked up in the normal scans not enrichment then use
+  // them i shouldn't have to refresh to get them". The scan's notes are merged in as they arrive
+  // (mergedNotes), so the banner asking for a Refresh has nothing left to say.
+  const notes = SCAN_NOTES_AUTO_ON ? mergedNotes(stop) : null;
   return (
     <div className="pt-1 space-y-2">
       <div>
@@ -9547,7 +9629,7 @@ function StopLiveDetail({ stop, onRefreshed }) {
         </button>
       </div>
       {refreshErr && <div className="text-[11px] text-amber-700">Couldn’t refresh: {refreshErr}</div>}
-      {fresh.stale && (
+      {!SCAN_NOTES_AUTO_ON && fresh.stale && (
       <div className="mt-1 mb-1 rounded border border-amber-300 bg-amber-50 px-2 py-1.5">
         <div className="text-[11px] font-semibold text-amber-800">NuVizz has newer instructions than these</div>
         <div className="text-[11px] text-amber-900 mt-0.5 whitespace-pre-wrap break-words">{fresh.liveText}</div>
@@ -9556,7 +9638,9 @@ function StopLiveDetail({ stop, onRefreshed }) {
         </div>
       </div>
     )}
-    {stop.allComments?.length ? (
+    {notes?.length ? (
+        <StopNotesList comments={notes} />
+      ) : !SCAN_NOTES_AUTO_ON && stop.allComments?.length ? (
         <StopNotesList comments={stop.allComments} />
       ) : cleaned ? (
         <div className="pt-1">
@@ -9626,7 +9710,10 @@ function useLiveStop(stop) {
     }
     // foldFreshStop, not a raw spread: a pull that returns an empty podDocs must
     // not erase the BOL already on the card (the mergeEnrich rule, client-side).
-    setFresh((prev) => foldFreshStop(prev, d));
+    // v1.100.3: notes read just now can be NEWER than the scan's note text on this card, so stamp
+    // them as refreshed — mergedNotes then judges nothing removed on this stop, instead of fading
+    // (and the ticket dropping) a note added since the last scan.
+    setFresh((prev) => foldFreshStop(prev, stampNotesRead(d, new Date().toISOString())));
     return null;
   }, []);
   return [live, onRefreshed];
@@ -9888,7 +9975,17 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
   // matchKey — derive it the same way the map does.
   const tractorLocs = useTractorLocations(shiplifyCtx.boardDate);
   const panelMatchKey = stop.matchKey || normalizeMatchKey(stop.businessName || '', stop.addr1 || '', stop.city || '', stop.zip || '');
-  const tractorInfo = tractorLocs.get(panelMatchKey);
+  // THE SAME QUESTION THE MAP ASKS (Chad, MYRIAD360 COREWEAVE: "Why does this not have my tractor has
+  // delivered here flag row?"). The row read the exact key alone while the lime check also asked by
+  // street + ZIP, and neither folded "SOUTHEAST" to "SE" — three tractor deliveries filed under the
+  // long spelling were invisible to an order written the short way. By key, then by the same place,
+  // directions folded (lib/place-mark.js tractorEntryAt). Switch off → the exact key, as before.
+  const tractorInfo = useMemo(
+    () => (TRACTOR_PLACE_FOLD_ON
+      ? (tractorEntryAt({ matchKey: panelMatchKey, addr1: stop.addr1, zip: stop.zip }, tractorLocs, { fold: true })?.entry || null)
+      : (tractorLocs.get(panelMatchKey) || null)),
+    [tractorLocs, panelMatchKey, stop.addr1, stop.zip],
+  );
   // IS THAT HISTORY STILL THE ANSWER? Chad, on a stop whose panel said "Tractor has delivered
   // here — last Aug 17" while its row in the Selected list was not green: "this stop has had a
   // tractor delivery to it but the row is not highlighted green why?"
@@ -11646,6 +11743,15 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                   {/* BOTH NAVIGATIONS OR NEITHER. A badge on the laptop and not the phone is
                       the v0.54.50 shape — dispatch runs on a phone. */}
                   {addrBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{addrBadge > 99 ? '99+' : addrBadge}</span>}
+                </button>
+                {/* PERFORMANCE (v1.100.0) — the same place as on the desktop menu. Both navigations or
+                    neither: a screen in one navigation only does not exist on a phone. */}
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('performance')}
+                  role="menuitem"
+                >
+                  <TrendingUp size={12} /> Performance
                 </button>
                 {/* Claude shadow is not here any more: it is Routing's third tab, Build | Engine |
                     Shadow (Chad, 2026-09-25). On a phone it is Routing → gear → Shadow view, and
@@ -17091,9 +17197,12 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     // comments and describe the freight on it. Both belong here (Chad, on 192 unplanned
     // orders: "DO ORDERS THAT HAVE DO NOT DOUBLE STACK IN THE NOTES SHOW UP HERE WITH A
     // DNDS RESTRICTION"), and the order-level ones come LAST so a customer's standing
-    // restrictions keep the position a dispatcher already reads them in. Plain text
-    // rather than a chip, because that is what every other value in this column is.
-    { k: 'restr', label: 'Restrictions', w: 160, get: (s) => restrCellText(s, notes),
+    // restrictions keep the position a dispatcher already reads them in. Each code now wears
+    // the icon its map pin and Legend use (Chad: "under restrictions can we put icons as well
+    // in there if they have any special icons") — words kept beside it, not chips. The sort
+    // key stays the words, read off the same list the icons are drawn from.
+    { k: 'restr', label: 'Restrictions', w: 160,
+      get: (s) => (GRID_RESTRICTION_ICONS_ON ? <RestrictionsCell s={s} notes={notes} /> : restrCellText(s, notes)),
       sortVal: (s) => restrCellText(s, notes) },
     // THE LOAD COLUMN IS WHY THE HOLE EXISTED. It reads NuVizz, and a Draft load carrying no
     // saved orders has nothing there to read — so a stop sitting at position 1 on an open card
@@ -20108,7 +20217,7 @@ const MANIFEST_IN_CARD_ORDER = (() => {
 })();
 
 // Does a Compare card that was saved, closed and brought back carry a green ✓? ON by default
-// (v1.99.0). Chad: "I want saved route to always carry a green check mark if it has saved
+// (v1.102.0). Chad: "I want saved route to always carry a green check mark if it has saved
 // previously say if a route was closed out and re brought up but keep the message as is for a
 // route that just saved." PUT IT BACK: VITE_CARD_SAVED_BEFORE=off — nothing reads or writes the
 // per-load record (lib/card-saves.js) and a reopened card says nothing, exactly as before; the
@@ -20186,11 +20295,34 @@ function HandlingChips({ stop }) {
 
 // The Restrictions cell as text — shared by the column's renderer and its sort key so
 // the two can never disagree about what the cell says.
-function restrCellText(s, notes) {
+function restrCellParts(s, notes) {
   const parts = getRestrictionBadgeKeys(notes.get(s.matchKey) || null)
-    .map((k) => RESTRICTION_ICONS[k]?.short || k);
-  for (const k of stopHandlingFlags(s)) parts.push(HANDLING_FLAGS[k]?.short || k);
-  return parts.join(', ');
+    .map((k) => ({ kind: 'restriction', key: k, text: RESTRICTION_ICONS[k]?.short || k }));
+  for (const k of stopHandlingFlags(s)) parts.push({ kind: 'handling', key: k, text: HANDLING_FLAGS[k]?.short || k });
+  return parts;
+}
+function restrCellText(s, notes) {
+  return restrCellParts(s, notes).map((p) => p.text).join(', ');
+}
+
+// The Restrictions cell as the grid draws it (v1.100.1): each customer restriction beside the
+// SAME icon its map pin, sidebar chip and Legend row use (RestrictionIcon), and each handling
+// flag beside its own mark when it has one (the stacker's yellow H; DNDS has none, so it stays a
+// word). Drawn from restrCellParts, the list the words and the sort key come from, so the icons
+// can never show something the words do not say.
+function RestrictionsCell({ s, notes }) {
+  const parts = restrCellParts(s, notes);
+  if (!parts.length) return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 align-middle">
+      {parts.map((p, i) => (
+        <span key={`${p.kind}:${p.key}`} className="inline-flex items-center gap-0.5" data-restr-part={p.key}>
+          {p.kind === 'restriction' ? <RestrictionIcon kind={p.key} size={13} /> : <HandlingItemBadge flagKey={p.key} size={13} className="inline-block align-middle flex-shrink-0" />}
+          <span>{p.text}{i < parts.length - 1 ? ',' : ''}</span>
+        </span>
+      ))}
+    </span>
+  );
 }
 
 /**
@@ -22786,14 +22918,14 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, tract
         if (k == null || String(k).trim() === '' || String(k) === 'null') return nm ? String(nm) : 'a card with no load number';
         return nm && nm !== String(k) ? `${nm} (${k})` : String(k);
       };
-      showToast(`✗ ${failed.map((l) => `${cardName(l)}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
+      showToast(`✗ ${failed.map((l) => `${cardName(l)}: ${plainWriteError(l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; '))}`).join(' | ') || plainWriteError(res.error || 'write failed')}${orphanMsg}`);
       // …and the card keeps saying so after that toast is gone (v1.37.1). Same array the
       // toast names, so the chip and the message can never disagree about which card failed.
       markSaveFailed(failed.map(keyOf).filter(Boolean));
     } else if (!pendings.length) {
       if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}${callsMsg}.${orphanMsg}${syncMsg}${finishedMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
       else {
-        showToast(`✗ ${res.error || 'write failed'}${orphanMsg}`);
+        showToast(`✗ ${plainWriteError(res.error || 'write failed')}${orphanMsg}`);
         // THE WHOLE CALL FAILED — no per-load results came back, so nothing above named a
         // card. Every card in this payload that was not confirmed is a refusal, and without
         // this the one failure mode with NO per-card detail would be the one that left the
@@ -25226,6 +25358,8 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         // The board's vendor-default creation slots, so a system-stamped 9:00–9:30 is not read as
         // a booked appointment (the same suppression the time-restrictions report applies).
         defaultSlots: detectDefaultSlots(stops),
+        countCollapsed: PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON,
+        milesCap: TIME_WINDOWS_MILES_CAP_ON,
         ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
       });
       setWbRoutes((prev) => prev.map((x) => (x.key !== key ? x : { ...x, order: res.order, strategy, roadSequenced: false })));
@@ -25234,13 +25368,14 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     }
     // Return to warehouse reports WHICH order it used and what that saved (returnPickSummary).
     const homePick = strategy === 'home' ? returnToWarehouse(pts, ROUTING_DEPOT) : null;
-    const newOrder = (homePick ? homePick.order : resequence(pts, ROUTING_DEPOT, strategy)).map((s) => s.id);
+    const newOrder = (homePick ? homePick.order : resequence(pts, ROUTING_DEPOT, strategy, sweepModeOf(strategy))).map((s) => s.id);
     const resolved = new Set(newOrder);
+    // The road order lands AFTER Google replies, onto the card as it is by then: a stop moved to
+    // another card or removed while the reply was out stays gone (mergeReplyOrder). Ids the reply
+    // did not place ride after it in the card's order — never dropped.
     const applyOrder = (ids, suffix) => setWbRoutes((prev) => prev.map((x) => {
       if (x.key !== key) return x;
-      const done = new Set(ids);
-      const tail = x.order.map(String).filter((id) => !done.has(id));   // never drop unresolvable ids
-      return { ...x, order: [...ids, ...tail], strategy, roadSequenced: suffix === 'road' };
+      return { ...x, order: mergeReplyOrder(ids, x.order, ROAD_REPLY_DROPS_MOVED_STOPS_ON), strategy, roadSequenced: suffix === 'road' };
     }));
     // The straight-line order lands INSTANTLY, exactly as it always has. Road distances (below)
     // only ever replace it a moment later — so the dropdown never feels slower than it did, and
@@ -25275,7 +25410,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
           return;
         }
         const roadPick = strategy === 'home' ? returnToWarehouseOnMatrix(pts, cost, ROUTING_DEPOT) : null;
-        const roadOrder = (roadPick ? roadPick.order : resequenceOnMatrix(pts, cost, strategy)).map((s) => s.id);
+        const roadOrder = (roadPick ? roadPick.order : resequenceOnMatrix(pts, cost, strategy, sweepModeOf(strategy))).map((s) => s.id);
         applyOrder(roadOrder, 'road');
         setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} · real road distances${roadPick ? ` — ${returnPickSummary(roadPick, 'road')}` : ''}`);
       } catch (e) {
@@ -26076,6 +26211,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         order: r.order, stopById, notes, routeKey,
         servedDate: selectedDate, dayKey: weekdayKeyFromDate(selectedDate),
         depot: ROUTING_DEPOT, travel,
+        countCollapsed: PREFLIGHT_COUNTS_EVERY_LATE_STOP_ON,
         ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
       }));
     }
@@ -26702,7 +26838,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       if (!curOrder) return prev;
       const stops = curOrder.map((id) => { const s = stopById.get(String(id)); return s ? { id: String(id), lat: s.lat, lng: s.lng } : null; }).filter(Boolean);
       if (stops.length < 2) return prev;
-      const newOrder = resequence(stops, depot, strategy).map((s) => s.id);
+      const newOrder = resequence(stops, depot, strategy, sweepModeOf(strategy)).map((s) => s.id);
       const resolved = new Set(newOrder);
       const tail = curOrder.map(String).filter((id) => !resolved.has(id)); // keep any unresolvable ids (no silent drops)
       return { ...(prev || {}), [truckId]: { order: [...newOrder, ...tail], reordered: true } };
@@ -31323,7 +31459,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'uatbench', 'users'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'performance', 'uatbench', 'users'];
     openTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -31486,6 +31622,10 @@ function Shell() {
                 { id: 'labels', label: 'Print labels', hint: 'Davis labels by shipper and day — 0 NuVizz calls', icon: <Tag size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
+                // PERFORMANCE (v1.100.0): stops delivered — today against a typical day at the same minute,
+                // and by day, week and month. Both navigations or neither: the phone menu carries it too,
+                // in the same place (under Address history).
+                { id: 'performance', label: 'Performance', hint: 'Ahead or behind today · days, weeks, months — 0 NuVizz calls', icon: <TrendingUp size={14} /> },
                 // Claude shadow moved to Routing's Build | Engine | Shadow toggle (Chad, 2026-09-25).
                 // Account & logins (v1.75.0): sign in, your own NuVizz login and, for admins, everyone's.
                 // Beside Diagnostics because both are about the app rather than the day. The phone menu
@@ -31538,7 +31678,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'users' ? (accountsOpen ? <AccountScreen isMobile={isMobile} loginMode={LOGIN_MODE} /> : null) : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'performance' ? <React.Suspense fallback={<div className="flex-1 bg-zinc-950 p-6 text-sm text-zinc-400">Loading Performance…</div>}><PerformanceScreen isMobile={isMobile} canBuild={accountsOpen} /></React.Suspense> : tab === 'users' ? (accountsOpen ? <AccountScreen isMobile={isMobile} loginMode={LOGIN_MODE} /> : null) : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
@@ -35187,7 +35327,7 @@ function classifyPushResult(j) {
   if (j?.ok && out.noteLanded === false) return { kind: 'partial', text: `${out.message || 'Address corrected.'}` };
   if (j?.ok) return { kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order.' };
   if (out.blocked) return { kind: 'blocked', text: 'Address writes are switched off on this server (NUVIZZ_ADDRESS_WRITE=off). The board correction is saved.' };
-  if (out.unverified) return { kind: 'unknown', text: `${out.error || err} — check the order in the portal before re-trying.` };
+  if (out.unverified) return { kind: 'unknown', text: PLAIN_ERRORS_ON && (out.error || err) ? plainWriteError(out.error || err) : `${out.error || err} — check the order in the portal before re-trying.` };
   // THE ADDRESS LANDED AND THE WRITE WAS NOT CLEAN — four of six rows on 2026-09-14, every one
   // of them reported to the dispatcher as "NuVizz refused the write". It did not: the server
   // proved the new street on the read-back and recorded `addressLanded: true` on this very
@@ -35195,9 +35335,9 @@ function classifyPushResult(j) {
   // saying and is a different sentence. Amber, and the row does NOT go back on the queue as
   // unfixed, because the order is fixed.
   if (addressReachedNuvizz(j)) {
-    return { kind: 'dirty', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order.'} The write also touched something else — check it in the portal: ${out.error || err || 'see the write log.'}` };
+    return { kind: 'dirty', text: PLAIN_ERRORS_ON && (out.error || err) ? plainWriteError(out.error || err) : `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order.'} The write also touched something else — check it in the portal: ${out.error || err || 'see the write log.'}` };
   }
-  return { kind: 'refused', text: out.error || err || 'NuVizz refused the write.' };
+  return { kind: 'refused', text: plainWriteError(out.error || err) || 'NuVizz refused the write.' };
 }
 
 // ── ULINE: STRAIGHT TRUCK ONLY — look at the building, then decide ──────────
@@ -37636,7 +37776,7 @@ const stopFreight = (r) => [
  *      asking. It folds under the address.
  *  The six that stay are the six that answer the phone call: which day, what happened, whose
  *  truck, when, and where we went. */
-function StopDayTable({ days, onOpen, renderDetail }) {
+function StopDayTable({ days, onOpen, renderDetail, onLoad = null, renderLoad = null }) {
   return (
     <div className="rounded-xl border bg-white overflow-hidden">
       {/* AUTO layout, not table-fixed. The first cut set each column a percentage by hand,
@@ -37660,8 +37800,9 @@ function StopDayTable({ days, onOpen, renderDetail }) {
         <tbody className="divide-y">
           {days.flatMap((r) => {
             const panel = renderDetail?.(r.refs.stopNbr || r.pro, r.date);
+            const loadPanel = renderLoad?.(loadRowOf(r).key);
             return [(
-            <tr key={r.date} className={`align-top ${panel ? 'bg-blue-50' : ''}`}>
+            <tr key={r.date} className={`align-top ${panel || loadPanel ? 'bg-blue-50' : ''}`}>
               <td className="px-3 py-2 font-semibold break-words">
                 {/* THE DAY IS THE HANDLE HERE, because on a per-order screen every row is the
                     same order and it is the DAY that picks which record you want to read. */}
@@ -37674,7 +37815,7 @@ function StopDayTable({ days, onOpen, renderDetail }) {
                 {stopExtraStatus(r) && <div className="text-[11px] text-slate-400 mt-0.5 font-mono break-words">{stopExtraStatus(r)}</div>}
                 {/* The provenance chips, folded in where the From column would have been. */}
                 <div className="xl:hidden mt-1"><StopSourceChips sources={r.sources} /></div></td>
-              <td className="px-3 py-2 text-slate-700 break-words">{r.route || <span className="text-slate-400">un-planned</span>}
+              <td className="px-3 py-2 text-slate-700 break-words"><RouteLoadButton row={r} open={!!loadPanel} onLoad={onLoad} />
                 {r.seq != null && <span className="text-[11px] text-slate-400"> · stop {r.seq}</span>}</td>
               <td className="px-3 py-2 text-slate-700 break-words">{r.driver || <span className="text-slate-400">—</span>}
                 {r.currentDriver && r.currentDriver !== r.driver && (
@@ -37700,6 +37841,10 @@ function StopDayTable({ days, onOpen, renderDetail }) {
               <tr key={`${r.date}:detail`}>
                 <td colSpan={8} className="p-0 bg-slate-50"><div className="px-3 py-3">{panel}</div></td>
               </tr>
+            ) : null, loadPanel ? (
+              <tr key={`${r.date}:load`}>
+                <td colSpan={8} className="p-0 bg-slate-50"><div className="px-3 py-3">{loadPanel}</div></td>
+              </tr>
             ) : null];
           })}
         </tbody>
@@ -37710,13 +37855,14 @@ function StopDayTable({ days, onOpen, renderDetail }) {
 
 /** PHONE: cards. The same eight facts, stacked — a table at 360px is a sideways scroll, and
  *  this screen gets opened one-handed with a customer talking. */
-function StopDayListMobile({ days, onOpen, renderDetail }) {
+function StopDayListMobile({ days, onOpen, renderDetail, onLoad = null, renderLoad = null }) {
   return (
     <div className="space-y-2">
       {days.flatMap((r) => {
         const panel = renderDetail?.(r.refs.stopNbr || r.pro, r.date);
+        const loadPanel = renderLoad?.(loadRowOf(r).key);
         return [(
-        <div key={r.date} className={`rounded-xl border bg-white p-3 space-y-1.5 ${panel ? 'border-blue-300' : ''}`}>
+        <div key={r.date} className={`rounded-xl border bg-white p-3 space-y-1.5 ${panel || loadPanel ? 'border-blue-300' : ''}`}>
           <div className="flex flex-wrap items-center gap-1.5">
             <StopOutcomeChip outcome={r.outcome} />
             <button onClick={() => onOpen?.(r.refs.stopNbr || r.pro, r.date)} aria-expanded={!!panel}
@@ -37725,8 +37871,9 @@ function StopDayListMobile({ days, onOpen, renderDetail }) {
             </button>
             <span className="ml-auto"><StopSourceChips sources={r.sources} /></span>
           </div>
-          <div className="text-xs text-slate-700 break-words">
-            {r.route || 'un-planned'}{r.seq != null ? ` · stop ${r.seq}` : ''}{r.driver ? ` · ${r.driver}` : ''}
+          <div className="text-xs text-slate-700 break-words flex flex-wrap items-center gap-x-1">
+            <RouteLoadButton row={r} open={!!loadPanel} onLoad={onLoad} tall />
+            {r.seq != null && <span>· stop {r.seq}</span>}{r.driver && <span>· {r.driver}</span>}
           </div>
           {r.currentDriver && r.currentDriver !== r.driver && (
             <div className="text-[11px] text-amber-700 break-words">moved onto {r.currentDriver} afterwards</div>
@@ -37745,7 +37892,7 @@ function StopDayListMobile({ days, onOpen, renderDetail }) {
             </div>
           )}
         </div>
-        ), panel ? <div key={`${r.date}:detail`}>{panel}</div> : null];
+        ), panel ? <div key={`${r.date}:detail`}>{panel}</div> : null, loadPanel ? <div key={`${r.date}:load`}>{loadPanel}</div> : null];
       })}
     </div>
   );
@@ -38674,7 +38821,32 @@ function CustomerDayHeading({ day, stacked }) {
 }
 
 /** DESKTOP: a table. A rep comparing six stops on one day reads down a column. */
-function CustomerDayTable({ day, onPro, renderDetail }) {
+/** Which row a load panel belongs to, and what the load is asked for by. One order on one day. */
+const loadRowOf = (r) => {
+  const stopNbr = r?.refs?.stopNbr || r?.stopNbr || r?.pro || null;
+  return { key: `${r?.date}|${stopNbr}`, date: r?.date || null, route: r?.route || null, driver: r?.driver || null, stopNbr };
+};
+
+/**
+ * THE ROUTE IS THE WAY INTO THE LOAD (v1.99.10). Chad, 2026-09-30, on a customer's row: "doesn't show
+ * me the load". A row that names a route AND a driver opens that load under itself — its map and
+ * every stop — and the customer stays on screen. No route is no load to open: the row still says
+ * un-planned. `onLoad` is null below dispatcher (Driver's loads is gated there), and then the route
+ * is the plain text it always was.
+ */
+function RouteLoadButton({ row, open, onLoad, tall = false }) {
+  if (!row?.route) return <span className="text-slate-400">un-planned</span>;
+  if (!onLoad || !row.driver || !row.date) return <>{row.route}</>;
+  return (
+    <button type="button" onClick={() => onLoad(loadRowOf(row))} aria-expanded={!!open}
+      title={open ? 'Close this load' : `Open ${row.route}’s load that day — its map and every stop`}
+      className={`inline-flex items-center gap-1 text-left font-semibold text-blue-800 hover:underline break-words ${tall ? 'min-h-[40px]' : ''}`}>
+      <Truck size={12} className="shrink-0" />{row.route}
+    </button>
+  );
+}
+
+function CustomerDayTable({ day, onPro, renderDetail, onLoad = null, renderLoad = null }) {
   return (
     <div className="space-y-1.5">
       <CustomerDayHeading day={day} />
@@ -38698,8 +38870,9 @@ function CustomerDayTable({ day, onPro, renderDetail }) {
                 rows straight when the panel moves from one order to another. */}
             {day.rows.flatMap((r) => {
               const panel = renderDetail?.(r.refs?.stopNbr || r.pro, r.date);
+              const loadPanel = renderLoad?.(loadRowOf(r).key);
               return [(
-              <tr key={r.key} className={`align-top ${panel ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
+              <tr key={r.key} className={`align-top ${panel || loadPanel ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
                 <td className="px-3 py-2"><StopOutcomeChip outcome={r.outcome} /></td>
                 <td className="px-3 py-2">
                   {/* THE PRO IS THE DRILL-DOWN. A rep reading a row out loud is one tap from
@@ -38711,7 +38884,7 @@ function CustomerDayTable({ day, onPro, renderDetail }) {
                   {r.refs.po && <div className="text-[10px] text-slate-400 break-words">PO {r.refs.po}</div>}
                 </td>
                 <td className="px-3 py-2 text-slate-700 break-words">{r.driver || <span className="text-slate-400">not assigned</span>}</td>
-                <td className="px-3 py-2 text-slate-700 break-words">{r.route || <span className="text-slate-400">un-planned</span>}
+                <td className="px-3 py-2 text-slate-700 break-words"><RouteLoadButton row={r} open={!!loadPanel} onLoad={onLoad} />
                   {r.seq != null && <span className="text-[11px] text-slate-400 whitespace-nowrap"> · stop {r.seq}</span>}</td>
                 <td className="px-3 py-2 text-[11px] whitespace-nowrap">
                   {r.deliveredAt
@@ -38734,6 +38907,12 @@ function CustomerDayTable({ day, onPro, renderDetail }) {
                     <div className="px-3 py-3">{panel}</div>
                   </td>
                 </tr>
+              ) : null, loadPanel ? (
+                <tr key={`${r.key}:load`}>
+                  <td colSpan={7} className="p-0 bg-slate-50">
+                    <div className="px-3 py-3">{loadPanel}</div>
+                  </td>
+                </tr>
               ) : null];
             })}
           </tbody>
@@ -38744,15 +38923,16 @@ function CustomerDayTable({ day, onPro, renderDetail }) {
 }
 
 /** PHONE: cards. Same seven facts, stacked, at a size somebody reads one-handed. */
-function CustomerDayCards({ day, onPro, renderDetail }) {
+function CustomerDayCards({ day, onPro, renderDetail, onLoad = null, renderLoad = null }) {
   return (
     <div className="space-y-1.5">
       <CustomerDayHeading day={day} stacked />
       <div className="space-y-2">
         {day.rows.flatMap((r) => {
           const panel = renderDetail?.(r.refs?.stopNbr || r.pro, r.date);
+          const loadPanel = renderLoad?.(loadRowOf(r).key);
           return [(
-          <div key={r.key} className={`rounded-xl border bg-white p-3 space-y-1.5 ${panel ? 'border-blue-300' : ''}`}>
+          <div key={r.key} className={`rounded-xl border bg-white p-3 space-y-1.5 ${panel || loadPanel ? 'border-blue-300' : ''}`}>
             <div className="flex flex-wrap items-center gap-1.5">
               <StopOutcomeChip outcome={r.outcome} />
               {r.deliveredAt && <span className="text-xs font-bold text-slate-800">{stopWhen(r.deliveredAt)}</span>}
@@ -38762,8 +38942,10 @@ function CustomerDayCards({ day, onPro, renderDetail }) {
                 title={panel ? 'Close this order' : 'Open this order — its detail, POD, line items and contact'}
                 className="ml-auto font-mono text-xs font-semibold text-blue-800 hover:underline break-all min-h-[40px] px-1">{r.pro}</button>
             </div>
-            <div className="text-xs text-slate-700 break-words">
-              {r.driver || 'not assigned'}{r.route ? ` · ${r.route}` : ''}{r.seq != null ? ` · stop ${r.seq}` : ''}
+            <div className="text-xs text-slate-700 break-words flex flex-wrap items-center gap-x-1">
+              <span>{r.driver || 'not assigned'}</span>
+              {r.route && <><span className="text-slate-400">·</span><RouteLoadButton row={r} open={!!loadPanel} onLoad={onLoad} tall /></>}
+              {r.seq != null && <span>· stop {r.seq}</span>}
             </div>
             {(custFreight(r) || r.proCount > 1) && (
               <div className="text-[11px] text-slate-500 break-words">
@@ -38774,7 +38956,7 @@ function CustomerDayCards({ day, onPro, renderDetail }) {
               {custAddr(r.address)}<span className="text-slate-400"> {custCity(r.address)}</span>
             </div>
           </div>
-          ), panel ? <div key={`${r.key}:detail`}>{panel}</div> : null];
+          ), panel ? <div key={`${r.key}:detail`}>{panel}</div> : null, loadPanel ? <div key={`${r.key}:load`}>{loadPanel}</div> : null];
         })}
       </div>
     </div>
@@ -38807,7 +38989,7 @@ function CustomerYearButton({ on, onClick, year }) {
 function CustomerRangeBar({ sel, setSel, range, today, stacked, yearOn, onYear }) {
   const year = String(today || '').slice(0, 4);
   return (
-    <div className={stacked ? 'rounded-xl border bg-white p-2 space-y-2' : 'flex flex-wrap items-center gap-1.5'}>
+    <div role="group" aria-label="The customer's window" className={stacked ? 'rounded-xl border bg-white p-2 space-y-2' : 'flex flex-wrap items-center gap-1.5'}>
       <div className="flex flex-wrap items-center gap-1.5">
         {CUSTOMER_PRESETS.map((p) => (
           <button key={p.key} onClick={() => setSel(p.sel)}
@@ -38834,7 +39016,7 @@ function CustomerRangeBar({ sel, setSel, range, today, stacked, yearOn, onYear }
 
 /** Two or more real businesses matched what was typed. Counts included, because the sweep
  *  that produced them has already been paid for and an uninformed choice is a wasted one. */
-function CustomerChooser({ matches, query, onPick, incomplete }) {
+function CustomerChooser({ matches, query, onPick, incomplete, openingKey = null }) {
   // A match with `stops: null` was never counted (the year's chooser) — it gets no count line,
   // because "nothing in this window" is a claim, and nothing measured it.
   const counted = matches.some((m) => m.stops != null);
@@ -38850,22 +39032,35 @@ function CustomerChooser({ matches, query, onPick, incomplete }) {
         </div>
       )}
       <div className="space-y-2">
-        {matches.map((m) => (
-          <button key={m.nameKey} onClick={() => onPick(m)}
-            className="w-full text-left rounded-xl border bg-white p-3 hover:bg-slate-50 hover:border-slate-300 flex items-center gap-3 min-h-[56px]">
-            <div className="min-w-0 flex-1">
-              <div className="font-semibold text-slate-800 break-words">{m.name}</div>
-              <div className="text-[11px] text-slate-500">
-                {[m.stops == null ? null : m.stops ? `${m.stops} stop${m.stops === 1 ? '' : 's'} in this window` : 'nothing in this window',
-                  m.lastDate ? `last ${formatDateForDisplay(m.lastDate)}` : null].filter(Boolean).join(' · ')}
+        {/* THE TAPPED ROW SAYS IT IS OPENING. Chad, 2026-09-30: "clicking this and nothing happens".
+            It did happen — a customer's answer takes about ten seconds to read — but the only sign was
+            "Looking…" on the search button, a screen above on a phone, and a second tap started the read
+            again and the clock with it. That row now ignores a second tap; a different row switches. */}
+        {matches.map((m) => {
+          const opening = openingKey === m.nameKey;
+          return (
+            <button key={m.nameKey} onClick={() => onPick(m)} disabled={opening} aria-busy={opening}
+              className={`w-full text-left rounded-xl border p-3 flex items-center gap-3 min-h-[56px] ${opening
+                ? 'bg-blue-50 border-blue-300'
+                : 'bg-white hover:bg-slate-50 hover:border-slate-300'}`}>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-slate-800 break-words">{m.name}</div>
+                <div className="text-[11px] text-slate-500">
+                  {opening
+                    ? <span className="font-semibold text-blue-800">Opening — reading their deliveries…</span>
+                    : [m.stops == null ? null : m.stops ? `${m.stops} stop${m.stops === 1 ? '' : 's'} in this window` : 'nothing in this window',
+                      m.lastDate ? `last ${formatDateForDisplay(m.lastDate)}` : null].filter(Boolean).join(' · ')}
+                </div>
               </div>
-            </div>
-            {m.today > 0 && (
-              <span className="shrink-0 rounded-lg bg-blue-100 text-blue-900 px-2 py-1 text-xs font-bold whitespace-nowrap">{m.today} today</span>
-            )}
-            <ChevronRight size={16} className="shrink-0 text-slate-400" />
-          </button>
-        ))}
+              {m.today > 0 && (
+                <span className="shrink-0 rounded-lg bg-blue-100 text-blue-900 px-2 py-1 text-xs font-bold whitespace-nowrap">{m.today} today</span>
+              )}
+              {opening
+                ? <RefreshCw size={16} className="shrink-0 text-blue-700 animate-spin" />
+                : <ChevronRight size={16} className="shrink-0 text-slate-400" />}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -39266,7 +39461,7 @@ function placeDatesLine(data) {
   return c.from ? `All dates we hold · ${formatDateForDisplay(c.from)} – ${formatDateForDisplay(c.to)} · ${days}` : 'All dates we hold';
 }
 
-function PlaceResults({ data, stacked, onOrder, renderDetail, rowsShown, onMore, onNarrow, ledgerOpen, onToggleLedger }) {
+function PlaceResults({ data, stacked, onOrder, renderDetail, rowsShown, onMore, onNarrow, ledgerOpen, onToggleLedger, onLoad = null, renderLoad = null }) {
   if (data.switchedOff) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 text-sm p-3">
@@ -39388,8 +39583,8 @@ function PlaceResults({ data, stacked, onOrder, renderDetail, rowsShown, onMore,
       {days.length > 0 && (
         <div className="space-y-4">
           {days.map((day) => (stacked
-            ? <CustomerDayCards key={day.date} day={day} onPro={onOrder} renderDetail={renderDetail} />
-            : <CustomerDayTable key={day.date} day={day} onPro={onOrder} renderDetail={renderDetail} />))}
+            ? <CustomerDayCards key={day.date} day={day} onPro={onOrder} renderDetail={renderDetail} onLoad={onLoad} renderLoad={renderLoad} />
+            : <CustomerDayTable key={day.date} day={day} onPro={onOrder} renderDetail={renderDetail} onLoad={onLoad} renderLoad={renderLoad} />))}
         </div>
       )}
       {listed < v.shown && (
@@ -39803,7 +39998,7 @@ function LoadMap({ load, yard, stacked }) {
 }
 
 /** The load's orders: the delivered run first, numbered as the map numbers them, then the rest. */
-function LoadStopList({ rows, onOrder, renderDetail, narrow = false }) {
+function LoadStopList({ rows, onOrder, renderDetail, narrow = false, markNbr = null }) {
   const inRun = rows.filter((r) => r.stop != null).sort((a, b) => a.stop - b.stop || String(a.at || '').localeCompare(String(b.at || '')));
   const rest = rows.filter((r) => r.stop == null);
   return (
@@ -39812,14 +40007,19 @@ function LoadStopList({ rows, onOrder, renderDetail, narrow = false }) {
         const panel = renderDetail?.(r.stopNbr, r.date, narrow ? { stacked: true } : undefined);
         const [tone, word] = LOAD_OUTCOME[r.outcome] || LOAD_OUTCOME.open;
         const badge = r.stop != null ? BRAND : r.outcome === 'not-delivered' ? '#dc2626' : r.outcome === 'open' ? '#d97706' : r.outcome === 'out' ? '#0284c7' : '#64748b';
+        // THE ORDER THE LOAD WAS OPENED FROM, marked — a load opened from a customer's row is read
+        // for where that customer sat in it.
+        const marked = !!markNbr && r.stopNbr === markNbr;
         return [(
-          <li key={`${r.stopNbr}|${r.date}`} className={`flex items-start gap-3 px-3 py-2.5 ${panel ? 'bg-blue-50' : ''}`}>
+          <li key={`${r.stopNbr}|${r.date}`} data-marked={marked || undefined}
+            className={`flex items-start gap-3 px-3 py-2.5 ${panel ? 'bg-blue-50' : marked ? 'bg-amber-50' : ''}`}>
             <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white" style={{ background: badge }}>
               {r.stop != null ? r.stop : r.outcome === 'not-delivered' ? '!' : r.outcome === 'open' ? '?' : r.outcome === 'out' ? '›' : '·'}
             </span>
             <div className="min-w-0 flex-1">
               <button type="button" onClick={() => onOrder(r.stopNbr, r.date)} aria-expanded={!!panel}
                 className="text-left text-sm font-medium text-blue-800 hover:underline break-words">{r.businessName || r.stopNbr}</button>
+              {marked && <span className="ml-1.5 inline-block whitespace-nowrap rounded bg-amber-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">this order</span>}
               <div className="text-[11px] text-slate-500 break-words">
                 <span className="font-mono">{r.stopNbr}</span>{r.city ? ` · ${r.city}` : ''}{r.pickup ? ' · pickup' : ''}{r.attempt ? ' · redelivery' : ''}
                 {r.weight != null ? ` · ${loadLb(r.weight)}` : ''}
@@ -39838,7 +40038,7 @@ function LoadStopList({ rows, onOrder, renderDetail, narrow = false }) {
 }
 
 /** What opens under a load: its map and its orders. */
-function LoadDetail({ load, yard, stacked, milesWhy, onOrder, renderDetail }) {
+function LoadDetail({ load, yard, stacked, milesWhy, onOrder, renderDetail, markNbr = null }) {
   const left = load.runLeftOut || {};
   const unplaced = (left.noTime || 0) + (left.noPin || 0);
   return (
@@ -39854,7 +40054,7 @@ function LoadDetail({ load, yard, stacked, milesWhy, onOrder, renderDetail }) {
         </p>
       </div>
       {/* Beside the map (a desktop table row) the list is the narrow column of two. */}
-      <LoadStopList rows={load.rows} onOrder={onOrder} renderDetail={renderDetail} narrow={!stacked} />
+      <LoadStopList rows={load.rows} onOrder={onOrder} renderDetail={renderDetail} narrow={!stacked} markNbr={markNbr} />
     </div>
   );
 }
@@ -40077,6 +40277,102 @@ function DriverWeekChooser({ data, stacked, onPick }) {
   );
 }
 
+/**
+ * ONE LOAD, OPENED UNDER THE ROW THAT RODE ON IT (v1.99.10).
+ *
+ * The same answer Driver's loads gives (driver-loads, one day, one driver) with the row's load picked
+ * out by loadForRow, drawn by the same LoadDetail. Every state says what it is: reading, a name two
+ * drivers answer to, a route that matches none of the driver's loads that day (the day's loads are
+ * listed to pick from, never one chosen for them), and a read that failed.
+ */
+function RowLoadPanel({ st, stacked, onClose, onPickDriver, onPickLoad, onOrder, renderDetail }) {
+  const day = st.date ? loadDay(st.date) : '';
+  const closeBtn = (
+    <button type="button" onClick={onClose}
+      className="shrink-0 rounded-lg px-3 min-h-[40px] text-xs font-semibold text-slate-700 ring-1 ring-inset ring-slate-300 bg-white hover:bg-slate-50">Close</button>
+  );
+  const shell = (body, tone = 'ring-[#1e5b92]/30') => (
+    <section aria-label={`${st.route || 'Load'} — the load`} className={`rounded-xl bg-white ring-1 ${tone} overflow-hidden`}>{body}</section>
+  );
+  const note = (text, extra = null, tone) => shell(
+    <div className="p-3 space-y-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 text-sm text-slate-700">{text}</div>
+        {closeBtn}
+      </div>
+      {extra}
+    </div>, tone);
+  if (st.loading) {
+    return note(<span role="status" className="inline-flex items-center gap-2 font-medium text-slate-700">
+      <RefreshCw size={14} className="animate-spin shrink-0" /> Opening {st.route}&rsquo;s load for {day}…</span>);
+  }
+  if (st.err) return note(<span className="text-red-800">Could not open {st.route}&rsquo;s load: {st.err}</span>, null, 'ring-red-200');
+  const j = st.data || {};
+  const pickBtn = 'rounded-lg px-3 min-h-[40px] text-xs font-semibold text-[#1e5b92] ring-1 ring-inset ring-[#1e5b92]/30 bg-white hover:bg-[#1e5b92]/5 text-left';
+  // WHY A DAY CAN HOLD NOTHING, SAID AS IT IS. driver-loads does not read a day that has not happened
+  // (a planned load for Friday is not "no load"), and a day it could not read is not an empty one.
+  const dayRead = (j.days || []).find((x) => x.date === st.date);
+  if (dayRead?.source === 'future') {
+    return note(<>{st.route} runs {day}, which has not happened yet. A load opens here from the day it runs.</>);
+  }
+  if (dayRead?.source === 'unread' && !(j.loads || []).length) {
+    return note(<span className="text-red-800">{day} could not be read, so {st.route}&rsquo;s load cannot be shown. Try again.</span>, null, 'ring-red-200');
+  }
+  if (j.mode === 'driver-week-choose') {
+    // TWO WAYS TO GET HERE, and neither is "there is no load". Several drivers answer to the name —
+    // pick one. Or NONE does: driver-loads folds the alias list (a vendor rename, "Brent  Boyd" →
+    // "Brent  Bryd") before it matches, and this row was never folded, so the load is filed under
+    // another spelling. Then the day's drivers are the list — `drivers`, which the answer carries.
+    const several = (j.candidates || []).length > 1;
+    const list = several ? j.candidates : (j.drivers || []);
+    return note(
+      several
+        ? <>&ldquo;{st.driver}&rdquo; matches {list.length} drivers on {day}. Pick the one who ran {st.route}:</>
+        : list.length
+          ? <>No driver in our records for {day} is called &ldquo;{st.driver}&rdquo; &mdash; a renamed driver is filed under the new name. The drivers who ran loads that day:</>
+          : <>Our records hold no loads at all for {day}, so there is no load to open.</>,
+      list.length ? <div className="flex flex-wrap gap-2">{list.map((d) => (
+        <button key={d.key} type="button" onClick={() => onPickDriver(d.key)} className={pickBtn}>{d.label} · {plural(d.loads, 'load')}</button>
+      ))}</div> : null);
+  }
+  const loads = j.loads || [];
+  const load = (st.chosen && loads.find((l) => l.key === st.chosen)) || loadForRow(loads, st);
+  if (!load) {
+    return note(
+      loads.length
+        ? <>No load named {st.route} for {j.driver?.label || st.driver} on {day} in our records. The loads they ran that day:</>
+        : <>Our records hold no load for {j.driver?.label || st.driver} on {day}, so there is no load to open.</>,
+      loads.length ? <div className="flex flex-wrap gap-2">{loads.map((l) => (
+        <button key={l.key} type="button" onClick={() => onPickLoad(l.key)} className={pickBtn}>{l.name} · {plural(l.stops, 'stop')}</button>
+      ))}</div> : null);
+  }
+  const f = loadFacts(load, j.miles);
+  // A LOAD THAT DOES NOT HOLD THIS ORDER IS SAID TO. Picked by its route name, it is the truck the
+  // row names — but an order moved onto another truck that day (an attempt taken over, a re-plan)
+  // is filed on the one that ended with it, and a rep must not read this load out as its truck.
+  const holds = !st.stopNbr || (load.rows || []).some((r) => r.stopNbr === st.stopNbr);
+  return shell(<>
+    <div className="flex items-start justify-between gap-3 p-3">
+      <div className="min-w-0">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">The load · {day}{f.truck ? ` · ${f.truck}` : ''}</div>
+        <div className="font-semibold text-slate-900 break-words">{load.name} &mdash; {j.driver?.label || st.driver}</div>
+        <div className="text-xs text-slate-600 break-words">
+          {plural(load.stops, 'stop')} · {f.delivered} delivered{f.outNow ? ` · ${f.outNow}` : ''}{f.exceptions ? ` · ${f.exceptions}` : ''} · {f.window} · {f.miles} · {f.freight}
+        </div>
+      </div>
+      {closeBtn}
+    </div>
+    {!holds && (
+      <div className="mx-3 mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+        This order is not on {load.name} in {day}&rsquo;s records. This is the load the row names; do not read it out as the order&rsquo;s truck.
+      </div>
+    )}
+    <div className="border-t border-slate-200 bg-slate-50">
+      <LoadDetail load={load} yard={j.yard} stacked={stacked} milesWhy={f.milesWhy} onOrder={onOrder} renderDetail={renderDetail} markNbr={st.stopNbr} />
+    </div>
+  </>);
+}
+
 const STOP_LOOKUP_LAST = 'dd_stop_lookup_last';
 const STOP_LOOKUP_RANGE = 'dd_stop_lookup_range';
 
@@ -40117,7 +40413,7 @@ function StopLookupScreen() {
   // How many of the year's orders are listed. Starts short because the year is read for its
   // COUNTS; a rep who wants the list asks for more.
   const [yearOrdersShown, setYearOrdersShown] = useState(20);
-  const [detail, setDetail] = useState(null);       // { stopNbr, date } | null
+  const [detail, setDetail] = useState(null);       // { stopNbr, date, where } | null
   const [detailData, setDetailData] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailErr, setDetailErr] = useState(null);
@@ -40154,6 +40450,20 @@ function StopLookupScreen() {
   // on the button that was pressed, not on both. Both stay disabled while either runs: there is
   // one answer area, and two searches racing into it would show whichever finished last.
   const [busy, setBusy] = useState(null);         // 'order' | 'place' | null
+  // WHAT IS BEING READ, IN WORDS, and which chooser row asked for it (v1.99.10). The status line that
+  // carries it stays at the top of the view wherever the page is scrolled: Chad tapped a business on a
+  // phone and "nothing happens" — the read was running, and its only sign was a button off screen.
+  const [busyNote, setBusyNote] = useState('');
+  const [openingKey, setOpeningKey] = useState(null);
+  // ONE LOAD OPEN UNDER ONE ROW (v1.99.10) — { key, date, route, driver, stopNbr, loading, err, data,
+  // chosen }. Its own request counter: a slow answer for a row the rep has since closed or left must
+  // not open under whatever is on screen now.
+  const [rowLoad, setRowLoad] = useState(null);
+  const rowLoadReqRef = useRef(0);
+  // Set for the one openOrder call a tap INSIDE a row's load makes, so the order opens there.
+  const orderInLoadRef = useRef(false);
+  const detailRef = useRef(null);
+  detailRef.current = detail;
   // RECENT LOOKUPS on this device — see src/lib/stop-lookup-recent.js for what is kept and why.
   const [recent, setRecent] = useState(() => {
     try { return parseRecent(localStorage.getItem(STOP_LOOKUP_RECENT)); } catch { return []; }
@@ -40224,6 +40534,8 @@ function StopLookupScreen() {
     const term = String(raw ?? '').trim();
     if (!term) return;
     setLoading(true); setBusy('order'); setErr(null); setPromptMsg(null);
+    setBusyNote(opts.note || `Looking up \u201c${term}\u201d…`); setOpeningKey(opts.opening || null);
+    rowLoadReqRef.current += 1; setRowLoad(null);
     // An open editor belongs to the customer that WAS on screen. Carrying it across a new
     // search is how a dock's hours get typed onto somebody else's dock.
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
@@ -40298,11 +40610,17 @@ function StopLookupScreen() {
     const id = String(stopNbr ?? '').trim();
     const day = String(date ?? '').trim();
     if (!id || !day) return;
+    // WHERE IT WAS TAPPED (v1.99.10): under its row, or inside a load opened under a row. One order
+    // can be in both places at once — a customer with two orders on one truck — and it opens in the
+    // one that was tapped, never both (two panels meant two priced timeline buttons for one order).
+    const where = orderInLoadRef.current ? 'load' : 'row';
+    orderInLoadRef.current = false;
+    if (detail && detail.stopNbr === id && detail.date === day && (detail.where || 'row') !== where) { setDetail({ ...detail, where }); return; }
     // TAPPING THE OPEN ONE AGAIN CLOSES IT. Inline, the row IS the control — an expanded panel
     // with no way back but a Close button four hundred pixels down the page is how an
     // accordion becomes a trap.
     if (detail && detail.stopNbr === id && detail.date === day) { closeOrder(); return; }
-    setDetail({ stopNbr: id, date: day });
+    setDetail({ stopNbr: id, date: day, where });
     setDetailLoading(true); setDetailErr(null); setDetailData(null);
     const req = ++detailReqRef.current;
     try {
@@ -40341,6 +40659,7 @@ function StopLookupScreen() {
   const renderOrderPanel = useCallback((stopNbr, date, opts = {}) => {
     if (!detail) return null;
     if (detail.stopNbr !== String(stopNbr ?? '').trim() || detail.date !== String(date ?? '').trim()) return null;
+    if ((detail.where || 'row') !== (opts.where || 'row')) return null;
     const pro = detailData?.stop?.pro || detail.stopNbr;
     return (
       <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={opts.stacked ?? isMobile} onTimelineSpent={timelineSpent}
@@ -40521,10 +40840,63 @@ function StopLookupScreen() {
   }, [editDock, editDraft, editWas, editSeed, notesGate.reason]);
 
   /** The rep picked one of several matching businesses. */
+  // THE CHOOSER'S OWN QUESTION is re-asked with the pick — `data.query`, never whatever the box holds
+  // now: a box edited after the list appeared sent the new word with the old business's key, and the
+  // answer was for neither. (The line above is an anchor: customer-notes-edit-dock-race.test.mjs cuts
+  // saveEdit out of this file at it.)
   const pickCustomer = useCallback((m) => {
+    // The business already opening ignores a second tap (that restarted its ten-second read). A
+    // DIFFERENT business replaces it: run() drops the older answer, so a mis-tap costs nothing.
+    if (busy === 'order' && openingKey === m.nameKey) return;
     setNameKey(m.nameKey);
-    run(q, { range, nameKey: m.nameKey, year: yearOn ? today.slice(0, 4) : null });
-  }, [run, q, range, yearOn, today]);
+    run(data?.query || q, { range, nameKey: m.nameKey, year: yearOn ? today.slice(0, 4) : null, note: `Opening ${m.name}…`, opening: m.nameKey });
+  }, [run, data, q, range, yearOn, today, busy, openingKey]);
+
+  // Closing a load closes an order opened inside it too — nothing is left open where no one can see it.
+  const closeRowLoad = useCallback(() => {
+    rowLoadReqRef.current += 1; setRowLoad(null);
+    if (detailRef.current?.where === 'load') closeOrder();
+  }, [closeOrder]);
+  const openOrderInLoad = useCallback((stopNbr, date) => { orderInLoadRef.current = true; openOrder(stopNbr, date); }, [openOrder]);
+  const renderOrderInLoad = useCallback((stopNbr, date, o = {}) => renderOrderPanel(stopNbr, date, { ...o, where: 'load' }), [renderOrderPanel]);
+
+  /**
+   * THE LOAD A ROW RODE ON, opened under that row (v1.99.10). Chad, 2026-09-30: "doesn't show me the
+   * load". Asked of driver-loads for that one driver and that one day — Firestore and the load-miles
+   * cache, never NuVizz — and picked out by loadForRow. Tapping the same route again closes it.
+   * `over.driverKey` is the second ask, when the row's driver name matched two people.
+   */
+  const openRowLoad = useCallback(async (row, over = {}) => {
+    if (!row?.key || !row.date || !row.driver) return;
+    if (!over.driverKey && rowLoad?.key === row.key) { closeRowLoad(); return; }
+    if (driverGate.reason) { setErr(driverGate.reason); return; }
+    const req = ++rowLoadReqRef.current;
+    setRowLoad({ ...row, loading: true, err: null, data: null, chosen: null });
+    const p = new URLSearchParams({ from: row.date, to: row.date });
+    if (over.driverKey) p.set('key', over.driverKey); else p.set('driver', row.driver);
+    try {
+      const r = await apiFetch(`/.netlify/functions/driver-loads?${p.toString()}`);
+      const j = await r.json();
+      if (req !== rowLoadReqRef.current) return;
+      if (!j.ok) throw new Error(j.error || 'the load could not be read');
+      setRowLoad((cur) => (cur && cur.key === row.key ? { ...cur, loading: false, data: j } : cur));
+    } catch (e) {
+      if (req === rowLoadReqRef.current) setRowLoad((cur) => (cur && cur.key === row.key ? { ...cur, loading: false, err: String(e.message || e) } : cur));
+    }
+  }, [rowLoad, closeRowLoad, driverGate.reason]);
+
+  /** The panel under the row that holds it, and null for every other row — the renderOrderPanel shape. */
+  const renderRowLoad = useCallback((key) => {
+    if (!rowLoad || rowLoad.key !== key) return null;
+    return (
+      <RowLoadPanel st={rowLoad} stacked={isMobile} onClose={closeRowLoad}
+        onPickDriver={(driverKey) => openRowLoad(rowLoad, { driverKey })}
+        onPickLoad={(k) => setRowLoad((cur) => (cur ? { ...cur, chosen: k } : cur))}
+        onOrder={openOrderInLoad} renderDetail={renderOrderInLoad} />
+    );
+  }, [rowLoad, isMobile, closeRowLoad, openRowLoad, openOrderInLoad, renderOrderInLoad]);
+  // Below dispatcher Driver's loads is refused, so the route stays the plain text it always was.
+  const loadHandler = driverGate.reason ? null : openRowLoad;
 
   /** A new window on a customer already on screen: re-read, keep the customer. */
   const changeRange = useCallback((nextSel) => {
@@ -40558,6 +40930,7 @@ function StopLookupScreen() {
     const f = { ...EMPTY_PLACE, ...(fields || {}) };
     if (!placeQueryUsable(placeQuery(f))) { setErr('Type a street address, a city or a ZIP to search by.'); return; }
     setLoading(true); setBusy('place'); setErr(null); setPromptMsg(null); closeOrder();
+    setBusyNote('Searching those addresses…'); setOpeningKey(null); rowLoadReqRef.current += 1; setRowLoad(null);
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     try { localStorage.setItem(STOP_LOOKUP_PLACE, JSON.stringify(f)); } catch { /* a remembered box is a convenience */ }
     const req = ++drvReqRef.current;
@@ -40599,6 +40972,7 @@ function StopLookupScreen() {
     if (driverGate.reason) { setErr(driverGate.reason); return; }
     const wk = periodRange(sel?.period || 'today', today, sel) || { from: today, to: today };
     setLoading(true); setBusy('driver'); setErr(null); setPromptMsg(null); closeOrder(); setOpenLoad(null);
+    setBusyNote('Reading the driver\u2019s loads…'); setOpeningKey(null); rowLoadReqRef.current += 1; setRowLoad(null);
     setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     const typed = String(name ?? '').trim();
     try { localStorage.setItem(STOP_LOOKUP_DRIVER, typed); } catch { /* a remembered box is a convenience */ }
@@ -40658,8 +41032,8 @@ function StopLookupScreen() {
    *  must not wipe an address search that is still on screen beside it. */
   const clearOrder = useCallback(() => {
     setQ(''); setErr(null);
-    if (data && !['place', 'driver-week', 'driver-week-choose'].includes(data.mode)) { setData(null); closeOrder(); }
-  }, [data, closeOrder]);
+    if (data && !['place', 'driver-week', 'driver-week-choose'].includes(data.mode)) { setData(null); closeOrder(); closeRowLoad(); }
+  }, [data, closeOrder, closeRowLoad]);
   const clearDriver = useCallback(() => {
     setDrvName(''); setErr(null);
     try { localStorage.setItem(STOP_LOOKUP_DRIVER, ''); } catch { /* convenience */ }
@@ -40667,13 +41041,23 @@ function StopLookupScreen() {
   }, [data, closeOrder]);
   const clearPlace = useCallback(() => {
     setPlace(EMPTY_PLACE); setErr(null);
-    if (data?.mode === 'place') { setData(null); closeOrder(); }
-  }, [data, closeOrder]);
+    if (data?.mode === 'place') { setData(null); closeOrder(); closeRowLoad(); }
+  }, [data, closeOrder, closeRowLoad]);
 
   const d = data?.mode === 'stop' ? data.dossier : null;
 
   return (
     <div ref={scrollerRef} className="flex-1 overflow-y-auto bg-slate-50">
+      {/* WHAT IS BEING READ, AT THE TOP OF THE VIEW WHEREVER THE PAGE IS SCROLLED (v1.99.10). Zero
+          height and sticky, so it lays over the page instead of pushing it down while it shows. */}
+      {busy && (
+        <div className="sticky top-0 z-20 h-0 flex justify-center pointer-events-none">
+          <div role="status" aria-live="polite" data-lookup-busy=""
+            className="mt-2 mx-4 inline-flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-full bg-slate-900/90 px-3 py-1.5 text-xs font-semibold text-white shadow-lg">
+            <RefreshCw size={13} className="animate-spin shrink-0" /><span className="truncate">{busyNote || 'Looking…'}</span>
+          </div>
+        </div>
+      )}
       <div className={`${SCREEN_DASH} px-4 py-5 sm:px-6 sm:py-8 space-y-5 sm:space-y-6`}>
         {/* THE LITERAL "Stop lookup" STAYS IN THE BODY. verify-desktop-layout.mjs proves the
             screen arrived with document.body.innerText.includes('Stop lookup') — rename it
@@ -40714,7 +41098,7 @@ function StopLookupScreen() {
         )}
 
         {data?.mode === 'place' && (
-          <PlaceResults data={data} stacked={isMobile} onOrder={openOrder} renderDetail={renderOrderPanel}
+          <PlaceResults data={data} stacked={isMobile} onOrder={openOrder} renderDetail={renderOrderPanel} onLoad={loadHandler} renderLoad={renderRowLoad}
             rowsShown={placeRowsShown} onMore={() => setPlaceRowsShown((n) => n + PLACE_PAGE)} onNarrow={narrowPlace}
             ledgerOpen={ledgerOpen} onToggleLedger={() => setLedgerOpen((x) => !x)} />
         )}
@@ -40723,7 +41107,8 @@ function StopLookupScreen() {
           <div className="space-y-4">
             <CustomerRangeBar sel={sel} setSel={changeRange} range={data.window || range} today={today} stacked={isMobile}
               yearOn={!!data.year} onYear={showYear} />
-            <CustomerChooser matches={data.matches} query={data.query} onPick={pickCustomer} incomplete={data.complete === false} />
+            <CustomerChooser matches={data.matches} query={data.query} onPick={pickCustomer} incomplete={data.complete === false}
+              openingKey={busy === 'order' ? openingKey : null} />
           </div>
         )}
 
@@ -40789,8 +41174,8 @@ function StopLookupScreen() {
               {v.days.length > 0
                 ? <div className="space-y-4">
                   {v.days.map((day) => (isMobile
-                    ? <CustomerDayCards key={day.date} day={day} onPro={openOrder} renderDetail={renderOrderPanel} />
-                    : <CustomerDayTable key={day.date} day={day} onPro={openOrder} renderDetail={renderOrderPanel} />))}
+                    ? <CustomerDayCards key={day.date} day={day} onPro={openOrder} renderDetail={renderOrderPanel} onLoad={loadHandler} renderLoad={renderRowLoad} />
+                    : <CustomerDayTable key={day.date} day={day} onPro={openOrder} renderDetail={renderOrderPanel} onLoad={loadHandler} renderLoad={renderRowLoad} />))}
                 </div>
                 : v.complete !== false && (
                   <div className="rounded-xl border bg-white p-6 text-center">
@@ -40884,8 +41269,8 @@ function StopLookupScreen() {
             )}
 
           {!!d.days.length && (isMobile
-            ? <StopDayListMobile days={d.days} onOpen={openOrder} renderDetail={renderOrderPanel} />
-            : <StopDayTable days={d.days} onOpen={openOrder} renderDetail={renderOrderPanel} />)}
+            ? <StopDayListMobile days={d.days} onOpen={openOrder} renderDetail={renderOrderPanel} onLoad={loadHandler} renderLoad={renderRowLoad} />
+            : <StopDayTable days={d.days} onOpen={openOrder} renderDetail={renderOrderPanel} onLoad={loadHandler} renderLoad={renderRowLoad} />)}
 
           {!!d.addressChanges.length && (
             <div className="space-y-2">
