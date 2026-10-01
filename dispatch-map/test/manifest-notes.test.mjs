@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { ticketNotes, printedNotes, mergedNotes, manifestScanNotesEnabled, MANIFEST_SCAN_NOTES_ON } from '../src/lib/stop-notes-freshness.js';
+import { ticketNotes, printedNotes, mergedNotes, manifestScanNotesEnabled, MANIFEST_SCAN_NOTES_ON, stampNotesRead, manifestNewNotesEnabled, MANIFEST_NEW_NOTES_ON } from '../src/lib/stop-notes-freshness.js';
 import { liftFromApp, libExports } from './helpers/app-lift.mjs';
 
 const ULINE = (text) => ({ text, type: 'ORD_IN', typeDesc: 'Order Instructions', addedBy: 'INTG ULINE', source: 'Order - Order Instructions', addedOn: '2026-09-28T16:50:22' });
@@ -41,7 +41,7 @@ test('a note NuVizz no longer lists is left off the paper — while the card sti
 
 test('2026-09-30, 007184027: the ULINE cancellation the scan picked up is printed on the ticket', () => {
   const paper = ticketNotes(CANCELLED, { on: true });
-  assert.deepEqual(paper[0], { text: 'CANCELLED ORDER. STOP & RETURN PER ULINE.', by: undefined, on: undefined }, 'no author or time — the list sends none');
+  assert.deepEqual(paper[0], { text: 'CANCELLED ORDER. STOP & RETURN PER ULINE.', by: undefined, on: undefined, fromScan: true }, 'no author or time — the list sends none');
   assert.equal(paper.length, 6, 'the five stored notes stay too');
   assert.deepEqual(OLD(CANCELLED).map((c) => c.text).includes('CANCELLED ORDER. STOP & RETURN PER ULINE.'), false, 'the old paper never printed it');
 });
@@ -70,8 +70,20 @@ test('NuVizz’s raw comments, when there are no stored notes, go through the sa
   assert.deepEqual(ticketNotes(s, { on: true }).map((c) => c.text), ['SPL-INSTR-TEXT: EMAIL FOR APPT']);
 });
 
-test('printedNotes is what the card shows, less the faded notes and the plain scan-only ones', () => {
-  for (const s of [CANCELLED, DROPPED, {}, null]) assert.deepEqual(printedNotes(s), mergedNotes(s).filter((n) => !n.gone && (!n.fromScan || n.isNew)));
+test('printedNotes is what the card shows, less the faded notes', () => {
+  for (const s of [CANCELLED, DROPPED, {}, null]) assert.deepEqual(printedNotes(s), mergedNotes(s).filter((n) => !n.gone));
+});
+
+test('VITE_MANIFEST_NEW_NOTES=off: the half Chad asked for, alone — removed notes still off, no scan notes printed', () => {
+  const both = { ...DROPPED, orderInstructions: DROPPED.orderInstructions + '; **DELIVER BY 3:00PM**' };
+  assert.deepEqual(ticketNotes(both, { on: true, addNew: false }).map((c) => c.text), ['SPL-INSTR-TEXT: EMAIL FOR APPT', 'TOTAL-AMOUNT : 61.80']);
+  assert.deepEqual(ticketNotes(both, { on: true, addNew: true }).map((c) => c.text), ['**DELIVER BY 3:00PM**', 'SPL-INSTR-TEXT: EMAIL FOR APPT', 'TOTAL-AMOUNT : 61.80']);
+  assert.equal(manifestNewNotesEnabled({}), true);
+  for (const v of ['off', 'OFF', '0', 'false', ' no ']) assert.equal(manifestNewNotesEnabled({ VITE_MANIFEST_NEW_NOTES: v }), false, v);
+  for (const v of ['offf', 'on', '1', '', 'nope']) assert.equal(manifestNewNotesEnabled({ VITE_MANIFEST_NEW_NOTES: v }), true, v);
+  assert.equal(MANIFEST_NEW_NOTES_ON, true);
+  const LIB = readFileSync(new URL('../src/lib/stop-notes-freshness.js', import.meta.url), 'utf8');
+  assert.match(LIB, /export const MANIFEST_NEW_NOTES_ON = MANIFEST_SCAN_NOTES_ON && \(/, 'inside the paper switch, which is inside the card switch');
 });
 
 test('an AVRT order with no stored notes: its price line stays off the ticket, as it always was', () => {
@@ -88,8 +100,8 @@ test('VITE_MANIFEST_SCAN_NOTES: default on, an off-word turns it off, a typo lea
   for (const v of ['off', 'OFF', '0', 'false', ' no ']) assert.equal(manifestScanNotesEnabled({ VITE_MANIFEST_SCAN_NOTES: v }), false, v);
   for (const v of ['offf', 'on', '1', '', 'nope']) assert.equal(manifestScanNotesEnabled({ VITE_MANIFEST_SCAN_NOTES: v }), true, v);
   assert.equal(MANIFEST_SCAN_NOTES_ON, true, 'in Node both switches read on');
-  // The card's switch puts the paper back too, so the screen and the ticket never disagree on which
-  // notes exist: the constant is the AND of the two.
+  // The card's switch puts the paper back too, so the paper never uses the scan's notes while the
+  // card does not: the constant is the AND of the two.
   const LIB = readFileSync(new URL('../src/lib/stop-notes-freshness.js', import.meta.url), 'utf8');
   assert.match(LIB, /export const MANIFEST_SCAN_NOTES_ON = SCAN_NOTES_AUTO_ON && \(/);
 });
@@ -120,4 +132,63 @@ test('ticketData reads its notes through ticketNotes — the one place the paper
   const body = APP.slice(APP.indexOf('\nfunction ticketData('), APP.indexOf('\nfunction ticketBody('));
   assert.match(body, /const comments = ticketNotes\(stop\);/);
   assert.doesNotMatch(body, /allComments/, 'no second, older reading of the notes left behind');
+});
+
+// ── the Refresh race (found by the v1.100.3 review sweep, reproduced before the fix) ─────────
+// A CSR adds "CALL 30 MIN AHEAD" in NuVizz after the last scan read the list; the dispatcher hits
+// Refresh, which reads the notes WITH it. Until the next scan the scan text still lacks it — so,
+// without a stamp, the newest note read as removed: faded on the card and dropped off the ticket.
+const RACE = {
+  stopNbr: '007199002',
+  orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; TOTAL-AMOUNT : 61.80',
+  allComments: [ULINE('SPL-INSTR-TEXT: EMAIL FOR APPT'), ULINE('SPL-INSTR-TEXT: CALL 30 MIN AHEAD'), ULINE('TOTAL-AMOUNT : 61.80')],
+};
+
+test('after a Refresh the newest note is printed, not dropped — and not faded on the card', () => {
+  const refreshed = { ...RACE, notes_refreshed_at: '2026-10-01T02:20:00.000Z' };
+  assert.ok(ticketNotes(refreshed, { on: true }).some((c) => c.text === 'SPL-INSTR-TEXT: CALL 30 MIN AHEAD'));
+  assert.equal(mergedNotes(refreshed).some((n) => n.gone), false);
+  // Without the stamp the same stop is the deletion case, exactly as before.
+  assert.equal(ticketNotes(RACE, { on: true }).some((c) => /CALL 30 MIN AHEAD/.test(c.text)), false);
+});
+
+test('the card’s live Refresh is stamped the way the server stamps a saved one', () => {
+  const at = '2026-10-01T02:20:00.000Z';
+  assert.equal(stampNotesRead({ stopNbr: '1', allComments: RACE.allComments }, at).notes_refreshed_at, at);
+  assert.equal(stampNotesRead({ stopNbr: '1', allComments: [] }, at).notes_refreshed_at, undefined, 'no notes read, no stamp');
+  assert.equal(stampNotesRead({ stopNbr: '1' }, at).notes_refreshed_at, undefined);
+  assert.equal(stampNotesRead({ allComments: RACE.allComments, notes_refreshed_at: 'x' }, at).notes_refreshed_at, 'x', 'a stamp the read carries wins');
+  assert.equal(stampNotesRead(null, at), null);
+  const APP = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const hook = APP.slice(APP.indexOf('\nfunction useLiveStop('), APP.indexOf('\n}', APP.indexOf('\nfunction useLiveStop(')));
+  assert.match(hook, /setFresh\(\(prev\) => foldFreshStop\(prev, stampNotesRead\(d, new Date\(\)\.toISOString\(\)\)\)\);/);
+});
+
+// ── the second review round ──────────────────────────────────────────────────
+test('a New Order sent with no notes, then given a real one in NuVizz: the paper prints it', () => {
+  const s = { stopNbr: '007199003', allComments: [], orderInstructions: 'CANCELLED ORDER. STOP & RETURN PER ULINE.' };
+  assert.deepEqual(ticketNotes(s, { on: true }).map((c) => c.text), ['CANCELLED ORDER. STOP & RETURN PER ULINE.']);
+  // …while a bare amount on such a stop stays off, in every spelling the 9/30 board carried.
+  for (const p of ['56.06', '**166.32**', '$59.99', ' 77.22 ']) assert.deepEqual(ticketNotes({ orderInstructions: p }, { on: true }), [], p);
+  // An amount WITH words is a note ("$59.99 JOSH 770-…" on RA58610778 is a contact line) and prints.
+  assert.equal(ticketNotes({ orderInstructions: '$59.99 CALL JOSH' }, { on: true }).length, 1);
+});
+
+test('the scan’s note says where it came from on the paper; stored notes keep their author', () => {
+  const html = L.buildTicketHtml(CANCELLED, 'logo.jpg');
+  const boxes = [...html.matchAll(/<div class="cmt-t">([^<]*)<\/div>\s*<div class="cmt-m">(.*?)<\/div>/gs)].map((m) => [m[1], m[2]]);
+  assert.equal(boxes[0][0], 'CANCELLED ORDER. STOP &amp; RETURN PER ULINE.');
+  assert.match(boxes[0][1], /From NuVizz’s latest scan/);
+  assert.doesNotMatch(boxes[0][1], /~By/);
+  assert.ok(boxes.slice(1).every(([, m]) => /~By INTG ULINE/.test(m)));
+});
+
+test('a cut text’s leftover fragment is not a note — not on the card, not on the paper', () => {
+  const s = { ...DROPPED, orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; SPL-INSTR-TEXT: CALL 30 MIN AHEAD; TOTAL-AMOU…' };
+  assert.equal(mergedNotes(s).some((n) => n.fromScan), false, JSON.stringify(mergedNotes(s)));
+  assert.equal(ticketNotes(s, { on: true }).some((c) => /…/.test(c.text)), false);
+  // A lone "…" left after the last "; " is nothing at all.
+  assert.equal(mergedNotes({ ...DROPPED, orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; …' }).some((n) => n.fromScan), false);
+  // A long tail is still matched to its note by its start, as before.
+  assert.equal(mergedNotes({ ...DROPPED, orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; SPL-INSTR-TEXT: CALL 30 MIN AH…' }).some((n) => n.fromScan || n.gone), false);
 });

@@ -83,7 +83,10 @@ export function noteFreshness(stop) {
 //     can hold LESS than the rich notes, so a note missing from it is not proof of a deletion,
 //     and a dispatcher who loses a real instruction loses the delivery. Nothing is marked gone
 //     when the text was cut short (the active pool cuts it at 400 characters and adds "…"):
-//     absence past the cut proves nothing.
+//     absence past the cut proves nothing. Nor on a stop whose notes a Refresh has read
+//     (notes_refreshed_at, v1.100.3): the stored notes may then be NEWER than the scan text, and
+//     a note added in between would read as removed — the newest note, the one most likely to
+//     matter.
 //   • any other stored note (pre-visit, general, a dispatcher's own) is shown as it was.
 //   • with no scan text, the stored notes are exactly what they were before.
 //
@@ -144,6 +147,13 @@ export function mergedNotes(stop) {
   const scan = scanNoteEntries(raw);
   if (!scan.length) return stored.map((c) => ({ ...c }));
   const cut = /…\s*$/.test(raw);
+  // A Refresh read the stored notes AFTER the scan may last have read the list (the board read
+  // strips each row's own scan time, so the two cannot be ordered): a note added between the two
+  // is in the stored notes and not yet in the scan text. Judging it removed would fade the newest
+  // note on the card and drop it off the ticket — so on a stop whose notes a Refresh has read,
+  // nothing is judged removed. For good: the scan carries notes_refreshed_at forward on every
+  // rewrite (mergeEnrich, nuvizz-list.mts), so there is no moment the two become comparable.
+  const storedNewer = !!stop?.notes_refreshed_at;
   const scanKeys = scan.map(noteKey);
   const joined = scanKeys.join(' ');
   const used = new Set();
@@ -157,10 +167,13 @@ export function mergedNotes(stop) {
       scanKeys.forEach((sk, i) => { if (!used.has(i) && holdsWords(k, sk)) used.add(i); });
       return { ...c };
     }
-    return isOrderInstruction(c) && !cut ? { ...c, gone: true } : { ...c };
+    return isOrderInstruction(c) && !cut && !storedNewer ? { ...c, gone: true } : { ...c };
   });
   const isNew = stored.length > 0;
-  const added = scan.filter((_, i) => !used.has(i)).map((text) => (isNew ? { text, fromScan: true, isNew: true } : { text, fromScan: true }));
+  // A cut text's last entry is a fragment by construction ("TOTAL-AMOU…"): one too short to have
+  // matched its stored note is not a note of its own. Nor is an entry with nothing left in it.
+  const fragment = (i) => !scanKeys[i] || (cut && i === scan.length - 1 && scanKeys[i].length < 12);
+  const added = scan.filter((_, i) => !used.has(i) && !fragment(i)).map((text) => (isNew ? { text, fromScan: true, isNew: true } : { text, fromScan: true }));
   return [...added, ...kept];
 }
 
@@ -169,15 +182,19 @@ export function mergedNotes(stop) {
 // Chad, 2026-10-01, on the card's faded "Not in NuVizz's latest notes": "do this in the portal but
 // on the print manifest don't put them on there at all." The screen keeps the faded line, because
 // a dispatcher can weigh it; a driver holding the ticket cannot, so a note NuVizz no longer lists
-// is left off the paper, and a note the latest scan picked up (the card's blue "New") is printed.
-// A stop with no stored notes prints what it always printed (see printedNotes). Every printed ticket —
+// is left off the paper, and a note the latest scan picked up is printed, its by-line reading
+// "From NuVizz's latest scan" (the list sends no author or time). A bare amount on a stop with no
+// stored notes (an AVRT price) stays off (see printedNotes). Every printed ticket —
 // the route panel's Print Manifest, a Compare card's Print manifest, and a single Delivery Ticket —
 // reads its notes through ticketData (App.jsx), which reads them here.
 //
-// THE WAY BACK: VITE_MANIFEST_SCAN_NOTES=off puts the paper back to the stored notes exactly as it
-// printed them before (house shape). VITE_SCAN_NOTES_AUTO=off, which puts back the card, puts back
-// the paper too, so the screen and the ticket can never disagree about which notes exist.
-// Build-time, so a redeploy. Zero NuVizz calls either way.
+// THE WAY BACK, in two halves (house shape each; build-time, so a redeploy; zero NuVizz calls):
+//   VITE_MANIFEST_SCAN_NOTES=off  the paper prints the stored notes exactly as it did before —
+//                                 removed notes back on, scan notes off.
+//   VITE_MANIFEST_NEW_NOTES=off   the paper stops printing the scan's notes but still leaves the
+//                                 removed ones off — the half Chad asked for, alone.
+// VITE_SCAN_NOTES_AUTO=off (the card's switch) turns both off, so the paper never uses the scan's
+// notes while the card does not.
 
 export function manifestScanNotesEnabled(env) {
   const v = String(env?.VITE_MANIFEST_SCAN_NOTES ?? '').trim().toLowerCase();
@@ -189,27 +206,39 @@ export const MANIFEST_SCAN_NOTES_ON = SCAN_NOTES_AUTO_ON && (() => {
   try { return manifestScanNotesEnabled(import.meta.env); } catch { return true; }
 })();
 
+export function manifestNewNotesEnabled(env) {
+  const v = String(env?.VITE_MANIFEST_NEW_NOTES ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** Does the paper print the scan's notes? Only inside the paper's own switch. */
+export const MANIFEST_NEW_NOTES_ON = MANIFEST_SCAN_NOTES_ON && (() => {
+  try { return manifestNewNotesEnabled(import.meta.env); } catch { return true; }
+})();
+
+/** A note that is nothing but an amount — "56.06", "**166.32**", "$59.99". */
+const PRICE_ONLY = /^[*\s$]*\d{1,7}(?:[.,]\d{1,2})?[*\s]*$/;
+
 /**
- * PURE. The notes a printed ticket carries: what the card shows, without the ones NuVizz no longer
- * lists, and with a scan note only where the card calls it New (there are stored notes for it to be
- * newer than). A stop with NO stored notes prints exactly what it printed before: on the 2026-09-30
- * board all 30 such stops were AVRT orders whose only note is their price, and a delivery ticket is
- * signed by the receiver — a rate is not put on it without Chad saying so. Each comes back as the
- * stored note (author and time kept) or `{ text, fromScan, isNew }` — the list sends no author or
- * time, so the ticket prints none.
+ * PURE. The notes a printed ticket carries: what the card shows, less the ones NuVizz no longer
+ * lists. The scan's notes are printed when `addNew` (VITE_MANIFEST_NEW_NOTES), except a bare
+ * amount on a stop with NO stored notes: on the 2026-09-30 board all 30 such stops were AVRT orders
+ * whose only note is their price, and those tickets have never printed one. Any other scan note on
+ * such a stop (a "CANCELLED ORDER" on a New Order sent with no notes) is printed. Each comes back
+ * as the stored note (author and time kept) or `{ text, fromScan, isNew }`.
  */
-export function printedNotes(stop) {
-  return mergedNotes(stop).filter((n) => !n.gone && (!n.fromScan || n.isNew));
+export function printedNotes(stop, { addNew = MANIFEST_NEW_NOTES_ON } = {}) {
+  return mergedNotes(stop).filter((n) => !n.gone && (!n.fromScan || (addNew && (n.isNew || !PRICE_ONLY.test(String(n.text))))));
 }
 
 /**
  * PURE (given `on`). The Comments boxes of one printed ticket, as ticketData (App.jsx) prints them:
  * `{ text, by, on }`. With the paper's switch off this is, line for line, what the ticket always
  * printed — the stored notes, or NuVizz's raw comments when there are none. With it on, the same
- * notes go through printedNotes: a note NuVizz no longer lists is left off, and one the card marks
- * New is added, with no author or time (the list sends none).
+ * notes go through printedNotes: a note NuVizz no longer lists is left off, and a scan note is
+ * added, marked `fromScan` so the ticket's by-line can say where it came from.
  */
-export function ticketNotes(stop, { on = MANIFEST_SCAN_NOTES_ON } = {}) {
+export function ticketNotes(stop, { on = MANIFEST_SCAN_NOTES_ON, addNew = MANIFEST_NEW_NOTES_ON } = {}) {
   const raw = (stop && stop.raw && stop.raw.stop) || {};
   const hasStored = Array.isArray(stop?.allComments) && stop.allComments.length > 0;
   if (!on) {
@@ -220,6 +249,17 @@ export function ticketNotes(stop, { on = MANIFEST_SCAN_NOTES_ON } = {}) {
   const stored = hasStored
     ? stop.allComments
     : (raw.comments || []).map((c) => ({ text: c.commentDescription, addedBy: c.addedByName, addedOn: c.addedOn }));
-  return printedNotes({ allComments: stored, orderInstructions: stop?.orderInstructions })
-    .map((c) => ({ text: c.text, by: c.addedBy, on: c.addedOn }));
+  return printedNotes({ ...stop, allComments: stored }, { addNew })
+    .map((c) => (c.fromScan ? { text: c.text, by: undefined, on: undefined, fromScan: true } : { text: c.text, by: c.addedBy, on: c.addedOn }));
+}
+
+/**
+ * PURE. A fresh /stop/info read about to be folded onto a card (useLiveStop, App.jsx): when it
+ * carries notes, stamp the moment they were read, the same field the server stamps when a Refresh
+ * saves them to the board (writeStopNotes, firestore.mts). A stamp the read already carries wins.
+ */
+export function stampNotesRead(fresh, atISO) {
+  if (!fresh || typeof fresh !== 'object') return fresh;
+  if (!Array.isArray(fresh.allComments) || !fresh.allComments.length || fresh.notes_refreshed_at) return fresh;
+  return { ...fresh, notes_refreshed_at: atISO };
 }
