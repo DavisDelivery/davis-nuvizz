@@ -234,8 +234,53 @@ test('WINDOWS: on Chad\'s board with the four Dalton orders due by 9:00, SCOTT d
   }
 });
 
-test('HARD RULES on 80 random overloaded boards (green rule on and off, both strategies): every order the old Build carried rides the same truck, every group added is a whole area of what it left off, no truck over skids or pounds, nothing box-only on a tractor, the same answer twice', async () => {
+test('A CUSTOMER SHUT TODAY is in no group, and no one is told a window is the reason: Chad\'s board with Greif Packaging closed, strict and advisory', async () => {
+  // The three Dalton orders that can be delivered are judged on their own: three cost SCOTT more per
+  // order than four did, past the 1.5× bar, so they stay off — with the distance reason, which is
+  // true. (A first version refused all four "would make a delivery miss its window" with no window.)
+  const stops = placed(7);
+  const shut = { openMin: null, closeMin: null, closedToday: true, sources: ['test'], label: 'closed Thursday' };
+  for (const windowMode of ['strict', 'advisory']) {
+    const p = await pipe(boardStops(stops.map((s) => (s.stopNbr === '007184673' ? { ...s, tr: shut } : s))), TRUCKS, { windowMode });
+    for (const g of p.meta.groupFill.taken) assert.ok(!g.stopIds.includes('007184673'), `${windowMode}: the shut customer is in no group`);
+    assert.deepEqual(p.meta.groupFill.refused, [], `${windowMode}: nothing refused for a window`);
+    for (const u of p.unassigned) assert.ok(!u.reasons.some((x) => /miss its window/.test(x)), `${windowMode} ${u.stopId}: ${u.reasons.join('; ')}`);
+  }
+});
+
+test('THE CLOCK ASKS IN THE ORDER THE BUILD SHIPS: the same stops handed over in any order get the same answer', async () => {
+  const { runClockFor } = await import('../netlify/functions/lib/routing-repair.mts');
+  const { haversineMatrix } = await import('../netlify/functions/google-route-matrix.mts');
+  // four Dalton orders that all close at noon, and a box's Cartersville run
+  const run = near('C', 34.165, -84.80, 6), dal = near('D', 34.77, -84.97, 4);
+  const midnight = Date.UTC(2026, 9, 1) / 1000;
+  const solverStops = [...run, ...dal].map((s) => ({ id: s.stopNbr, lat: s.lat, lng: s.lng, skids: 1, weightLbs: 300, linearFeetIn: 0, serviceMin: 15, equipmentReqs: [], closedToday: false,
+    timeWindow: s.stopNbr[0] === 'D' ? { startSec: midnight + 7 * 3600, endSec: midnight + 12 * 3600 } : null, timeConstraint: s.stopNbr[0] === 'D' ? 'STRICT' : 'SOFT' }));
+  for (const windowMode of ['advisory', 'strict']) {
+    const input = { stops: solverStops, trucks: [box('BOX')], depot: dock, matrix: haversineMatrix(dock, solverStops), strategy: 'MIN_DISTANCE', constraints: [], departEpochSec: midnight + 8 * 3600, windowMode };
+    const clock = runClockFor(input);
+    const answers = new Set();
+    const perms = (xs) => (xs.length <= 1 ? [xs] : xs.flatMap((x, i) => perms([...xs.slice(0, i), ...xs.slice(i + 1)]).map((p) => [x, ...p])));
+    for (const order of perms(solverStops.slice(6))) answers.add(clock([...solverStops.slice(0, 6), ...order]).late.map((x) => x.id).sort().join(','));
+    assert.equal(answers.size, 1, `${windowMode}: ${[...answers].join(' | ')}`);
+  }
+});
+
+test('NEVER AN ORDER THE BUILD WITHOUT IT CARRIED: on a strict Build where taking the Dalton group would leave no room for Sunday c/o Encore after a shut customer comes off, the group is undone and the job says why', async () => {
+  const stops = placed(73);
+  const shut = { openMin: null, closeMin: null, closedToday: true, sources: ['test'], label: 'closed Thursday' };
+  const win = { openMin: 600, closeMin: 690, closedToday: false, sources: ['test'], label: '10:00a–11:30a' };
+  const board = boardStops(stops.map((s) => (s.stopNbr === '007184677' ? { ...s, tr: shut } : s.stopNbr === '007184686' ? { ...s, tr: win } : s)));
+  const on = await pipe(board, TRUCKS, { windowMode: 'strict' }), off = await pipe(board, TRUCKS, { windowMode: 'strict', fillTrucks: false });
+  assert.ok(on.meta.groupFill.undone, 'the guard fired');
+  assert.deepEqual(on.meta.groupFill.undone.ordersItWouldCost, [SUNDAY]);
+  assert.deepEqual(on.routes.map((r) => [r.truckId, r.orderedStopIds]), off.routes.map((r) => [r.truckId, r.orderedStopIds]), 'the Build without the group ships');
+  assert.deepEqual(on.meta.groupFill.taken, []);
+});
+
+for (const windowMode of ['advisory', 'strict']) test(`HARD RULES on 80 random overloaded boards (${windowMode}, some customers shut, some windows; green rule on and off, both strategies): every order the old Build carried rides the same truck, every group added is a whole area of what it left off, no truck over skids or pounds, nothing box-only on a tractor, the same answer twice`, async () => {
   let seed = 31337; const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  let seed2 = 4242; const rnd2 = () => ((seed2 = (seed2 * 1103515245 + 12345) % 2147483648) / 2147483648);   // windows: their own draws, so the boards are the same in both modes
   let groups = 0;
   for (let b = 0; b < 80; b++) {
     const trucks = Array.from({ length: 1 + Math.floor(rnd() * 3) }, (_, i) => (rnd() < 0.35 ? tractor(`T${i}`) : box(`B${i}`, 14, rnd() < 0.3 ? 6000 : 10000)));
@@ -245,15 +290,18 @@ test('HARD RULES on 80 random overloaded boards (green rule on and off, both str
     while (tot < cap * (1.1 + rnd() * 0.8)) {
       const [la, ln] = centres[Math.floor(rnd() * centres.length)];
       const c = rnd() < 0.65 ? 1 : (rnd() < 0.6 ? 2 : (rnd() < 0.5 ? 0 : 6));
-      rows.push({ stopNbr: `X${rows.length}`, lat: la + (rnd() - 0.5) * 0.12, lng: ln + (rnd() - 0.5) * 0.12, cartons: c, weight: rnd() < 0.2 ? 2500 : 300 });
+      const roll = rnd2();
+      const tr = roll < 0.05 ? { openMin: null, closeMin: null, closedToday: true, sources: ['test'], label: 'closed' }
+        : roll < 0.15 ? { openMin: 420 + Math.floor(rnd2() * 240), closeMin: 720 + Math.floor(rnd2() * 300), closedToday: false, sources: ['test'], label: 'window' } : null;
+      rows.push({ stopNbr: `X${rows.length}`, lat: la + (rnd() - 0.5) * 0.12, lng: ln + (rnd() - 0.5) * 0.12, cartons: c, weight: rnd() < 0.2 ? 2500 : 300, tr });
       tot += c;
     }
     const greenOnly = rnd() < 0.5;
     const green = new Set(rows.filter(() => rnd() < 0.4).map((r) => r.stopNbr));
     const strategy = rnd() < 0.5 ? 'FARTHEST_FIRST' : 'MIN_DISTANCE';
     const stops = rows.map((s) => ({ stopNbr: s.stopNbr, lat: s.lat, lng: s.lng, ...buildFreightFields({ cartons: s.cartons, pallets: s.cartons, weight: s.weight, weightUOM: 'LB', stopDetails: [] }, { countSkids: true }),
-      equipmentReqs: equipmentReqsFrom(null, { tractorOnlyGreen: greenOnly, panelGreen: green.has(s.stopNbr) }) }));
-    const p = await pipe(stops, trucks, { strategy }), again = await pipe(stops, trucks, { strategy }), off = await pipe(stops, trucks, { strategy, fillTrucks: false });
+      equipmentReqs: equipmentReqsFrom(null, { tractorOnlyGreen: greenOnly, panelGreen: green.has(s.stopNbr) }), ...(s.tr ? { timeRestriction: s.tr } : {}) }));
+    const p = await pipe(stops, trucks, { strategy, windowMode }), again = await pipe(stops, trucks, { strategy, windowMode }), off = await pipe(stops, trucks, { strategy, windowMode, fillTrucks: false });
     assert.deepEqual(again.routes.map((r) => r.orderedStopIds), p.routes.map((r) => r.orderedStopIds), `board ${b}: deterministic`);
     assert.deepEqual(again.unassigned, p.unassigned, `board ${b}: deterministic`);
     const by = new Map(rows.map((r) => [r.stopNbr, r]));

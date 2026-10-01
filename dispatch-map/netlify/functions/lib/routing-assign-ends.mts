@@ -115,11 +115,14 @@ export interface EndsAssignment {
   /** Stops moved off a full truck onto another truck that could carry them and had room. */
   movedToRoom: Array<{ stopId: string; from: string; to: string }>;
   /** ROUTING_BUILD_FILL_TRUCKS (step 6): each group of left-off orders a truck with room took, and
-   *  each group a truck had room for but was refused for a window or the driver's day; null when the
+   *  each group a truck had room for but was refused because a delivery would miss its window; null when the
    *  step did not run (switched off, or nothing was left off). */
   groupFill: {
     taken: Array<{ truckId: string; stopIds: string[]; skids: number; addedMiPerStop: number; averageMiPerStop: number }>;
     refused: Array<{ truckId: string; stopIds: string[] }>;
+    /** set by routing-pipeline when the groups were undone: on the Build with them, an order the
+     *  Build without them carried would have come off (or moved truck), or skids would be lost */
+    undone?: { groups: Array<{ truckId: string; stopIds: string[] }>; ordersItWouldCost: string[]; skidsWith: number; skidsWithout: number };
   } | null;
 }
 
@@ -165,10 +168,8 @@ export function assignLeavingOffEnds(
   const cost = (s: SolverStop, t: SolverTruck) => distToTruck(s, t) + BALANCE_M * loadFraction(loadOf.get(t.id)!, t);
   // ── 0. A stop no selected truck can EVER carry is listed with why, as before. ──
   const pool: SolverStop[] = [];
-  const noTruck: SolverStop[] = [];
   for (const s of stops) {
     if (capableOf.get(s.id)!.length) { pool.push(s); continue; }
-    noTruck.push(s);
     const reasons = new Set<string>();
     for (const t of trucks) for (const r of truckCanCarry(s, t).reasons) reasons.add(r);
     unassigned.push({ stopId: s.id, reasons: [REASON.noTruckFits, ...reasons] });
@@ -471,7 +472,8 @@ export function assignLeavingOffEnds(
     for (let guard6 = 0; guard6 < stops.length + 5 && leftOff.length; guard6++) {
       let pick: { area: SolverStop[]; T: SolverTruck; run: SolverStop[]; per: number; avg: number } | null = null;
       refusedFor.clear();
-      for (const area of areasOf(leftOff)) {
+      // A customer shut today cannot take a delivery: it is in no group, and no group is judged by it.
+      for (const area of areasOf(leftOff.filter((x) => !x.closedToday))) {
         if (area.length < GROUP_MIN) continue;
         for (const T of trucks) {
           if (!area.every((x) => capableOf.get(x.id)!.includes(T))) continue;
@@ -514,8 +516,8 @@ export function assignLeavingOffEnds(
     // passes (measured on Chad's board: the four Dalton orders out again for Sunday c/o Encore's 6,
     // and what was left off back in two towns).
     for (let round = 0; round < 6; round++) {
-      const took = groupFillPass();
-      if (!fillRoom() && !took) break;
+      if (!groupFillPass()) break;
+      fillRoom();
     }
     const byTruckRefused = new Map<string, { truckId: string; stopIds: string[] }>();
     for (const [id, r] of refusedFor) {

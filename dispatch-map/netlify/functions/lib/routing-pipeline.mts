@@ -16,7 +16,7 @@
 import {
   DEFAULT_OBJECTIVE_WEIGHTS, DEFAULT_SERVICE_MIN, DEFAULT_DEPART_HHMM, DEPOT,
   DEFAULT_MATRIX_MODE, matrixElementCount, estimateMatrixCostUsd,
-  type SolverStop, type SolverTruck, type SolverInput, type SolverMatrix,
+  type SolverStop, type SolverTruck, type SolverInput, type SolverOutput, type SolverMatrix,
   type Strategy, type ObjectiveWeights, type EquipmentReq, type BuiltRoute, type MatrixMode,
   type WindowMode, DEFAULT_WINDOW_MODE,
 } from './routing-types.mts';
@@ -255,8 +255,29 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
 
   // ── P3 solve + P4 repair (deterministic) ──
   // Step 6 of the ends rule asks runClockFor what the run the repair below will ship does to the clock.
-  const solved = solveRouting(solverInput, solverInput.fillTrucks ? { runClock: runClockFor(solverInput) } : undefined);
-  const repaired = repair(solverInput, solved);
+  let solved = solveRouting(solverInput, solverInput.fillTrucks ? { runClock: runClockFor(solverInput) } : undefined);
+  let repaired = repair(solverInput, solved);
+  // STEP 6 NEVER COSTS AN ORDER THE BUILD WITHOUT IT CARRIED. It only adds to trucks, but on a strict
+  // Build repair then takes stops off for their windows and refills the room it freed — and room a
+  // group took is room that refill no longer has (measured: Sunday c/o Encore's 6 pallets, which the
+  // Build without step 6 put back on SCOTT, left off; 55 skids → 52). So when a group went on, the
+  // Build without it is made too, and the group stays only if every order that one carried rides the
+  // same truck here and no skid is lost; otherwise that plan ships and meta.groupFill says why.
+  const taken = (solved.meta as any)?.groupFill?.taken || [];
+  if (solverInput.fillTrucks && taken.length) {
+    const withoutInput: SolverInput = { ...solverInput, fillTrucks: false };
+    const withoutSolved = solveRouting(withoutInput);
+    const without = repair(withoutInput, withoutSolved);
+    const truckOf = (out: SolverOutput) => new Map(out.routes.flatMap((r) => r.orderedStopIds.map((id) => [id, r.truckId] as const)));
+    const skids = (out: SolverOutput) => out.routes.reduce((a, r) => a + (r.load?.skids || 0), 0);
+    const now = truckOf(repaired);
+    const lost = [...truckOf(without)].filter(([id, t]) => now.get(id) !== t).map(([id]) => id);
+    if (lost.length || skids(repaired) < skids(without)) {
+      const gf = (solved.meta as any).groupFill;
+      solved = withoutSolved;
+      repaired = { ...without, meta: { ...without.meta, fillTrucks: true, groupFill: { taken: [], refused: gf.refused || [], undone: { groups: taken, ordersItWouldCost: lost, skidsWith: skids(repaired), skidsWithout: skids(without) } } } };
+    }
+  }
 
   // ── P5 explain (optional model; else deterministic summary) ──
   let rationale = deterministicRationale(repaired, intent.strategy);
