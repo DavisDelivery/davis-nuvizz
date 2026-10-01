@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import { cardManifestPages, stopOrdersAgree } from '../src/lib/card-manifest.js';
 import { isHashLikeId, looksLikeLoadNbr } from '../src/lib/route-identity.js';
 import { houseSwitchOn } from '../src/lib/routing-select.js';
+import { ticketNotes } from '../src/lib/stop-notes-freshness.js';
 
 const APP = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 
@@ -51,9 +52,9 @@ const SRC = [
     'orderRouteStops', 'tktReqTime', 'tktReqClock', 'tktDayOffset', 'tktNextStop', 'tktCommentTime',
     'ticketData', 'ticketBody', 'manifestOrigin', 'buildManifestHtml'].map(fnSource),
 ].join('\n');
-const { buildManifestHtml, buildTicketBody } = new Function('isHashLikeId', 'looksLikeLoadNbr', 'stopOrdersAgree',
+const { buildManifestHtml, buildTicketBody } = new Function('isHashLikeId', 'looksLikeLoadNbr', 'stopOrdersAgree', 'ticketNotes',
   `"use strict";\n${SRC}\nreturn { buildManifestHtml, buildTicketBody: ticketBody };`,
-)(isHashLikeId, looksLikeLoadNbr, stopOrdersAgree);
+)(isHashLikeId, looksLikeLoadNbr, stopOrdersAgree, ticketNotes);
 
 // ── fixtures: a load as the board holds it ────────────────────────────────────
 // routeSeq is NuVizz's sequence off the scan; plannedEtaDTTM its per-stop ETA for that order.
