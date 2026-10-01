@@ -29,8 +29,8 @@ import { normalizeMatchKey } from '../src/lib/matchKey.js';
 import { readFileSync } from 'node:fs';
 
 const D = '2026-09-29';
-const SWITCHES = ['ROUTING_BUILD_COUNT_SKIDS', 'ROUTING_BUILD_GREEN_MATCHES_PANEL', 'ROUTING_BUILD_COUNTS_EXISTING', 'ROUTING_BUILD_LEAVE_OFF_ENDS', 'ROUTING_BUILD_FILL_TRUCKS'];
-const ALL_ON = { countSkids: true, greenMatchesPanel: true, countsExisting: true, leaveOffEnds: true, fillTrucks: true };
+const SWITCHES = ['ROUTING_BUILD_COUNT_SKIDS', 'ROUTING_BUILD_GREEN_MATCHES_PANEL', 'ROUTING_BUILD_COUNTS_EXISTING', 'ROUTING_BUILD_LEAVE_OFF_ENDS', 'ROUTING_BUILD_FILL_TRUCKS', 'ROUTING_BUILD_WINDOW_REACH'];
+const ALL_ON = { countSkids: true, greenMatchesPanel: true, countsExisting: true, leaveOffEnds: true, fillTrucks: true, windowReach: true };
 
 // ── CHAD'S BOARD, IN SHAPE: 26 stops round Cartersville / White / Calhoun / Adairsville /
 // Dalton, 36 skids and 10,601 lb. One stop is hand-painted green, ten more are green only by the
@@ -104,11 +104,11 @@ test('the Build switches have the house shape: on by default, an explicit off-wo
 
 test('CHAD\'S BOARD, AS IT WAS: CHE gets the one hand-painted stop and SCOTT, a 14-skid box, gets 30+ skids — the Build counted none', async () => {
   const r = await runBuild({ rows: WEIGHTS.map((_, i) => boardRow(i)), request: boardRequest(),
-    env: { ROUTING_BUILD_COUNT_SKIDS: 'off', ROUTING_BUILD_GREEN_MATCHES_PANEL: 'off', ROUTING_BUILD_COUNTS_EXISTING: 'off', ROUTING_BUILD_LEAVE_OFF_ENDS: 'off', ROUTING_BUILD_FILL_TRUCKS: 'off' } });
+    env: { ROUTING_BUILD_COUNT_SKIDS: 'off', ROUTING_BUILD_GREEN_MATCHES_PANEL: 'off', ROUTING_BUILD_COUNTS_EXISTING: 'off', ROUTING_BUILD_LEAVE_OFF_ENDS: 'off', ROUTING_BUILD_FILL_TRUCKS: 'off', ROUTING_BUILD_WINDOW_REACH: 'off' } });
   assert.deepEqual(routeOf(r, 'CHE').orderedStopIds, [id(HAND_GREEN)], 'only the painted stop rode the 53′');
   assert.ok(realSkids(routeOf(r, 'SCOTT').orderedStopIds) > 14, `SCOTT carried ${realSkids(routeOf(r, 'SCOTT').orderedStopIds)} real skids on a 14-skid box`);
   assert.equal(routeOf(r, 'SCOTT').load.skids, 0, 'and the Build counted 0 of them');
-  assert.deepEqual(r.buildRules, { countSkids: false, greenMatchesPanel: false, countsExisting: false, leaveOffEnds: false, fillTrucks: false, panelGreenStops: null, existing: {} });
+  assert.deepEqual(r.buildRules, { countSkids: false, greenMatchesPanel: false, countsExisting: false, leaveOffEnds: false, fillTrucks: false, windowReach: false, panelGreenStops: null, existing: {} });
 });
 
 test('CHAD\'S RULE: the box stops at 14 skids, the 53′ takes the green the panel paints (and nothing else), everything else is listed', async () => {

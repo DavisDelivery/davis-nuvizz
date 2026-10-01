@@ -149,6 +149,10 @@ export interface SolverInput {
   leaveOffEnds?: boolean;
   /** with leaveOffEnds: a truck with room takes a whole group of left-off orders (routing-assign-ends step 6) */
   fillTrucks?: boolean;
+  /** THE WINDOW ORDER READS THE CLOCK THE TRUCK IS ON (routing-repair windowAwareOrder,
+   *  ROUTING_BUILD_WINDOW_REACH): a dock the truck cannot reach before it closes never sets the
+   *  run order, and a wait at a dock is weighed against the drive it saves. Absent → the old rule. */
+  windowReach?: boolean;
 }
 
 export interface SolverOutput {

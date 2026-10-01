@@ -65,22 +65,85 @@ function timeline(ordered: SolverStop[], indexById: Map<string, number>, matrix:
 // one and the repair loop decides whether that stop stays and is flagged (advisory) or comes
 // off the truck (strict). Deterministic. O(W·N²) for W windowed stops — trivial under the
 // 150-stop selection cap.
-function windowAwareOrder(stops: SolverStop[], indexById: Map<string, number>, matrix: SolverInput['matrix'], depart: number, strategy: SolverInput['strategy']): SolverStop[] {
-  const windowed = stops.filter(hasWindow)
-    .sort((a, b) => (a.timeWindow!.endSec - b.timeWindow!.endSec) || (a.timeWindow!.startSec - b.timeWindow!.startSec));
-  const rest = stops.filter((s) => !hasWindow(s));
-  const byNode = new Map(stops.map((s) => [indexById.get(s.id)!, s]));
+//
+// REACH (ROUTING_BUILD_WINDOW_REACH, `reach`). Two things the rule above got wrong, both found by
+// running a truck leaving at noon through it:
+//   1. A dock that closes before the truck can get there — even driving to it first — still went
+//      in first (it is the least late there), dragged the run to it and pushed stops that COULD
+//      be made past their close. Strict then took a deliverable order off with "appointment window
+//      cannot be met". Now such a stop sets nothing: it rides where the strategy order puts it,
+//      its lateness is not scored, and strict takes it off first, saying why (unreachableIn).
+//   2. Placing windows one at a time could leave a dock the truck COULD make late (below).
+function windowAwareOrder(stops: SolverStop[], indexById: Map<string, number>, matrix: SolverInput['matrix'], depart: number, strategy: SolverInput['strategy'], reach = false): SolverStop[] {
   const node = (s: SolverStop) => indexById.get(s.id)!;
+  const canReach = (s: SolverStop) => !reach || windowReachable(s, node(s), matrix, depart);
+  const windowed = stops.filter((s) => hasWindow(s) && canReach(s))
+    .sort((a, b) => (a.timeWindow!.endSec - b.timeWindow!.endSec) || (a.timeWindow!.startSec - b.timeWindow!.startSec));
+  const rest = stops.filter((s) => !hasWindow(s) || !canReach(s));
+  const byNode = new Map(stops.map((s) => [indexById.get(s.id)!, s]));
   const base: SolverStop[] = sequence(rest.map(node), strategy, matrix).map((n) => byNode.get(n)!);
   const dist = matrix.distanceMeters;
-  return insertByWindow(base, windowed, {
-    timeline: (cand) => timeline(cand, indexById, matrix, depart),
-    closeOf: (s) => (hasWindow(s) ? s.timeWindow!.endSec : null),
-    added: (prev, w, next) => {
+  const fns = {
+    timeline: (cand: SolverStop[]) => timeline(cand, indexById, matrix, depart),
+    closeOf: (s: SolverStop) => (hasWindow(s) && canReach(s) ? s.timeWindow!.endSec : null),
+    added: (prev: SolverStop | null, w: SolverStop, next: SolverStop | null) => {
       const p = prev ? node(prev) : 0;
       return dist[p][node(w)] + (next ? dist[node(w)][node(next)] - dist[p][node(next)] : 0);
     },
-  });
+  };
+  const greedy = insertByWindow(base, windowed, fns);
+  if (!reach || !windowed.length) return greedy;
+  // 2. ONE WINDOW AT A TIME CAN PAINT ITSELF INTO A CORNER. Three 2:00p docks in one town, a
+  //    truck leaving at noon: the first two went in after an unwindowed stop, used up the slack
+  //    the third needed, and strict took a deliverable order off. So when the one-at-a-time order
+  //    leaves a dock it COULD make late, the appointments-first order is built too — the windows
+  //    in deadline order, then every other stop slotted where it adds the least driving without
+  //    making an appointment later — and it ships only when it is LESS late. Nothing that is on
+  //    time today is touched.
+  // How late an order runs, as a dispatcher counts it: how many docks it misses, then by how much.
+  // A miss is a miss — two stops five minutes late are not better than one an hour late.
+  const lateOf = (order: SolverStop[]) => {
+    const { etas } = timeline(order, indexById, matrix, depart);
+    let n = 0, sec = 0;
+    order.forEach((x, i) => { if (hasWindow(x) && canReach(x) && etas[i] > x.timeWindow!.endSec) { n++; sec += etas[i] - x.timeWindow!.endSec; } });
+    return n * 1e7 + sec;
+  };
+  const greedyLate = lateOf(greedy);
+  if (!greedyLate) return greedy;
+  let firsts = insertByWindow([], windowed, fns);
+  for (const r of base) {
+    let best: { pos: number; late: number; added: number } | null = null;
+    for (let pos = 0; pos <= firsts.length; pos++) {
+      const cand = [...firsts.slice(0, pos), r, ...firsts.slice(pos)];
+      const late = lateOf(cand);
+      const added = fns.added(pos === 0 ? null : firsts[pos - 1], r, pos < firsts.length ? firsts[pos] : null);
+      if (!best || late < best.late || (late === best.late && added < best.added)) best = { pos, late, added };
+    }
+    firsts = [...firsts.slice(0, best!.pos), r, ...firsts.slice(best!.pos)];
+  }
+  return lateOf(firsts) < greedyLate ? firsts : greedy;
+}
+
+// Can a truck leaving the dock at `depart` reach this stop before its window closes, even if it
+// drives there first? If not, no order makes it.
+function windowReachable(s: SolverStop, idx: number, matrix: SolverInput['matrix'], depart: number): boolean {
+  if (!hasWindow(s)) return true;
+  return depart + matrix.durationSec[0][idx] <= s.timeWindow!.endSec;
+}
+
+// "12:10p" on the Build's UTC-anchored clock (the same clock the windows are on).
+function clockLabel(sec: number): string {
+  const d = new Date(sec * 1000);
+  const h = d.getUTCHours(), m = d.getUTCMinutes();
+  return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')}${h < 12 ? 'a' : 'p'}`;
+}
+
+// The stops on a truck no order can deliver in their window, each with a reason that names the
+// clock — so the dispatcher sees WHY, not just "cannot be met".
+function unreachableIn(stops: SolverStop[], truck: SolverTruck, input: SolverInput, indexById: Map<string, number>, depart: number): Array<{ stop: SolverStop; reason: string }> {
+  return stops
+    .filter((s) => hasWindow(s) && !windowReachable(s, indexById.get(s.id)!, input.matrix, depart))
+    .map((s) => ({ stop: s, reason: `${REASON.windowUnsatisfiable} — it closes ${clockLabel(s.timeWindow!.endSec)}, before ${truck.label || truck.id} can get there leaving at ${clockLabel(depart)}` }));
 }
 
 /**
@@ -130,7 +193,27 @@ export function insertByWindow<S>(
 // real window on the truck, the window-aware insertion above; otherwise the dispatcher's
 // chosen strategy order untouched (windows are then irrelevant to validity, capacity is
 // order-free).
+// ONE TRUCK, ONE SET OF STOPS, ONE RUN (with ROUTING_BUILD_WINDOW_REACH). The window order can
+// answer differently for the same stops handed in a different order (equal deadlines keep the
+// order they are given). Repair checks a run, then assembles the route from the checked order — so
+// an order-sensitive answer could ship a run other than the one it checked (measured: a strict
+// Build shipping a stop a minute late). So the first answer for a set of stops on a clock is kept,
+// per Build, and every later ask for that set gets the same run. The first answer is computed
+// exactly as before, from the order the stops were handed in.
+const windowOrders = new WeakMap<SolverInput, Map<string, SolverStop[]>>();
+
 function orderForTruck(stops: SolverStop[], input: SolverInput, indexById: Map<string, number>): SolverStop[] {
+  if (stops.some(hasWindow) && input.windowReach === true) {
+    const depart = input.departEpochSec ?? 0;
+    let memo = windowOrders.get(input);
+    if (!memo) { memo = new Map(); windowOrders.set(input, memo); }
+    const key = `${depart}|${stops.map((s) => s.id).sort().join('\u0001')}`;
+    const seen = memo.get(key);
+    if (seen) return seen;
+    const run = windowAwareOrder(stops, indexById, input.matrix, depart, input.strategy, true);
+    memo.set(key, run);
+    return run;
+  }
   if (stops.some(hasWindow)) return windowAwareOrder(stops, indexById, input.matrix, input.departEpochSec ?? 0, input.strategy);
   const byNode = new Map(stops.map((s) => [indexById.get(s.id)!, s]));
   const nodes = stops.map((s) => indexById.get(s.id)!);
@@ -274,6 +357,15 @@ export function repair(input: SolverInput, output: SolverOutput, opts?: { origin
     // trap routing-solver's Phase 3 documents). n passes suffice; +2 is slack.
     const maxIters = stops.length + 2;
     let guard = 0;
+    // A STRICT stop no order can make in time comes off FIRST, saying why — before it can steer
+    // the window order and push a stop that could be made past its close (ROUTING_BUILD_WINDOW_REACH).
+    if (enforceWindows && input.windowReach === true) {
+      for (const { stop, reason } of unreachableIn(stops, truck, input, indexById, depart)) {
+        stops = stops.filter((s) => s.id !== stop.id);
+        unassigned.push({ stopId: stop.id, reasons: [reason] });
+        spilledFrom.set(stop.id, truck.id);
+      }
+    }
     while (stops.length && guard++ < maxIters) {
       const ordered = orderForTruck(stops, input, indexById);
       const etas = etasFor(ordered, indexById, input.matrix, depart);
@@ -356,7 +448,7 @@ export function repair(input: SolverInput, output: SolverOutput, opts?: { origin
   return {
     routes,
     unassigned: dedupeUnassigned(stillUnassigned),
-    meta: { ...output.meta, repaired: true, recoverOriginFirst: originFirst },
+    meta: { ...output.meta, repaired: true, recoverOriginFirst: originFirst, ...(input.windowReach === true ? { windowReach: true } : {}) },
   };
 }
 
