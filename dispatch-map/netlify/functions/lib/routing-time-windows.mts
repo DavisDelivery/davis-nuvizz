@@ -37,6 +37,7 @@
 // all sides at once (the resolver simply attaches nothing). House shape: default ON, an
 // explicit off-word turns it off, anything malformed leaves it ON.
 
+import { storedRoutingSwitch } from './routing-switch-cache.mts';
 import { orderWindow, detectDefaultSlots, weekdayKey } from '../../../src/lib/time-restrictions.js';
 import { dayReceivingWindow, closedDayTier, fmtMin } from '../../../src/lib/board-flags.js';
 import { dayWindowMinutes } from '../../../src/lib/time-marks.js';
@@ -50,8 +51,14 @@ export interface StopTimeRestriction {
 }
 
 const OFF_WORDS = new Set(['off', '0', 'false', 'no']);
-export function timeRestrictionsEnabled(env: Record<string, any> = process.env): boolean {
-  return !OFF_WORDS.has(String(env.ROUTING_TIME_RESTRICTIONS ?? '').trim().toLowerCase());
+// `stored` is Diagnostics → Routing switches (src/lib/routing-switches.js): set there, it wins over
+// the environment; not set, or not loaded, the environment and the default decide as before.
+export function timeRestrictionsEnabled(
+  env: Record<string, any> = process.env,
+  stored: boolean | undefined = storedRoutingSwitch('ROUTING_TIME_RESTRICTIONS'),
+): boolean {
+  if (typeof stored === 'boolean') return stored;
+  return !OFF_WORDS.has(String(env?.ROUTING_TIME_RESTRICTIONS ?? '').trim().toLowerCase());
 }
 
 /** Vendor default creation slots on this board (see time-restrictions.detectDefaultSlots). */

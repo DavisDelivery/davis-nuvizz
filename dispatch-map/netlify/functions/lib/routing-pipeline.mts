@@ -24,6 +24,7 @@ import { deriveGeometryForStops, type GeometryAssist } from './freight-geometry.
 import { parseIntentResponse, parseGeometryAssist } from './routing-intent.mts';
 import { solveRouting } from './routing-solver.mts';
 import { repair, runClockFor } from './routing-repair.mts';
+import { hydrateRoutingSwitches } from './routing-switches-store.mts';
 import type { StopTimeRestriction } from './routing-time-windows.mts';
 
 export interface PipelineStopInput {
@@ -206,6 +207,8 @@ function deterministicRiskFlags(input: SolverInput, plan: { routes: BuiltRoute[]
 }
 
 export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Promise<RoutingPlan> {
+  // ROUTING_REPAIR_ORIGIN_FIRST is read inside repair(); load what Diagnostics stored first.
+  await hydrateRoutingSwitches();
   const depot = req.depot || { lat: DEPOT.lat, lng: DEPOT.lng };
   const chosenStrategy: Strategy = req.strategy || 'MIN_DISTANCE';
   const serviceMin = req.serviceMin ?? DEFAULT_SERVICE_MIN;

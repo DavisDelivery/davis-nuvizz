@@ -1071,8 +1071,10 @@ export function resequence(stops, depot, strategy, mode = SWEEP_MODE) {
 //
 // PURE. The sweep mode a menu pick of `strategy` runs: 'pure' for Closest first while the switch is
 // on, SWEEP_MODE for everything else.
-export function sweepModeFor(strategy, env) {
-  return strategy === 'closest' && closestFirstWithoutTownsEnabled(env) ? 'pure' : SWEEP_MODE;
+// `on` is the switch's position when the caller has already resolved it (the app reads it through
+// Diagnostics → Routing switches, lib/routing-switches.js); left out, `env` decides as before.
+export function sweepModeFor(strategy, env, on = closestFirstWithoutTownsEnabled(env)) {
+  return strategy === 'closest' && on ? 'pure' : SWEEP_MODE;
 }
 
 // THE SWITCH. VITE_CLOSEST_FIRST_WITHOUT_TOWNS — house shape: default on, an off-word (off/0/false/

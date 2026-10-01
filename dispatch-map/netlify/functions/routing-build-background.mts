@@ -28,6 +28,7 @@ import { requireUserForBackground } from './lib/background-gate.mts';
 // The truck/stop rule is shared with step 4's "Fill my loads" (routing-cleanup-core) — one rule,
 // two builders, so the same stop cannot ride a tractor from one button and a box from the other.
 import { equipmentReqsFrom } from './lib/routing-equipment.mts';
+import { hydrateRoutingSwitches } from './lib/routing-switches-store.mts';
 import { buildRules, buildFreightFields, trucksWithRoomLeft, withExistingFreight, type BuildRules } from './lib/routing-build-rules.mts';
 
 // Overall job deadline (belt-and-suspenders with the per-call 8s timeouts). A
@@ -54,6 +55,8 @@ async function resolveStops(
   opts: { tractorOnlyGreen?: boolean; panelGreen?: Set<string>; rules: BuildRules },
 ): Promise<{ stops: PipelineStopInput[]; boardById: Map<string, any>; notPlaced: Array<{ stopId: string; reasons: string[] }> }> {
   const { stops } = await readStops(tenant, date);
+  // The routing switches set on Diagnostics (src/lib/routing-switches.js), before any is read.
+  await hydrateRoutingSwitches();
   // TIME RESTRICTIONS (routing-time-windows.mts) — on unless ROUTING_TIME_RESTRICTIONS=off.
   // The vendor's default creation slot is detected over the WHOLE board, never the
   // selection: 21 unrelated customers on one 09:00–09:30 stamp is the tell, and a

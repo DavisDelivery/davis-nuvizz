@@ -60,6 +60,7 @@ import type { TruckCapabilities } from './routing-types.mts';
 import { pickReferences } from './routing-reference.mts';
 import { serviceTimeAsOf } from './routing-service-times.mts';
 import { liveStopToAssignStop, liveMatchKey, modalWarehouseOf, LIVE_SOLVER_MS } from './routing-draft-core.mts';
+import { hydrateRoutingSwitches } from './routing-switches-store.mts';
 import { dayReceivingWindow, closedDayTier, fmtMin } from '../../../src/lib/board-flags.js';
 
 // The dispatcher's truck classes and the engine's are DIFFERENT VOCABULARIES:
@@ -1500,6 +1501,8 @@ export async function runCleanup(
   }
 
   const cfg = await loadEngineConfig(tenant);
+  // ROUTING_TIME_RESTRICTIONS is read inside buildCleanupPlan; load what Diagnostics stored first.
+  await hydrateRoutingSwitches();
   const { meta, stops } = await readStopsForPlanning(tenant, date);
   if (!stops.length) {
     return { ok: false, status: 404, error: `no board data for ${date} — the scheduled scan has not written that day yet` };
