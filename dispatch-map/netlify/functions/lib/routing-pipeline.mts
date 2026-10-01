@@ -23,8 +23,7 @@ import {
 import { deriveGeometryForStops, type GeometryAssist } from './freight-geometry.mts';
 import { parseIntentResponse, parseGeometryAssist } from './routing-intent.mts';
 import { solveRouting } from './routing-solver.mts';
-import { repair, windowCostFor } from './routing-repair.mts';
-import { FILL_RULE } from './routing-fill-leftover.mts';
+import { repair, runClockFor } from './routing-repair.mts';
 import type { StopTimeRestriction } from './routing-time-windows.mts';
 
 export interface PipelineStopInput {
@@ -62,7 +61,7 @@ export interface PipelineRequest {
   matrixMode?: MatrixMode;  // 'haversine' (default, free) | 'google' (paid opt-in)
   windowMode?: WindowMode;  // 'advisory' (default, flag) | 'strict' (spill on unmet window)
   leaveOffEnds?: boolean;   // full trucks give up the end of their run, not the middle (routing-assign-ends)
-  fillTrucks?: boolean;     // with leaveOffEnds: trucks with room fill; what is left off is one group (routing-fill-leftover)
+  fillTrucks?: boolean;     // with leaveOffEnds: a truck with room takes a whole group of left-off orders (routing-assign-ends step 6)
 }
 
 export interface PipelineDeps {
@@ -255,8 +254,8 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
   };
 
   // ── P3 solve + P4 repair (deterministic) ──
-  // The fill step plans on straight tours; windowCostFor lets it see the run the repair below will ship.
-  const solved = solveRouting(solverInput, solverInput.fillTrucks ? { windowCost: windowCostFor(solverInput, FILL_RULE.DAY_HOURS) } : undefined);
+  // Step 6 of the ends rule asks runClockFor what the run the repair below will ship does to the clock.
+  const solved = solveRouting(solverInput, solverInput.fillTrucks ? { runClock: runClockFor(solverInput) } : undefined);
   const repaired = repair(solverInput, solved);
 
   // ── P5 explain (optional model; else deterministic summary) ──

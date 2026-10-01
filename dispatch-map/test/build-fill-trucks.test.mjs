@@ -1,6 +1,5 @@
-// test/build-fill-trucks.test.mjs — WHEN THE TRUCKS CANNOT CARRY EVERYTHING: FILL THEM, AND WHAT IS
-// LEFT OFF IS ONE GROUP — THE RUN ONE MORE TRUCK WOULD MAKE — WITH NO NEIGHBOUR LEFT OFF, AND EACH
-// TRUCK JUDGED AS IT WILL SHIP: WINDOWS AND THE DRIVER'S DAY INCLUDED.
+// test/build-fill-trucks.test.mjs — A TRUCK WITH ROOM TAKES A WHOLE GROUP OF THE ORDERS LEFT OFF
+// (routing-assign-ends step 6, ROUTING_BUILD_FILL_TRUCKS).
 //
 // Chad, 2026-09-30, on a Build onto CHE, SCOTT and TRAILER 1: "worked better but still left orders
 // off the loads that only one was full and didn't have any logic to how it left them off they were
@@ -26,7 +25,7 @@ import { resolveMatrix } from '../netlify/functions/google-route-matrix.mts';
 import { DEPOT } from '../netlify/functions/lib/routing-types.mts';
 import { equipmentReqsFrom } from '../netlify/functions/lib/routing-equipment.mts';
 import { buildFreightFields, buildRules } from '../netlify/functions/lib/routing-build-rules.mts';
-import { settleLeftOff, extraTruckM, FILL_RULE } from '../netlify/functions/lib/routing-fill-leftover.mts';
+import { assignLeavingOffEnds } from '../netlify/functions/lib/routing-assign-ends.mts';
 
 const D = '2026-10-01';
 const dock = { lat: DEPOT.lat, lng: DEPOT.lng };
@@ -126,7 +125,15 @@ function areas(pts) {
   return n;
 }
 
-test('the switch has the house shape: on by default, an off-word turns it off, a typo leaves it ON', () => {
+const DALTON_FOUR = STOPS.filter((s) => s.group === 'OFF' && s.town === 'DALTON').map((s) => s.stopNbr).sort();
+const SUNDAY = '007185025', FIELDTURF = '007184708';
+const pipeStop = (s, reqs = []) => ({ stopNbr: s.stopNbr, lat: s.lat, lng: s.lng, ...buildFreightFields({ cartons: s.sk, pallets: s.sk, weight: s.lb, weightUOM: 'LB', stopDetails: [] }, { countSkids: true }), equipmentReqs: reqs, ...(s.tr ? { timeRestriction: s.tr } : {}) });
+const chadStops = (stops) => stops.map((s) => pipeStop(s, equipmentReqsFrom(null, { tractorOnlyGreen: true, panelGreen: GREEN.has(s.stopNbr) })));
+const pipe = (stops, trucks, { strategy = 'MIN_DISTANCE', fillTrucks = true, windowMode = 'advisory' } = {}) => runPipeline({ stops, trucks, depot: dock, strategy, date: D, matrixMode: 'haversine', windowMode, leaveOffEnds: true, fillTrucks },
+  { buildMatrix: async (d, pts) => resolveMatrix(d, pts, 'haversine') });
+const onTruck = (p) => new Map(p.routes.flatMap((r) => r.orderedStopIds.map((id) => [id, r.truckId])));
+
+test('the switch has the house shape: on by default, an off-word turns it off, a typo leaves it ON — and it is off whenever the ends rule is', () => {
   assert.equal(buildRules({}).fillTrucks, true);
   for (const off of ['off', 'OFF', '0', 'false', 'no', ' No ']) assert.equal(buildRules({ ROUTING_BUILD_FILL_TRUCKS: off }).fillTrucks, false, off);
   for (const on of ['of', 'on', 'yes', '1', 'maybe', '']) assert.equal(buildRules({ ROUTING_BUILD_FILL_TRUCKS: on }).fillTrucks, true, on);
@@ -143,237 +150,93 @@ test('CHAD\'S 09-30 BOARD, AS IT WAS (switched off): the same six left off in th
   assert.equal(skidsOn(r, stops, 'TRAILER 1'), 28, 'TRAILER 1 the only one full');
   assert.equal(new Set(r.unassigned.map((u) => stops.find((s) => s.stopNbr === u.stopId).town)).size, 3, 'Dalton, Calhoun and Cartersville');
   assert.ok(roomWhileListed(r, stops).length > 0, 'and SCOTT had room for orders it left off');
-  assert.equal(r.meta.leftOffGroup, null);
+  assert.equal(r.meta.groupFill, null);
 });
 
 for (const strategy of ['MIN_DISTANCE', 'FARTHEST_FIRST', 'CLOSEST_FIRST']) {
-  test(`CHAD'S 09-30 BOARD, NOW (${strategy}): SCOTT is full, no truck with room leaves a stop it may carry, and what is left off is one area — the run one more truck would make`, async () => {
+  test(`CHAD'S 09-30 BOARD, NOW (${strategy}): SCOTT takes the four Dalton orders together, and the Calhoun carton on its way — only Sunday c/o Encore's 6 pallets are left off, because they do not fit`, async () => {
     const { r, stops } = await boardBuild({ strategy });
-    const by = new Map(stops.map((s) => [s.stopNbr, s]));
     assert.equal(r.buildRules.fillTrucks, true, 'the result says the rule ran');
-    assert.equal(skidsOn(r, stops, 'SCOTT'), 14, 'the box stops at 14 skids');
-    assert.deepEqual(roomWhileListed(r, stops), [], 'nothing listed that a truck with room may carry');
-    // nothing that is not green rides a 53′ (the hard rule the step works under)
-    for (const t of ['CHE', 'TRAILER 1']) for (const id of r.routes.find((x) => x.truckId === t)?.orderedStopIds || []) assert.ok(GREEN.has(id), `${id} on ${t} is green`);
-    const tractorMi = (res) => ['CHE', 'TRAILER 1'].reduce((a, t) => a + (res.routes.find((x) => x.truckId === t)?.legs || []).reduce((b, l) => b + l.distanceMeters, 0), 0);
-    const off = r.unassigned.map((u) => by.get(u.stopId));
-    assert.ok(off.length > 0, 'the freight is more than the trucks: something is left off');
-    for (const s of off) assert.ok(!GREEN.has(s.stopNbr), `${s.name} left off is box-only (CHE has room for anything green)`);
-    assert.equal(areas(off), 1, `what is left off is one area: ${off.map((s) => `${s.name} (${s.town})`).join(', ')} — ${spreadKm(off).toFixed(1)} km across`);
-    for (const u of r.unassigned) assert.ok(u.reasons.length && u.reasons.every((x) => x.trim()), `${u.stopId} says why`);
-    // the one more truck it implies drives less than the one his screen implied
+    const scott = new Set(r.routes.find((x) => x.truckId === 'SCOTT').orderedStopIds);
+    for (const id of [...DALTON_FOUR, FIELDTURF]) assert.ok(scott.has(id), `${stops.find((s) => s.stopNbr === id).name} is on SCOTT`);
+    assert.equal(skidsOn(r, stops, 'SCOTT'), 13);
+    assert.deepEqual(r.unassigned.map((u) => u.stopId), [SUNDAY], 'one order left off');
+    assert.ok(r.unassigned[0].reasons.some((x) => /over skid capacity/.test(x)), `and it says why: ${r.unassigned[0].reasons.join('; ')}`);
+    assert.deepEqual(r.meta.groupFill.taken.map((t) => [t.truckId, [...t.stopIds].sort()]), [['SCOTT', DALTON_FOUR]], 'the job says which group went on which truck');
+    // what the switched-off Build carried is still carried, on the same truck
     const before = await boardBuild({ strategy, env: { ROUTING_BUILD_FILL_TRUCKS: 'off' } });
-    const extra = (res) => extraTruckM(res.r.unassigned.map((u) => ({ ...by.get(u.stopId), id: u.stopId })), dock);
-    assert.ok(extra({ r }) < extra(before) - 50000, `the extra truck: ${Math.round(extra(before) / 1000)} km → ${Math.round(extra({ r }) / 1000)} km`);
-    assert.ok(tractorMi(r) <= tractorMi(before.r) + 1000, `the two 53′s drive no more than before: ${Math.round(tractorMi(before.r) / 1000)} → ${Math.round(tractorMi(r) / 1000)} km`);
-    assert.ok(r.meta.leftOffGroup && r.meta.leftOffGroup.moves > 0 && r.meta.leftOffGroup.leftOffStops === r.unassigned.length, 'the job says what the step did');
-    assert.equal(r.meta.leftOffGroup.leftOffAreas, 1, 'and that what is left off is one area');
+    const was = new Map(before.r.routes.flatMap((x) => x.orderedStopIds.map((id) => [id, x.truckId]))), now = new Map(r.routes.flatMap((x) => x.orderedStopIds.map((id) => [id, x.truckId])));
+    for (const [id, t] of was) assert.equal(now.get(id), t, `${id} stays on ${t}`);
   });
 }
 
-test('ON 120 PLACEMENTS OF THE SAME 42 STOPS: never a truck with room while a stop it may carry is listed, SCOTT always at 14, and what is left off is always one area', async () => {
-  let room = 0, split = 0, runs = 0, scattered = 0, light = 0;
+test('ON 120 PLACEMENTS OF THE SAME 42 STOPS: nothing the old Build carried is left off, never fewer skids — and wherever SCOTT had room for the four Dalton orders, it now carries them', async () => {
+  let roomy = 0, carried = 0, runs = 0;
   for (let seed = 1; seed <= 40; seed++) {
     for (const strategy of ['MIN_DISTANCE', 'FARTHEST_FIRST', 'CLOSEST_FIRST']) {
       const stops = placed(seed);
-      const p = await runPipeline({ stops: stops.map((s) => ({ stopNbr: s.stopNbr, lat: s.lat, lng: s.lng, ...buildFreightFields({ cartons: s.sk, pallets: s.sk, weight: s.lb, weightUOM: 'LB', stopDetails: [] }, { countSkids: true }),
-        equipmentReqs: equipmentReqsFrom(null, { tractorOnlyGreen: true, panelGreen: GREEN.has(s.stopNbr) }) })), trucks: TRUCKS, depot: dock, strategy, date: D, matrixMode: 'haversine', windowMode: 'advisory', leaveOffEnds: true, fillTrucks: true },
-      { buildMatrix: async (d, pts) => resolveMatrix(d, pts, 'haversine') });
+      const on = await pipe(chadStops(stops), TRUCKS, { strategy }), off = await pipe(chadStops(stops), TRUCKS, { strategy, fillTrucks: false });
       runs++;
-      if (roomWhileListed(p, stops).length) room++;
-      const off = p.unassigned.map((u) => stops.find((s) => s.stopNbr === u.stopId));
-      const towns = new Set(off.map((s) => s.town));
-      if ((towns.has('DALTON') || towns.has('CALHOUN')) && (towns.has('CARTERSVILLE') || towns.has('WHITE'))) split++;
-      if (areas(off) > 1) scattered++;
-      if (skidsOn(p, stops, 'SCOTT') !== 14) light++;
+      const offLeft = new Set(off.unassigned.map((u) => u.stopId));
+      for (const u of on.unassigned) assert.ok(offLeft.has(u.stopId), `seed ${seed} ${strategy}: ${u.stopId} was carried before and is left off now`);
+      const sk = (p) => p.routes.reduce((a, x) => a + skidsOn(p, stops, x.truckId), 0);
+      assert.ok(sk(on) >= sk(off), `seed ${seed} ${strategy}: skids ${sk(off)} → ${sk(on)}`);
+      if (DALTON_FOUR.every((id) => offLeft.has(id)) && 14 - skidsOn(off, stops, 'SCOTT') >= 4) {
+        roomy++;
+        const scott = new Set(on.routes.find((x) => x.truckId === 'SCOTT').orderedStopIds);
+        if (DALTON_FOUR.every((id) => scott.has(id))) carried++;
+      }
     }
   }
-  assert.equal(room, 0, `${room} of ${runs} runs left a stop off that a truck with room may carry`);
-  assert.equal(scattered, 0, `${scattered} of ${runs} runs left off stops in two or more areas`);
-  assert.equal(light, 0, `${light} of ${runs} runs left SCOTT below 14`);
-  assert.equal(split, 0, `${split} of ${runs} runs left stops off both up in Dalton/Calhoun and down in Cartersville/White`);
+  assert.ok(roomy > 0, 'some placements give SCOTT room for the group');
+  assert.equal(carried, roomy, `SCOTT carries the Dalton group on ${carried} of the ${roomy} placements that give it room`);
 });
 
-// ── the step on its own (lib/routing-fill-leftover.mts) ─────────────────────────────────────────
-const P = (id, lat, lng, skids = 1, weightLbs = 300, reqs = []) => ({ id, lat, lng, skids, weightLbs, linearFeetIn: 0, serviceMin: 15, equipmentReqs: reqs });
-const town = (tag, lat, lng, n, skids = 1, reqs = []) => Array.from({ length: n }, (_, i) => P(`${tag}${String(i).padStart(2, '0')}`, lat + ((i * 37) % 11 - 5) * 0.003, lng + ((i * 53) % 11 - 5) * 0.003, skids, 300, reqs));
-const sk = (xs) => xs.reduce((a, s) => a + s.skids, 0);
+// ── the rule's edges, on small boards through the real pipeline ─────────────────────────────────
+const at = (id, lat, lng, sk = 1) => ({ stopNbr: id, lat, lng, sk, lb: 300 });
+const near = (tag, lat, lng, n, sk = 1) => Array.from({ length: n }, (_, i) => at(`${tag}${String(i).padStart(2, '0')}`, lat + ((i * 37) % 11 - 5) * 0.003, lng + ((i * 53) % 11 - 5) * 0.003, sk));
+const BOX_ONLY = ['box_truck_only'];
 
-test('FILL: a truck with room takes a stop that was left off, even out of its way — it is not left for another truck', () => {
-  const A = town('A', 34.30, -84.40, 10);
-  const far = P('FAR', 34.62, -84.95);   // ~60 km past the town
-  const r = settleLeftOff(new Map([['BOX', A]]), [far], [box('BOX', 14)], dock);
-  assert.deepEqual(r.leftOff, []);
-  assert.equal(r.byTruck.get('BOX').length, 11);
-  assert.ok(r.costAfterM < r.costBeforeM);
+// Chad's shape on a small board: a box's town (Cartersville, 9 × 1 skid), a 6-pallet order beyond it
+// toward Calhoun, and something farther still. The ends rule sheds the far end, then the 6 pallets,
+// and the box is left at 9 with 5 skids of room.
+const HOME = near('C', 34.165, -84.80, 9), BIG = at('BIG', 34.40, -84.93, 6);
+
+test('ONE ORDER ALONE is still not a trip across town: a box with room leaves a single far order off and says how far', async () => {
+  const p = await pipe([...HOME, BIG, at('ROME', 34.257, -85.165)].map((s) => pipeStop(s, BOX_ONLY)), [box('BOX', 14)]);
+  assert.deepEqual(p.unassigned.map((u) => u.stopId).sort(), ['BIG', 'ROME']);
+  assert.match(p.unassigned.find((u) => u.stopId === 'ROME').reasons[0], /out of its way/);
+  assert.deepEqual(p.meta.groupFill.taken, []);
 });
 
-test('WHOLE SKIDS: a 6-skid order goes on in place of five 1-skid ones, so the box ends at 14, not 13', () => {
-  const A = town('A', 34.30, -84.40, 13);   // 13 one-skid stops on a 14-skid box
-  const big = P('BIG', 34.301, -84.401, 6, 2724);
-  const r = settleLeftOff(new Map([['BOX', A]]), [big], [box('BOX', 14)], dock);
-  assert.equal(sk(r.byTruck.get('BOX')), 14);
-  assert.ok(r.byTruck.get('BOX').includes(big));
-  assert.equal(sk(r.leftOff), 5);
+test('A GROUP TOO FAR stays off: two orders 100+ miles out cost the box far more per order than its own stops', async () => {
+  const p = await pipe([...HOME, BIG, ...near('R', 34.68, -85.60, 2)].map((s) => pipeStop(s, BOX_ONLY)), [box('BOX', 14)]);
+  assert.deepEqual(p.unassigned.map((u) => u.stopId).sort(), ['BIG', 'R00', 'R01']);
+  for (const u of p.unassigned.filter((x) => x.stopId[0] === 'R')) assert.match(u.reasons[0], /out of its way/);
+  assert.deepEqual(p.meta.groupFill.taken, []);
 });
 
-test('EJECT: a green stop on the box moves to the tractor with room, so a box-only stop left off fits the box', () => {
-  const boxOnly = ['box_truck_only'];
-  const onBox = [...town('B', 34.30, -84.40, 7, 1, boxOnly), P('G0', 34.302, -84.402)];
-  const onTrl = town('T', 34.31, -84.41, 4);
-  const left = P('L0', 34.303, -84.399, 1, 300, boxOnly);
-  const r = settleLeftOff(new Map([['BOX', onBox], ['TRL', onTrl]]), [left], [box('BOX', 8), tractor('TRL')], dock);
-  assert.deepEqual(r.leftOff, []);
-  assert.ok(r.byTruck.get('BOX').includes(left), 'the box-only stop is on the box');
-  assert.ok(r.byTruck.get('TRL').some((s) => s.id === 'G0'), 'the green one moved to the tractor');
-  for (const s of r.byTruck.get('TRL')) assert.ok(!s.equipmentReqs.includes('box_truck_only'), `${s.id} on the tractor is not box-only`);
-});
-
-test('ONE AREA: when the box must leave five skids off, they come off together in one town — not four up north and one down south', () => {
-  const boxOnly = ['box_truck_only'];
-  // south (Cartersville): 9 one-skid box-only stops; north (Dalton, 60 km up the road): 4. A 9-skid box.
-  const south = town('S', 34.165, -84.80, 9, 1, boxOnly);
-  const north = town('N', 34.77, -84.97, 4, 1, boxOnly);
-  // start from the split answer: the box runs the south but one, and one south + all north are left off
-  const r = settleLeftOff(new Map([['BOX', south.slice(0, 8)]]), [south[8], ...north], [box('BOX', 9)], dock);
-  assert.equal(sk(r.byTruck.get('BOX')), 9, 'the box is still full');
-  assert.equal(r.leftOff.length, 4);
-  assert.ok(spreadKm(r.leftOff) < 15, `left off together: ${r.leftOff.map((s) => s.id).join(',')}`);
-  assert.ok(r.costAfterM < r.costBeforeM);
-});
-
-test('STOPS NO TRUCK CAN CARRY never move, and what else is left off gathers round them', () => {
-  // a 10-skid tractor, 6 one-skid stops in each of two towns 50 km apart, and a liftgate stop no
-  // truck here can carry in the first town: the extra truck goes there anyway, so that is where
-  // the two skids that do not fit come off — starting from the plan that left them in the other town
-  const lift = P('LIFT', 34.60, -84.20, 1, 300, ['liftgate_required']);
-  const tp = town('P', 34.60, -84.20, 6), tq = town('Q', 34.25, -84.70, 6);
-  const r = settleLeftOff(new Map([['TRL', [...tp, ...tq.slice(0, 4)]]]), [tq[4], tq[5]], [tractor('TRL', 10)], dock, [lift]);
-  assert.ok(!r.leftOff.includes(lift), 'a pinned stop is not returned as movable');
-  assert.ok(![...r.byTruck.values()].flat().includes(lift), 'and is never put on a truck that cannot carry it');
-  assert.equal(r.leftOff.length, 2);
-  for (const s of r.leftOff) assert.ok(s.id.startsWith('P'), `${s.id} is left off beside the liftgate stop`);
-  assert.equal(r.leftOffAreas, 1, 'one area, the pinned stop included');
-});
-
-test('MAKE ROOM: green freight on the box moves to a tractor, which hands its own on to the other tractor, so the box-only order left off goes on the box — every truck full', () => {
-  const bo = ['box_truck_only'];
-  // box 8: a 6-skid green order and two 1-skid box-only; tractor T1 7 (4 green, room 3); T2 5 (2 green, room 3)
-  const B = [P('G6', 34.30, -84.40, 6), P('b1', 34.301, -84.401, 1, 300, bo), P('b2', 34.302, -84.399, 1, 300, bo)];
-  const T1 = town('g', 34.305, -84.405, 4), T2 = [P('g5', 34.298, -84.402), P('g6', 34.299, -84.398)];
-  const L6 = P('L6', 34.303, -84.403, 6, 900, bo);
-  const r = settleLeftOff(new Map([['B', B], ['T1', T1], ['T2', T2]]), [L6], [box('B', 8), tractor('T1', 7), tractor('T2', 5)], dock);
-  assert.deepEqual(r.leftOff, [], 'nothing left off');
-  assert.ok(r.byTruck.get('B').includes(L6), 'the box-only order is on the box');
-  assert.equal(sk(r.byTruck.get('B')), 8); assert.equal(sk(r.byTruck.get('T1')), 7); assert.equal(sk(r.byTruck.get('T2')), 5);
-  for (const t of ['T1', 'T2']) for (const s of r.byTruck.get(t)) assert.ok(!s.equipmentReqs.includes('box_truck_only'), `${s.id} on ${t} is green`);
-});
-
-test('NO TRIP FOR A CARTON: a 53′ does not drive to a far town for one loose-only order the extra truck is going there for anyway', () => {
-  // the extra truck must go to Dalton (a liftgate stop no truck here can carry); a loose carton sits
-  // beside it. The tractor works 80 km away with all the room in the world.
-  const pin = P('FARLIFT', 34.771, -84.971, 1, 300, ['liftgate_required']);
-  const carton = P('CARTON', 34.77, -84.97, 0, 40);
-  const r = settleLeftOff(new Map([['TRL', town('H', 34.05, -84.10, 5)]]), [carton], [tractor('TRL', 28)], dock, [pin]);
-  assert.deepEqual(r.leftOff.map((s) => s.id), ['CARTON'], 'the carton rides with the extra truck');
-});
-
-test('NEXT DOOR: a box does not drive to Dalton for one order while the extra truck goes there for the other four', () => {
-  // 13 one-skid box-only orders in Cartersville, 5 in Dalton (69 km on), a 14-skid box
-  const bo = ['box_truck_only'];
-  const C = town('C', 34.165, -84.80, 13, 1, bo), Dl = town('D', 34.77, -84.97, 5, 1, bo);
-  // start from the plan that did exactly that: the box with all of Cartersville and one Dalton order
-  const r = settleLeftOff(new Map([['BOX', [...C, Dl[0]]]]), Dl.slice(1), [box('BOX', 14)], dock);
-  const boxTowns = new Set(r.byTruck.get('BOX').map((s) => s.id[0])), leftTowns = new Set(r.leftOff.map((s) => s.id[0]));
-  assert.equal(sk(r.byTruck.get('BOX')), 14, 'the box is still full');
-  assert.ok(!(boxTowns.has('D') && leftTowns.has('D')), `the box and the extra truck do not both go to Dalton: box ${[...boxTowns]}, left off ${[...leftTowns]}`);
-  assert.equal(r.leftOffAreas, 1);
-});
-
-// ── windows and the day: the step asks routing-repair what the shipped run would be ───────────
-test('WINDOWS (strict): a stop the shipped run would reach after its close stays off the truck — it would only be taken off again', () => {
-  const A = town('A', 34.30, -84.40, 5), X = P('X', 34.302, -84.401);
-  const late = (stops) => ({ excessM: 0, late: stops.filter((s) => s.id === 'X'), overDaySec: 0 });
-  const strict = settleLeftOff(new Map([['BOX', A]]), [X], [box('BOX', 14)], dock, [], { windowCost: late, strict: true });
-  assert.deepEqual(strict.leftOff.map((s) => s.id), ['X']);
-  const none = settleLeftOff(new Map([['BOX', A]]), [X], [box('BOX', 14)], dock, []);
-  assert.deepEqual(none.leftOff, [], 'without the window it goes on');
-});
-
-test('WINDOWS: the extra driving a window order costs counts — a stop that would bend the run 400 km is not taken for one skid', () => {
-  const A = town('A', 34.30, -84.40, 5), X = P('X', 34.302, -84.401);
-  const bend = (stops) => ({ excessM: stops.some((s) => s.id === 'X') ? 400000 : 0, late: [], overDaySec: 0 });
-  const r = settleLeftOff(new Map([['BOX', A]]), [X], [box('BOX', 14)], dock, [], { windowCost: bend });
-  assert.deepEqual(r.leftOff.map((s) => s.id), ['X']);
-});
-
-test('THE DAY: a truck does not take an order that keeps its driver three hours past the day', () => {
-  const A = town('A', 34.30, -84.40, 5), X = P('X', 34.302, -84.401);
-  const longDay = (stops) => ({ excessM: 0, late: [], overDaySec: stops.some((s) => s.id === 'X') ? 3 * 3600 : 0 });
-  const r = settleLeftOff(new Map([['BOX', A]]), [X], [box('BOX', 14)], dock, [], { windowCost: longDay });
-  assert.deepEqual(r.leftOff.map((s) => s.id), ['X']);
-});
-
-test('CHAD\'S BOARD WITH A 1–2 PM APPOINTMENT ON SUNDAY C/O ENCORE (advisory): the box still fills, meets it, is done by 6 PM on every placement, and the appointment bends its run by tens of km, not hundreds', async () => {
-  // The first version planned on straight tours and shipped the window order: the box averaged
-  // 485 km against 265 and finished after 6 PM on a third of placements.
-  const sunday = '007185025';
-  let after6 = 0, light = 0, late = 0, runs = 0, bend = 0;
-  const scottKm = (p) => (p.routes.find((x) => x.truckId === 'SCOTT')?.legs || []).reduce((a, l) => a + l.distanceMeters, 0) / 1000;
-  for (let seed = 1; seed <= 15; seed++) {
-    for (const strategy of ['MIN_DISTANCE', 'FARTHEST_FIRST', 'CLOSEST_FIRST']) {
-      const stops = placed(seed);
-      const build = (withWindow) => runPipeline({ stops: stops.map((s) => ({ stopNbr: s.stopNbr, lat: s.lat, lng: s.lng, ...buildFreightFields({ cartons: s.sk, pallets: s.sk, weight: s.lb, weightUOM: 'LB', stopDetails: [] }, { countSkids: true }),
-        equipmentReqs: equipmentReqsFrom(null, { tractorOnlyGreen: true, panelGreen: GREEN.has(s.stopNbr) }),
-        ...(withWindow && s.stopNbr === sunday ? { timeRestriction: { openMin: 780, closeMin: 840, closedToday: false, sources: ['test'], label: '1:00p–2:00p' } } : {}) })),
-        trucks: TRUCKS, depot: dock, strategy, date: D, matrixMode: 'haversine', windowMode: 'advisory', leaveOffEnds: true, fillTrucks: true },
-      { buildMatrix: async (d, pts) => resolveMatrix(d, pts, 'haversine') });
-      const p = await build(true), plain = await build(false);
-      runs++;
-      const scott = p.routes.find((x) => x.truckId === 'SCOTT');
-      bend += scottKm(p) - scottKm(plain);
-      const lastHour = (scott.etas[scott.etas.length - 1] % 86400) / 3600;
-      if (lastHour >= 18) after6++;
-      if (skidsOn(p, stops, 'SCOTT') !== 14) light++;
-      late += p.routes.reduce((a, r) => a + (r.windowViolatedIds || []).length, 0);
+test('WINDOWS: on Chad\'s board with the four Dalton orders due by 9:00, SCOTT does not take them (it cannot get there in time), the reason says so, and nothing the old Build carried comes off', async () => {
+  const stops = placed(7);
+  const due = { openMin: 420, closeMin: 540, closedToday: false, sources: ['test'], label: '7:00a–9:00a' };
+  const withWindows = stops.map((s) => (DALTON_FOUR.includes(s.stopNbr) ? { ...s, tr: due } : s));
+  for (const windowMode of ['advisory', 'strict']) {
+    const p = await pipe(chadStops(withWindows), TRUCKS, { windowMode }), off = await pipe(chadStops(withWindows), TRUCKS, { windowMode, fillTrucks: false });
+    const scott = new Set(p.routes.find((x) => x.truckId === 'SCOTT').orderedStopIds);
+    for (const id of DALTON_FOUR) assert.ok(!scott.has(id), `${windowMode}: ${id} is not on SCOTT`);
+    for (const id of DALTON_FOUR) {
+      const u = p.unassigned.find((x) => x.stopId === id);
+      assert.ok(u && u.reasons.some((x) => /miss its window|appointment window/.test(x)), `${windowMode} ${id}: ${u ? u.reasons.join('; ') : 'not listed'}`);
     }
+    assert.deepEqual(p.meta.groupFill.refused.map((r) => [r.truckId, [...r.stopIds].sort()]), [['SCOTT', DALTON_FOUR]], `${windowMode}: the job says which group was refused for the clock`);
+    const was = onTruck(off), now = onTruck(p);
+    for (const [id, t] of was) assert.equal(now.get(id), t, `${windowMode}: ${id} stays on ${t}`);
   }
-  assert.equal(after6, 0, `${after6} of ${runs} placements: SCOTT's last delivery after 6 PM`);
-  assert.equal(late, 0, `${late} deliveries past their close`);
-  assert.equal(light, 0, `${light} of ${runs}: SCOTT below 14`);
-  // measured: 38 km on average (the window order keeps the strategy's order and slots the
-  // appointment in — routing-repair's insertByWindow, which this step does not choose)
-  assert.ok(bend / runs < 60, `the appointment adds ${(bend / runs).toFixed(1)} km to SCOTT's run on average`);
 });
 
-test('STRICT WINDOWS on Chad\'s board (Dalton orders due by noon, Sunday 1–2 PM): the box still ends at 14, no stop is carried late, and no more skids are left off than with the step off', async () => {
-  // The first version filled the box with stops the window check then took off: SCOTT finished
-  // below 14 where the Build without the step reached it, on 23 of 480 placements.
-  const W = { '007184862': [420, 720], '007184962': [420, 720], '007185025': [780, 840] };
-  let light = 0, worse = 0, runs = 0;
-  for (let seed = 1; seed <= 10; seed++) {
-    for (const strategy of ['MIN_DISTANCE', 'FARTHEST_FIRST', 'CLOSEST_FIRST']) {
-      const stops = placed(seed);
-      const build = (fillTrucks) => runPipeline({ stops: stops.map((s) => ({ stopNbr: s.stopNbr, lat: s.lat, lng: s.lng, ...buildFreightFields({ cartons: s.sk, pallets: s.sk, weight: s.lb, weightUOM: 'LB', stopDetails: [] }, { countSkids: true }),
-        equipmentReqs: equipmentReqsFrom(null, { tractorOnlyGreen: true, panelGreen: GREEN.has(s.stopNbr) }),
-        ...(W[s.stopNbr] ? { timeRestriction: { openMin: W[s.stopNbr][0], closeMin: W[s.stopNbr][1], closedToday: false, sources: ['test'], label: 'window' } } : {}) })),
-        trucks: TRUCKS, depot: dock, strategy, date: D, matrixMode: 'haversine', windowMode: 'strict', leaveOffEnds: true, fillTrucks },
-      { buildMatrix: async (d, pts) => resolveMatrix(d, pts, 'haversine') });
-      const p = await build(true), off = await build(false);
-      runs++;
-      const offSk = (x) => x.unassigned.reduce((a, u) => a + stops.find((s) => s.stopNbr === u.stopId).sk, 0);
-      if (skidsOn(p, stops, 'SCOTT') !== 14) light++;
-      if (offSk(p) > offSk(off)) worse++;
-      for (const r of p.routes) assert.deepEqual(r.windowViolatedIds || [], [], `${r.truckId}: nothing late on a strict Build`);
-    }
-  }
-  assert.equal(light, 0, `${light} of ${runs}: SCOTT below 14`);
-  assert.equal(worse, 0, `${worse} of ${runs}: more skids left off than with the step off`);
-});
-
-test('HARD RULES on 80 random overloaded boards (green rule on and off, both strategies): nothing lost or doubled, no truck over skids or pounds, nothing box-only on a tractor, the same answer twice — and never fewer skids carried than with the step off', async () => {
+test('HARD RULES on 80 random overloaded boards (green rule on and off, both strategies): every order the old Build carried rides the same truck, every group added is a whole area of what it left off, no truck over skids or pounds, nothing box-only on a tractor, the same answer twice', async () => {
   let seed = 31337; const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
-  let skOn = 0, skOff = 0;
+  let groups = 0;
   for (let b = 0; b < 80; b++) {
     const trucks = Array.from({ length: 1 + Math.floor(rnd() * 3) }, (_, i) => (rnd() < 0.35 ? tractor(`T${i}`) : box(`B${i}`, 14, rnd() < 0.3 ? 6000 : 10000)));
     const cap = trucks.reduce((a, t) => a + t.maxSkids, 0);
@@ -390,12 +253,12 @@ test('HARD RULES on 80 random overloaded boards (green rule on and off, both str
     const strategy = rnd() < 0.5 ? 'FARTHEST_FIRST' : 'MIN_DISTANCE';
     const stops = rows.map((s) => ({ stopNbr: s.stopNbr, lat: s.lat, lng: s.lng, ...buildFreightFields({ cartons: s.cartons, pallets: s.cartons, weight: s.weight, weightUOM: 'LB', stopDetails: [] }, { countSkids: true }),
       equipmentReqs: equipmentReqsFrom(null, { tractorOnlyGreen: greenOnly, panelGreen: green.has(s.stopNbr) }) }));
-    const run = (fillTrucks) => runPipeline({ stops, trucks, depot: dock, strategy, date: D, matrixMode: 'haversine', windowMode: 'advisory', leaveOffEnds: true, fillTrucks },
-      { buildMatrix: async (d, pts) => resolveMatrix(d, pts, 'haversine') });
-    const p = await run(true), again = await run(true), off = await run(false);
+    const p = await pipe(stops, trucks, { strategy }), again = await pipe(stops, trucks, { strategy }), off = await pipe(stops, trucks, { strategy, fillTrucks: false });
     assert.deepEqual(again.routes.map((r) => r.orderedStopIds), p.routes.map((r) => r.orderedStopIds), `board ${b}: deterministic`);
     assert.deepEqual(again.unassigned, p.unassigned, `board ${b}: deterministic`);
     const by = new Map(rows.map((r) => [r.stopNbr, r]));
+    const was = onTruck(off), now = onTruck(p);
+    for (const [id, t] of was) assert.equal(now.get(id), t, `board ${b}: ${id} stays on ${t}`);
     const seen = new Map();
     for (const r of p.routes) for (const id of r.orderedStopIds) seen.set(id, (seen.get(id) || 0) + 1);
     for (const u of p.unassigned) seen.set(u.stopId, (seen.get(u.stopId) || 0) + 1);
@@ -407,32 +270,34 @@ test('HARD RULES on 80 random overloaded boards (green rule on and off, both str
       if (greenOnly && t.capabilities.tractor) for (const id of r.orderedStopIds) assert.ok(green.has(id), `board ${b}: box-only ${id} on ${t.id}`);
     }
     for (const u of p.unassigned) assert.ok(u.reasons.length > 0 && u.reasons.every((x) => x.trim()), `board ${b}: ${u.stopId} says why`);
-    const carried = (x) => x.routes.reduce((a, r) => a + r.orderedStopIds.reduce((c, id) => c + by.get(id).cartons, 0), 0);
-    skOn += carried(p); skOff += carried(off);
+    // each group the rule took is two or more orders, and no order chained within 15 km of it was left behind
+    const left = p.unassigned.map((u) => by.get(u.stopId));
+    for (const g of p.meta.groupFill?.taken || []) {
+      groups++;
+      assert.ok(g.stopIds.length >= 2, `board ${b}: a group of ${g.stopIds.length}`);
+      for (const id of g.stopIds) for (const l of left) assert.ok(hav(by.get(id), l) >= 15000, `board ${b}: ${l.stopNbr} left behind ${Math.round(hav(by.get(id), l))} m from ${id}, which went on ${g.truckId}`);
+    }
   }
-  assert.ok(skOn >= skOff, `skids carried: ${skOff} with the step off → ${skOn} on`);
+  assert.ok(groups > 0, 'the rule took at least one group across these boards');
 });
 
 test('A BOARD THE ENDS RULE PLANS WITHOUT LEAVING ANYTHING OFF is unchanged: the step does not run', async () => {
-  const stops = town('A', 34.30, -84.40, 10).map((s) => ({ stopNbr: s.id, lat: s.lat, lng: s.lng, ...buildFreightFields({ cartons: 1, pallets: 1, weight: 300, weightUOM: 'LB', stopDetails: [] }, { countSkids: true }), equipmentReqs: [] }));
-  const run = (fillTrucks) => runPipeline({ stops, trucks: [box('B1'), box('B2')], depot: dock, strategy: 'MIN_DISTANCE', date: D, matrixMode: 'haversine', windowMode: 'advisory', leaveOffEnds: true, fillTrucks },
-    { buildMatrix: async (d, pts) => resolveMatrix(d, pts, 'haversine') });
-  const on = await run(true), off = await run(false);
+  const stops = near('A', 34.30, -84.40, 10).map((s) => pipeStop(s));
+  const on = await pipe(stops, [box('B1'), box('B2')]), off = await pipe(stops, [box('B1'), box('B2')], { fillTrucks: false });
   assert.deepEqual(on.routes.map((r) => [r.truckId, r.orderedStopIds]), off.routes.map((r) => [r.truckId, r.orderedStopIds]));
-  assert.equal(on.meta.leftOffGroup, null);
+  assert.equal(on.meta.groupFill, null);
   assert.equal(on.meta.fillTrucks, true);
 });
 
-test('THE WIRING: the Build passes the switch to the pipeline, the pipeline to the solver, the solver to the ends rule', () => {
+test('THE WIRING: the Build passes the switch to the pipeline, the pipeline the clock to the solver, the solver both to the ends rule', () => {
   const bg = readFileSync(new URL('../netlify/functions/routing-build-background.mts', import.meta.url), 'utf8');
   assert.match(bg, /fillTrucks: rules\.fillTrucks,/);
-  const pipe = readFileSync(new URL('../netlify/functions/lib/routing-pipeline.mts', import.meta.url), 'utf8');
-  assert.match(pipe, /fillTrucks: req\.fillTrucks === true,/);
+  const pipeSrc = readFileSync(new URL('../netlify/functions/lib/routing-pipeline.mts', import.meta.url), 'utf8');
+  assert.match(pipeSrc, /fillTrucks: req\.fillTrucks === true,/);
+  assert.match(pipeSrc, /\{ runClock: runClockFor\(solverInput\) \}/);
   const solver = readFileSync(new URL('../netlify/functions/lib/routing-solver.mts', import.meta.url), 'utf8');
-  assert.match(pipe, /windowCost: windowCostFor\(solverInput, FILL_RULE\.DAY_HOURS\)/, 'the pipeline hands the solver the shipped-run cost');
-  assert.match(solver, /\{ fillTrucks: input\.fillTrucks === true, windowCost: opts\?\.windowCost, strictWindows: input\.windowMode === 'strict' \}/);
+  assert.match(solver, /\{ fillTrucks: input\.fillTrucks === true, runClock: opts\?\.runClock \}/);
   const ends = readFileSync(new URL('../netlify/functions/lib/routing-assign-ends.mts', import.meta.url), 'utf8');
   assert.match(ends, /if \(opts\?\.fillTrucks && leftOff\.length\)/);
-  assert.match(ends, /settleLeftOff\(byTruck, leftOff, trucks, depot, noTruck, \{ windowCost: opts\.windowCost, strict: opts\.strictWindows === true \}\)/);
-  for (const k of ['SKID_KM', 'AREA_PENALTY_KM', 'HOLE_KM', 'OVER_DAY_KM_PER_HOUR', 'ADVISORY_LATE_KM']) assert.ok(FILL_RULE[k] > 0, k);
+  assert.equal(typeof assignLeavingOffEnds, 'function');
 });

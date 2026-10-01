@@ -141,50 +141,32 @@ function etasFor(ordered: SolverStop[], indexById: Map<string, number>, matrix: 
   return timeline(ordered, indexById, matrix, depart).etas;
 }
 
-/** One truck's run as the Build will ship it, for the fill step. */
-export interface WindowCost {
-  /** metres the window-aware order drives beyond the same stops in the strategy's own order */
-  excessM: number;
-  /** stops that order reaches after their window closes, and (strict) customers shut today —
-   *  the stops repair would take off a strict Build; on an advisory one, the missed closes */
+/** What the clock says about one truck's run as the Build will ship it. */
+export interface RunClock {
+  /** stops that run reaches after their window closes, and (strict) customers shut today — the
+   *  stops repair would take off a strict Build; on an advisory one, the missed closes */
   late: SolverStop[];
-  /** seconds the last delivery finishes past the driver's day (depart + dayHours) — 0 within it */
-  overDaySec: number;
 }
 
-// THE SHIPPED RUN FOR THE FILL STEP (lib/routing-fill-leftover.mts). That step chooses who rides
-// what on straight dock-to-dock tours, and a straight tour knows nothing about a 1–2 PM appointment
-// or a driver's day; the run the Build SHIPS is orderForTruck's, which bends round every window on
-// the truck. Measured before this existed: one ordinary appointment on a box-only stop turned the
-// box's run into a 485 km zig-zag that ended after 6 PM. So the step asks, for any set of stops it is
-// weighing on a truck, what THIS file would make of it: the extra driving the window order costs,
-// which stops it still cannot reach in time, and how far past the day the last delivery ends. Same
-// matrix, same clock, same insertion rule — one place decides.
-export function windowCostFor(input: SolverInput, dayHours = 10): (stops: SolverStop[]) => WindowCost | null {
+// THE CLOCK FOR STEP 6 OF THE ENDS RULE (routing-assign-ends: a truck with room takes a whole group
+// of left-off orders). That step weighs a group on a truck's run; the run the Build SHIPS is
+// orderForTruck's, which bends round every window on the truck. So before it takes a group it asks
+// what THIS file would make of the run with it: which stops would miss their window. Same matrix,
+// same clock, same order as the flags on the card — one place decides. Null for an empty run, or a
+// stop this Build does not know.
+export function runClockFor(input: SolverInput): (stops: SolverStop[]) => RunClock | null {
   const indexById = new Map<string, number>();
   input.stops.forEach((s, k) => indexById.set(s.id, k + 1));
   const depart = input.departEpochSec ?? 0;
   const strict = input.windowMode === 'strict';
-  const dist = input.matrix.distanceMeters;
-  const runM = (nodes: number[]) => { let m = 0, prev = 0; for (const n of nodes) { m += dist[prev][n]; prev = n; } return m; };
   return (stops) => {
     if (!stops.length || stops.some((s) => !indexById.has(s.id))) return null;
-    const node = (s: SolverStop) => indexById.get(s.id)!;
-    const windowed = stops.some((s) => hasWindow(s) || (strict && s.closedToday));
+    if (!stops.some((s) => hasWindow(s) || (strict && s.closedToday))) return { late: [] };
     const ordered = orderForTruck(stops, input, indexById);
-    const plainM = windowed ? runM(sequence(stops.map(node), input.strategy, input.matrix)) : 0;
     const etas = etasFor(ordered, indexById, input.matrix, depart);
-    // Strict: every stop repair would take off (a missed close, a customer shut today). Advisory:
-    // only a missed close — a stop shut today is flagged wherever it rides, so it is no truck's cost.
-    const late = windowed
-      ? ordered.filter((s, i) => (strict ? !windowOk(s, etas[i]) : hasWindow(s) && !s.closedToday && !windowOk(s, etas[i])))
-      : [];
-    const done = etas.length ? etas[etas.length - 1] + serviceSec(ordered[ordered.length - 1]) : depart;
-    return {
-      excessM: windowed ? Math.max(0, runM(ordered.map(node)) - plainM) : 0,
-      late,
-      overDaySec: Math.max(0, done - (depart + dayHours * 3600)),
-    };
+    // Strict: every stop repair would take off. Advisory: only a missed close — a customer shut
+    // today is flagged wherever it rides, so it is no truck's doing.
+    return { late: ordered.filter((s, i) => (strict ? !windowOk(s, etas[i]) : hasWindow(s) && !s.closedToday && !windowOk(s, etas[i]))) };
   };
 }
 

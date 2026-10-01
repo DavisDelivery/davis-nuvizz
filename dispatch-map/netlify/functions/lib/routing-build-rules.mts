@@ -27,11 +27,10 @@
 //   ROUTING_BUILD_LEAVE_OFF_ENDS=off       full trucks leave off whatever the old assignment left,
 //                                          not the costliest end of their run
 //                                          (lib/routing-assign-ends.mts)
-//   ROUTING_BUILD_FILL_TRUCKS=off          with the ends rule on, a truck with room may leave a stop
-//                                          off rather than drive out of its way, and what is left
-//                                          off is not pulled into one group — the v1.92.0 Build
-//                                          (lib/routing-fill-leftover.mts). A step of the ends rule:
-//                                          with LEAVE_OFF_ENDS off it is off too, and says so.
+//   ROUTING_BUILD_FILL_TRUCKS=off          a truck with room no longer takes a whole group of the
+//                                          orders left off (routing-assign-ends step 6) — the
+//                                          v1.100 Build. A step of the ends rule: with
+//                                          LEAVE_OFF_ENDS off it is off too, and says so.
 // The job result carries `buildRules` saying which ran, so the position of each switch can be
 // read off any build rather than remembered.
 //

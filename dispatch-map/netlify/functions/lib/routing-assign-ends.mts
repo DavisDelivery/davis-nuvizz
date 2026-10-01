@@ -38,12 +38,11 @@
 //      a truck able to carry it drives past goes on that truck — straight on if it has room, else
 //      in exchange for stops off the beginning or end of its run, never for fewer skids. The two
 //      repeat until nothing moves, so a stop an exchange freed is offered again.
-//   6. ROUTING_BUILD_FILL_TRUCKS (on by default): when anything is left off, the plan is settled so
-//      a truck with room takes what it can carry, what is left off is one group — the run one more
-//      truck would make — and no stop a truck drives past is left off for it, each truck scored as
-//      the Build will ship it, windows and the driver's day included (lib/routing-fill-leftover.mts).
-//      Chad, 2026-09-30, on a Build where this file's step 5 left SCOTT at 9 of 14 and the left-off
-//      orders in three towns. Off, the plan is exactly steps 1–5.
+//   6. ROUTING_BUILD_FILL_TRUCKS (on by default): a truck with room takes a WHOLE GROUP of two or
+//      more orders left off — an area of them chained within 15 km — when it fits, costs no more
+//      driving per order than 1.5× the truck's average stop, and makes no delivery miss its window.
+//      Chad, 2026-09-30, on a Build where 5a refused each Dalton order alone and SCOTT stopped at 9
+//      of 14. Off, the plan is exactly steps 1–5.
 //   7. What is left is listed, and EVERY listed stop says why: either the trucks that could carry
 //      it are full, or the nearest truck with room would have to drive N miles out of its way.
 //
@@ -61,8 +60,7 @@ import type { SolverStop, SolverTruck, UnassignedStop } from './routing-types.mt
 import {
   truckCanCarry, capacityFits, capacityBreaches, equipmentOk, loadFraction, emptyLoad, addLoad, computeLoad, REASON,
 } from './routing-constraints.mts';
-import { settleLeftOff } from './routing-fill-leftover.mts';
-import type { WindowCost } from './routing-repair.mts';
+import type { RunClock } from './routing-repair.mts';
 
 function haversineM(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
   const R = 6371000, toRad = (d: number) => (d * Math.PI) / 180;
@@ -116,9 +114,13 @@ export interface EndsAssignment {
   leftOffAtEnds: string[];
   /** Stops moved off a full truck onto another truck that could carry them and had room. */
   movedToRoom: Array<{ stopId: string; from: string; to: string }>;
-  /** ROUTING_BUILD_FILL_TRUCKS: what the fill-and-group step did (lib/routing-fill-leftover.mts);
-   *  null when it did not run (switched off, or nothing was left off). */
-  settled: { moves: number; evals: number; capped: boolean; leftOffStops: number; leftOffAreas: number; extraTruckCrowKm: number } | null;
+  /** ROUTING_BUILD_FILL_TRUCKS (step 6): each group of left-off orders a truck with room took, and
+   *  each group a truck had room for but was refused for a window or the driver's day; null when the
+   *  step did not run (switched off, or nothing was left off). */
+  groupFill: {
+    taken: Array<{ truckId: string; stopIds: string[]; skids: number; addedMiPerStop: number; averageMiPerStop: number }>;
+    refused: Array<{ truckId: string; stopIds: string[] }>;
+  } | null;
 }
 
 // `runOrder` puts one truck's stops in the order that truck will drive them (routing-solver passes
@@ -126,7 +128,7 @@ export interface EndsAssignment {
 export function assignLeavingOffEnds(
   stops: SolverStop[], trucks: SolverTruck[], depot: { lat: number; lng: number },
   runOrder?: (stops: SolverStop[]) => SolverStop[],
-  opts?: { fillTrucks?: boolean; windowCost?: (stops: SolverStop[]) => WindowCost | null; strictWindows?: boolean },
+  opts?: { fillTrucks?: boolean; runClock?: (stops: SolverStop[]) => RunClock | null },
 ): EndsAssignment {
   const byTruck = new Map<string, SolverStop[]>();
   const loadOf = new Map<string, ReturnType<typeof emptyLoad>>();
@@ -425,17 +427,103 @@ export function assignLeavingOffEnds(
     if (!noHoles()) break;
   }
 
-  // ── 6. ROUTING_BUILD_FILL_TRUCKS: a truck with room takes what it can carry, and what is left
-  //    off is ONE group — the run one more truck would make (lib/routing-fill-leftover.mts). This
-  //    is what Chad asked for on 2026-09-30, and it replaces 5a's "no trip across town for one
-  //    skid" with a price per skid whenever something is left off; a board steps 1–5 plan without
-  //    leaving anything off is exactly as above. ──
-  let settled: EndsAssignment['settled'] = null;
+  // ── 6. ROUTING_BUILD_FILL_TRUCKS: A TRUCK WITH ROOM TAKES A WHOLE GROUP OF LEFT-OFF ORDERS. ──
+  // Chad, 2026-09-30, on a Build where SCOTT, the only box, stopped at 9 of 14 while four 1-skid
+  // Dalton orders and a Calhoun carton were left off — "still left orders off the loads that only
+  // one was full … orders scattered across 3 towns so i would have sent an additional truck". 5a
+  // refused each Dalton order ALONE (65 mi out of SCOTT's way for one skid); together they are a run
+  // worth making. So the orders left off are grouped into AREAS, and a truck with room takes a WHOLE
+  // area of two or more orders when it fits (equipment and capacity) and adding it costs no more
+  // driving per order than GROUP_FACTOR × the average stop already on that truck — 5a's own yardstick,
+  // with room for a group. Never part of an area (that is two trucks in one town), never a stop taken
+  // OFF a truck — so nothing that was routed is dropped, and no truck is sent across town for one.
+  // And never a group that would make a delivery on that truck miss its window, on the run the Build
+  // will ship (routing-repair runClockFor). Cheapest group first; then 5a again, for a single order
+  // the grown run now passes; repeated until nothing moves.
+  // GROUP_M: an area is orders chained within this of each other — Chad's four Dalton orders are one,
+  // the Calhoun carton 30 km on is another. GROUP_MIN: one order alone stays 5a's call ("no trip
+  // across town for one skid"). GROUP_FACTOR: how much more per order than the truck's average stop a
+  // group may cost — measured on his board, the Dalton group costs SCOTT 1.24× its average; at 1.25
+  // the rule took it on fewer of 120 placements than at 1.5, and 2 took nothing more than 1.5.
+  const GROUP_M = 15000;
+  const GROUP_MIN = 2;
+  const GROUP_FACTOR = 1.5;
+  let groupFill: EndsAssignment['groupFill'] = null;
+  const refusedFor = new Map<string, { truck: SolverTruck }>();
+  const areasOf = (list: SolverStop[]): SolverStop[][] => {
+    const seen = new Set<SolverStop>(), out: SolverStop[][] = [];
+    for (const s0 of [...list].sort(farthestFirst)) {
+      if (seen.has(s0)) continue;
+      const comp: SolverStop[] = [], q = [s0];
+      seen.add(s0);
+      while (q.length) {
+        const x = q.pop()!;
+        comp.push(x);
+        for (const y of list) if (!seen.has(y) && haversineM(x, y) < GROUP_M) { seen.add(y); q.push(y); }
+      }
+      out.push(comp.sort(farthestFirst));
+    }
+    return out;
+  };
+  const late = (w: RunClock | null) => new Set((w?.late || []).map((x) => x.id));
+  const groupFillPass = (): boolean => {
+    let any = false;
+    for (let guard6 = 0; guard6 < stops.length + 5 && leftOff.length; guard6++) {
+      let pick: { area: SolverStop[]; T: SolverTruck; run: SolverStop[]; per: number; avg: number } | null = null;
+      refusedFor.clear();
+      for (const area of areasOf(leftOff)) {
+        if (area.length < GROUP_MIN) continue;
+        for (const T of trucks) {
+          if (!area.every((x) => capableOf.get(x.id)!.includes(T))) continue;
+          if (capacityBreaches(area.reduce((ld, x) => addLoad(ld, x), loadOf.get(T.id)!), T).length) continue;
+          const run = order(byTruck.get(T.id)!);
+          if (!run.length) continue;
+          const avg = runLength(run) / run.length;
+          let grown: SolverStop[] = run;
+          for (const x of area) {
+            const pts = [depot, ...grown, depot];
+            let best = Infinity, at = 0;
+            for (let i = 0; i + 1 < pts.length; i++) {
+              const d = haversineM(pts[i], x) + haversineM(x, pts[i + 1]) - haversineM(pts[i], pts[i + 1]);
+              if (d < best) { best = d; at = i; }
+            }
+            grown = [...grown.slice(0, at), x, ...grown.slice(at)];
+          }
+          const per = (runLength(grown) - runLength(run)) / area.length;
+          if (per > GROUP_FACTOR * avg) continue;
+          if (opts?.runClock) {
+            const before = opts.runClock(run), after = opts.runClock([...run, ...area]);
+            const was = late(before);
+            if ([...late(after)].some((id) => !was.has(id))) { for (const x of area) if (!refusedFor.has(x.id)) refusedFor.set(x.id, { truck: T }); continue; }
+          }
+          if (!pick || per < pick.per || (per === pick.per && area[0].id < pick.area[0].id)) pick = { area, T, run, per, avg };
+        }
+      }
+      if (!pick) break;
+      setStops(pick.T, [...pick.run, ...pick.area]);
+      for (const x of pick.area) { leftOff.splice(leftOff.indexOf(x), 1); refusedFor.delete(x.id); }
+      groupFill!.taken.push({ truckId: pick.T.id, stopIds: pick.area.map((x) => x.id), skids: computeLoad(pick.area).skids, addedMiPerStop: Math.round((pick.per / MILE_M) * 10) / 10, averageMiPerStop: Math.round((pick.avg / MILE_M) * 10) / 10 });
+      any = true;
+    }
+    return any;
+  };
   if (opts?.fillTrucks && leftOff.length) {
-    const s = settleLeftOff(byTruck, leftOff, trucks, depot, noTruck, { windowCost: opts.windowCost, strict: opts.strictWindows === true });
-    for (const t of trucks) setStops(t, s.byTruck.get(t.id) || []);
-    leftOff.splice(0, leftOff.length, ...[...s.leftOff].sort(farthestFirst));
-    settled = { moves: s.moves, evals: s.evals, capped: s.capped, leftOffStops: s.leftOff.length + noTruck.length, leftOffAreas: s.leftOffAreas, extraTruckCrowKm: Math.round(s.leftOffTourM / 100) / 10 };
+    groupFill = { taken: [], refused: [] };
+    // Then 5a again — a single order the grown run now passes (the Calhoun carton on the way to
+    // Dalton) — but not 5b: its exchange would trade the group back off for one big order the truck
+    // passes (measured on Chad's board: the four Dalton orders out again for Sunday c/o Encore's 6,
+    // and what was left off back in two towns).
+    for (let round = 0; round < 6; round++) {
+      const took = groupFillPass();
+      if (!fillRoom() && !took) break;
+    }
+    const byTruckRefused = new Map<string, { truckId: string; stopIds: string[] }>();
+    for (const [id, r] of refusedFor) {
+      if (!leftOff.some((x) => x.id === id)) continue;
+      if (!byTruckRefused.has(r.truck.id)) byTruckRefused.set(r.truck.id, { truckId: r.truck.id, stopIds: [] });
+      byTruckRefused.get(r.truck.id)!.stopIds.push(id);
+    }
+    groupFill.refused = [...byTruckRefused.values()];
   }
 
   // ── 7. What is left is listed, and every listed stop says WHY. ──
@@ -458,10 +546,16 @@ export function assignLeavingOffEnds(
       }
       return reasons;
     }
+    // Step 6 had room for it and its group on a truck, and refused only for the clock: say that.
+    const clock = refusedFor.get(s.id);
+    if (clock) {
+      const who = clock.truck.label || clock.truck.id;
+      return [`left off: ${who} has room, but taking it and the orders near it would make a delivery miss its window`];
+    }
     // It would fit a truck's spare room, but no truck's run was worth extending for it: say how far.
     return [outOfWayReason(s, withRoom.map((t) => ({ label: t.label || t.id, run: order(byTruck.get(t.id)!) })), depot)];
   };
   for (const s of leftOff) { unassigned.push({ stopId: s.id, reasons: spillReason(s) }); leftOffAtEnds.push(s.id); }
 
-  return { byTruck, unassigned, leftOffAtEnds, movedToRoom, settled };
+  return { byTruck, unassigned, leftOffAtEnds, movedToRoom, groupFill };
 }
