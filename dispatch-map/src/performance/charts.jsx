@@ -206,7 +206,7 @@ export function PaceChart({ live, bands, share = false, overlays = [], asOfBucke
       <PaceLegend typicalLabel={typicalLabel} n={bands?.n || 0} overlays={overlays} hasToday={!!todayPath} compact={compact} />
       <div
         ref={wrapRef}
-        className="relative mt-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60 touch-pan-y"
+        className="relative mt-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 touch-pan-y"
         style={{ height: H }}
         tabIndex={0}
         role="group"
@@ -256,10 +256,10 @@ export function PaceChart({ live, bands, share = false, overlays = [], asOfBucke
         </svg>
         {hv && (
           <div
-            className="pointer-events-none absolute top-2 z-10 min-w-[168px] rounded-md border border-zinc-700 bg-zinc-950/95 px-3 py-2 text-xs shadow-lg shadow-black/40"
+            className="pointer-events-none absolute top-2 z-10 min-w-[168px] rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg shadow-slate-900/10"
             style={tipOnLeft ? { right: W - tipLeft + 12 } : { left: tipLeft + 12 }}
           >
-            <div className="text-zinc-400">by <span className="font-mono tabular-nums text-zinc-300">{fmtClock(hv.minute)}</span></div>
+            <div className="text-slate-600">by <span className="font-mono tabular-nums text-slate-700">{fmtClock(hv.minute)}</span></div>
             <TipRow color={C.today} value={hv.today != null ? fmtV(hv.today) : '—'} label="Today" />
             <TipRow color={C.typical} value={fmtV(hv.median)} label={typicalLabel} />
             <TipRow band value={hv.lo != null ? `${fmtV(hv.lo)}–${fmtV(hv.hi)}` : '—'} label="Middle half" />
@@ -275,33 +275,33 @@ function TipRow({ color, band = false, value, label }) {
   return (
     <div className="mt-1 flex items-center gap-2">
       {band
-        ? <span className="inline-block h-2.5 w-3 rounded-sm" style={{ background: 'rgba(161,161,170,0.35)' }} aria-hidden="true" />
+        ? <span className="inline-block h-2.5 w-3 rounded-sm" style={{ background: C.bandKey }} aria-hidden="true" />
         : <span className="inline-block h-0.5 w-3 rounded-full" style={{ background: color }} aria-hidden="true" />}
-      <span className="font-mono tabular-nums font-semibold text-zinc-100">{value}</span>
-      <span className="truncate text-zinc-400">{label}</span>
+      <span className="font-mono tabular-nums font-semibold text-slate-900">{value}</span>
+      <span className="truncate text-slate-600">{label}</span>
     </div>
   );
 }
 
 function PaceLegend({ typicalLabel, n, overlays, hasToday, compact }) {
   return (
-    <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 ${compact ? 'text-[11px]' : 'text-xs'} text-zinc-400`}>
+    <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 ${compact ? 'text-[11px]' : 'text-xs'} text-slate-600`}>
       <span className="inline-flex items-center gap-1.5">
         <span className="inline-block h-0.5 w-4 rounded-full" style={{ background: C.today }} aria-hidden="true" />
-        <span className="text-zinc-300">Today{hasToday ? '' : ' (nothing yet)'}</span>
+        <span className="text-slate-700">Today{hasToday ? '' : ' (nothing yet)'}</span>
       </span>
       <span className="inline-flex items-center gap-1.5">
         <span className="inline-block h-0.5 w-4 rounded-full" style={{ background: C.typical }} aria-hidden="true" />
         <span>{typicalLabel}{n ? `, median of ${n} day${n === 1 ? '' : 's'}` : ''}</span>
       </span>
       <span className="inline-flex items-center gap-1.5">
-        <span className="inline-block h-2.5 w-4 rounded-sm" style={{ background: 'rgba(161,161,170,0.3)' }} aria-hidden="true" />
+        <span className="inline-block h-2.5 w-4 rounded-sm" style={{ background: C.bandKey }} aria-hidden="true" />
         <span>Middle half of those days</span>
       </span>
       {overlays.map((o) => (
         <span key={o.date} className="inline-flex items-center gap-1.5">
           <span className="inline-block h-0.5 w-4 rounded-full" style={{ background: o.color }} aria-hidden="true" />
-          <span className="text-zinc-300">{o.label}</span>
+          <span className="text-slate-700">{o.label}</span>
         </span>
       ))}
     </div>
@@ -329,10 +329,10 @@ export function PaceTable({ live, bands, share = false, overlays = [], asOfBucke
     });
   }
   return (
-    <div className="mt-2 overflow-x-auto rounded-md border border-zinc-800">
+    <div className="mt-2 overflow-x-auto rounded-md border border-slate-200">
       <table className="w-full min-w-[420px] text-xs">
         <caption className="sr-only">Delivered by each hour — today, the typical day, and any day overlaid</caption>
-        <thead className="bg-zinc-900 text-zinc-400">
+        <thead className="bg-white text-slate-600">
           <tr>
             <th scope="col" className="px-3 py-2 text-left font-medium">By</th>
             <th scope="col" className="px-3 py-2 text-right font-medium">Today</th>
@@ -341,13 +341,13 @@ export function PaceTable({ live, bands, share = false, overlays = [], asOfBucke
             {overlays.map((o) => <th key={o.date} scope="col" className="px-3 py-2 text-right font-medium">{o.label}</th>)}
           </tr>
         </thead>
-        <tbody className="divide-y divide-zinc-800 font-mono tabular-nums text-zinc-200">
+        <tbody className="divide-y divide-slate-200 font-mono tabular-nums text-slate-800">
           {rows.map((r) => (
             <tr key={r.m}>
-              <td className="px-3 py-1.5 text-zinc-400">{fmtClock(r.m)}</td>
+              <td className="px-3 py-1.5 text-slate-600">{fmtClock(r.m)}</td>
               <td className="px-3 py-1.5 text-right">{fmtV(r.today)}</td>
               <td className="px-3 py-1.5 text-right">{fmtV(r.median)}</td>
-              <td className="px-3 py-1.5 text-right text-zinc-400">{r.lo != null ? `${fmtV(r.lo)}–${fmtV(r.hi)}` : '—'}</td>
+              <td className="px-3 py-1.5 text-right text-slate-600">{r.lo != null ? `${fmtV(r.lo)}–${fmtV(r.hi)}` : '—'}</td>
               {r.ov.map((v, i) => <td key={overlays[i].date} className="px-3 py-1.5 text-right">{fmtV(v)}</td>)}
             </tr>
           ))}
@@ -413,14 +413,14 @@ export function TrendChart({ buckets, average = null, averageLabel = null, heigh
 
   return (
     <div className={`transition-opacity duration-300 ${dimmed ? 'opacity-60' : 'opacity-100'}`}>
-      <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 ${compact ? 'text-[11px]' : 'text-xs'} text-zinc-400`}>
-        <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: C.today }} aria-hidden="true" /><span className="text-zinc-300">Delivered</span></span>
+      <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 ${compact ? 'text-[11px]' : 'text-xs'} text-slate-600`}>
+        <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: C.today }} aria-hidden="true" /><span className="text-slate-700">Delivered</span></span>
         {averageLabel && <span className="inline-flex items-center gap-1.5"><span className="inline-block h-0.5 w-4 rounded-full" style={{ background: C.average }} aria-hidden="true" /><span>{averageLabel}</span></span>}
         <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm border" style={{ borderColor: C.today }} aria-hidden="true" /><span>Still running</span></span>
       </div>
       <div
         ref={wrapRef}
-        className="relative mt-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60"
+        className="relative mt-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50"
         style={{ height: H }}
         tabIndex={n ? 0 : -1}
         role="group"
@@ -466,15 +466,15 @@ export function TrendChart({ buckets, average = null, averageLabel = null, heigh
         </svg>
         {hb && (
           <div
-            className="pointer-events-none absolute top-2 z-10 min-w-[180px] rounded-md border border-zinc-700 bg-zinc-950/95 px-3 py-2 text-xs shadow-lg shadow-black/40"
+            className="pointer-events-none absolute top-2 z-10 min-w-[180px] rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg shadow-slate-900/10"
             style={tipOnLeft ? { right: W - tipLeft + 14 } : { left: tipLeft + 14 }}
           >
-            <div className="text-zinc-300">{hb.label}{hb.partial ? <span className="text-zinc-400"> · still running</span> : null}</div>
-            <div className="mt-1 flex items-baseline gap-2"><span className="font-mono tabular-nums text-sm font-semibold text-zinc-100">{fmtCount(hb.delivered)}</span><span className="text-zinc-400">delivered</span></div>
-            {unitLabel !== 'day' && <div className="mt-0.5 flex items-baseline gap-2"><span className="font-mono tabular-nums text-zinc-200">{hb.perDay != null ? fmtCount(hb.perDay) : '—'}</span><span className="text-zinc-400">a day, over {hb.days - (hb.partial ? 1 : 0)} closed day{hb.days - (hb.partial ? 1 : 0) === 1 ? '' : 's'}</span></div>}
-            <div className="mt-0.5 flex items-baseline gap-2"><span className="font-mono tabular-nums text-zinc-200">{fmtShare(hb.completionRate)}</span><span className="text-zinc-400">completed</span></div>
-            {average && average[hover] != null && <div className="mt-0.5 flex items-baseline gap-2"><span className="font-mono tabular-nums text-zinc-200">{fmtCount(average[hover])}</span><span className="text-zinc-400">{averageLabel}</span></div>}
-            {hb.gaps > 0 && <div className="mt-1 text-amber-300">{hb.gaps} day{hb.gaps === 1 ? '' : 's'} not built yet — not counted</div>}
+            <div className="text-slate-700">{hb.label}{hb.partial ? <span className="text-slate-600"> · still running</span> : null}</div>
+            <div className="mt-1 flex items-baseline gap-2"><span className="font-mono tabular-nums text-sm font-semibold text-slate-900">{fmtCount(hb.delivered)}</span><span className="text-slate-600">delivered</span></div>
+            {unitLabel !== 'day' && <div className="mt-0.5 flex items-baseline gap-2"><span className="font-mono tabular-nums text-slate-800">{hb.perDay != null ? fmtCount(hb.perDay) : '—'}</span><span className="text-slate-600">a day, over {hb.days - (hb.partial ? 1 : 0)} closed day{hb.days - (hb.partial ? 1 : 0) === 1 ? '' : 's'}</span></div>}
+            <div className="mt-0.5 flex items-baseline gap-2"><span className="font-mono tabular-nums text-slate-800">{fmtShare(hb.completionRate)}</span><span className="text-slate-600">completed</span></div>
+            {average && average[hover] != null && <div className="mt-0.5 flex items-baseline gap-2"><span className="font-mono tabular-nums text-slate-800">{fmtCount(average[hover])}</span><span className="text-slate-600">{averageLabel}</span></div>}
+            {hb.gaps > 0 && <div className="mt-1 text-amber-700">{hb.gaps} day{hb.gaps === 1 ? '' : 's'} not built yet — not counted</div>}
           </div>
         )}
       </div>
@@ -505,7 +505,7 @@ export function Sparkline({ values, height = 32, width = 112, accent = C.today, 
   const last = pts[pts.length - 1];
   return (
     <svg width={width} height={height} className="block shrink-0" role="img" aria-label={`${label}: ${format ? format(pts[0].v) : pts[0].v} to ${format ? format(last.v) : last.v}`}>
-      <path d={d} fill="none" stroke="#71717a" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      <path d={d} fill="none" stroke={C.typical} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
       <circle cx={x(last.i)} cy={y(last.v)} r="3" fill={accent} stroke={C.surface} strokeWidth="1.5" />
     </svg>
   );
@@ -541,7 +541,7 @@ export function OutcomeMeter({ mix, compact = false }) {
   const whole = mix?.whole || 0;
   return (
     <div>
-      <div className="flex h-2.5 w-full gap-[2px] overflow-hidden rounded-full bg-zinc-800" role="img"
+      <div className="flex h-2.5 w-full gap-[2px] overflow-hidden rounded-full bg-slate-100" role="img"
         aria-label={rows.map((r) => `${r.label} ${fmtCount(r.count)} (${fmtShare(r.share)})`).join(', ')}>
         {whole > 0 && rows.filter((r) => r.count > 0).map((r) => (
           <span key={r.key} className="h-full first:rounded-l-full last:rounded-r-full"
@@ -552,14 +552,14 @@ export function OutcomeMeter({ mix, compact = false }) {
         {rows.map((r) => (
           <li key={r.key} className="flex items-center gap-2">
             <span className="inline-block h-2 w-2 shrink-0 rounded-sm" style={{ background: STATUS_COLOR[r.status], opacity: r.key === 'hand' ? 0.55 : 1 }} aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate text-zinc-300">{r.label}</span>
-            <span className="font-mono tabular-nums text-zinc-100">{fmtCount(r.count)}</span>
-            <span className="w-12 text-right font-mono tabular-nums text-zinc-400">{fmtShare(r.share)}</span>
+            <span className="min-w-0 flex-1 truncate text-slate-700">{r.label}</span>
+            <span className="font-mono tabular-nums text-slate-900">{fmtCount(r.count)}</span>
+            <span className="w-12 text-right font-mono tabular-nums text-slate-600">{fmtShare(r.share)}</span>
           </li>
         ))}
       </ul>
       {(mix?.cancelled > 0 || mix?.unaccounted) ? (
-        <p className="mt-2 text-xs leading-relaxed text-zinc-400">
+        <p className="mt-2 text-xs leading-relaxed text-slate-600">
           {mix.cancelled > 0 ? `${fmtCount(mix.cancelled)} cancelled — pulled orders, not counted as work. ` : ''}
           {mix.unaccounted ? `${fmtCount(Math.abs(mix.unaccounted))} ${mix.unaccounted > 0 ? 'not in any row above' : 'counted twice'} — see the Days table.` : ''}
         </p>
@@ -577,15 +577,15 @@ export function WeekdayBars({ profile, todayWeekday = null }) {
         const on = p.weekday === todayWeekday;
         return (
           <li key={p.weekday} className="flex items-center gap-3 text-[13px]">
-            <span className={`w-9 shrink-0 ${on ? 'text-zinc-100' : 'text-zinc-400'}`}>{WEEKDAY_SHORT[p.weekday]}</span>
-            <span className="relative h-2 flex-1 rounded-r bg-zinc-800/60">
+            <span className={`w-9 shrink-0 ${on ? 'text-slate-900' : 'text-slate-600'}`}>{WEEKDAY_SHORT[p.weekday]}</span>
+            <span className="relative h-2 flex-1 rounded-r bg-slate-100">
               {p.avg != null && (
                 <span className="absolute inset-y-0 left-0 rounded-r"
                   style={{ width: `${(p.avg / max) * 100}%`, background: on ? C.today : C.mutedBar }} />
               )}
             </span>
-            <span className="w-14 text-right font-mono tabular-nums text-zinc-100">{p.avg != null ? fmtCount(p.avg) : '—'}</span>
-            <span className="w-10 text-right font-mono tabular-nums text-xs text-zinc-400">{p.n ? `×${p.n}` : ''}</span>
+            <span className="w-14 text-right font-mono tabular-nums text-slate-900">{p.avg != null ? fmtCount(p.avg) : '—'}</span>
+            <span className="w-10 text-right font-mono tabular-nums text-xs text-slate-600">{p.n ? `×${p.n}` : ''}</span>
           </li>
         );
       })}

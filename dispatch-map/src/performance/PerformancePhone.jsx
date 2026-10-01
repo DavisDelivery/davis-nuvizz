@@ -40,7 +40,7 @@ export default function PerformancePhone({ vm, act }) {
   const stale = vm.stale;
   const failedCold = !vm.data && !vm.loading && !!vm.error;
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-zinc-950 text-zinc-100 antialiased" style={{ fontFamily: SANS }}>
+    <div className="flex-1 min-h-0 overflow-y-auto bg-slate-50 text-slate-900 antialiased" style={{ fontFamily: SANS }}>
       <PhoneHeader vm={vm} act={act} />
       <div className="space-y-3 px-3 pb-10 pt-3">
         {vm.dateOpen ? (
@@ -103,16 +103,16 @@ export default function PerformancePhone({ vm, act }) {
 function PhoneHeader({ vm, act }) {
   const preset = RANGE_PRESETS.find((p) => p.id === vm.selection?.id);
   return (
-    <header className="sticky top-0 z-30 border-b border-zinc-800 bg-zinc-950/95 backdrop-blur">
+    <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
       <div className="flex items-center gap-2 px-3 pt-2">
         <div className="min-w-0 flex-1">
           {/* "Stop performance" is the phone guard's heading for this screen too. */}
-          <h1 className="text-[17px] font-semibold tracking-tight text-zinc-50">Stop performance</h1>
-          <p className="truncate font-mono text-[11px] text-zinc-400">{vm.freshness}</p>
+          <h1 className="text-[17px] font-semibold tracking-tight text-slate-900">Stop performance</h1>
+          <p className="truncate font-mono text-[11px] text-slate-600">{vm.freshness}</p>
         </div>
         <button
           type="button" onClick={act.reload} disabled={vm.loading} aria-label="Refresh"
-          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-300 transition-colors active:bg-zinc-800 disabled:opacity-60"
+          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 transition-colors active:bg-slate-200 disabled:opacity-60"
         >
           <RefreshCw size={16} className={vm.loading ? 'animate-spin motion-reduce:animate-none' : ''} aria-hidden="true" />
         </button>
@@ -121,21 +121,21 @@ function PhoneHeader({ vm, act }) {
         <button
           type="button" onClick={() => act.setDateOpen(!vm.dateOpen)} aria-expanded={vm.dateOpen}
           className={`inline-flex h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border px-3 text-left text-[13.5px] transition-colors
-            ${vm.dateOpen ? 'border-zinc-600 bg-zinc-800' : 'border-zinc-800 bg-zinc-900 active:bg-zinc-800'}`}
+            ${vm.dateOpen ? 'border-slate-300 bg-slate-100' : 'border-slate-200 bg-white active:bg-slate-200'}`}
         >
-          <CalendarRange size={15} className="shrink-0 text-zinc-400" aria-hidden="true" />
-          <span className="shrink-0 font-medium text-zinc-100">{preset ? preset.label : 'Custom'}</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-zinc-400">{rangeLabel(vm.range.from, vm.range.to)}</span>
-          <ChevronDown size={15} className={`shrink-0 text-zinc-500 transition-transform duration-150 ${vm.dateOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+          <CalendarRange size={15} className="shrink-0 text-slate-600" aria-hidden="true" />
+          <span className="shrink-0 font-medium text-slate-900">{preset ? preset.label : 'Custom'}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-slate-600">{rangeLabel(vm.range.from, vm.range.to)}</span>
+          <ChevronDown size={15} className={`shrink-0 text-slate-500 transition-transform duration-150 ${vm.dateOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
         </button>
         <button
           type="button" onClick={() => act.setFiltersOpen((v) => !v)} aria-expanded={vm.filtersOpen} aria-controls="perf-filters"
           className={`inline-flex h-11 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-[13.5px] font-medium transition-colors
-            ${vm.filtersOpen ? 'border-zinc-600 bg-zinc-800 text-zinc-100' : 'border-zinc-800 bg-zinc-900 text-zinc-300 active:bg-zinc-800'}`}
+            ${vm.filtersOpen ? 'border-slate-300 bg-slate-100 text-slate-900' : 'border-slate-200 bg-white text-slate-700 active:bg-slate-200'}`}
         >
-          <SlidersHorizontal size={15} className="text-zinc-400" aria-hidden="true" />
+          <SlidersHorizontal size={15} className="text-slate-600" aria-hidden="true" />
           Filters
-          {vm.facetCount > 0 ? <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-zinc-100 px-1 font-mono text-[10px] font-semibold text-zinc-900">{vm.facetCount}</span> : null}
+          {vm.facetCount > 0 ? <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-brand px-1 font-mono text-[10px] font-semibold text-white">{vm.facetCount}</span> : null}
         </button>
       </div>
     </header>
@@ -151,7 +151,7 @@ function PaceHero({ vm, act, dimmed }) {
   const share = vm.measure === 'share';
   if (vm.firstLoad) {
     return (
-      <section aria-label="Today’s pace" className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <section aria-label="Today’s pace" className="rounded-xl border border-slate-200 bg-white p-4">
         <Skeleton className="h-3 w-28" />
         <Skeleton className="mt-3 h-9 w-32" />
         <Skeleton className="mt-3 h-3 w-48" />
@@ -160,13 +160,13 @@ function PaceHero({ vm, act, dimmed }) {
     );
   }
   return (
-    <section aria-label="Today’s pace" className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+    <section aria-label="Today’s pace" className="rounded-xl border border-slate-200 bg-white p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-xs font-medium text-zinc-400">{t.label}</h2>
+          <h2 className="text-xs font-medium text-slate-600">{t.label}</h2>
           <div className="mt-1 flex items-baseline gap-2">
-            <span className="text-[34px] font-semibold leading-none tracking-tight text-zinc-50">{t.value}</span>
-            {vm.live ? <span className="font-mono text-[13px] text-zinc-400">of {fmtCount(vm.live.gradable)}</span> : null}
+            <span className="text-[34px] font-semibold leading-none tracking-tight text-slate-900">{t.value}</span>
+            {vm.live ? <span className="font-mono text-[13px] text-slate-600">of {fmtCount(vm.live.gradable)}</span> : null}
           </div>
         </div>
         <StatusChip status={t.status} size="lg" />
@@ -174,24 +174,24 @@ function PaceHero({ vm, act, dimmed }) {
       {t.delta ? (
         <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
           <Delta {...t.delta} />
-          <span className="text-xs text-zinc-400">{t.delta.against}</span>
+          <span className="text-xs text-slate-600">{t.delta.against}</span>
         </div>
       ) : null}
       {words.head
-        ? <p className="mt-3 text-[13.5px] leading-snug text-zinc-200">{words.head}</p>
-        : words.note ? <p className="mt-3 text-[13px] leading-relaxed text-zinc-400">{words.note}</p> : null}
+        ? <p className="mt-3 text-[13.5px] leading-snug text-slate-800">{words.head}</p>
+        : words.note ? <p className="mt-3 text-[13px] leading-relaxed text-slate-600">{words.note}</p> : null}
       {words.facts ? (
-        <dl className="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-md border border-zinc-800 bg-zinc-800">
+        <dl className="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-100">
           {words.facts.map((f) => (
-            <div key={f.key} className="min-w-0 bg-zinc-900 px-2.5 py-2">
-              <dt className="text-[11px] leading-tight text-zinc-400">{f.label}</dt>
-              <dd className={`mt-0.5 font-mono text-[15px] font-semibold tabular-nums ${f.tone === 'good' ? 'text-emerald-300' : f.tone === 'bad' ? 'text-amber-300' : 'text-zinc-50'}`}>{f.value}</dd>
+            <div key={f.key} className="min-w-0 bg-white px-2.5 py-2">
+              <dt className="text-[11px] leading-tight text-slate-600">{f.label}</dt>
+              <dd className={`mt-0.5 font-mono text-[15px] font-semibold tabular-nums ${f.tone === 'good' ? 'text-emerald-700' : f.tone === 'bad' ? 'text-amber-700' : 'text-slate-900'}`}>{f.value}</dd>
             </div>
           ))}
         </dl>
       ) : null}
       <div className="mt-4 flex items-center justify-between gap-2">
-        <span className="text-xs text-zinc-400">{vm.live?.asOf ? `As of the ${fmtClock(vm.live.asOf.minute)} scan` : 'Through the day'}</span>
+        <span className="text-xs text-slate-600">{vm.live?.asOf ? `As of the ${fmtClock(vm.live.asOf.minute)} scan` : 'Through the day'}</span>
         <ViewToggle value={vm.paceView} onChange={act.setPaceView} label="Pace: chart or table" size="lg" />
       </div>
       <div className="mt-2">
@@ -205,7 +205,7 @@ function PaceHero({ vm, act, dimmed }) {
         )}
       </div>
       <OverlayChips vm={vm} act={act} compact />
-      {t.sub ? <p className="mt-3 border-t border-zinc-800 pt-3 text-xs leading-relaxed text-zinc-400">{t.sub}</p> : null}
+      {t.sub ? <p className="mt-3 border-t border-slate-200 pt-3 text-xs leading-relaxed text-slate-600">{t.sub}</p> : null}
     </section>
   );
 }
@@ -230,7 +230,7 @@ function TrendCard({ vm, act, dimmed }) {
               : <TrendChart compact buckets={vm.trend} average={vm.average} averageLabel={vm.averageLabel} height={190} dimmed={dimmed} unitLabel={vm.gran} />}
       </div>
       {missing ? (
-        <p className="mt-3 text-xs leading-relaxed text-amber-300">
+        <p className="mt-3 text-xs leading-relaxed text-amber-700">
           {fmtCount(missing)} captured day{missing === 1 ? ' is' : 's are'} not built yet — left out, not counted as zero. The History card, at the bottom, builds {missing === 1 ? 'it' : 'them'}.
         </p>
       ) : null}
@@ -268,11 +268,11 @@ function RowsCard({ vm, act }) {
         ]}
       />
       {!days ? (
-        <label className="mt-2 flex items-center gap-2 text-xs text-zinc-400">
+        <label className="mt-2 flex items-center gap-2 text-xs text-slate-600">
           <span className="shrink-0">Day</span>
           <select
             value={vm.routeDate || ''} onChange={(e) => act.setRoutesDay(e.target.value || null)}
-            className="h-11 min-w-0 flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-2 font-mono text-[13px] text-zinc-100 outline-none focus:border-zinc-600"
+            className="h-11 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 font-mono text-[13px] text-slate-900 outline-none focus:border-slate-400"
           >
             {vm.routeDate && !vm.dayOptions.some((o) => o.date === vm.routeDate) ? <option value={vm.routeDate}>{dayLabel(vm.routeDate, vm.today)}</option> : null}
             {vm.dayOptions.map((o) => <option key={o.date} value={o.date}>{o.label}</option>)}
@@ -284,12 +284,12 @@ function RowsCard({ vm, act }) {
         placeholder={days ? 'Search days' : 'Search routes and drivers'}
       />
       <div className="mt-2 flex items-center justify-between gap-2">
-        <span className="font-mono text-xs tabular-nums text-zinc-400">{fmtCount(n)} {days ? (n === 1 ? 'day' : 'days') : (n === 1 ? 'route' : 'routes')}</span>
-        <label className="flex min-w-0 items-center gap-2 text-xs text-zinc-400">
+        <span className="font-mono text-xs tabular-nums text-slate-600">{fmtCount(n)} {days ? (n === 1 ? 'day' : 'days') : (n === 1 ? 'route' : 'routes')}</span>
+        <label className="flex min-w-0 items-center gap-2 text-xs text-slate-600">
           <span className="shrink-0">Sort</span>
           <select
             value={current?.id || ''} onChange={(e) => { const o = sorts.find((x) => x.id === e.target.value); if (o) act.setSort(o.key, o.dir); }}
-            className="h-11 min-w-0 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-[13px] text-zinc-100 outline-none focus:border-zinc-600"
+            className="h-11 min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-[13px] text-slate-900 outline-none focus:border-slate-400"
           >
             {!current ? <option value="">As chosen</option> : null}
             {sorts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
@@ -301,16 +301,16 @@ function RowsCard({ vm, act }) {
       {loading ? (
         <ul className="mt-3 space-y-2" aria-busy="true" aria-label="Loading">
           {[0, 1, 2].map((i) => (
-            <li key={i} className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+            <li key={i} className="rounded-lg border border-slate-200 bg-white p-3">
               <Skeleton className="h-4 w-32" /><Skeleton className="mt-2 h-3 w-48" /><Skeleton className="mt-3 h-8 w-full" />
             </li>
           ))}
         </ul>
       ) : !pg.rows.length ? (
-        <div className="mt-3 rounded-lg border border-dashed border-zinc-800 px-4 py-8 text-center">
-          <p className="text-sm text-zinc-300">{emptyText}</p>
+        <div className="mt-3 rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center">
+          <p className="text-sm text-slate-700">{emptyText}</p>
           {searching ? (
-            <button type="button" onClick={() => act.setQuery('')} className="mt-2 inline-flex h-11 items-center px-3 text-xs font-medium text-zinc-300 underline decoration-zinc-600 underline-offset-2">
+            <button type="button" onClick={() => act.setQuery('')} className="mt-2 inline-flex h-11 items-center px-3 text-xs font-medium text-slate-700 underline decoration-slate-400 underline-offset-2">
               Clear the search
             </button>
           ) : null}
@@ -326,14 +326,14 @@ function RowsCard({ vm, act }) {
         <nav className="mt-3 flex items-center justify-between gap-2" aria-label="Pages">
           <button
             type="button" onClick={() => act.setPage(pg.page - 1)} disabled={pg.page <= 1}
-            className="inline-flex h-11 items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-3 text-[13px] text-zinc-200 disabled:opacity-40"
+            className="inline-flex h-11 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-[13px] text-slate-800 disabled:opacity-40"
           >
             <ChevronLeft size={15} aria-hidden="true" /> Previous
           </button>
-          <span className="font-mono text-xs tabular-nums text-zinc-400">{pg.first}–{pg.last} of {pg.total}</span>
+          <span className="font-mono text-xs tabular-nums text-slate-600">{pg.first}–{pg.last} of {pg.total}</span>
           <button
             type="button" onClick={() => act.setPage(pg.page + 1)} disabled={pg.page >= pg.pages}
-            className="inline-flex h-11 items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-3 text-[13px] text-zinc-200 disabled:opacity-40"
+            className="inline-flex h-11 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-[13px] text-slate-800 disabled:opacity-40"
           >
             Next <ChevronRight size={15} aria-hidden="true" />
           </button>
@@ -347,12 +347,12 @@ function PhoneBulk({ vm, act }) {
   const n = vm.selected.size;
   const anyLeftOut = [...vm.selected].some((d) => vm.leftOut.has(d));
   const anyIn = [...vm.selected].some((d) => d !== vm.today && !vm.leftOut.has(d));
-  const btn = 'inline-flex h-11 items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 text-[13px] font-medium text-zinc-200 active:bg-zinc-800';
+  const btn = 'inline-flex h-11 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[13px] font-medium text-slate-800 active:bg-slate-200';
   return (
-    <div role="region" aria-label="Ticked days" className="mt-3 rounded-lg border border-indigo-400/30 bg-indigo-400/[0.06] p-2.5">
-      <p className="px-0.5 text-[13px] text-zinc-100">
+    <div role="region" aria-label="Ticked days" className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-2.5">
+      <p className="px-0.5 text-[13px] text-slate-900">
         <span className="font-medium">{n} day{n === 1 ? '' : 's'} ticked</span>
-        <span className="text-zinc-400"> — {n > 2 ? 'the newest two are drawn over today' : 'drawn over today'}</span>
+        <span className="text-slate-600"> — {n > 2 ? 'the newest two are drawn over today' : 'drawn over today'}</span>
       </p>
       <div className="mt-2 flex flex-wrap gap-2">
         {anyIn ? <button type="button" onClick={act.leaveOutSelected} className={btn}><EyeOff size={14} aria-hidden="true" /> Leave out</button> : null}
@@ -365,5 +365,5 @@ function PhoneBulk({ vm, act }) {
 }
 
 function Empty({ text }) {
-  return <p className="py-5 text-center text-sm text-zinc-400">{text}</p>;
+  return <p className="py-5 text-center text-sm text-slate-600">{text}</p>;
 }

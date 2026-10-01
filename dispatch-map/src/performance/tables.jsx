@@ -43,11 +43,11 @@ function SortHeader({ col, sort, onSort }) {
   const Icon = !on ? ArrowUpDown : sort.dir === 'asc' ? ArrowUp : ArrowDown;
   return (
     <th scope="col" aria-sort={on ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
-      className={`sticky top-0 z-10 whitespace-nowrap border-b border-zinc-800 bg-zinc-900 px-2.5 py-0 font-medium ${col.align === 'left' ? 'text-left' : 'text-right'}`}>
+      className={`sticky top-0 z-10 whitespace-nowrap border-b border-slate-200 bg-white px-2.5 py-0 font-medium ${col.align === 'left' ? 'text-left' : 'text-right'}`}>
       <button type="button" onClick={() => onSort(col.key)} title={col.title}
-        className={`inline-flex h-8 items-center gap-1 text-xs transition-colors ${on ? 'text-zinc-100' : 'text-zinc-400 hover:text-zinc-200'} ${col.align === 'left' ? '' : 'flex-row-reverse'}`}>
+        className={`inline-flex h-8 items-center gap-1 text-xs transition-colors ${on ? 'text-slate-900' : 'text-slate-600 hover:text-slate-800'} ${col.align === 'left' ? '' : 'flex-row-reverse'}`}>
         {col.label}
-        <Icon size={12} className={on ? 'text-zinc-300' : 'text-zinc-600'} aria-hidden="true" />
+        <Icon size={12} className={on ? 'text-slate-700' : 'text-slate-400'} aria-hidden="true" />
       </button>
     </th>
   );
@@ -57,7 +57,7 @@ const cell = 'whitespace-nowrap px-2.5 py-1.5 text-right font-mono tabular-nums'
 
 function SkeletonRows({ cols, rows = 8 }) {
   return Array.from({ length: rows }, (_, i) => (
-    <tr key={`sk-${i}`} className="border-b border-zinc-800/70">
+    <tr key={`sk-${i}`} className="border-b border-slate-100">
       {Array.from({ length: cols }, (__, j) => (
         <td key={j} className="px-2.5 py-2.5"><Skeleton className={`h-3 ${j === 1 ? 'w-24' : 'ml-auto w-10'}`} /></td>
       ))}
@@ -69,9 +69,9 @@ function EmptyRow({ cols, text, onReset }) {
   return (
     <tr>
       <td colSpan={cols} className="px-4 py-12 text-center">
-        <Search size={18} className="mx-auto text-zinc-600" aria-hidden="true" />
-        <p className="mt-2 text-sm text-zinc-300">{text}</p>
-        {onReset ? <button type="button" onClick={onReset} className="mt-2 text-xs font-medium text-zinc-300 underline decoration-zinc-600 underline-offset-2 hover:text-zinc-100">Clear the search and filters</button> : null}
+        <Search size={18} className="mx-auto text-slate-400" aria-hidden="true" />
+        <p className="mt-2 text-sm text-slate-700">{text}</p>
+        {onReset ? <button type="button" onClick={onReset} className="mt-2 text-xs font-medium text-slate-700 underline decoration-slate-400 underline-offset-2 hover:text-slate-900">Clear the search and filters</button> : null}
       </td>
     </tr>
   );
@@ -94,50 +94,50 @@ export function DaysTable({ rows, sort, onSort, selected, onToggle, onToggleAll,
           <caption className="sr-only">Delivered stops by day</caption>
           <thead>
             <tr>
-              <th scope="col" className="sticky top-0 z-10 w-10 border-b border-zinc-800 bg-zinc-900 px-1.5 text-left">
+              <th scope="col" className="sticky top-0 z-10 w-10 border-b border-slate-200 bg-white px-1.5 text-left">
                 {/* The LABEL is the target, not the 14px box: 32px wide here, and index.css makes it
                     44px tall on a finger — verify-tablet-layout measures it on four iPads. */}
                 <label className="inline-flex h-8 w-8 cursor-pointer items-center justify-center">
                   <input type="checkbox" checked={allOn} ref={(el) => { if (el) el.indeterminate = !allOn && someOn; }}
                     onChange={() => onToggleAll(pageIds, !allOn)} aria-label="Select every day on this page"
-                    className="h-3.5 w-3.5 cursor-pointer accent-indigo-400" />
+                    className="h-3.5 w-3.5 cursor-pointer accent-indigo-600" />
                 </label>
               </th>
               {DAY_COLUMNS.map((c) => <SortHeader key={c.key} col={c} sort={sort} onSort={onSort} />)}
-              <th scope="col" className="sticky top-0 z-10 w-10 border-b border-zinc-800 bg-zinc-900"><span className="sr-only">Actions</span></th>
+              <th scope="col" className="sticky top-0 z-10 w-10 border-b border-slate-200 bg-white"><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
-          <tbody className="text-zinc-200">
+          <tbody className="text-slate-800">
             {loading && !rows.length ? <SkeletonRows cols={cols} /> : null}
             {!loading && !rows.length ? <EmptyRow cols={cols} text={emptyText} onReset={onReset} /> : null}
             {rows.map((r) => {
               const on = selected.has(r.id);
               return (
-                <tr key={r.id} className={`group border-b border-zinc-800/70 transition-colors ${on ? 'bg-indigo-400/[0.06]' : 'hover:bg-zinc-800/40'}`}>
-                  <td className={`border-b border-zinc-800/70 px-1.5 ${r.live ? 'shadow-[inset_2px_0_0_0_#9085e9]' : ''}`}>
+                <tr key={r.id} className={`group border-b border-slate-100 transition-colors ${on ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}>
+                  <td className={`border-b border-slate-100 px-1.5 ${r.live ? 'shadow-[inset_2px_0_0_0_#6457d9]' : ''}`}>
                     <label className="inline-flex h-7 w-8 cursor-pointer items-center justify-center">
                       <input type="checkbox" checked={on} onChange={() => onToggle(r.id)} aria-label={`Select ${r.label}`}
-                        className="h-3.5 w-3.5 cursor-pointer accent-indigo-400" />
+                        className="h-3.5 w-3.5 cursor-pointer accent-indigo-600" />
                     </label>
                   </td>
-                  <td className="whitespace-nowrap border-b border-zinc-800/70 px-2.5 py-1.5 text-left">
-                    <span className="font-medium text-zinc-100">{r.label}</span>
-                    {r.live ? <span className="ml-2 rounded border border-indigo-400/40 px-1.5 py-px text-[10.5px] font-medium text-indigo-200">so far</span> : null}
-                    {r.leftOut ? <span className="ml-2 inline-flex items-center gap-1 text-[11px] text-zinc-400" title="Left out of the typical day"><EyeOff size={11} aria-hidden="true" />left out</span> : null}
+                  <td className="whitespace-nowrap border-b border-slate-100 px-2.5 py-1.5 text-left">
+                    <span className="font-medium text-slate-900">{r.label}</span>
+                    {r.live ? <span className="ml-2 rounded border border-indigo-300 px-1.5 py-px text-[10.5px] font-medium text-indigo-700">so far</span> : null}
+                    {r.leftOut ? <span className="ml-2 inline-flex items-center gap-1 text-[11px] text-slate-600" title="Left out of the typical day"><EyeOff size={11} aria-hidden="true" />left out</span> : null}
                   </td>
-                  <td className={`${cell} border-b border-zinc-800/70 text-zinc-400`}>{fmtCount(r.planned)}</td>
-                  <td className={`${cell} border-b border-zinc-800/70 font-semibold text-zinc-100`}>{fmtCount(r.delivered)}</td>
-                  <td className={`${cell} border-b border-zinc-800/70`}>{fmtShare(r.completionRate)}</td>
-                  <td className={`${cell} border-b border-zinc-800/70`}>
+                  <td className={`${cell} border-b border-slate-100 text-slate-600`}>{fmtCount(r.planned)}</td>
+                  <td className={`${cell} border-b border-slate-100 font-semibold text-slate-900`}>{fmtCount(r.delivered)}</td>
+                  <td className={`${cell} border-b border-slate-100`}>{fmtShare(r.completionRate)}</td>
+                  <td className={`${cell} border-b border-slate-100`}>
                     <Delta text={r.vsLastWeek == null ? null : fmtPctChange(r.vsLastWeek)} tone={r.vsLastWeek == null ? 'neutral' : r.vsLastWeek >= 0 ? 'good' : 'bad'} up={r.vsLastWeek == null ? null : r.vsLastWeek >= 0} />
                   </td>
-                  <td className={`${cell} border-b border-zinc-800/70 text-zinc-400`}>{fmtCount(r.manual)}</td>
-                  <td className={`${cell} border-b border-zinc-800/70 ${r.unable ? 'text-rose-300' : 'text-zinc-400'}`}>{fmtCount(r.unable)}</td>
-                  <td className={`${cell} border-b border-zinc-800/70 text-zinc-400`}>{fmtCount(r.open)}</td>
-                  <td className={`${cell} border-b border-zinc-800/70 text-zinc-400`}>{fmtClock(r.firstMin)}</td>
-                  <td className={`${cell} border-b border-zinc-800/70`}>{fmtClock(r.halfMin)}</td>
-                  <td className={`${cell} border-b border-zinc-800/70 text-zinc-400`}>{fmtClock(r.lastMin)}</td>
-                  <td className="border-b border-zinc-800/70 px-1.5 text-right">
+                  <td className={`${cell} border-b border-slate-100 text-slate-600`}>{fmtCount(r.manual)}</td>
+                  <td className={`${cell} border-b border-slate-100 ${r.unable ? 'text-rose-700' : 'text-slate-600'}`}>{fmtCount(r.unable)}</td>
+                  <td className={`${cell} border-b border-slate-100 text-slate-600`}>{fmtCount(r.open)}</td>
+                  <td className={`${cell} border-b border-slate-100 text-slate-600`}>{fmtClock(r.firstMin)}</td>
+                  <td className={`${cell} border-b border-slate-100`}>{fmtClock(r.halfMin)}</td>
+                  <td className={`${cell} border-b border-slate-100 text-slate-600`}>{fmtClock(r.lastMin)}</td>
+                  <td className="border-b border-slate-100 px-1.5 text-right">
                     <RowMenu label={`Actions for ${r.label}`} items={dayActions(r, onAction, on)} />
                   </td>
                 </tr>
@@ -178,35 +178,35 @@ export function RoutesTable({ rows, sort, onSort, loading, dimmed, onAction, emp
           <thead>
             <tr>
               {ROUTE_COLUMNS.map((c) => <SortHeader key={c.key} col={c} sort={sort} onSort={onSort} />)}
-              <th scope="col" className="sticky top-0 z-10 w-10 border-b border-zinc-800 bg-zinc-900"><span className="sr-only">Actions</span></th>
+              <th scope="col" className="sticky top-0 z-10 w-10 border-b border-slate-200 bg-white"><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
-          <tbody className="text-zinc-200">
+          <tbody className="text-slate-800">
             {loading && !rows.length ? <SkeletonRows cols={cols} /> : null}
             {!loading && !rows.length ? <EmptyRow cols={cols} text={emptyText} onReset={onReset} /> : null}
             {rows.map((r) => (
-              <tr key={r.id} className="border-b border-zinc-800/70 transition-colors hover:bg-zinc-800/40">
-                <td className="whitespace-nowrap border-b border-zinc-800/70 px-2.5 py-1.5 font-medium text-zinc-100">{r.route}</td>
-                <td className="max-w-[200px] truncate border-b border-zinc-800/70 px-2.5 py-1.5 text-zinc-300">{r.driver || <span className="text-zinc-500">no driver</span>}</td>
-                <td className={`${cell} border-b border-zinc-800/70 text-zinc-400`}>{fmtCount(r.planned)}</td>
-                <td className={`${cell} border-b border-zinc-800/70 font-semibold text-zinc-100`}>{fmtCount(r.delivered)}</td>
-                <td className={`${cell} border-b border-zinc-800/70 text-zinc-400`}>{fmtCount(r.open)}</td>
-                <td className={`${cell} border-b border-zinc-800/70 ${r.unable ? 'text-rose-300' : 'text-zinc-400'}`}>{fmtCount(r.unable)}</td>
-                <td className={`${cell} border-b border-zinc-800/70`}>
+              <tr key={r.id} className="border-b border-slate-100 transition-colors hover:bg-slate-50">
+                <td className="whitespace-nowrap border-b border-slate-100 px-2.5 py-1.5 font-medium text-slate-900">{r.route}</td>
+                <td className="max-w-[200px] truncate border-b border-slate-100 px-2.5 py-1.5 text-slate-700">{r.driver || <span className="text-slate-500">no driver</span>}</td>
+                <td className={`${cell} border-b border-slate-100 text-slate-600`}>{fmtCount(r.planned)}</td>
+                <td className={`${cell} border-b border-slate-100 font-semibold text-slate-900`}>{fmtCount(r.delivered)}</td>
+                <td className={`${cell} border-b border-slate-100 text-slate-600`}>{fmtCount(r.open)}</td>
+                <td className={`${cell} border-b border-slate-100 ${r.unable ? 'text-rose-700' : 'text-slate-600'}`}>{fmtCount(r.unable)}</td>
+                <td className={`${cell} border-b border-slate-100`}>
                   <span className="inline-flex items-center gap-2">
-                    <span className="relative hidden h-1.5 w-14 overflow-hidden rounded-full bg-zinc-800 xl:inline-block" aria-hidden="true">
-                      <span className="absolute inset-y-0 left-0 rounded-full bg-zinc-400" style={{ width: `${Math.round((r.share || 0) * 100)}%` }} />
+                    <span className="relative hidden h-1.5 w-14 overflow-hidden rounded-full bg-slate-100 xl:inline-block" aria-hidden="true">
+                      <span className="absolute inset-y-0 left-0 rounded-full bg-slate-400" style={{ width: `${Math.round((r.share || 0) * 100)}%` }} />
                     </span>
                     {fmtShare(r.share)}
                   </span>
                 </td>
-                <td className={`${cell} border-b border-zinc-800/70`}>
+                <td className={`${cell} border-b border-slate-100`}>
                   <Delta text={r.vsFleet == null ? null : fmtPoints(r.vsFleet, 0)} tone={r.vsFleet == null ? 'neutral' : r.vsFleet >= 0 ? 'good' : 'bad'} up={r.vsFleet == null ? null : r.vsFleet >= 0} />
                 </td>
-                <td className={`${cell} border-b border-zinc-800/70 text-zinc-400`}>{fmtClock(r.firstMin)}</td>
-                <td className={`${cell} border-b border-zinc-800/70 text-zinc-400`}>{fmtClock(r.lastMin)}</td>
-                <td className={`${cell} border-b border-zinc-800/70`}>{r.perHour != null ? r.perHour.toFixed(1) : '—'}</td>
-                <td className="border-b border-zinc-800/70 px-1.5 text-right">
+                <td className={`${cell} border-b border-slate-100 text-slate-600`}>{fmtClock(r.firstMin)}</td>
+                <td className={`${cell} border-b border-slate-100 text-slate-600`}>{fmtClock(r.lastMin)}</td>
+                <td className={`${cell} border-b border-slate-100`}>{r.perHour != null ? r.perHour.toFixed(1) : '—'}</td>
+                <td className="border-b border-slate-100 px-1.5 text-right">
                   <RowMenu label={`Actions for ${r.route}`} items={routeActions(r, onAction)} />
                 </td>
               </tr>
@@ -231,18 +231,18 @@ export function routeActions(r, onAction) {
 /** One day, as a card. The checkbox and the menu are full 44px targets; the numbers stay dense. */
 export function DayCard({ r, selected, onToggle, onAction }) {
   return (
-    <li className={`rounded-lg border ${r.live ? 'border-indigo-400/40' : 'border-zinc-800'} ${selected ? 'bg-indigo-400/[0.06]' : 'bg-zinc-900'} p-3`}>
+    <li className={`rounded-lg border ${r.live ? 'border-indigo-300' : 'border-slate-200'} ${selected ? 'bg-indigo-50' : 'bg-white'} p-3`}>
       <div className="flex items-center gap-2">
         <label className="-ml-1 inline-flex h-11 w-11 shrink-0 items-center justify-center">
-          <input type="checkbox" checked={selected} onChange={() => onToggle(r.id)} aria-label={`Select ${r.label}`} className="h-4 w-4 accent-indigo-400" />
+          <input type="checkbox" checked={selected} onChange={() => onToggle(r.id)} aria-label={`Select ${r.label}`} className="h-4 w-4 accent-indigo-600" />
         </label>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className="text-[15px] font-semibold text-zinc-100">{r.label}</span>
-            {r.live ? <span className="rounded border border-indigo-400/40 px-1.5 py-px text-[10.5px] font-medium text-indigo-200">so far</span> : null}
-            {r.leftOut ? <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400"><EyeOff size={11} aria-hidden="true" />left out</span> : null}
+            <span className="text-[15px] font-semibold text-slate-900">{r.label}</span>
+            {r.live ? <span className="rounded border border-indigo-300 px-1.5 py-px text-[10.5px] font-medium text-indigo-700">so far</span> : null}
+            {r.leftOut ? <span className="inline-flex items-center gap-1 text-[11px] text-slate-600"><EyeOff size={11} aria-hidden="true" />left out</span> : null}
           </div>
-          <div className="mt-0.5 font-mono text-xs tabular-nums text-zinc-400">
+          <div className="mt-0.5 font-mono text-xs tabular-nums text-slate-600">
             first {fmtClock(r.firstMin)} · half {fmtClock(r.halfMin)} · last {fmtClock(r.lastMin)}
           </div>
         </div>
@@ -255,8 +255,8 @@ export function DayCard({ r, selected, onToggle, onAction }) {
         <Stat label="vs last wk" value={r.vsLastWeek == null ? '—' : fmtPctChange(r.vsLastWeek)} tone={r.vsLastWeek == null ? null : r.vsLastWeek >= 0 ? 'good' : 'bad'} />
       </dl>
       {(r.unable || r.open || r.manual) ? (
-        <p className="mt-1.5 font-mono text-xs tabular-nums text-zinc-400">
-          {fmtCount(r.open)} open · <span className={r.unable ? 'text-rose-300' : ''}>{fmtCount(r.unable)} unable</span> · {fmtCount(r.manual)} by hand
+        <p className="mt-1.5 font-mono text-xs tabular-nums text-slate-600">
+          {fmtCount(r.open)} open · <span className={r.unable ? 'text-rose-700' : ''}>{fmtCount(r.unable)} unable</span> · {fmtCount(r.manual)} by hand
         </p>
       ) : null}
     </li>
@@ -265,16 +265,16 @@ export function DayCard({ r, selected, onToggle, onAction }) {
 
 export function RouteCard({ r, onAction }) {
   return (
-    <li className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+    <li className="rounded-lg border border-slate-200 bg-white p-3">
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[15px] font-semibold text-zinc-100">{r.route}</div>
-          <div className="truncate text-xs text-zinc-400">{r.driver || 'no driver'}</div>
+          <div className="truncate text-[15px] font-semibold text-slate-900">{r.route}</div>
+          <div className="truncate text-xs text-slate-600">{r.driver || 'no driver'}</div>
         </div>
         <RowMenuPhone label={`Actions for ${r.route}`} items={routeActions(r, onAction)} />
       </div>
-      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800" aria-hidden="true">
-        <div className="h-full rounded-full bg-zinc-400" style={{ width: `${Math.round((r.share || 0) * 100)}%` }} />
+      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
+        <div className="h-full rounded-full bg-slate-400" style={{ width: `${Math.round((r.share || 0) * 100)}%` }} />
       </div>
       <dl className="mt-2 grid grid-cols-4 gap-2 text-right">
         <Stat label="Delivered" value={`${fmtCount(r.delivered)}/${fmtCount(r.planned)}`} strong />
@@ -282,16 +282,16 @@ export function RouteCard({ r, onAction }) {
         <Stat label="vs fleet" value={r.vsFleet == null ? '—' : fmtPoints(r.vsFleet, 0).replace(' pts', '')} tone={r.vsFleet == null ? null : r.vsFleet >= 0 ? 'good' : 'bad'} />
         <Stat label="Per hour" value={r.perHour != null ? r.perHour.toFixed(1) : '—'} />
       </dl>
-      <p className="mt-1.5 font-mono text-xs tabular-nums text-zinc-400">first {fmtClock(r.firstMin)} · last {fmtClock(r.lastMin)} · {fmtCount(r.open)} open{r.unable ? ` · ${fmtCount(r.unable)} unable` : ''}</p>
+      <p className="mt-1.5 font-mono text-xs tabular-nums text-slate-600">first {fmtClock(r.firstMin)} · last {fmtClock(r.lastMin)} · {fmtCount(r.open)} open{r.unable ? ` · ${fmtCount(r.unable)} unable` : ''}</p>
     </li>
   );
 }
 
 function Stat({ label, value, strong = false, tone = null }) {
-  const color = tone === 'good' ? 'text-emerald-300' : tone === 'bad' ? 'text-amber-300' : strong ? 'text-zinc-50' : 'text-zinc-200';
+  const color = tone === 'good' ? 'text-emerald-700' : tone === 'bad' ? 'text-amber-700' : strong ? 'text-slate-900' : 'text-slate-800';
   return (
     <div className="min-w-0">
-      <dt className="truncate text-[11px] text-zinc-400">{label}</dt>
+      <dt className="truncate text-[11px] text-slate-600">{label}</dt>
       <dd className={`truncate font-mono text-sm tabular-nums ${strong ? 'font-semibold' : ''} ${color}`}>{value}</dd>
     </div>
   );
