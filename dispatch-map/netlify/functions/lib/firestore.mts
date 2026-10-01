@@ -1181,10 +1181,8 @@ export async function writeStopNotes(
 
 /**
  * PURE. The board doc a Refresh writes, or null when the notes did not change. Only NOTE_FIELDS
- * move. Stamped with WHEN the notes were read (notes_refreshed_at) and WHICH scan text the doc held
- * at that moment (notes_refreshed_scan_text, v1.100.3): the card judges a stored note removed only
- * against scan text NEWER than the notes, and until a later scan changes that text it cannot tell
- * (lib/stop-notes-freshness.js mergedNotes). Both are carried forward by the scan (mergeEnrich).
+ * move, stamped notes_refreshed_at — which the card and the printed ticket read as "these notes
+ * may be newer than the scan's text, judge none removed" (lib/stop-notes-freshness.js mergedNotes).
  */
 export function notesRefreshDoc(cur: any, fresh: any, atISO: string): any | null {
   if (!cur || !fresh) return null;
@@ -1200,7 +1198,7 @@ export function notesRefreshDoc(cur: any, fresh: any, atISO: string): any | null
   }
   if (!Object.keys(patch).length) return null;
   const { _id, ...rest } = cur;
-  return { ...rest, ...patch, notes_refreshed_at: atISO, notes_refreshed_scan_text: String(cur.orderInstructions ?? '') };
+  return { ...rest, ...patch, notes_refreshed_at: atISO };
 }
 
 export async function writeEnrichedPros(tenant: string, stops: any[], atISO: string, conc = 12): Promise<number> {

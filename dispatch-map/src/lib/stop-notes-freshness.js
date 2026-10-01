@@ -83,9 +83,10 @@ export function noteFreshness(stop) {
 //     can hold LESS than the rich notes, so a note missing from it is not proof of a deletion,
 //     and a dispatcher who loses a real instruction loses the delivery. Nothing is marked gone
 //     when the text was cut short (the active pool cuts it at 400 characters and adds "…"):
-//     absence past the cut proves nothing. Nor right after a Refresh (v1.100.3): until a later
-//     scan changes the scan text, the stored notes are NEWER than it, and a note added in
-//     between would read as removed — the newest note, the one most likely to matter.
+//     absence past the cut proves nothing. Nor on a stop whose notes a Refresh has read
+//     (notes_refreshed_at, v1.100.3): the stored notes may be NEWER than the scan text, and a
+//     note added in between would read as removed — the newest note, the one most likely to
+//     matter. Such a stop keeps every stored note, as before.
 //   • any other stored note (pre-visit, general, a dispatcher's own) is shown as it was.
 //   • with no scan text, the stored notes are exactly what they were before.
 //
@@ -149,15 +150,14 @@ export function mergedNotes(stop) {
   const scan = scanNoteEntries(raw);
   if (!scan.length) return stored.map((c) => ({ ...c }));
   const cut = /…\s*$/.test(raw);
-  // A Refresh read the stored notes AFTER the scan last read the list: a note added between the
-  // two is in the stored notes and not yet in the scan text, and judging it removed would fade the
-  // newest note on the card and drop it off the ticket. So while the scan text is still the text
-  // the Refresh saw (notes_refreshed_scan_text), nothing is judged removed. Once a later scan
-  // changes it, that text is newer than the notes and judging resumes — a note deleted after the
-  // Refresh leaves the paper again. A stamp with no recorded text (written before v1.100.3) cannot
-  // be ordered at all, so it keeps judging off: the safe side, every stored note shown.
-  const refreshedVs = stop?.notes_refreshed_scan_text;
-  const storedNewer = !!stop?.notes_refreshed_at && (refreshedVs == null || norm(refreshedVs) === norm(raw));
+  // A Refresh can read the stored notes AFTER the scan last read the list: a note added between
+  // the two is in the stored notes and not yet in the scan text, and judging it removed would fade
+  // the newest note on the card and drop it off the ticket. The two reads cannot be put in time
+  // order from what a row carries (the board read strips the row's scan time, and a scan that read
+  // the list before a Refresh can write after it), so on a stop whose notes a Refresh has read,
+  // nothing is judged removed — for good, since the scan carries the stamp forward (mergeEnrich).
+  // The safe side: such a stop shows and prints every stored note, exactly as before v1.100.2.
+  const storedNewer = !!stop?.notes_refreshed_at;
   const scanKeys = scan.map(noteKey);
   const joined = scanKeys.join(' ');
   const used = new Set();
@@ -183,7 +183,8 @@ export function mergedNotes(stop) {
     const k = scanKeys[i];
     if (!k) return true;
     if (!cut || i !== scan.length - 1) return false;
-    return storedKeys.some((sk) => sk.startsWith(k)) || CUT_LABELS.some((l) => l.startsWith(k));
+    const label = k.replace(/\s*:$/, '');   // "TOTAL-AMOUNT :…" is the label and its colon, cut
+    return storedKeys.some((sk) => sk.startsWith(k)) || CUT_LABELS.some((l) => l.startsWith(label));
   };
   const added = scan.filter((_, i) => !used.has(i) && !fragment(i)).map((text) => (isNew ? { text, fromScan: true, isNew: true } : { text, fromScan: true }));
   return [...added, ...kept];
@@ -269,12 +270,11 @@ export function ticketNotes(stop, { on = MANIFEST_SCAN_NOTES_ON, addNew = MANIFE
 
 /**
  * PURE. A fresh /stop/info read about to be folded onto a card (useLiveStop, App.jsx): when it
- * carries notes, stamp when they were read and the scan text the card held at that moment — the
- * same two fields the server stamps when a Refresh saves them to the board (notesRefreshDoc,
- * firestore.mts).
+ * carries notes, stamp when they were read — the field the server stamps when a Refresh saves
+ * them to the board (notesRefreshDoc, firestore.mts). A stamp the read already carries wins.
  */
-export function stampNotesRead(fresh, atISO, scanText) {
+export function stampNotesRead(fresh, atISO) {
   if (!fresh || typeof fresh !== 'object') return fresh;
-  if (!Array.isArray(fresh.allComments) || !fresh.allComments.length) return fresh;
-  return { ...fresh, notes_refreshed_at: atISO, notes_refreshed_scan_text: String(scanText ?? '') };
+  if (!Array.isArray(fresh.allComments) || !fresh.allComments.length || fresh.notes_refreshed_at) return fresh;
+  return { ...fresh, notes_refreshed_at: atISO };
 }

@@ -38,8 +38,7 @@ export const LEAN_STOP_FIELDS = [
   'nuvizzLoadNbr',
   'plannedDurationToNextStop', 'plannedEtaDTTM', 'poRef', 'podDocs', 'primaryPro', 'pro',
   'proCount', 'proNbr', 'pros', 'requestedDate', 'routeName', 'routeSeq',
-  // notes_refreshed_scan_text: the scan text a Refresh read the notes against (v1.100.3).
-  'orderInstructions', 'notes_refreshed_at', 'notes_refreshed_scan_text',
+  'orderInstructions', 'notes_refreshed_at',
   'scheduledDate', 'scheduledFrom', 'scheduledTo', 'shipmentNbr', 'signalSources', 'source',
   'state', 'status', 'stopDetails', 'stopDistance', 'stopId', 'stopNbr',
   'stopType', 'terms', 'timeConstraint', 'volume', 'warehouse', 'weight',
