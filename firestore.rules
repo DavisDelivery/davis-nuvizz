@@ -203,6 +203,9 @@ rules_version = '2';
 //                                 Box/Tractor memory)
 //   dispatch_presence .......... who else is working the board
 //   nuvizz_ops/manifest_check_latest ... the overnight manifest check's result
+//   routing_switches ........... routing-switch changes made on Diagnostics as they
+//                                 happen (the screen still reads them once through
+//                                 the server, so it is live updates that are lost)
 //
 // The other three always surfaced something and still do: tractor_locations,
 // routing_routes (sets an error string) and routing_jobs.

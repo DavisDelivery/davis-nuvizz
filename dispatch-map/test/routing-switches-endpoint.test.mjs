@@ -19,7 +19,7 @@ process.env.AUTH_SESSION_SECRET = 'test-session-secret-that-is-long-enough-32';
 delete process.env.AUTH_REQUIRED;
 
 import { installFirestoreFake } from './_firestore-fake.mjs';
-import { _resetRoutingSwitchesStoreForTests, hydrateRoutingSwitches, routingSwitchesTrail } from '../netlify/functions/lib/routing-switches-store.mts';
+import { _resetRoutingSwitchesStoreForTests, hydrateRoutingSwitches, routingSwitchesTrail, inRoutingSwitchRequest } from '../netlify/functions/lib/routing-switches-store.mts';
 import { timeRestrictionsEnabled } from '../netlify/functions/lib/routing-time-windows.mts';
 
 const DOC = 'routing_switches/davis';
@@ -142,19 +142,16 @@ test('the server re-reads within 30 s, keeps its last copy through a blip, and a
     // Cold, and the read fails: this request runs on Netlify/default — and the trail says so.
     assert.equal(await hydrateRoutingSwitches(1_000_000), 'failed-none');
     assert.equal(timeRestrictionsEnabled({}), true, 'no copy: the page setting cannot be honoured on this request');
-    assert.equal(routingSwitchesTrail(1_000_000).read, 'failed-none');
-    assert.match(routingSwitchesTrail(1_000_000).failed.error, /503/);
+    assert.equal(routingSwitchesTrail().read, 'failed-none');
+    assert.match(routingSwitchesTrail().error, /503/);
     // The next request, 1 s later, does NOT wait out a retry window — there is no copy to protect.
     down = false;
     assert.equal(await hydrateRoutingSwitches(1_001_000), 'fresh');
     assert.equal(timeRestrictionsEnabled({}), false, 'the page setting, one request later');
-    // A request whose first read failed and whose second succeeded still SAYS a read failed.
-    const t = routingSwitchesTrail(1_001_000);
+    const t = routingSwitchesTrail();
     assert.equal(t.read, 'fresh');
     assert.equal(t.copyFrom, new Date(1_001_000).toISOString());
-    assert.deepEqual(t.set, { ROUTING_TIME_RESTRICTIONS: false });
-    assert.equal(t.failed.at, new Date(1_000_000).toISOString(), 'the failure 1 s earlier is not hidden');
-    assert.equal(routingSwitchesTrail(1_000_000 + 31_000).failed, undefined, 'and drops off once it is older than the 30 s window');
+    assert.equal(t.error, undefined);
     // Inside the TTL: no read at all.
     const gets = fake.log.gets.length;
     assert.equal(await hydrateRoutingSwitches(1_020_000), 'cached');
@@ -170,6 +167,57 @@ test('the server re-reads within 30 s, keeps its last copy through a blip, and a
     fake.store.get(DOC).ROUTING_TIME_RESTRICTIONS = { on: true, at: '2026-10-01T16:00:00.000Z', by: 'dispatcher-a' };
     assert.equal(await hydrateRoutingSwitches(1_046_000), 'fresh');
     assert.equal(timeRestrictionsEnabled({ ROUTING_TIME_RESTRICTIONS: 'off' }), true);
+  } finally { globalThis.fetch = inner; }
+}));
+
+test('ONE READ PER REQUEST: a request whose read failed runs ALL of it on Netlify values — a later load in the same request does not switch it halfway — and its trail says so', () => withStore({
+  [DOC]: { ROUTING_TIME_RESTRICTIONS: { on: false, at: '2026-10-01T15:00:00.000Z', by: 'dispatcher-a' }, ROUTING_REPAIR_ORIGIN_FIRST: { on: false, at: '2026-10-01T15:00:00.000Z', by: 'dispatcher-a' } },
+}, async (fake) => {
+  const inner = globalThis.fetch;
+  let failNext = 1;
+  globalThis.fetch = async (input, init = {}) => (String(input?.url ?? input).includes('routing_switches') && failNext-- > 0
+    ? new Response('down', { status: 503 }) : inner(input, init));
+  const reads = () => fake.log.gets.filter((p) => String(p).includes('routing_switches')).length;
+  try {
+    const first = await inRoutingSwitchRequest(async () => {
+      assert.equal(await hydrateRoutingSwitches(1_000_000), 'failed-none');
+      const early = timeRestrictionsEnabled({});
+      // The database is back — but this request already decided.
+      assert.equal(await hydrateRoutingSwitches(1_000_500), 'failed-none');
+      return { early, late: timeRestrictionsEnabled({}), trail: routingSwitchesTrail() };
+    });
+    assert.equal(first.early, true);
+    assert.equal(first.late, true, 'the same position all the way through the request');
+    assert.equal(reads(), 0, 'no second read inside the request');
+    assert.deepEqual(first.trail.fromPage, {});
+    assert.deepEqual(first.trail.notFromPage, ['ROUTING_TIME_RESTRICTIONS'], 'it says the switch it read did NOT come from the page — and names only that switch');
+    assert.equal(first.trail.read, 'failed-none');
+
+    // The next request reads, and its trail lists only what IT read.
+    const second = await inRoutingSwitchRequest(async () => {
+      assert.equal(await hydrateRoutingSwitches(1_001_000), 'fresh');
+      return { on: timeRestrictionsEnabled({}), trail: routingSwitchesTrail() };
+    });
+    assert.equal(second.on, false);
+    assert.deepEqual(second.trail.fromPage, { ROUTING_TIME_RESTRICTIONS: false });
+    assert.deepEqual(second.trail.notFromPage, []);
+    assert.equal(reads(), 1);
+  } finally { globalThis.fetch = inner; }
+}));
+
+test('a write that does not READ BACK as asked is reported, never claimed', () => withStore({}, async (fake) => {
+  const inner = globalThis.fetch;
+  // Firestore answers the PATCH 200 but the document does not hold it.
+  globalThis.fetch = async (input, init = {}) => ((init.method || 'GET').toUpperCase() === 'PATCH'
+    ? new Response(JSON.stringify({ name: 'x', fields: {} }), { status: 200 }) : inner(input, init));
+  try {
+    const r = await (await load())(POST({ name: 'ROUTING_TIME_RESTRICTIONS', on: false }));
+    assert.equal(r.status, 500);
+    const j = await r.json();
+    assert.equal(j.ok, false);
+    assert.equal(j.written, true);
+    assert.match(j.error, /did not read back as off/);
+    assert.equal(fake.store.get(DOC), undefined);
   } finally { globalThis.fetch = inner; }
 }));
 

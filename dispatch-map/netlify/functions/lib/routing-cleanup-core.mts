@@ -60,7 +60,7 @@ import type { TruckCapabilities } from './routing-types.mts';
 import { pickReferences } from './routing-reference.mts';
 import { serviceTimeAsOf } from './routing-service-times.mts';
 import { liveStopToAssignStop, liveMatchKey, modalWarehouseOf, LIVE_SOLVER_MS } from './routing-draft-core.mts';
-import { hydrateRoutingSwitches, routingSwitchesTrail } from './routing-switches-store.mts';
+import { hydrateRoutingSwitches, routingSwitchesTrail, inRoutingSwitchRequest } from './routing-switches-store.mts';
 import { dayReceivingWindow, closedDayTier, fmtMin } from '../../../src/lib/board-flags.js';
 
 // The dispatcher's truck classes and the engine's are DIFFERENT VOCABULARIES:
@@ -1485,10 +1485,20 @@ export function buildCleanupPlan(tenant: string, date: string, opts: BuildCleanu
 
 // I/O wrapper: live board + the same as-of learning inputs the nightly uses.
 // ZERO NuVizz calls — readStopsForPlanning and loadPlanInputs are Firestore-only.
-export async function runCleanup(
+// One read of the routing switches for the whole plan (lib/routing-switches-store.mts).
+type CleanupRuleOpts = { tractorOnlyGreen?: boolean; windowMode?: 'strict' | 'advisory'; panelGreenStopNbrs?: string[] | null };
+type CleanupRun = { ok: true; plan: CleanupResult } | { ok: false; status: number; error: string };
+export function runCleanup(
   tenant: string, date: string, trucks: CleanupTruckInput[], excludeStopNbrs?: string[],
-  ruleOpts: { tractorOnlyGreen?: boolean; windowMode?: 'strict' | 'advisory'; panelGreenStopNbrs?: string[] | null } = {},
-): Promise<{ ok: true; plan: CleanupResult } | { ok: false; status: number; error: string }> {
+  ruleOpts: CleanupRuleOpts = {},
+): Promise<CleanupRun> {
+  return inRoutingSwitchRequest(() => runCleanupInner(tenant, date, trucks, excludeStopNbrs, ruleOpts));
+}
+
+async function runCleanupInner(
+  tenant: string, date: string, trucks: CleanupTruckInput[], excludeStopNbrs: string[] | undefined,
+  ruleOpts: CleanupRuleOpts,
+): Promise<CleanupRun> {
   if (!Array.isArray(trucks) || !trucks.length) {
     return { ok: false, status: 400, error: 'pick at least one load to route onto' };
   }

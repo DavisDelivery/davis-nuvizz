@@ -8,23 +8,28 @@
 // switch flipped on the page is honoured within HYDRATE_TTL_MS (30 s) of the flip: a warm instance
 // re-reads at most that often.
 //
+// ONE READ PER REQUEST. Each entry point runs inside inRoutingSwitchRequest(): the request's first
+// hydrate decides, and every later one in the same request is a no-op. So a build that runs for
+// minutes, or reaches a load at three points, never uses one position of a switch in one place and
+// another in the next — and its trail can say exactly what it used.
+//
 // WHAT A FAILED READ DOES, exactly (it is not free, and the page says so):
 //   • an instance that has read the document before KEEPS that copy and tries again after
 //     HYDRATE_RETRY_MS — a blip delays a flip, it does not undo one;
-//   • an instance that has NEVER read it has nothing to keep: that request runs on the Netlify
-//     value or default, IGNORING a switch set on the page, and the next request tries again (no
-//     retry wait — the wait only protects a copy, and there is none).
-// routingSwitchesTrail() says which of those happened, and the build and the road box carry it in
-// their answer, so a request that ran without the page's settings says so instead of looking normal.
+//   • an instance that has NEVER read it has nothing to keep: that whole request runs on the
+//     Netlify value or default, IGNORING a switch set on the page, and the next request tries again
+//     (no retry wait — the wait only protects a copy, and there is none).
+// routingSwitchesTrail() says which of those happened and which switches the request read from the
+// page; the build, the Fill-my-loads plan and the Google road box carry it in their answer.
 import { getDoc, updateDocFields, isFirestoreEnabled } from './firestore.mts';
-import { setRoutingSwitchCache, routingSwitchCache } from './routing-switch-cache.mts';
-import { ROUTING_SWITCHES, ROUTING_SWITCHES_PATH } from '../../../src/lib/routing-switches.js';
+import { setRoutingSwitchCache, routingSwitchConsults, clearRoutingSwitchConsults } from './routing-switch-cache.mts';
+import { ROUTING_SWITCHES_PATH } from '../../../src/lib/routing-switches.js';
 
 export const HYDRATE_TTL_MS = 30_000;
 export const HYDRATE_RETRY_MS = 5_000;
 
 /**
- * 'fresh'       read the document on this request
+ * 'fresh'       read the document
  * 'cached'      a copy read within HYDRATE_TTL_MS
  * 'failed-kept' the read failed; the last good copy is in use
  * 'failed-none' the read failed and there is no copy: Netlify values and defaults, page ignored
@@ -36,15 +41,38 @@ export type HydrateStatus = 'fresh' | 'cached' | 'failed-kept' | 'failed-none' |
 let loadedAt = 0;
 let failedAt = 0;
 let lastStatus: HydrateStatus = 'not-read';
-// The last failed read, kept past a later success: a build whose FIRST read failed (so part of it
-// ran on Netlify values) and whose second succeeded must not report a clean 'fresh'.
-let lastFailedAt = 0;
 let lastError = '';
+// The open request, if any, and its one read's status (null until it has read).
+let inRequest = false;
+let requestStatus: HydrateStatus | null = null;
 
-const note = (s: HydrateStatus): HydrateStatus => { lastStatus = s; return s; };
+/**
+ * Run one request's work with ONE read of the switches. A nested call (runPipeline inside the
+ * build) joins the outer request. Netlify runs one request per instance at a time, so a
+ * module-level request is the request.
+ */
+export async function inRoutingSwitchRequest<T>(fn: () => Promise<T>): Promise<T> {
+  if (inRequest) return fn();
+  inRequest = true;
+  requestStatus = null;
+  clearRoutingSwitchConsults();
+  try {
+    return await fn();
+  } finally {
+    inRequest = false;
+    requestStatus = null;
+  }
+}
 
-/** Load the document into the cache, at most once per HYDRATE_TTL_MS. Never throws. */
+const note = (s: HydrateStatus): HydrateStatus => {
+  lastStatus = s;
+  if (inRequest) requestStatus = s;
+  return s;
+};
+
+/** Load the document into the cache, at most once per HYDRATE_TTL_MS and once per request. Never throws. */
 export async function hydrateRoutingSwitches(now: number = Date.now()): Promise<HydrateStatus> {
+  if (inRequest && requestStatus) return requestStatus;
   if (!isFirestoreEnabled()) return note('off');
   if (loadedAt && now - loadedAt < HYDRATE_TTL_MS) return note('cached');
   // The retry wait protects a copy we HAVE; with none, every request tries.
@@ -54,10 +82,10 @@ export async function hydrateRoutingSwitches(now: number = Date.now()): Promise<
     setRoutingSwitchCache(doc || {});
     loadedAt = now;
     failedAt = 0;
+    lastError = '';
     return note('fresh');
   } catch (e: any) {
     failedAt = now;
-    lastFailedAt = now;
     lastError = String(e?.message || e).slice(0, 200);
     const s = loadedAt ? 'failed-kept' : 'failed-none';
     console.warn(`routing-switches: read failed (${s === 'failed-kept' ? 'keeping the last copy' : 'no copy — this request uses the Netlify values and defaults'}) —`, lastError);
@@ -65,22 +93,36 @@ export async function hydrateRoutingSwitches(now: number = Date.now()): Promise<
   }
 }
 
+export interface RoutingSwitchesTrail {
+  read: HydrateStatus;
+  copyFrom: string | null;
+  error?: string;
+  /** Switches this request read whose position CAME FROM THE PAGE. */
+  fromPage: Record<string, boolean>;
+  /** Switches this request read with nothing from the page: its Netlify value or default. */
+  notFromPage: string[];
+}
+
 /**
- * What the last hydrate on this instance found, and the server switches set on the page that this
- * request honoured — the build puts it in plan.meta.routingSwitches, the road box in its reply.
+ * What this request's read found, and — switch by switch — whether each switch it actually READ
+ * took its position from the page. Only switches the request read are listed: a road-box answer
+ * never names a Build switch.
  */
-export function routingSwitchesTrail(now: number = Date.now()): { read: HydrateStatus; copyFrom: string | null; failed?: { at: string; error: string }; set: Record<string, boolean> } {
-  const cache = routingSwitchCache();
-  const set: Record<string, boolean> = {};
-  for (const s of ROUTING_SWITCHES) {
-    if (s.side !== 'server') continue;
-    const v = cache?.[s.name];
-    if (v && typeof v === 'object' && typeof v.on === 'boolean') set[s.name] = v.on;
+export function routingSwitchesTrail(): RoutingSwitchesTrail {
+  const read = (inRequest && requestStatus) || lastStatus;
+  const fromPage: Record<string, boolean> = {};
+  const notFromPage: string[] = [];
+  for (const [name, v] of routingSwitchConsults()) {
+    if (typeof v === 'boolean') fromPage[name] = v; else notFromPage.push(name);
   }
-  // copyFrom: when the copy in use was read — 'cached' on a request is a copy at most 30 s old.
-  // failed: a read that failed within the last HYDRATE_TTL_MS, even if a later one succeeded.
-  const failed = lastFailedAt && now - lastFailedAt < HYDRATE_TTL_MS ? { failed: { at: new Date(lastFailedAt).toISOString(), error: lastError } } : {};
-  return { read: lastStatus, copyFrom: loadedAt ? new Date(loadedAt).toISOString() : null, ...failed, set };
+  return {
+    read,
+    // When the copy in use was read: 'cached' is a copy at most 30 s old, 'failed-kept' an older one.
+    copyFrom: loadedAt ? new Date(loadedAt).toISOString() : null,
+    ...(read === 'failed-kept' || read === 'failed-none' ? { error: lastError } : {}),
+    fromPage,
+    notFromPage: notFromPage.sort(),
+  };
 }
 
 /** The whole document, read now (the endpoint's GET and its read-back). Throws on failure. */
@@ -106,7 +148,9 @@ export function _resetRoutingSwitchesStoreForTests(): void {
   loadedAt = 0;
   failedAt = 0;
   lastStatus = 'not-read';
-  lastFailedAt = 0;
   lastError = '';
+  inRequest = false;
+  requestStatus = null;
+  clearRoutingSwitchConsults();
   setRoutingSwitchCache({});
 }

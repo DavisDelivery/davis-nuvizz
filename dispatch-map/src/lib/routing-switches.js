@@ -16,9 +16,10 @@
 //   2. the Netlify environment variable      — what it was before this page existed
 //   3. the switch's default                  — what the code ships with
 //
-// So an empty document, a database that cannot be read, or a deploy with no Firestore at all
-// leaves every switch EXACTLY where it was before this file — the page can only move a switch,
-// never lose one.
+// So an empty document, or a deploy with no Firestore at all, leaves every switch EXACTLY where it
+// was before this file. A database that cannot be read is NOT free: a switch set on the page is
+// then not honoured until it can be (the browser and a cold server fall back to Netlify/default; a
+// server that has read it before keeps its last copy) — the page and each build's trail say so.
 //
 // ONE REGISTRY, read by the page, the browser's switch reads and the server's. `since` is the
 // moment the change went live on main, in Eastern time, from the merge commit — the date Chad
@@ -172,6 +173,29 @@ export function setStoredRoutingSwitches(next) {
   loaded = true;
   version += 1;
   for (const fn of listeners) { try { fn(); } catch { /* one listener cannot stop the rest */ } }
+}
+
+/**
+ * PURE. Two copies of the document, switch by switch, keeping the entry stamped LATER (`at`). Every
+ * write stamps `at` and nothing deletes a switch (a hand-back is an { on: null } entry), so the
+ * later stamp is the later state. An entry with no readable `at` loses to one with.
+ */
+export function newerRoutingSwitches(a, b) {
+  const t = (v) => { const n = Date.parse(v?.at); return Number.isFinite(n) ? n : -Infinity; };
+  const out = { ...(a && typeof a === 'object' ? a : {}) };
+  for (const [k, v] of Object.entries(b && typeof b === 'object' ? b : {})) {
+    if (!(k in out) || t(v) >= t(out[k])) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Fold an answer from the ENDPOINT into the browser's copy. The live listener replaces the copy
+ * (Firestore delivers its snapshots in order); an HTTP answer can arrive after a newer snapshot, so it
+ * may only move a switch forward in time, never back.
+ */
+export function mergeStoredRoutingSwitches(incoming) {
+  setStoredRoutingSwitches(newerRoutingSwitches(doc, incoming));
 }
 export function storedRoutingSwitches() { return doc; }
 export function routingSwitchesLoaded() { return loaded; }

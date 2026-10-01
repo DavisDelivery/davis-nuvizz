@@ -21,12 +21,13 @@ import { DEPOT } from '../netlify/functions/lib/routing-types.mts';
 const DOC = 'routing_switches/davis';
 const D = '2026-09-11';
 const set = (on) => ({ on, at: '2026-10-01T14:00:00.000Z', by: 'dispatcher-a' });
-// The trail a request carries once it has read the document: this request's read ('fresh'), or a
-// copy read moments earlier in the same request ('cached' — a later check inside the 30 s window).
-function readOk(trail, wantSet) {
-  assert.ok(['fresh', 'cached'].includes(trail?.read), `read: ${trail?.read}`);
+// The trail a request carries: its one read, and — of the switches IT read — which took their
+// position from the page and which did not.
+function readOk(trail, fromPage, notFromPage) {
+  assert.equal(trail?.read, 'fresh', `read: ${trail?.read}`);
   assert.equal(typeof trail.copyFrom, 'string', 'says when the copy was read');
-  assert.deepEqual(trail.set, wantSet);
+  assert.deepEqual(trail.fromPage, fromPage);
+  assert.deepEqual(trail.notFromPage, notFromPage);
 }
 const row = (id, i, extra = {}) => ({
   stopNbr: id, businessName: `CUSTOMER ${id}`, addr1: `${100 + i} Main St`, city: 'CARTERSVILLE', zip: '30120',
@@ -39,13 +40,17 @@ const row = (id, i, extra = {}) => ({
 const ROWS = [row('A', 0), row('B', 1, { scheduledFrom: `${D}T13:00:00`, scheduledTo: `${D}T13:30:00`, timeConstraint: 'STRICT' })];
 const BOX = { id: 'BOX', label: 'BOX', maxSkids: 14, maxWeightLbs: 10000, deckLengthIn: 312, capabilities: { liftgate: true, tractor: false, lengthClassFt: 26, overheadClearance: true } };
 
-async function build(stored) {
+async function build(stored, { failFirstSwitchRead = false } = {}) {
   _resetRoutingSwitchesStoreForTests();
   const request = { tenant: 'davis', date: D, selectedStopIds: ROWS.map((r) => r.stopNbr), trucks: [BOX], strategy: 'MIN_DISTANCE', matrixMode: 'haversine', windowMode: 'advisory' };
   const seed = { [`nuvizz_stop_index/davis__${D}`]: { tenant: 'davis', date: D }, 'routing_jobs/job_sw': { id: 'job_sw', status: 'queued', request } };
   for (const r of ROWS) seed[`nuvizz_stop_index/davis__${D}/stops/${r.stopNbr}`] = r;
   if (stored) seed[DOC] = stored;
   const fake = installFirestoreFake(seed);
+  const inner = globalThis.fetch;
+  let fail = failFirstSwitchRead ? 1 : 0;
+  globalThis.fetch = async (input, init = {}) => (String(input?.url ?? input).includes('routing_switches') && fail-- > 0
+    ? new Response('down', { status: 503 }) : inner(input, init));
   try {
     const res = await routingBuild(new Request('https://x.test/.netlify/functions/routing-build-background', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jobId: 'job_sw' }),
@@ -53,19 +58,20 @@ async function build(stored) {
     assert.equal(res.status, 202);
     const job = fake.store.get('routing_jobs/job_sw');
     assert.equal(job.status, 'done', job.error);
+    job.result.switchReads = fake.log.gets.filter((p) => String(p).includes('routing_switches')).length;
     return job.result;
-  } finally { fake.restore(); _resetRoutingSwitchesStoreForTests(); }
+  } finally { globalThis.fetch = inner; fake.restore(); _resetRoutingSwitchesStoreForTests(); }
 }
 
 test('THE BUILD: time restrictions set OFF on the page are off for the build — read before the board is turned into stops', async () => {
   delete process.env.ROUTING_TIME_RESTRICTIONS;
   const on = await build(null);
   assert.ok(on.timeRestrictions?.B, 'nothing stored: B carries its appointment, as before');
-  readOk(on.meta.routingSwitches, {});
+  readOk(on.meta.routingSwitches, {}, ['ROUTING_REPAIR_ORIGIN_FIRST', 'ROUTING_TIME_RESTRICTIONS']);
 
   const off = await build({ ROUTING_TIME_RESTRICTIONS: set(false) });
   assert.deepEqual(off.timeRestrictions, {}, 'set off on the page: no clock reached the build');
-  readOk(off.meta.routingSwitches, { ROUTING_TIME_RESTRICTIONS: false });   // the result says which page setting it honoured
+  readOk(off.meta.routingSwitches, { ROUTING_TIME_RESTRICTIONS: false }, ['ROUTING_REPAIR_ORIGIN_FIRST']);   // the result says which page setting it honoured
 });
 
 test('THE BUILD: the page wins over Netlify in both directions, and a handed-back switch is Netlify\'s again', async () => {
@@ -75,6 +81,17 @@ test('THE BUILD: the page wins over Netlify in both directions, and a handed-bac
     assert.ok((await build({ ROUTING_TIME_RESTRICTIONS: set(true) })).timeRestrictions?.B, 'set ON on the page beats Netlify off');
     assert.deepEqual((await build({ ROUTING_TIME_RESTRICTIONS: { on: null, at: '2026-10-01T14:00:00.000Z', by: 'dispatcher-a' } })).timeRestrictions, {}, 'handed back: Netlify off again');
   } finally { delete process.env.ROUTING_TIME_RESTRICTIONS; }
+});
+
+test('THE BUILD reads the switches ONCE: when that read fails, the whole build runs on Netlify values and its result says so — never "from the page" for a setting it did not use', async () => {
+  delete process.env.ROUTING_TIME_RESTRICTIONS;
+  const r = await build({ ROUTING_TIME_RESTRICTIONS: set(false) }, { failFirstSwitchRead: true });
+  assert.ok(r.timeRestrictions?.B, 'the read failed: the default (on) — B keeps its appointment');
+  assert.equal(r.switchReads, 0, 'no second read later in the same build (the pipeline joined the build\'s one read)');
+  assert.equal(r.meta.routingSwitches.read, 'failed-none');
+  assert.match(r.meta.routingSwitches.error, /503/);
+  assert.deepEqual(r.meta.routingSwitches.fromPage, {}, 'it does not claim the page setting it could not read');
+  assert.deepEqual(r.meta.routingSwitches.notFromPage, ['ROUTING_REPAIR_ORIGIN_FIRST', 'ROUTING_TIME_RESTRICTIONS']);
 });
 
 test('THE ROAD BOX: the free straight-line mode never waits on the switches document; Google mode honours the page — read BEFORE the switch is', async () => {
@@ -120,12 +137,12 @@ test('THE ROAD BOX: the free straight-line mode never waits on the switches docu
   assert.equal(plain.g.source, 'google');
   assert.equal(plain.reads, 1, 'Google mode read the switches once');
   assert.ok(plain.g.matrix.distanceMeters[0][1] > 0, 'nothing stored: the road estimate, as before');
-  readOk(plain.g.switches, {});
+  readOk(plain.g.switches, {}, ['ROAD_BOX_ESTIMATE_UNROUTABLE']);
 
-  const off = await run({ ROAD_BOX_ESTIMATE_UNROUTABLE: set(false) });
+  const off = await run({ ROAD_BOX_ESTIMATE_UNROUTABLE: set(false), ROUTING_TIME_RESTRICTIONS: set(false), ROUTING_REPAIR_ORIGIN_FIRST: set(false) });
   assert.equal(off.g.matrix.distanceMeters[0][1], 0, 'set off on the page: the old free leg');
   assert.equal(off.g.matrix.durationSec[0][1], 0);
-  readOk(off.g.switches, { ROAD_BOX_ESTIMATE_UNROUTABLE: false });
+  readOk(off.g.switches, { ROAD_BOX_ESTIMATE_UNROUTABLE: false }, []);   // and never names the Build switches stored beside it
 
   const onOverNetlify = await run({ ROAD_BOX_ESTIMATE_UNROUTABLE: set(true) }, 'off');
   assert.ok(onOverNetlify.g.matrix.distanceMeters[0][1] > 0, 'set on on the page beats Netlify off');
@@ -140,7 +157,7 @@ test('THE PIPELINE on its own (the pre-resolved-stops path skips resolveStops): 
       { buildMatrix: async (d, pts) => resolveMatrix(d, pts, 'haversine') },
     );
     assert.equal(plan.meta.routingSwitches.read, 'fresh', 'runPipeline read the document itself');
-    assert.deepEqual(plan.meta.routingSwitches.set, { ROUTING_REPAIR_ORIGIN_FIRST: false });
+    assert.deepEqual(plan.meta.routingSwitches.fromPage, { ROUTING_REPAIR_ORIGIN_FIRST: false });
     assert.equal(repairOriginFirstEnabled({}), false, 'and repair() reads the page setting');
   } finally { fake.restore(); _resetRoutingSwitchesStoreForTests(); }
 });
@@ -161,8 +178,8 @@ test('CLEANUP ("Fill my loads"): a switch set on the page is read before the pla
   };
   const on = await run(null);
   assert.equal(on.rules_detail?.time_restrictions, true);
-  readOk(on.routing_switches, {});
+  readOk(on.routing_switches, {}, ['ROUTING_TIME_RESTRICTIONS']);
   const off = await run({ ROUTING_TIME_RESTRICTIONS: set(false) });
   assert.equal(off.rules_detail?.time_restrictions, false, 'set off on the page: the plan ran without the clock');
-  readOk(off.routing_switches, { ROUTING_TIME_RESTRICTIONS: false });
+  readOk(off.routing_switches, { ROUTING_TIME_RESTRICTIONS: false }, []);
 });

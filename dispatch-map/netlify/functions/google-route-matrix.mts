@@ -13,7 +13,7 @@
 import { fetchWithTimeout } from './lib/async-util.mts';
 import { requireUser } from './lib/require-user.mts';
 import { storedRoutingSwitch } from './lib/routing-switch-cache.mts';
-import { hydrateRoutingSwitches, routingSwitchesTrail } from './lib/routing-switches-store.mts';
+import { hydrateRoutingSwitches, routingSwitchesTrail, inRoutingSwitchRequest } from './lib/routing-switches-store.mts';
 
 const ROUTES_URL = 'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix';
 const MAX_ELEMENTS = 600;         // under Google's 625 element cap, with margin
@@ -166,8 +166,13 @@ export async function resolveMatrix(depot: LatLng, stops: LatLng[], mode: 'haver
 }
 
 // HTTP handler: POST { depot, stops, mode? } → { matrix, source }. Defaults to the
-// free haversine estimate; pass mode:'google' to bill live Google drive-times.
-export default async function handler(req: Request): Promise<Response> {
+// free haversine estimate; pass mode:'google' to bill live Google drive-times. One read of the
+// routing switches per request (lib/routing-switches-store.mts).
+export default function handler(req: Request): Promise<Response> {
+  return inRoutingSwitchRequest(() => roadBoxHandler(req));
+}
+
+async function roadBoxHandler(req: Request): Promise<Response> {
   if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
   // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
   const gate = await requireUser(req, { role: 'dispatcher' });

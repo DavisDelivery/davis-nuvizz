@@ -11,11 +11,25 @@
 // default.
 
 let cache: Record<string, any> = {};
+// What each reader was TOLD, by switch, since the last clear — so a request can say which page
+// settings it actually used (lib/routing-switches-store.mts routingSwitchesTrail), not which ones
+// merely sat in the cache. undefined = nothing from the page: the reader used Netlify or default.
+const consulted = new Map<string, boolean | undefined>();
 
 /** The stored on/off for `name`, or undefined when the page has not set it (or nothing loaded). */
 export function storedRoutingSwitch(name: string): boolean | undefined {
   const v = cache?.[name];
-  return v && typeof v === 'object' && typeof v.on === 'boolean' ? v.on : undefined;
+  const out = v && typeof v === 'object' && typeof v.on === 'boolean' ? v.on : undefined;
+  consulted.set(name, out);
+  return out;
+}
+
+export function routingSwitchConsults(): Map<string, boolean | undefined> {
+  return consulted;
+}
+
+export function clearRoutingSwitchConsults(): void {
+  consulted.clear();
 }
 
 export function setRoutingSwitchCache(doc: Record<string, any> | null | undefined): void {

@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import {
   ROUTING_SWITCHES, ROUTING_SWITCH_NAMES, ROUTING_SWITCHES_PATH, routingSwitchDef, resolveRoutingSwitch,
   storedSetting, handedBackSetting, setStoredRoutingSwitches, routingSwitchOn, subscribeRoutingSwitches, routingSwitchesVersion,
+  newerRoutingSwitches, mergeStoredRoutingSwitches, storedRoutingSwitches,
 } from '../src/lib/routing-switches.js';
 import { sweepModeFor, SWEEP_MODE } from '../src/lib/routing-select.js';
 import { setRoutingSwitchCache, storedRoutingSwitch } from '../netlify/functions/lib/routing-switch-cache.mts';
@@ -98,6 +99,23 @@ test("the browser's copy: empty until loaded, a flip notifies, and the page wins
   setStoredRoutingSwitches({});
 });
 
+test('an answer from the server can only move a switch FORWARD: the newest stamp wins, switch by switch', () => {
+  const at = (on, t, by = 'dispatcher-a') => ({ on, at: `2026-10-01T${t}:00.000Z`, by });
+  // The live listener already delivered 15:05 (off); an HTTP answer read at 15:00 (on) lands late.
+  setStoredRoutingSwitches({ VITE_CLOSEST_FIRST_WITHOUT_TOWNS: at(false, '15:05'), VITE_TIME_WINDOWS_MILES_CAP: at(true, '14:00') });
+  mergeStoredRoutingSwitches({ VITE_CLOSEST_FIRST_WITHOUT_TOWNS: at(true, '15:00'), VITE_TIME_WINDOWS_MILES_CAP: at(null, '15:10'), VITE_COMPARE_TIME_WINDOWS: at(false, '15:10') });
+  const d = storedRoutingSwitches();
+  assert.equal(d.VITE_CLOSEST_FIRST_WITHOUT_TOWNS.on, false, 'the older answer did not undo the newer flip');
+  assert.equal(d.VITE_TIME_WINDOWS_MILES_CAP.on, null, 'a newer hand-back moves it forward');
+  assert.equal(d.VITE_COMPARE_TIME_WINDOWS.on, false, 'a switch the copy did not have is added');
+  // No stamp loses to a stamp; equal stamps take the incoming one.
+  assert.equal(newerRoutingSwitches({ X: { on: true } }, { X: at(false, '09:00') }).X.on, false);
+  assert.equal(newerRoutingSwitches({ X: at(true, '09:00') }, { X: { on: false } }).X.on, true);
+  assert.equal(newerRoutingSwitches({ X: at(true, '09:00') }, { X: at(false, '09:00') }).X.on, false);
+  assert.deepEqual(newerRoutingSwitches(null, undefined), {});
+  setStoredRoutingSwitches({});
+});
+
 test("the server's readers: stored wins, nothing stored reads the environment exactly as before", () => {
   try {
     setRoutingSwitchCache({});
@@ -167,6 +185,18 @@ test('the live copy listens to the one document, reports a refused read, and fal
   assert.match(APP, /\(err\) => \{ reportDenied\('routing_switches', err\); loadRoutingSwitchesOnce\(\); \}/, 'a refused listen is reported (lib/permission-denied.js), not swallowed');
   // No browser write: a flip goes through the endpoint (and firestore.rules refuses the browser).
   assert.ok(!/(setDoc|updateDoc|deleteDoc)\(\s*doc\(db, ROUTING_SWITCHES/.test(APP));
+  // The listener REPLACES (Firestore delivers in order); every HTTP answer only MERGES forward.
+  assert.equal((APP.match(/setStoredRoutingSwitches\(/g) || []).length, 1, 'only the live listener replaces the browser\'s copy');
+  assert.match(APP, /\.then\(\(j\) => \{ if \(j\?\.ok\) mergeStoredRoutingSwitches\(j\.stored \|\| \{\}\); \}\)/);
+});
+
+test('the panel: shows the newest of its own read and the live copy, feeds its reads to this browser, and "Try again" clears an old message', () => {
+  const panel = APP.slice(APP.indexOf('function RoutingSwitchesPanel()'), APP.indexOf('// ── THIS DEVICE: the per-device switches'));
+  assert.match(panel, /stored: newerRoutingSwitches\(state\.read\?\.stored, storedRoutingSwitches\(\)\)/);
+  assert.match(panel, /\}\), \[state\.read, liveV\]\);/);
+  assert.ok((panel.match(/mergeStoredRoutingSwitches\(read\.stored\);/g) || []).length >= 2, 'a read and a flip both reach this browser\'s copy');
+  assert.match(panel, /onClick=\{\(\) => \{ setMsg\(null\); load\(\); \}\}/);
+  assert.match(panel, /const canFlip = gate\.allowed && known && state\.persistent === true;/);
 });
 
 test('the Diagnostics tab exists, renders the panel, and the phone layout guard opens it', () => {

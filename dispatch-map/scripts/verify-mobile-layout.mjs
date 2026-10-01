@@ -1028,6 +1028,18 @@ function stubRoutes(page, emailHtml) {
       entriesShown: 1, entriesTotal: 1, entriesTruncated: false,
     });
     if (u.includes('coverage=1')) return R({ ok: true, pct: 100, withEmail: 599, sampled: 600, delivered: 710, bySource: { order: 599, notes: 0 }, optedOut: 0, withoutEmail: 1 });
+    // ROUTING SWITCHES — every one SET HERE, with a long name in `by`: the busiest the page gets
+    // (a "Use Netlify setting" button and a long "Set here … by …" line on all ten rows). Each is
+    // stored at its DEFAULT position (opt-in off, the rest on), so the other screens this guard
+    // measures behave exactly as they would with nothing set.
+    if (u.includes('/routing-switches')) return R({
+      ok: true, persistent: true,
+      stored: Object.fromEntries(['VITE_TIME_WINDOWS_MILES_CAP', 'VITE_CLOSEST_FIRST_WITHOUT_TOWNS', 'ROAD_BOX_ESTIMATE_UNROUTABLE',
+        'VITE_PREFLIGHT_COUNTS_EVERY_LATE_STOP', 'VITE_ROAD_REPLY_DROPS_MOVED_STOPS', 'VITE_RETURN_TO_WAREHOUSE', 'VITE_COMPARE_TIME_WINDOWS',
+        'ROUTING_REPAIR_ORIGIN_FIRST', 'ROUTE_MATRIX_ESTIMATE_UNROUTABLE', 'ROUTING_TIME_RESTRICTIONS']
+        .map((n) => [n, { on: n !== 'VITE_RETURN_TO_WAREHOUSE', at: '2026-10-01T16:42:00.000Z', by: 'dispatcher-with-a-long-login-name-for-the-layout-check' }])),
+      serverEnv: { ROUTING_TIME_RESTRICTIONS: null, ROUTING_REPAIR_ORIGIN_FIRST: 'off', ROUTE_MATRIX_ESTIMATE_UNROUTABLE: null, ROAD_BOX_ESTIMATE_UNROUTABLE: null },
+    });
     if (u.includes('customer-comms-test')) return R({ ok: true, preview: true, pro: '007161743', customer: 'BUFORD TILE & STONE', subject: 'Delivered — PRO 007161743', html: emailHtml.replace(/\{\{[^}]+\}\}/g, 'X'), recipientOnFile: 'receiving@buford.example.com', recipientSource: 'order', optedOut: false });
     if (u.includes('nuvizz-pull-today-stops') || u.includes('nuvizz-board')) return R({ ok: true, stops: STOPS, count: STOPS.length, date: '2026-08-17' });
     if (u.includes('day-completion') && u.includes('history=1')) return R({ ok: true, days: [

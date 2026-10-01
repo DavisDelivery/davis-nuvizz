@@ -24,7 +24,7 @@ import { deriveGeometryForStops, type GeometryAssist } from './freight-geometry.
 import { parseIntentResponse, parseGeometryAssist } from './routing-intent.mts';
 import { solveRouting } from './routing-solver.mts';
 import { repair, runClockFor } from './routing-repair.mts';
-import { hydrateRoutingSwitches, routingSwitchesTrail } from './routing-switches-store.mts';
+import { hydrateRoutingSwitches, routingSwitchesTrail, inRoutingSwitchRequest } from './routing-switches-store.mts';
 import type { StopTimeRestriction } from './routing-time-windows.mts';
 
 export interface PipelineStopInput {
@@ -206,7 +206,13 @@ function deterministicRiskFlags(input: SolverInput, plan: { routes: BuiltRoute[]
   return [...new Set(flags)];
 }
 
-export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Promise<RoutingPlan> {
+// Inside the build it joins the build's one read of the routing switches; called on its own, it
+// is its own request (lib/routing-switches-store.mts).
+export function runPipeline(req: PipelineRequest, deps: PipelineDeps): Promise<RoutingPlan> {
+  return inRoutingSwitchRequest(() => runPipelineInner(req, deps));
+}
+
+async function runPipelineInner(req: PipelineRequest, deps: PipelineDeps): Promise<RoutingPlan> {
   // ROUTING_REPAIR_ORIGIN_FIRST is read inside repair(); load what Diagnostics stored first.
   await hydrateRoutingSwitches();
   const depot = req.depot || { lat: DEPOT.lat, lng: DEPOT.lng };
