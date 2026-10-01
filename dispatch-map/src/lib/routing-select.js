@@ -1525,9 +1525,24 @@ export function fmtClockMs(ms) {
 // A stamp is only a stamp if it is a positive number. Number(null) is 0 and 0 is finite.
 const stampOf = (v) => { const t = Number(v); return Number.isFinite(t) && t > 0 ? t : 0; };
 
-export function savedMark({ savedAt = null, failedAt = null, dirty = false } = {}) {
+// ── AND A CARD THAT WAS SAVED, CLOSED AND BROUGHT BACK (v1.102.0) ────────────
+//
+// Chad, 2026-09-30: "I want saved route to always carry a green check mark if it has saved
+// previously say if a route was closed out and re brought up but keep the message as is for a
+// route that just saved."
+//
+// savedAt / failedAt above are THIS card's stamps, and they go when the card closes. The
+// earlier* pair is the LOAD's record (lib/card-saves.js), written in the same two places and
+// kept past a close. They only speak when the card has no stamp of its own: a card that just
+// saved keeps its "✓ SENT 7:42 AM" exactly as it was, and a card that just failed keeps its ✗.
+// The reopened card gets the plain green ✓ — withdrawn by an edit on the same rule as the tick
+// above, and never earned if the load's latest outcome on record was a refusal or a cancellation
+// (a tie goes to that outcome too: no check on a load that may not be in NuVizz). The caller
+// passes earlierSavedAt only while the card still shows what that save carried (sameRunOrder).
+export function savedMark({ savedAt = null, failedAt = null, dirty = false, earlierSavedAt = null, earlierFailedAt = null, now = Date.now() } = {}) {
   const ok = stampOf(savedAt);
   const bad = stampOf(failedAt);
+  if (!ok && !bad) return earlierSaveMark({ savedAt: earlierSavedAt, failedAt: earlierFailedAt, dirty, now });
 
   // THE MOST RECENT OBSERVED OUTCOME WINS, and a TIE GOES TO THE ✗. Both stamps are written
   // only where the result is read, so the later one is the later truth. On the knife edge the
@@ -1559,6 +1574,36 @@ export function savedMark({ savedAt = null, failedAt = null, dirty = false } = {
     clock,
     title: `Sent to NuVizz at ${clock}, and NuVizz confirmed the write — this card matches the load. Change anything on it and the tick goes until you send again.`,
   };
+}
+
+const NO_MARK = { show: false, kind: 'none', label: '', title: '', clock: '' };
+
+function earlierSaveMark({ savedAt = null, failedAt = null, dirty = false, now = Date.now() } = {}) {
+  const ok = stampOf(savedAt);
+  const bad = stampOf(failedAt);
+  // Never saved, or the latest outcome on record was a refusal or a cancellation: claim nothing.
+  if (!ok || bad >= ok) return NO_MARK;
+  const clock = fmtClockMs(ok);
+  if (dirty) return { show: false, kind: 'stale', label: '', title: '', clock };
+  const day = fmtDayMs(ok);
+  return {
+    show: true,
+    kind: 'saved-before',
+    label: '✓',
+    clock,
+    // A phone has no hover, so its chip carries the when: the clock today, the day otherwise —
+    // a check from last night must not read like one from five minutes ago.
+    short: day && day === fmtDayMs(now) ? clock : day,
+    title: `Saved to NuVizz at ${clock} on ${day} from this device, and NuVizz confirmed the write. This card still shows exactly the stops, in the order, that save carried. It cannot see a change made in the NuVizz portal or on another device that the board has not picked up yet. Change anything on it and the check goes until you send again.`,
+  };
+}
+
+// "Sep 30" — the save can be yesterday's (tomorrow's routes are built the night before), so the
+// clock alone would read as a time today.
+function fmtDayMs(ms) {
+  const d = new Date(Number(ms));
+  if (Number.isNaN(d.getTime())) return '';
+  return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]} ${d.getDate()}`;
 }
 
 // ── WHICH TRUCK RUNS THIS LOAD — ONE TAP, AND IT STICKS (v1.34.0) ────────────
