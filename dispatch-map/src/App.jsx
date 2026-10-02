@@ -81,6 +81,7 @@ import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } f
 import { formatCompletionPct } from './lib/completion-pct.js';
 import { isTvPath, tvRailRows, tvVerdict, tvFeedState, tvRollDate, TV_RAIL_LIMIT } from './lib/tv-mode.js';
 import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent, tvImageFailure, boundsOf, snapBounds } from './lib/tv-static-map.js';
+import { pinKeyer, pinSig } from './lib/tv-pin-reuse.js';
 import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, setStopPieces, addressReachedNuvizz } from './lib/nuvizzWrite.js';
@@ -220,7 +221,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.106.0';
+const APP_VERSION = '1.106.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -274,6 +275,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.106.1', 'THE WALL KEEPS ITS PINS: THE TV’S STOP ICONS NO LONGER BLINK OUT EVERY TWO MINUTES. Chad, with a photo of the office TV: “Why are my icons not right. They keep disappearing and reappearing.” MEASURED, NOT GUESSED: the board refreshes every two minutes, and every refresh hands the map a NEW list of stops whether anything changed or not. The map answered every one by taking EVERY stop icon off and drawing every one again — counted on the real app over Google’s real map with an 813-stop board that did not change: 813 icons removed and 813 rebuilt, every two minutes. Google redraws a rebuilt board from nothing. A desk does that in a blink; the 2020 TV does it slowly enough to watch. With the browser slowed to stand in for the TV, one captured moment had 90% of the icons gone, and it looked like the photo: metro Atlanta empty, a few outlying pins left standing. NOW, ON THE TV’S LIVE MAP, an icon whose stop has not changed stays exactly where it is. Only a stop that changed (delivered, moved, renamed, new receiving hours), arrived or left gets touched, and only that one icon. Same app, same slowed browser: the refresh rebuilds 0 stop icons, and no captured moment drops below the full board. A CI check now drives the TV’s live map and fails if a refresh that changed nothing rebuilds the icons, if a changed board touches more than the stops that changed, or if the kept board draws anything different from a fresh one. It fails on the code before this change. THE TRUCKS were checked too: their 12 icons are rebuilt on the one-minute driver poll as before, and in 1,013 captured frames none blinked, so they are left alone. THE DESKTOP AND PHONE MAPS ARE UNCHANGED: they still rebuild every two minutes, which a desktop does too fast to see, and nobody asked for those to change. 0 NuVizz calls. PUT IT BACK: revert this commit. The Route Workbench is not touched.'],
   ['1.106.0', 'PROBLEM ADDRESSES NOW LISTS AN ORDER WHOSE CUSTOMER IS FIXED ON OUR BOARD BUT WHOSE ADDRESS IN NUVIZZ IS STILL WRONG \u2014 AND SENDS IT WITH THE SAME BUTTON. Chad, on BRENT SCARBROUGHQTS, the first stop on MONE: \u201cwhy was this address not flagged?!?\u201d \u2014 then: \u201cWhy are we not able to correct this one like we are all the others.\u201d The customer had been corrected on our board on Sep 15 (street first, the laydown yard second, the pin moved by hand), and the list stops judging an address the moment a board correction exists. But a board correction covers the CUSTOMER and a NuVizz correction covers ONE ORDER, so every new order still arrived with the dock line first \u2014 in the portal, the carrier\u2019s record and the driver\u2019s manifest \u2014 and nothing on the list could see it. WINDSTREAM DISTRIBUTION CENTER was the same. A fourth kind of row, NOT IN NUVIZZ (blue): our board has a correction for the customer and the order\u2019s address in NuVizz is different. Different means a different door: case, punctuation, RD/ROAD, STE/SUITE, CIR/CIRCLE and the other usual spellings, GA/GEORGIA, a ZIP+4 and the same words with the line break in another place (\u201c1200 MAIN ST, STE 5\u201d on one line) do not count; the dock ahead of the street, another dock or another ZIP does. Delivered, arrived and excepted orders are left off (they cannot be re-addressed). It ranks last \u2014 our truck goes to the right door; it is the paperwork that is wrong. Correct opens on the board\u2019s address with ONE button, Send to NuVizz (3 calls), and it touches nothing on our board: no re-geocode over a pin somebody placed by hand, no fresh correction stamp. Edit any field and it is an ordinary correction again. Correct + NuVizz pushes these rows with the rest; Correct on the board leaves them out (it would change nothing) and says so. Wave off expires if NuVizz re-addresses the order to something else. The badge counts them. Finding them is free (zero NuVizz calls); each push is the usual 3. A customer whose orders keep arriving the old way will show up on every order. PUT IT BACK: ADDRESS_QUEUE_NOT_IN_NUVIZZ=off on the server \u2014 no redeploy, the other three kinds untouched.'],
   ['1.105.1', 'A NEW ROUTE SHIPS FROM DAVIS DELIVERY UNLESS YOU PICK OTHERWISE. Chad, on the \u2795 New route form opening on Caliber Steel: \u201cThis should always default to davis delivery.\u201d It opened there because the form put the last pickup used in the New Order tab first, so one Caliber Steel order made every new route on that device start at Caliber\u2019s dock. Davis Delivery (943 Gainesville Hwy, Buford) is now always the first choice and the one selected. The last-used and saved pickups still follow it in the dropdown, one pick away, and Davis is never listed twice. The same rule covers the other two ways a route gets created: tapping a standard route on the Loads list, and a Save whose card carries no ship-from. The line under the dropdown now says Davis Delivery is the default instead of claiming the device has no saved pickup. Nothing about what a Save sends changes except which address starts selected. Zero NuVizz calls.'],
   ['1.105.0', 'EDIT AN ORDER\u2019S PIECE COUNTS ON THE STOP CARD AND SEND THEM TO NUVIZZ. Chad, 10/02: \u201cmake it where in dispatch map i can edit an order and change piece counts and then send it to nuvizz to change as well.\u201d WHERE: the stop card, under Items \u2014 \u201cEdit piece counts\u201d. It is the same card on the Map\u2019s desktop sidebar, the Map\u2019s phone drawer, the Routing stop panel and the PRO-lookup card, so it is on all four. Two boxes, Pallets and Loose \u2014 the same two the New Order form takes; the total is their sum and is shown, never typed. Send to NuVizz reads the order, writes ONLY the counts that change (NuVizz totalCartons / volume / totalPallets \u2014 a pallets fix never sends the loose count), reads it back, and says what NuVizz now holds. 3 NuVizz calls; 1 when NuVizz already has those counts. REFUSED BEFORE ANYTHING IS WRITTEN: an order already dispatched, out for delivery, arrived or delivered; a second NuVizz order sharing the number; a record with no id of its own; zero pieces (that is a cancel, not an edit). VERIFIED, NEVER ASSUMED: no write in this app had changed a piece count before, so the read-back is the proof every time. If NuVizz takes the write but reads back a different count, or any other field moves (weight, address, the line items, the BOL), the card says exactly which one, in red. NOT CHANGED: the order\u2019s line items in NuVizz (the portal\u2019s Items table) are a separate record and keep their quantity \u2014 the card says so before you Send. THE BOARD MOVES TOO: the scans do not refresh freight (it is carried forward from an order\u2019s first read), so NuVizz\u2019s read-back counts are written onto the order\u2019s board row and its stored copy \u2014 field-masked, never creating a row \u2014 and the card, the route\u2019s skid count and the Build Panel change together. A scan that snapshotted the board before the edit could have written the old count back over it; for the hour after an edit the scan now keeps the edited counts (the same hold the plan write-through uses). NUVIZZ_PIECES_WRITE=off turns all of it off \u2014 the write and the scan\u2019s hold \u2014 with one env var.'],
@@ -14127,6 +14129,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const map3dAvailable = MAP_3D_ON && !tvMode;
   const clustererRef = useRef(null);
   const markersRef = useRef([]);
+  // THE WALL KEEPS ITS PINS — on the television's live map, the stop pins on the glass by key,
+  // with what each one draws: { map, byKey } there, null everywhere else. See the pin effect.
+  const tvPinsRef = useRef(null);
   const driverMarkersRef = useRef([]);
   const driverLabelsRef = useRef([]);
   // The one truck plate shown on HOVER while the labels are switched off (see the driver effect).
@@ -15254,9 +15259,25 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   useEffect(() => {
     if (!google || !mapRef.current) return;
 
-    if (clustererRef.current) clustererRef.current.clearMarkers();
-    markersRef.current.forEach((m) => m.setMap(null));
-    markersRef.current = [];
+    // THE WALL KEEPS ITS PINS. Chad, 2026-10-02, photographing the office TV: "Why are my icons
+    // not right. They keep disappearing and reappearing." Every 2-minute board refresh hands this
+    // effect a NEW stops array, changed or not, and it answered every one by taking every pin off
+    // and building every pin again — counted on the real bundle over Google's real map: an
+    // unchanged 813-stop board, 813 pins removed and 813 created, every two minutes. Google
+    // redraws a rebuilt board from nothing; a desk does it in a frame, the 2020 television slowly
+    // enough to watch, dense metro Atlanta emptying first and filling last — the photograph.
+    // So ON THE TELEVISION'S LIVE MAP a pin whose stop draws and behaves exactly as it did stays
+    // where it is (lib/tv-pin-reuse.js), and only stops that changed, arrived or left touch the
+    // map. Unclustered only, and only on the map instance those pins are on (re-ticking Live map
+    // builds a new one, which rebuilds). The desk, the phone and a clustered wall rebuild exactly
+    // as they always have: nobody asked for those to change.
+    const keep = (tvMode && !mapFilters.showClustered && tvPinsRef.current?.map === mapRef.current)
+      ? tvPinsRef.current.byKey : null;
+    if (!keep) {
+      if (clustererRef.current) clustererRef.current.clearMarkers();
+      markersRef.current.forEach((m) => m.setMap(null));
+      markersRef.current = [];
+    }
     // Drop any receiving-hours hover tooltip left over from the prior render.
     if (hoverTipRef.current) { hoverTipRef.current.tip.setMap(null); hoverTipRef.current = null; }
     // Reusable overlay class for the desktop hover tooltip (same styling as driver labels).
@@ -15296,6 +15317,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         routeSeqByStop.set(s.stopNbr, pickup ? 'P' : rs != null ? rs : i + 1);
       });
     }
+    const keyOf = pinKeyer();
+    const nextPins = new Map();   // key → { marker, sig, holder }: every pin on the glass after this run
+    const fresh = [];             // the pins this run built, which are the only ones still to put on the map
     const locCounts = buildLocCounts(positioned);   // co-located delivery tally for the badge
     const newMarkers = positioned.map((s) => {
       const note = notes.get(s.matchKey);
@@ -15308,7 +15332,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       // Routing screens stay pixel-identical.
       const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq, sameLocCount: locCounts.get(stopLocKey(s)) || 1, tractorDelivered: tractorLocs.has(s.matchKey), ...shiplifyMap.markerOpts(s) });
       // The native Marker `title` still carries the business name (OS hover fallback).
-      const marker = new google.maps.Marker({
+      const pinOpts = {
         position: { lat: s.lat, lng: s.lng },
         icon,
         title: s.businessName || '',
@@ -15317,22 +15341,39 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         // latitude-based auto stacking (≤ MAX_ZINDEX), so a northern hit never hides beneath a
         // southern non-match. Dimmed non-matches sink below the normal board.
         zIndex: matched ? ((google.maps.Marker?.MAX_ZINDEX ?? 1e6) + 1) : (dim ? 0 : undefined),
-      });
-      marker.addListener('click', () => {
-        setSelectedDriver(null);
-        setSelectedStop(s);
-        handlePanToStop(s);   // match list/search behavior: recenter + zoom to STOP_ZOOM
-      });
+      };
       // Desktop hover tooltip for the receiving-hours "clock" pins: pop up the
       // business name + the hours window immediately on hover, so hunting for a
       // time-restricted stop surfaces its window without clicking in. Only clock
       // pins get this — formatReceivingHours returns null when no hours are set,
       // so a plain pin never shows a (false) window. (#receiving-hours-hover)
       const hoursStr = formatReceivingHours(note);
+      // Signed from the SAME options the pin is built with, plus its hover text, so "the same
+      // pin" can never mean less than what is actually drawn.
+      const key = keyOf(s.stopNbr);
+      const sig = pinSig({ ...pinOpts, hover: hoursStr });
+      const held = keep && keep.get(key);
+      if (held && held.sig === sig) {
+        // The listeners read through `holder`, so a kept pin opens TODAY's copy of its stop.
+        held.holder.s = s;
+        held.holder.pan = handlePanToStop;
+        nextPins.set(key, held);
+        return held.marker;
+      }
+      const holder = { s, pan: handlePanToStop };
+      const marker = new google.maps.Marker(pinOpts);
+      fresh.push(marker);
+      nextPins.set(key, { marker, sig, holder });
+      marker.addListener('click', () => {
+        setSelectedDriver(null);
+        setSelectedStop(holder.s);
+        holder.pan(holder.s);   // match list/search behavior: recenter + zoom to STOP_ZOOM
+      });
       if (hoursStr) {
         marker.addListener('mouseover', () => {
           if (hoverTipRef.current) hoverTipRef.current.tip.setMap(null);
-          const tip = new HoverTip(new google.maps.LatLng(s.lat, s.lng), s.businessName || 'Stop', `Receiving hours: ${hoursStr}`);
+          const cur = holder.s;
+          const tip = new HoverTip(new google.maps.LatLng(cur.lat, cur.lng), cur.businessName || 'Stop', `Receiving hours: ${hoursStr}`);
           tip.setMap(mapRef.current);
           hoverTipRef.current = { marker, tip };
         });
@@ -15348,6 +15389,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       return marker;
     });
 
+    // Pins the wall no longer has — a stop that left, or the old pin of a stop that changed (its
+    // new pin is in `fresh`) — come off. A pin carried over never left the glass.
+    if (keep) keep.forEach((p, k) => { if (nextPins.get(k) !== p) p.marker.setMap(null); });
     markersRef.current = newMarkers;
     // M4.4 — when clustering is disabled, attach markers directly to the map
     // instead of routing through MarkerClusterer. Skipping clustering on 600+
@@ -15362,9 +15406,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         clustererRef.current.addMarkers(newMarkers);
       }
     } else {
-      newMarkers.forEach((m) => m.setMap(mapRef.current));
+      fresh.forEach((m) => m.setMap(mapRef.current));
     }
-  }, [google, filteredStops, notes, tractorLocs, effectiveMatchSet, mapFilters.showClustered, selectedDate, selectedRoute, selectedRouteStops, mapReady, shiplifyMap]);
+    tvPinsRef.current = (tvMode && !mapFilters.showClustered) ? { map: mapRef.current, byKey: nextPins } : null;
+  }, [google, filteredStops, notes, tractorLocs, effectiveMatchSet, mapFilters.showClustered, selectedDate, selectedRoute, selectedRouteStops, mapReady, shiplifyMap, tvMode]);
 
   // Center/zoom the map to fit a route's stops when it's opened (per dispatcher
   // request — NuVizz frames the route on open). Restores the prior board view on close.
