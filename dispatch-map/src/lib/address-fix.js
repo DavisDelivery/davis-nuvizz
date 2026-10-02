@@ -118,3 +118,59 @@ export function sameDeliveryAddress(a, b) {
     && cityOf(a?.city) === cityOf(b?.city)
     && zipOf(a?.zip) === zipOf(b?.zip);
 }
+
+// ── DOES THIS SAVE MOVE THE PIN? ────────────────────────────────────────────
+//
+// Chad, on the proposal "stop Save from replacing a pin placed by hand": "yes do 1 and 2".
+//
+// Every address Save geocoded the street and wrote the answer over the pin — including a Save
+// that changed nothing about WHERE the place is: the same street opened and saved again to push
+// it to NuVizz, or a fix to the suite line. The geocode asks Google about the street line, city,
+// state and ZIP only (line 2 is left out on purpose — AddressEditModal), so when those are the
+// same it can only re-find the street. It cannot improve a pin somebody dragged onto the right
+// dock; it can only replace it.
+
+/**
+ * PURE: would a geocode of `b` ask the same question as a geocode of `a`? The street line in its
+ * place with the spellings folded (as in sameDeliveryAddress), the city and the ZIP; the state is
+ * left to the ZIP, because NuVizz and people spell it more than one way.
+ */
+export function sameGeocodeQuery(a, b) {
+  return foldLine(a?.addr1) === foldLine(b?.addr1)
+    && cityOf(a?.city) === cityOf(b?.city)
+    && zipOf(a?.zip) === zipOf(b?.zip);
+}
+
+// A stored time in any shape the browser meets: a Firestore Timestamp (its public `seconds` and
+// `nanoseconds`), a plain { seconds, nanoseconds } copy of one, or an ISO string. Anything else
+// is "cannot tell".
+function millisOf(v) {
+  if (v == null) return NaN;
+  if (typeof v.seconds === 'number') return v.seconds * 1000 + Math.floor((Number(v.nanoseconds) || 0) / 1e6);
+  return Date.parse(String(v));
+}
+
+/**
+ * PURE: does this customer note hold a pin of our own, and is it older than the address
+ * correction (so it is on the OLD building)? The queue's own rule (pinIsStale,
+ * netlify/functions/lib/address-queue.mts), read off the browser's copy of the note — whose
+ * stamps are Timestamps, which that string-parsing copy would read as "cannot tell".
+ */
+export function notePinState(note) {
+  const ov = note?.location_override;
+  const pinned = !!ov && Number.isFinite(parseFloat(ov.lat)) && Number.isFinite(parseFloat(ov.lng));
+  const addrAt = millisOf(note?.address_override_at);
+  if (!Number.isFinite(addrAt)) return { pinned, stale: false };   // no correction recorded
+  const pinAt = millisOf(note?.location_override_at);
+  return { pinned, stale: !pinned || !Number.isFinite(pinAt) || pinAt < addrAt };
+}
+
+/**
+ * PURE: should this Save keep the pin that is there instead of geocoding a new one? Only when
+ * there IS a pin of our own, it is not older than the address correction, and the address being
+ * saved asks the geocoder the same question as the address in effect (`before` — what the card
+ * shows). A Save that moves the street, the city or the ZIP still geocodes, exactly as before.
+ */
+export function keepsPin(pinState, before, fields) {
+  return !!pinState?.pinned && !pinState?.stale && sameGeocodeQuery(before, fields);
+}

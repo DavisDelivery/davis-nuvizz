@@ -49,7 +49,7 @@ import { mapBaseOptions, mapLiveOptions, mapIdKey, usesMapId, keepView } from '.
 import { map3dEnabled, cameraFor2dView, hintForRange, isCtrlDragStart, dragCrossedThreshold, isEscape, cameraMoved, groundedCamera, cameraGroundPoint, twoDViewFor3dCamera, paint3dControl, control3dSpec, webglUsable, vectorFellBack, MAP3D_BUTTON_CSS, MAP3D_NO_WEBGL, MAP3D_NO_VECTOR } from './lib/map-3d.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
-import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
+import { addressLooksOff, suggestAddressFix, keepsPin, notePinState } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
@@ -221,7 +221,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.106.2';
+const APP_VERSION = '1.106.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -275,6 +275,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.106.3', 'A SAVE THAT DOES NOT MOVE THE PLACE KEEPS THE PIN. Chad, on the proposal \u201cstop Save from replacing a pin placed by hand\u201d: \u201cyes do 1 and 2\u201d. Every address Save \u2014 Edit address on a stop card, and Correct on Problem addresses \u2014 geocoded the street and wrote Google\u2019s answer over the pin, even when the street, city and ZIP had not changed: the same address saved again to push it to NuVizz, or a fix to the suite or dock line. The geocode never looks at that second line, so for an unchanged street it can only re-find the street \u2014 it cannot improve a pin somebody dragged onto the right dock, only replace it. NOW: when the customer has a pin of our own that is not older than the address correction, and the street line, city and ZIP are the same (the usual spellings and the state aside), the Save keeps the pin and re-stamps it on the same write, so it is never listed as \u201cPin not moved\u201d. A Save that changes the street, city or ZIP geocodes exactly as before, and so does one where the pin is the feed\u2019s own or already older than the correction. The one-click Fix & move pin is unchanged \u2014 its split always moves the street. 0 NuVizz calls. PUT IT BACK: VITE_SAVE_KEEPS_PIN=off, on the next build.'],
   ['1.106.2', 'A PUSH TO NUVIZZ NO LONGER COSTS THE ORDER ITS PIN AND ITS NOTES. Chad, on the proposal \u201cdon\u2019t lose a hand-placed pin when pushing\u201d: \u201cyes do 1 and 2\u201d. WHY IT HAPPENED: a customer note \u2014 the hand-placed pin, receiving hours, closed days, the no-tractor mark, contacts, the email opt-out \u2014 is filed under the order\u2019s own first address line, city and ZIP as NuVizz has them. Correcting the address in NuVizz moves line 1 (\u201cDOCK 32\u201d becomes \u201c1200 NORTHBROOK PKWY STE 180\u201d), so on the next scan the order is filed under a new name and its note no longer reaches it. Measured on DESIGN PRINT BANNER (007183435, pushed 9/28): the next day\u2019s board had it under the new name with no note at all. Today\u2019s three Not in NuVizz rows would each have lost the pin our board has for them the same way \u2014 and EMORY UNIV HOSPITAL MIDTOWN its 7:00\u20132:30 receiving hours. NOW: when a push lands, the server copies the note to the order\u2019s new name, worked out from the address NuVizz actually STORED \u2014 the one the next scan reads. The pin goes only if it belongs to the corrected address (a pin older than the correction stays behind, it is on the old building). The address correction does not go: NuVizz holds the address now. ONLY INTO AN EMPTY PLACE: if the new name already has a note, nothing is copied and nothing is overwritten. The note is only copied when the order\u2019s address in NuVizz before the push matches the note the board joined \u2014 a board one scan behind copies nothing. The customer\u2019s next order, still arriving the old way, keeps the original note. No NuVizz calls added; each push\u2019s entry in the write log says what was carried, or why not. PUT IT BACK: ADDRESS_PUSH_CARRY_NOTE=off on the server \u2014 no redeploy.'],
   ['1.106.1', 'THE WALL KEEPS ITS PINS: THE TV’S STOP ICONS NO LONGER BLINK OUT EVERY TWO MINUTES. Chad, with a photo of the office TV: “Why are my icons not right. They keep disappearing and reappearing.” MEASURED, NOT GUESSED: the board refreshes every two minutes, and every refresh hands the map a NEW list of stops whether anything changed or not. The map answered every one by taking EVERY stop icon off and drawing every one again — counted on the real app over Google’s real map with an 813-stop board that did not change: 813 icons removed and 813 rebuilt, every two minutes. Google redraws a rebuilt board from nothing. A desk does that in a blink; the 2020 TV does it slowly enough to watch. With the browser slowed to stand in for the TV, one captured moment had 90% of the icons gone, and it looked like the photo: metro Atlanta empty, a few outlying pins left standing. NOW, ON THE TV’S LIVE MAP, an icon whose stop has not changed stays exactly where it is. Only a stop that changed (delivered, moved, renamed, new receiving hours), arrived or left gets touched, and only that one icon. Same app, same slowed browser: the refresh rebuilds 0 stop icons, and no captured moment drops below the full board. A CI check now drives the TV’s live map and fails if a refresh that changed nothing rebuilds the icons, if a changed board touches more than the stops that changed, or if the kept board draws anything different from a fresh one. It fails on the code before this change. THE TRUCKS were checked too: their 12 icons are rebuilt on the one-minute driver poll as before, and in 1,013 captured frames none blinked, so they are left alone. THE DESKTOP AND PHONE MAPS ARE UNCHANGED: they still rebuild every two minutes, which a desktop does too fast to see, and nobody asked for those to change. 0 NuVizz calls. PUT IT BACK: revert this commit. The Route Workbench is not touched.'],
   ['1.106.0', 'PROBLEM ADDRESSES NOW LISTS AN ORDER WHOSE CUSTOMER IS FIXED ON OUR BOARD BUT WHOSE ADDRESS IN NUVIZZ IS STILL WRONG \u2014 AND SENDS IT WITH THE SAME BUTTON. Chad, on BRENT SCARBROUGHQTS, the first stop on MONE: \u201cwhy was this address not flagged?!?\u201d \u2014 then: \u201cWhy are we not able to correct this one like we are all the others.\u201d The customer had been corrected on our board on Sep 15 (street first, the laydown yard second, the pin moved by hand), and the list stops judging an address the moment a board correction exists. But a board correction covers the CUSTOMER and a NuVizz correction covers ONE ORDER, so every new order still arrived with the dock line first \u2014 in the portal, the carrier\u2019s record and the driver\u2019s manifest \u2014 and nothing on the list could see it. WINDSTREAM DISTRIBUTION CENTER was the same. A fourth kind of row, NOT IN NUVIZZ (blue): our board has a correction for the customer and the order\u2019s address in NuVizz is different. Different means a different door: case, punctuation, RD/ROAD, STE/SUITE, CIR/CIRCLE and the other usual spellings, GA/GEORGIA, a ZIP+4 and the same words with the line break in another place (\u201c1200 MAIN ST, STE 5\u201d on one line) do not count; the dock ahead of the street, another dock or another ZIP does. Delivered, arrived and excepted orders are left off (they cannot be re-addressed). It ranks last \u2014 our truck goes to the right door; it is the paperwork that is wrong. Correct opens on the board\u2019s address with ONE button, Send to NuVizz (3 calls), and it touches nothing on our board: no re-geocode over a pin somebody placed by hand, no fresh correction stamp. Edit any field and it is an ordinary correction again. Correct + NuVizz pushes these rows with the rest; Correct on the board leaves them out (it would change nothing) and says so. Wave off expires if NuVizz re-addresses the order to something else. The badge counts them. Finding them is free (zero NuVizz calls); each push is the usual 3. A customer whose orders keep arriving the old way will show up on every order. PUT IT BACK: ADDRESS_QUEUE_NOT_IN_NUVIZZ=off on the server \u2014 no redeploy, the other three kinds untouched.'],
@@ -7450,6 +7451,13 @@ function AddressFixBanner({ stop, note, onAutoFix, onEdit }) {
   );
 }
 
+// A SAVE THAT DOES NOT MOVE THE PLACE KEEPS THE PIN (v1.106.2) — Edit address and the Problem
+// addresses editor. See keepsPin (lib/address-fix.js). VITE_SAVE_KEEPS_PIN=off puts back the old
+// rule — every Save re-geocodes — on the next build; anything malformed leaves it ON.
+const SAVE_KEEPS_PIN = (() => {
+  try { return houseSwitchOn(import.meta.env.VITE_SAVE_KEEPS_PIN); } catch { return true; }
+})();
+
 // Geocode a single-line address query via the Google client geocoder. Shared by
 // the address-edit modal and the one-click auto-fix. Rejects on any non-OK.
 function geocodeAddress(google, q) {
@@ -7525,8 +7533,13 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       // right. Chad, shown the consequence: "WE should flag this if it happens" — it now does,
       // as a `corrected_not_pinned` row on the problem-address queue, because a corrected
       // address over a STALE feed pin still routes a truck to the old building.
+      // A PIN OF OUR OWN THAT THIS SAVE DOES NOT MOVE STAYS WHERE IT IS (keepsPin): the same street,
+      // city and ZIP — pushed to NuVizz again, or a fix to the suite line — asks the geocoder the
+      // question it already answered, and its answer would land on top of a pin somebody dragged
+      // onto the right dock. A Save that moves the street still geocodes, exactly as before.
+      const keepPin = SAVE_KEEPS_PIN && keepsPin(notePinState(note), wasShowing, fields);
       let geo = null, geoErr = null;
-      try { geo = await geocodeAddress(google, q); } catch (e) { geoErr = e; }
+      if (!keepPin) { try { geo = await geocodeAddress(google, q); } catch (e) { geoErr = e; } }
 
       // FIRESTORE FIRST, AND UNCONDITIONALLY. It is the durable half, and neither a failed
       // geocode nor a failed vendor write may cost the dispatcher the address they just typed.
@@ -7537,7 +7550,10 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
         address_override_at: serverTimestamp(),
         // Only written when we actually have one: a half-written pin is worse than none, and
         // an absent location_override is what puts this stop on the queue to be finished.
-        ...(geo ? { location_override: { lat: geo.lat, lng: geo.lng }, location_override_at: serverTimestamp() } : {}),
+        ...(geo ? { location_override: { lat: geo.lat, lng: geo.lng }, location_override_at: serverTimestamp() }
+          // A KEPT pin is re-stamped on this same write: it was just confirmed for this address,
+          // and a stamp older than the new address_override_at would list it as "Pin not moved".
+          : keepPin ? { location_override_at: serverTimestamp() } : {}),
         last_updated: serverTimestamp(),
       }, { merge: true });
 
@@ -36760,8 +36776,12 @@ async function saveQueueCorrection({ row, fields, google, push, today, clientOpI
   const boardHasIt = queueBoardHasIt(row, fields);
   let geo = null, geoErr = null;
   if (!boardHasIt) {
+    // A pin of our own that this correction does not move stays (keepsPin, as on Edit address).
+    // The row already knows both halves: where its pin came from, and — as "Pin not moved" —
+    // whether that pin is older than the correction.
+    const keepPin = SAVE_KEEPS_PIN && keepsPin({ pinned: row?.pin?.source === 'override', stale: row?.signal === 'corrected_not_pinned' }, row.shown, fields);
     const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
-    try { geo = await geocodeAddress(google, q); } catch (e) { geoErr = e; }
+    if (!keepPin) { try { geo = await geocodeAddress(google, q); } catch (e) { geoErr = e; } }
 
     const payload = {
       match_key: row.matchKey,
@@ -36771,6 +36791,7 @@ async function saveQueueCorrection({ row, fields, google, push, today, clientOpI
       last_updated: serverTimestamp(),
     };
     if (geo) { payload.location_override = { lat: geo.lat, lng: geo.lng }; payload.location_override_at = serverTimestamp(); }
+    else if (keepPin) payload.location_override_at = serverTimestamp();   // confirmed for this address, on this write
     // The board half FIRST and unconditionally — a vendor write that fails must never cost the
     // dispatcher the address they just typed.
     await setDoc(doc(db, 'customer_notes', row.matchKey), payload, { merge: true });

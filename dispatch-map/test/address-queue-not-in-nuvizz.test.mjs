@@ -28,7 +28,7 @@ import {
   classifyQueueRow, buildQueueRow, sortQueueRows, isDismissed, queueRowFingerprint,
   notInNuvizzEnabled, nuvizzBehindBoard, SIGNAL_RANK,
 } from '../netlify/functions/lib/address-queue.mts';
-import { sameDeliveryAddress } from '../src/lib/address-fix.js';
+import { sameDeliveryAddress, keepsPin } from '../src/lib/address-fix.js';
 import { normalizeMatchKey, normStreetOf } from '../src/lib/matchKey.js';
 import { shownAddress } from '../src/lib/address-log.js';
 
@@ -277,8 +277,10 @@ function saveWith(spies) {
   // eslint-disable-next-line no-new-func
   return new Function(
     'db', 'doc', 'setDoc', 'serverTimestamp', 'geocodeAddress', 'setStopAddress', 'classifyPushResult', 'addressReachedNuvizz', 'logAddressOverride',
+    'SAVE_KEEPS_PIN', 'keepsPin',
     `'use strict';\n${PURE()}\n${fnOnly('saveQueueCorrection', 'async function ')}\nreturn saveQueueCorrection;`,
-  )({}, (_db, coll, id) => `${coll}/${id}`, spies.setDoc, () => 'TS', spies.geocode, spies.push, () => ({ kind: 'ok', text: 'NuVizz now reads it.' }), () => true, spies.log);
+  )({}, (_db, coll, id) => `${coll}/${id}`, spies.setDoc, () => 'TS', spies.geocode, spies.push, () => ({ kind: 'ok', text: 'NuVizz now reads it.' }), () => true, spies.log,
+    spies.keepsPinSwitch ?? true, keepsPin);
 }
 function spySet() {
   const calls = { setDoc: [], geocode: [], push: [], log: [] };
@@ -315,20 +317,33 @@ test('…and a board-only save of that row writes nothing and claims nothing', a
   assert.equal(out.logged.outcome, 'declined', 'the log’s own word for a write it rightly refused — not counted as lost');
 });
 
-test('an EDITED row is an ordinary correction again: board half first, geocode, then the push', async () => {
-  const sp = spySet();
+test('an EDITED row is an ordinary correction again: board half first, then the push', async () => {
+  // A line-2 edit leaves the street, so the hand pin stays (v1.106.2, keepsPin) — re-stamped on
+  // the same write so it does not read as older than the correction.
+  let sp = spySet();
   const edited = { ...ROW.shown, addr2: 'GATE 2 LAYDOWN YARD' };
   await saveWith(sp)({ row: ROW, fields: edited, google: {}, push: true, today: DAY, clientOpId: 'op2' });
-  assert.equal(sp.calls.geocode.length, 1);
   assert.equal(sp.calls.setDoc.length, 1);
   assert.deepEqual(sp.calls.setDoc[0][1].address_override, edited);
+  assert.equal(sp.calls.geocode.length, 0, 'the street did not move, so neither does the pin');
+  assert.equal('location_override' in sp.calls.setDoc[0][1], false);
+  assert.equal(sp.calls.setDoc[0][1].location_override_at, 'TS');
   assert.equal(sp.calls.push.length, 1);
   assert.deepEqual(sp.calls.log[0].before, ROW.shown, 'an ordinary correction logs what the board showed');
+  // An edit that moves the street geocodes, exactly as it always did.
+  sp = spySet();
+  const moved = { ...ROW.shown, addr1: '570 SANDY CREEK ROAD' };
+  await saveWith(sp)({ row: ROW, fields: moved, google: {}, push: true, today: DAY, clientOpId: 'op2b' });
+  assert.equal(sp.calls.geocode.length, 1);
+  assert.deepEqual(sp.calls.setDoc[0][1].location_override, { lat: 1, lng: 2 });
 });
 
 test('the other signals save exactly as before — board half, geocode, push', async () => {
   const sp = spySet();
-  const mis = { ...ROW, signal: 'mis_split', corrected: false, suggestion: { addr1: '568 SANDY CREEK ROAD ENTRANCE', addr2: 'SANDY CREEK ENTRANCE LAYDOWN Y' } };
+  // As a real mis-split row arrives: no correction yet, so the board shows NuVizz's own lines and
+  // the pin is NuVizz's — and the suggestion moves the street.
+  const mis = { ...ROW, signal: 'mis_split', corrected: false, shown: { ...ROW.vendor }, pin: { lat: 33.41, lng: -84.45, source: 'feed' },
+    suggestion: { addr1: '568 SANDY CREEK ROAD ENTRANCE', addr2: 'SANDY CREEK ENTRANCE LAYDOWN Y' } };
   await saveWith(sp)({ row: mis, fields: pure.correctedFields(mis), google: {}, push: true, today: DAY, clientOpId: 'op3' });
   assert.equal(sp.calls.setDoc.length, 1);
   assert.equal(sp.calls.geocode.length, 1);
