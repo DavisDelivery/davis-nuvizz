@@ -34,7 +34,8 @@
 //     (`identity`). NUVIZZ_PERSONAL_LOGINS=off puts every write back on the shared login;
 //     =required refuses a write with no personal login behind it. See lib/nuvizz-identity.mts.
 
-import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, type WriteOp } from './lib/nuvizz-write-ops.mts';
+import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, parsePieceInput, piecesBoardDates, type WriteOp } from './lib/nuvizz-write-ops.mts';
+import { piecesWriteEnabled } from './lib/pieces-hold.mts';
 import { requireUser } from './lib/require-user.mts';
 import { bearerFromHeaders } from './lib/auth-core.mts';
 import { runOp, resolveWriteCreds, loadImportBlocked, personalWriteCreds, routeCreateEngine } from './lib/nuvizz-write.mts';
@@ -161,6 +162,19 @@ function planFor(op: WriteOp, payload: any): string[] {
       `READ stop ${payload?.stopNbr ?? '?'} — record WHAT is about to be cancelled, and refuse if two orders share the number`,
       'REFUSE if the order is already delivered, or currently planned on a load (NuVizz only cancels unplanned orders)',
       `CANCEL BY stopId — never by number — reason ${String(payload?.reasonCode ?? '').trim() || 'ADMIN'}. THIS CANNOT BE UNDONE.`,
+    ];
+  }
+  // §P piece counts (v1.105.0) — the same ladder, plus the board half, which is Firestore only.
+  if (op === 'setStopPieces') {
+    const want = parsePieceInput(payload);
+    if ('error' in want) return [`REFUSE before any call: ${want.error}`];
+    const days = piecesBoardDates(payload?.boardDates);
+    return [
+      ...(piecesWriteEnabled() ? [] : ['REFUSE before any call: piece-count edits are switched off on this site (NUVIZZ_PIECES_WRITE)']),
+      `READ stop ${payload?.stopNbr ?? '?'} (partialUpdate is a FULL replace — the current record is what gets echoed back); refuse a second order sharing the number, or an order the driver already has`,
+      `WRITE the echo with the piece counts set to ${want.pallets} pallet(s) + ${want.loose} loose = ${want.total} piece(s) (NuVizz totalCartons / volume / totalPallets — only the ones that change are sent; the line items are never sent)`,
+      'VERIFY by reading the order back — each count must read as intended AND every other field byte-identical',
+      `BOARD: put the read-back counts on this order's board row${days.length ? ` (${days.join(', ')})` : ''} and its stored copy — Firestore only, no NuVizz call`,
     ];
   }
   if (op === 'addStopNote' || op === 'setStopDate' || op === 'setStopContact' || op === 'setStopAddress') {

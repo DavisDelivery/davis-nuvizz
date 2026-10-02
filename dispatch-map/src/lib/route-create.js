@@ -74,7 +74,7 @@ export function validateNewRoute({ routeName, date, existingNames = [], hasOrigi
 // so "the pickup dropdown always exists (even on a fresh browser with nothing saved)". The
 // address the form needed was in the app the whole time; only this screen could not see it.
 //
-// So the origin is RESOLVED, never merely read: the company terminal first (v1.104.4 — Chad:
+// So the origin is RESOLVED, never merely read: the company terminal first (v1.105.1 — Chad:
 // "This should always default to davis delivery."), then the last-used pickup, then the saved
 // list — and the form SHOWS which one it landed on, because a route created from the wrong
 // warehouse is not something to discover at the dock.

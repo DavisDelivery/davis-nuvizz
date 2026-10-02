@@ -941,6 +941,43 @@ export async function patchStopFields(tenant: string, dateStr: string, stopNbr: 
   return updateDocFields(`${COLLECTION}/${parentId(tenant, dateStr)}/stops/${encodeURIComponent(String(stopNbr))}`, fields);
 }
 
+// ── A confirmed piece write, onto the rows we already hold (v1.105.0) ────────
+//
+// The board half of the piece-count edit (lib/nuvizz-write.mts runSetStopPieces). Two stored
+// copies carry an order's freight forward, and the scan merges from whichever applies, so both
+// are patched: the day's row (what the board shows now and what later scans of that day carry
+// forward) and the order's enrichment-registry record (what a later day's first scan merges in).
+//
+// NEVER A CREATE, and never another record. updateDocFields would MINT a document at a missing
+// path — a board row holding nothing but freight is a phantom stop with no address. So each path
+// is read first (absent → left alone), refused when it is plainly a different NuVizz record (both
+// stopIds id-shaped and unequal — the two-orders-one-number case), and then patched through
+// incrementDocFields, whose currentDocument.exists:true makes a row the scan pruned in between a
+// failed write rather than a resurrected one. Field-masked: nothing outside `fields` moves.
+export type PiecePatchOutcome = 'patched' | 'absent' | 'other-record';
+
+const idShapedId = (v: any): boolean => {
+  const s = String(v ?? '').trim();
+  if (!s || /\s/.test(s)) return false;
+  return /^[0-9a-f]{16,}$/i.test(s) || (/^[A-Za-z0-9_-]{20,}$/.test(s) && /\d/.test(s));
+};
+
+async function patchSameRecord(path: string, stopId: string | null, fields: Record<string, any>): Promise<PiecePatchOutcome> {
+  const cur: any = await getDoc(path);
+  if (!cur) return 'absent';
+  if (idShapedId(stopId) && idShapedId(cur.stopId) && String(cur.stopId).trim() !== String(stopId).trim()) return 'other-record';
+  await incrementDocFields(path, {}, fields);
+  return 'patched';
+}
+
+export async function patchStopRowPieces(tenant: string, dateStr: string, stopNbr: string, stopId: string | null, fields: Record<string, any>): Promise<PiecePatchOutcome> {
+  return patchSameRecord(`${COLLECTION}/${parentId(tenant, dateStr)}/stops/${encodeURIComponent(String(stopNbr))}`, stopId, fields);
+}
+
+export async function patchEnrichedProPieces(tenant: string, stopNbr: string, stopId: string | null, fields: Record<string, any>): Promise<PiecePatchOutcome> {
+  return patchSameRecord(enrichRegPath(tenant, String(stopNbr)), stopId, fields);
+}
+
 // ── Board write-through (issue #361) ─────────────────────────────────────────
 //
 // A CONFIRMED live Save (the import engine's order read-back, or a classic save whose steps
