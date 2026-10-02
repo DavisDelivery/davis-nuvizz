@@ -196,6 +196,30 @@ export const duplicateOrder = (stopNbr, { pallets, loose, weight, date, copyPric
     ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
   }, { createdBy: 'dispatcher-duplicate', ...opts, dryRun: false });
 
+// WHICH SWITCHED WRITES THIS SITE HAS ON — the server's own switches, read off a dry run (zero
+// NuVizz calls) once per page load. The stop card offers the Duplicate panel only when the server
+// would run it, so NUVIZZ_DUPLICATE_ORDER=off takes the button away together with the refusal.
+// Anything but a clear answer reads as OFF (a button that creates an order is never shown on a
+// guess) and is asked again by the next card rather than remembered.
+let featuresAsk = null;
+let featuresKnown = null;
+export function siteWriteFeatures() {
+  if (featuresKnown) return Promise.resolve(featuresKnown);
+  if (!featuresAsk) {
+    featuresAsk = callWrite('duplicateOrder', {}, { dryRun: true }).then((j) => {
+      featuresAsk = null;
+      if (j?.ok === true && j.dryRun === true && j.features && typeof j.features === 'object') {
+        featuresKnown = j.features;
+        return featuresKnown;
+      }
+      return {};
+    }, () => { featuresAsk = null; return {}; });
+  }
+  return featuresAsk;
+}
+/** The answer siteWriteFeatures() already has, or null before one — a card renders without a flash. */
+export const siteWriteFeaturesNow = () => featuresKnown;
+
 // Create a route from the Compare card, orders and all (§R). The server checks the load number
 // is genuinely free (routePlan/update is create-OR-UPDATE — an existing number would be EDITED,
 // so anything but a clean absent-read refuses), reads every order on the card (each must be

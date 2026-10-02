@@ -38,7 +38,7 @@ import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, parsePieceIn
 import { piecesWriteEnabled } from './lib/pieces-hold.mts';
 import { requireUser } from './lib/require-user.mts';
 import { bearerFromHeaders } from './lib/auth-core.mts';
-import { runOp, resolveWriteCreds, loadImportBlocked, personalWriteCreds, routeCreateEngine, duplicateOrderBlocked, DUP_PROBE_MAX } from './lib/nuvizz-write.mts';
+import { runOp, resolveWriteCreds, loadImportBlocked, personalWriteCreds, routeCreateEngine, duplicateOrderBlocked, siteWriteFeatures, DUP_PROBE_MAX } from './lib/nuvizz-write.mts';
 import { rwbEngineBlocked, takeRwbLoginRefusal, holdRwbLogin, rwbLoginHeld, releaseRwbLoginCheckedSince, buildManualRouteJson, rwbHosts } from './lib/nuvizz-rwb.mts';
 import { personalLoginsMode, publicIdentity, type Identity } from './lib/nuvizz-identity.mts';
 import { resolveWriteIdentity, watchPersonalRefusals, refusalAfterWrite, markLoginRejected, passingCheckAt } from './lib/nuvizz-write-identity.mts';
@@ -333,10 +333,12 @@ export default async (req: Request): Promise<Response> => {
   const live = writeEnabled();
   const ops = await opsSnapshot();
 
-  // 1) DRY RUN — never touches NuVizz. The Compare panel's default mode + Beta mode.
+  // 1) DRY RUN — never touches NuVizz. The Compare panel's default mode + Beta mode. `features`
+  //    is which switched writes this site has on (siteWriteFeatures) — the stop card asks once per
+  //    page load and offers the Duplicate panel only when the server would run it.
   if (dryRun) {
     const preview = previewBodyFor(op, payload);
-    return J({ ok: true, op, tenant, live, dryRun: true, plan: planFor(op, payload), ...(preview ? { preview } : {}), ...(op === 'newRoute' ? { routeCreate: routeCreateEngine() } : {}), ops });
+    return J({ ok: true, op, tenant, live, dryRun: true, plan: planFor(op, payload), ...(preview ? { preview } : {}), ...(op === 'newRoute' ? { routeCreate: routeCreateEngine() } : {}), features: siteWriteFeatures(), ops });
   }
 
   // 2) Mutating ops require the server-side kill switch.

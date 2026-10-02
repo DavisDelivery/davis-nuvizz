@@ -21,7 +21,9 @@ import {
   copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, opLedgerStatus, STOP_NBR_MAX,
   WRITE_OPS, MUTATING_OPS,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
-import { runDuplicateOrder, runOp, DUP_PROBE_MAX } from '../netlify/functions/lib/nuvizz-write.mts';
+import { runDuplicateOrder, runOp, DUP_PROBE_MAX, siteWriteFeatures as serverWriteFeatures } from '../netlify/functions/lib/nuvizz-write.mts';
+import writeHandler from '../netlify/functions/nuvizz-write.mts';
+import { siteWriteFeatures as clientWriteFeatures, siteWriteFeaturesNow } from '../src/lib/nuvizzWrite.js';
 import { etDayString } from '../netlify/functions/lib/firestore.mts';
 import {
   copyBaseNbr as clientCopyBaseNbr, duplicateEligible, defaultCopyDate, duplicateDraft, duplicateOutcome,
@@ -467,4 +469,77 @@ test('the stop card mounts the Duplicate panel, and it sends ONE key per request
   assert.match(panel, /opRef\.current = singleOrderOpId\(opRef\.current, request, newClientOpId\);/);
   assert.match(panel, /clientOpId: opRef\.current\.id/);
   assert.match(panel, /if \(outcome\.created\) opRef\.current = \{ id: newClientOpId\(\), sent: null \};/);
+  // Offered only when the server would run it — the same switch, read off the dry run.
+  assert.match(panel, /siteWriteFeatures\(\)\.then\(\(f\) => \{ if \(live\) setEnabled\(f\?\.duplicateOrder === true\); \}\);/);
+  assert.match(panel, /if \(!enabled\) return null;/);
+  // A viewer behind the login is never asked (the 403 would raise the role bar over a card they only
+  // opened): the ask waits on the role gate, and the button shows greyed out with the reason.
+  assert.match(panel, /const gate = useRoleGate\('dispatcher'\);/);
+  assert.match(panel, /if \(enabled \|\| !gate\.allowed\) return undefined;/);
+  assert.match(panel, /\}, \[enabled, gate\.allowed\]\);/);
+  assert.match(panel, /if \(!gate\.allowed\) \{[\s\S]*?<button type="button" disabled title=\{gate\.reason\}[\s\S]*?\{gate\.reason\}/);
+  // Order matters: a pickup is never offered; a viewer is told why before the switch is consulted.
+  const iElig = panel.indexOf('if (!duplicateEligible(stop)) return null;');
+  const iGate = panel.indexOf('if (!gate.allowed) {');
+  const iOn = panel.indexOf('if (!enabled) return null;');
+  assert.ok(iElig > 0 && iElig < iGate && iGate < iOn, 'eligible → role gate → switch');
+});
+
+test('NUVIZZ_DUPLICATE_ORDER=off takes the button away WITH the refusal: the dry run carries the switch the executor checks', async () => {
+  // House shape: default ON, an explicit off-word turns it off, anything malformed leaves it ON.
+  assert.deepEqual(serverWriteFeatures({}), { duplicateOrder: true });
+  assert.deepEqual(serverWriteFeatures({ NUVIZZ_DUPLICATE_ORDER: 'off' }), { duplicateOrder: false });
+  assert.deepEqual(serverWriteFeatures({ NUVIZZ_DUPLICATE_ORDER: ' No ' }), { duplicateOrder: false });
+  assert.deepEqual(serverWriteFeatures({ NUVIZZ_DUPLICATE_ORDER: 'of' }), { duplicateOrder: true });
+  const saved = process.env.NUVIZZ_DUPLICATE_ORDER;
+  try {
+    for (const [v, want] of [[undefined, true], ['off', false]]) {
+      if (v === undefined) delete process.env.NUVIZZ_DUPLICATE_ORDER; else process.env.NUVIZZ_DUPLICATE_ORDER = v;
+      const res = await writeHandler(new Request('http://localhost/.netlify/functions/nuvizz-write', {
+        method: 'POST', body: JSON.stringify({ op: 'duplicateOrder', payload: {}, dryRun: true }),
+      }));
+      const j = await res.json();
+      assert.equal(res.status, 200);
+      assert.equal(j.dryRun, true);
+      assert.deepEqual(j.features, { duplicateOrder: want }, `NUVIZZ_DUPLICATE_ORDER=${v}`);
+      // And the executor refuses exactly when the card hides — before any NuVizz call.
+      if (!want) {
+        const r = await runDuplicateOrder({ request: async () => { throw new Error('no NuVizz call may be made'); } }, { stopNbr: '007174789', pallets: 4 }, { base: 'x', companyCode: 'X', auth: 'a' });
+        assert.equal(r.ok, false);
+        assert.match(r.error, /switched off/);
+      }
+    }
+  } finally {
+    if (saved === undefined) delete process.env.NUVIZZ_DUPLICATE_ORDER; else process.env.NUVIZZ_DUPLICATE_ORDER = saved;
+  }
+});
+
+test('the stop card asks once per page load, shows Duplicate only on a clear yes, and asks again after an unclear answer', async () => {
+  const realFetch = globalThis.fetch;
+  const asked = [];
+  let answer = { status: 502, body: { ok: false, error: 'bad gateway' } };
+  globalThis.fetch = async (url, init) => {
+    asked.push({ url: String(url), body: JSON.parse(init.body) });
+    return new Response(JSON.stringify(answer.body), { status: answer.status, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    assert.equal(siteWriteFeaturesNow(), null);
+    // A failed ask reads as OFF — a button that creates an order is never shown on a guess…
+    assert.deepEqual(await clientWriteFeatures(), {});
+    assert.equal(siteWriteFeaturesNow(), null, '…and is not remembered');
+    // An answer from a server that does not carry the switches (a deploy mid-rollout) is not a yes.
+    answer = { status: 200, body: { ok: true, dryRun: true, plan: [] } };
+    assert.deepEqual(await clientWriteFeatures(), {});
+    assert.equal(siteWriteFeaturesNow(), null);
+    answer = { status: 200, body: { ok: true, dryRun: true, plan: [], features: { duplicateOrder: true } } };
+    assert.deepEqual(await clientWriteFeatures(), { duplicateOrder: true });
+    assert.deepEqual(siteWriteFeaturesNow(), { duplicateOrder: true });
+    await clientWriteFeatures();
+    assert.equal(asked.length, 3, 'a clear answer is remembered for the page — no ask per card');
+    for (const a of asked) {
+      assert.match(a.url, /nuvizz-write$/);
+      assert.equal(a.body.op, 'duplicateOrder');
+      assert.equal(a.body.dryRun, true, 'the ask is a dry run — zero NuVizz calls');
+    }
+  } finally { globalThis.fetch = realFetch; }
 });

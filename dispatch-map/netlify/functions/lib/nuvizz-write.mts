@@ -3209,8 +3209,19 @@ async function applyBoardPieces(creds: WriteCreds, stopNbr: string, stopId: stri
  * NUVIZZ_DUPLICATE_ORDER=off (or 0/false/no) refuses every duplicate before any NuVizz call. House
  * shape — default ON, an explicit off-word turns it off, anything malformed leaves it ON.
  */
-export function duplicateOrderBlocked(): boolean {
-  return /^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_DUPLICATE_ORDER ?? '').trim());
+export function duplicateOrderBlocked(env: Record<string, any> = process.env): boolean {
+  return /^(0|false|off|no)$/i.test(String(env.NUVIZZ_DUPLICATE_ORDER ?? '').trim());
+}
+
+/**
+ * WHICH SWITCHED WRITES THIS SITE HAS ON, for a screen deciding what to offer. Read from the very
+ * switch the executor checks, so a button and its refusal cannot disagree: NUVIZZ_DUPLICATE_ORDER=off
+ * takes the Duplicate panel off the stop card AND refuses the op — one env var, every side at once
+ * (CLAUDE.md "the switch reverts EVERY side at once"). Carried on every dry-run answer, which spends
+ * no NuVizz call.
+ */
+export function siteWriteFeatures(env: Record<string, any> = process.env): { duplicateOrder: boolean } {
+  return { duplicateOrder: !duplicateOrderBlocked(env) };
 }
 
 /** The most NuVizz reads the number hunt may spend proving a copy number free. */
