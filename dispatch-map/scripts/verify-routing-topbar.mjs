@@ -28,6 +28,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
+import { STOPS_BAR_MIN_WIDTH } from '../src/lib/stops-tab.js';
 
 const DIST = resolve(process.argv[2] || 'dist');
 const PORT = Number(process.env.SMOKE_PORT) || 8810;
@@ -300,6 +301,12 @@ for (const vp of [{ name: 'laptop', width: 1440, height: 900 }, { name: 'desktop
 // badge is injected in TabBtn's own markup because the unread count comes from Firestore, which
 // the guard does not have; the geometry is what is under test.
 //
+// STOPS ONLY WHEN IT FITS (v1.104.3). Putting Stop lookup on this row as "Stops" ran it 30px over at
+// 1366, 55px at 1194 and 69px at 1180 with this one-digit badge (45px at 1366 with "99+"), so Stops
+// rides the bar only from STOPS_BAR_MIN_WIDTH and sits under More below it (lib/stops-tab.js; Chad:
+// "1 i like your idea"). The badge is now "99+" — what Chad's own bar showed — and every width also
+// proves Stops is on exactly one side: the bar at and above the cutoff, More below it, never both.
+//
 // WHAT IT DOES NOT COVER, said plainly: 1280px, 1080px and 820px, where v1.68.1 ALREADY clipped
 // the row (the "Dispatch Map" wordmark appears at 1280; the tablets are narrower than the row).
 // The fix makes all three better than v1.68.1, not whole. And a second dispatcher's longer chip
@@ -309,7 +316,7 @@ const BIG_DAY = Array.from({ length: 805 }, (_, i) => ({
 }));
 const BIG_PULL = { ...PULL, stops: BIG_DAY, count: BIG_DAY.length, scanUnplannedCount: BIG_DAY.filter((x) => x.isUnplanned).length };
 console.log('\nThe tab row — Messages and its unread badge stay on screen beside Build | Engine | Shadow\n');
-for (const width of [1180, 1194, 1366, 1440, 1920]) {
+for (const width of [1180, 1194, 1366, STOPS_BAR_MIN_WIDTH - 1, STOPS_BAR_MIN_WIDTH, 1920]) {
   const ctx = await browser.newContext({ viewport: { width, height: 900 } });
   const page = await ctx.newPage();
   page.setDefaultTimeout(15000);
@@ -332,7 +339,7 @@ for (const width of [1180, 1194, 1366, 1440, 1920]) {
     if (!msg) return { error: 'no Messages tab in the row' };
     const badge = document.createElement('span');
     badge.className = 'ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center';
-    badge.textContent = '3';
+    badge.textContent = '99+';
     msg.appendChild(badge);
     const nr = nav.getBoundingClientRect(), br = badge.getBoundingClientRect();
     const tabs = [...header.querySelectorAll('button')].filter((b) => /^(Build|Engine|Shadow)$/.test((b.innerText || '').trim()));
@@ -346,6 +353,7 @@ for (const width of [1180, 1194, 1366, 1440, 1920]) {
       chipW: cr ? cr.width : null, chipR: cr ? cr.right : null,
       headerH: header.getBoundingClientRect().height,
       vw: window.innerWidth,
+      stopsOnBar: [...nav.querySelectorAll('button')].some((b) => (b.innerText || '').trim() === 'Stops'),
     };
     badge.remove();
     return out;
@@ -362,6 +370,19 @@ for (const width of [1180, 1194, 1366, 1440, 1920]) {
   else ok(`${where}: Build | Engine | Shadow is whole and on screen`);
   if (m.headerH > 48) bad(`${where}: the header is ${Math.round(m.headerH)}px tall — it wrapped or grew a scrollbar (45px on one row)`);
   if (m.chipW != null && m.chipW < 27) bad(`${where}: the presence chip is ${Math.round(m.chipW)}px — it lost its dot`);
+  // STOPS IS ON EXACTLY ONE SIDE. The bar from the cutoff up, More below it — read off the page,
+  // not off the rule, so a bar tab and a More row that disagree are caught here.
+  const wantBar = width >= STOPS_BAR_MIN_WIDTH;
+  await page.evaluate(() => {
+    const b = [...document.querySelectorAll('header button')].find((x) => /^more/i.test((x.innerText || '').trim()));
+    if (b) b.click();
+  });
+  await page.waitForTimeout(400);
+  const inMore = (await page.getByRole('menuitem', { name: /^stops\b/i }).count()) > 0;
+  await page.keyboard.press('Escape');
+  if (m.stopsOnBar !== wantBar) bad(`${where}: Stops is ${m.stopsOnBar ? 'on' : 'off'} the bar — it belongs ${wantBar ? 'on' : 'off'} it at this width (cutoff ${STOPS_BAR_MIN_WIDTH}px)`);
+  else if (inMore === wantBar) bad(`${where}: More ${inMore ? 'lists Stops while the bar carries it — offered twice' : 'does not list Stops and the bar does not carry it — not offered at all'}`);
+  else ok(`${where}: Stops is ${wantBar ? 'on the bar, right of Routing, and not under More' : 'under More, and the bar keeps Messages'}`);
   await ctx.close();
 }
 
