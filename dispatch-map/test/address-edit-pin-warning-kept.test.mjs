@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { addressReachedNuvizz } from '../src/lib/nuvizzWrite.js';
 import { plainWriteError } from '../src/lib/write-error.js';
+import { keepsPin, notePinState } from '../src/lib/address-fix.js';
 
 const APP = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 
@@ -62,6 +63,11 @@ function runSave({ vendor, geocode, toNuvizz = true }) {
     setStopAddress: vendor,
     addressReachedNuvizz,
     plainWriteError,
+    // v1.106.2 — a Save that does not move the place keeps the pin. No note here, so no pin of our
+    // own: every save in this file geocodes exactly as it did.
+    SAVE_KEEPS_PIN: true,
+    keepsPin,
+    notePinState,
   };
   const names = Object.keys(env);
   // eslint-disable-next-line no-new-func
