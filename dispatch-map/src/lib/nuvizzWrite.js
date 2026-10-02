@@ -178,6 +178,24 @@ export const setStopPieces = (stopNbr, { pallets, loose } = {}, opts = {}) =>
     ...(Array.isArray(opts.boardDates) && opts.boardDates.length ? { boardDates: opts.boardDates.map(String) } : {}),
   }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
+// DUPLICATE an order as a NEW one numbered {original}-N (§DUP, v1.106.0). The server reads the
+// original, finds the first {original}-1, -2 … that NuVizz answers NOT FOUND (a number it holds is
+// skipped, never written — the create is an upsert), creates the copy with these counts, and reads it
+// back. ~4 NuVizz calls, never more than 6. `opts.clientOpId` is REQUIRED from the caller and must be
+// kept for a retry of the same request (lib/single-order-op.js singleOrderOpId): a retry under a
+// fresh key after a lost answer would make a SECOND copy, and the server's ledger replays the first
+// answer only to the same key.
+export const duplicateOrder = (stopNbr, { pallets, loose, weight, date, copyPrice } = {}, opts = {}) =>
+  callWrite('duplicateOrder', {
+    stopNbr,
+    pallets,
+    loose,
+    ...(weight != null && weight !== '' ? { weight } : {}),
+    ...(date ? { date: String(date) } : {}),
+    copyPrice: copyPrice === true,
+    ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
+  }, { createdBy: 'dispatcher-duplicate', ...opts, dryRun: false });
+
 // Create a route from the Compare card, orders and all (§R). The server checks the load number
 // is genuinely free (routePlan/update is create-OR-UPDATE — an existing number would be EDITED,
 // so anything but a clean absent-read refuses), reads every order on the card (each must be

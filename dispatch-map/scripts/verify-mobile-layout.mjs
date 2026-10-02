@@ -402,6 +402,27 @@ const PROBES = {
         return page.getByText(/^piece counts in nuvizz$/i).first().isVisible().catch(() => false);
       },
     },
+    {
+      // v1.106.0: the Duplicate panel opens in flow under the piece editor — three number boxes on
+      // one row at 360px, a date box, a checkbox row and the Create button. Same CUSTOMER 1 reason
+      // as above (a delivered order would still offer it, but one fixture row keeps both probes
+      // measuring the same drawer).
+      name: 'stop detail drawer — duplicate open',
+      open: async (page) => {
+        await page.getByRole('button', { name: /^stops$/i }).first().click();
+        await page.waitForTimeout(500);
+        const row = page.locator('[data-stop-row], li, button').filter({ hasText: /CUSTOMER 1 WITH/i }).first();
+        if (!(await row.isVisible().catch(() => false))) return false;
+        await row.click();
+        await page.waitForTimeout(800);
+        const dup = page.getByRole('button', { name: /^duplicate as a new order$/i }).first();
+        await dup.scrollIntoViewIfNeeded().catch(() => {});
+        if (!(await dup.isVisible().catch(() => false))) return false;
+        await dup.click();
+        await page.waitForTimeout(300);
+        return page.getByRole('button', { name: /^create the copy in nuvizz$/i }).first().isVisible().catch(() => false);
+      },
+    },
   ],
   addrhistory: [
     {

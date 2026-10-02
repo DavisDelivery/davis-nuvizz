@@ -978,6 +978,34 @@ export async function patchEnrichedProPieces(tenant: string, stopNbr: string, st
   return patchSameRecord(enrichRegPath(tenant, String(stopNbr)), stopId, fields);
 }
 
+/**
+ * Does our enrichment registry already hold a record for this order number? (v1.106.0)
+ *
+ * A FREE first look for the duplicate's number hunt (lib/nuvizz-write.mts runDuplicateOrder): an
+ * order our scans ever enriched is one NuVizz has held, so the hunt skips it without spending a
+ * NuVizz read. It only ever SKIPS a number — a miss here proves nothing (plenty of orders are never
+ * enriched), so the number is still proven absent in NuVizz itself before anything is created.
+ */
+export async function enrichedProKnown(tenant: string, stopNbr: string): Promise<boolean> {
+  return !!(await getDoc(enrichRegPath(tenant, String(stopNbr))));
+}
+
+/**
+ * CLAIM a copy number before creating it (v1.106.0) — an atomic create (createDocIfAbsent), so of two
+ * duplicates racing for the same {original}-N exactly one wins. Both would otherwise read N as not
+ * found in NuVizz, both would create it, and the second create — an UPSERT — would overwrite the
+ * first copy. The loser moves on to the next number. Returns true when this call holds the number.
+ * Throws when Firestore cannot answer (the caller decides; a hiccup must not read as "claimed").
+ */
+const copyClaimPath = (tenant: string, stopNbr: string) => `nuvizz_copy_claims/${tenantKey(tenant)}__${encodeURIComponent(String(stopNbr))}`;
+export async function claimCopyNumber(tenant: string, stopNbr: string, info: Record<string, any>): Promise<boolean> {
+  return createDocIfAbsent(copyClaimPath(tenant, stopNbr), { stopNbr: String(stopNbr), ...info, claimedAt: new Date().toISOString() });
+}
+/** Give a number back when the create it was claimed for did not happen (best-effort). */
+export async function releaseCopyNumber(tenant: string, stopNbr: string): Promise<void> {
+  await deleteDoc(copyClaimPath(tenant, stopNbr));
+}
+
 // ── Board write-through (issue #361) ─────────────────────────────────────────
 //
 // A CONFIRMED live Save (the import engine's order read-back, or a classic save whose steps

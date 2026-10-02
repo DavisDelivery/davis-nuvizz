@@ -34,11 +34,11 @@
 //     (`identity`). NUVIZZ_PERSONAL_LOGINS=off puts every write back on the shared login;
 //     =required refuses a write with no personal login behind it. See lib/nuvizz-identity.mts.
 
-import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, parsePieceInput, piecesBoardDates, type WriteOp } from './lib/nuvizz-write-ops.mts';
+import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, parsePieceInput, piecesBoardDates, parseCopyWeight, copyBaseNbr, opLedgerStatus, type WriteOp } from './lib/nuvizz-write-ops.mts';
 import { piecesWriteEnabled } from './lib/pieces-hold.mts';
 import { requireUser } from './lib/require-user.mts';
 import { bearerFromHeaders } from './lib/auth-core.mts';
-import { runOp, resolveWriteCreds, loadImportBlocked, personalWriteCreds, routeCreateEngine } from './lib/nuvizz-write.mts';
+import { runOp, resolveWriteCreds, loadImportBlocked, personalWriteCreds, routeCreateEngine, duplicateOrderBlocked, DUP_PROBE_MAX } from './lib/nuvizz-write.mts';
 import { rwbEngineBlocked, takeRwbLoginRefusal, holdRwbLogin, rwbLoginHeld, releaseRwbLoginCheckedSince, buildManualRouteJson, rwbHosts } from './lib/nuvizz-rwb.mts';
 import { personalLoginsMode, publicIdentity, type Identity } from './lib/nuvizz-identity.mts';
 import { resolveWriteIdentity, watchPersonalRefusals, refusalAfterWrite, markLoginRejected, passingCheckAt } from './lib/nuvizz-write-identity.mts';
@@ -177,6 +177,21 @@ function planFor(op: WriteOp, payload: any): string[] {
       `BOARD: put the read-back counts on this order's board row${days.length ? ` (${days.join(', ')})` : ''} and its stored copy — Firestore only, no NuVizz call`,
     ];
   }
+  // §DUP (v1.106.0) — a NEW order, so the plan names how its number is found before anything else.
+  if (op === 'duplicateOrder') {
+    const want = parsePieceInput(payload);
+    if ('error' in want) return [`REFUSE before any call: ${want.error}`];
+    const w = parseCopyWeight(payload?.weight);
+    if ('error' in w) return [`REFUSE before any call: ${w.error}`];
+    const base = copyBaseNbr(payload?.stopNbr);
+    return [
+      ...(duplicateOrderBlocked() ? ['REFUSE before any call: duplicating orders is switched off on this site (NUVIZZ_DUPLICATE_ORDER)'] : []),
+      `READ order ${payload?.stopNbr ?? '?'} — the original to copy; refuse a second order sharing the number`,
+      `FIND the first free number from ${base}-1: a number our own records know is skipped for free; any other must read NOT FOUND in NuVizz (an explicit 404) before it is used — a number NuVizz holds is skipped, never written (stop/sync/update would REPLACE that order); at most ${DUP_PROBE_MAX} reads`,
+      `CREATE it (stop/sync/update, as New Order does) for ${String(payload?.date ?? '').trim() || 'today'}: consignee, address, contact, delivery window, commodity, instructions and pickup origin copied from the original; ${want.pallets} pallet(s) + ${want.loose} loose = ${want.total} piece(s), ${(w as any).weight != null ? `${(w as any).weight} lbs` : "the original's weight"}; price ${payload?.copyPrice === true ? 'copied' : 'NOT copied'}; lands UNPLANNED`,
+      'VERIFY by reading the new order back — its number, pieces and street must read as created',
+    ];
+  }
   if (op === 'addStopNote' || op === 'setStopDate' || op === 'setStopContact' || op === 'setStopAddress') {
     const a = payload?.address || {};
     const what = op === 'addStopNote' ? 'merge the note onto the order\'s existing comments'
@@ -256,6 +271,11 @@ function previewBodyFor(op: WriteOp, payload: any): any {
 async function journal(op: WriteOp, payload: any, result: any, tenant: string, clientOpId: string | null, createdBy: string | null, by: string | null = null): Promise<void> {
   const date = String(payload?.date || etDayString());
   try {
+    // A duplicate is a created order too, and it is journaled the moment NuVizz confirms the create
+    // — even when the read-back could not verify it, because the order exists either way.
+    if (op === 'duplicateOrder' && result?.created === true && result?.stopNbr) {
+      await recordCreatedOrder({ tenant, stopNbr: result.stopNbr, stopId: result.stopId ?? null, loadNbr: null, status: 'succeeded', createdBy: createdBy || 'dispatcher-duplicate', by, createdAt: new Date().toISOString(), clientOpId, copyOf: result.copyOf ?? null, verified: result.ok === true, nuvizzResponse: result });
+    }
     if (op === 'createStop' && result?.ok) {
       // `createdBy` is the SOURCE the client names ('dispatcher', 'dispatcher-bulk',
       // 'dispatcher-manifest') and is kept exactly as sent; `by` is the PERSON — the signed-in
@@ -429,7 +449,7 @@ export default async (req: Request): Promise<Response> => {
   if (MUTATING_OPS.has(op)) {
     await journal(op, payload, result, tenant, clientOpId, createdBy, who);
     const sent = saveSent(payload, { createdBy });
-    if (clientOpId) await putOpRecord({ clientOpId, op, status: result?.ok ? 'succeeded' : 'failed', result, tenant, at: new Date().toISOString(), by: who, nuvizzAs: identity.kind === 'personal' ? identity.nuvizzUser : 'shared', ...(sent ? { sent } : {}) });
+    if (clientOpId) await putOpRecord({ clientOpId, op, status: opLedgerStatus(op, result), result, tenant, at: new Date().toISOString(), by: who, nuvizzAs: identity.kind === 'personal' ? identity.nuvizzUser : 'shared', ...(sent ? { sent } : {}) });
   }
 
   // 8) Answer. A failure MUST carry its reason at the top level — the executors always build

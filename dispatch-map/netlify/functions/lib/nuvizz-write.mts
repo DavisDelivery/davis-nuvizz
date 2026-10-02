@@ -32,11 +32,12 @@ import {
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   stopPiecesFrom, parsePieceInput, buildStopPiecesOverride, piecesVerdict, piecesLine, boardPiecesFields,
   piecesBoardDates, boardPiecesWarning, PIECE_WRITE_SENDS,
+  copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, STOP_NBR_MAX, COPY_N_MAX,
   isTransportRetryable,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId, statusFromCode, isTerminalStatus } from './nuvizz-list.mts';
-import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay, readStopDoc, patchStopFields, patchStopRowPieces, patchEnrichedProPieces } from './firestore.mts';
+import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay, readStopDoc, patchStopFields, patchStopRowPieces, patchEnrichedProPieces, enrichedProKnown, claimCopyNumber, releaseCopyNumber } from './firestore.mts';
 import { piecesWriteEnabled } from './pieces-hold.mts';
 import { completionPatch } from './scan-completions.mts';
 import { finishedGuardEnabled } from './finished-guard.mts';
@@ -3204,6 +3205,168 @@ async function applyBoardPieces(creds: WriteCreds, stopNbr: string, stopId: stri
 }
 
 /**
+ * THE WAY BACK for the duplicate (CLAUDE.md "ship it so it can be put back"):
+ * NUVIZZ_DUPLICATE_ORDER=off (or 0/false/no) refuses every duplicate before any NuVizz call. House
+ * shape — default ON, an explicit off-word turns it off, anything malformed leaves it ON.
+ */
+export function duplicateOrderBlocked(): boolean {
+  return /^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_DUPLICATE_ORDER ?? '').trim());
+}
+
+/** The most NuVizz reads the number hunt may spend proving a copy number free. */
+export const DUP_PROBE_MAX = 3;
+
+/**
+ * runDuplicateOrder (§DUP, v1.106.0) — create {original}-N as a NEW order, copied from an existing one.
+ *
+ * Chad, 2026-10-02: "make it where i can duplicate an order essentially we can do it as creating a
+ * new order and way we make the pro number is its original pro-1 then if we duplicate the same
+ * order twice it would be original pro-2 so on an so forth."
+ *
+ * THE LADDER (§DUP in nuvizz-write-ops.mts says why each rung exists):
+ *   1. READ   the order on the card. Refuse a wrong twin and a record with no stopId of its own.
+ *             Build the copy BEFORE spending another call, so a pickup, half an address or a day
+ *             already gone is refused here.
+ *   2. FIND   the first free {original}-N from N=1. A number our own registry already knows is
+ *             skipped for free; every other candidate must read NOT FOUND in NuVizz — an explicit
+ *             404 — before it is used. A number NuVizz holds is skipped, never written:
+ *             stop/sync/update is an UPSERT and would REPLACE that order. Any other answer (a 5xx,
+ *             a 200 with no order in it) refuses: "could not tell" is never "free". At most
+ *             DUP_PROBE_MAX reads. A number proven free is CLAIMED atomically (claimCopyNumber)
+ *             before the create, so two duplicates racing for it cannot both write it.
+ *   3. CREATE the copy with createStop — the stop/sync/update New Order uses. NuVizz answering that
+ *             it UPDATED an order instead of creating one is an alarm, never a success.
+ *   4. VERIFY by reading the new order back: its number, pieces and street must read as created.
+ * Typically 4 NuVizz calls (read, one probe, create, read-back); never more than 6.
+ *
+ * Once the create has landed the result carries `created: true` whatever the read-back says, and the
+ * write ledger counts that as done (opLedgerStatus), so a retry of the same request replays this
+ * answer instead of minting a second copy.
+ *
+ * NO BOARD ROW IS WRITTEN. The new order reaches the board through the scans, exactly as an order
+ * made in New Order does. Where an order lands is the scan's decision, and changing that is its own
+ * piece of work.
+ */
+export async function runDuplicateOrder(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
+  const stopNbr = req(payload?.stopNbr, 'duplicateOrder: stopNbr');
+  const calls = { reads: 0, writes: 0 };
+  if (duplicateOrderBlocked()) {
+    return { ok: false, blocked: true, calls, error: 'duplicateOrder: duplicating orders is switched off on this site (NUVIZZ_DUPLICATE_ORDER) — nothing was sent to NuVizz.' };
+  }
+  const want = parsePieceInput(payload);
+  if ('error' in want) return { ok: false, calls, error: `duplicateOrder: ${want.error} — nothing was sent to NuVizz.` };
+  const w = parseCopyWeight(payload?.weight);
+  if ('error' in w) return { ok: false, calls, error: `duplicateOrder: ${w.error} — nothing was sent to NuVizz.` };
+  const today = etDayString();
+  const date = String(payload?.date ?? '').trim() || today;
+  if (!isDayString(date)) return { ok: false, calls, error: `duplicateOrder: '${date}' is not a YYYY-MM-DD delivery day — nothing was sent to NuVizz.` };
+  if (date < today) return { ok: false, calls, error: `duplicateOrder: ${date} has already gone — a new order goes on today (${today}) or a later day. Nothing was sent to NuVizz.` };
+
+  // 1. READ the original.
+  const src = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!src?.ok) return { ok: false, calls, error: `duplicateOrder: could not read order ${stopNbr} (${src?.error || 'read failed'}) — nothing was created.` };
+  const raw = rawStopFrom(src.raw ?? src);
+  const twin = stopInstanceMismatch('duplicateOrder', stopNbr, payload?.stopId, raw);
+  if (twin) return { ok: false, wrongInstance: true, calls, error: twin };
+  if (!String(raw?.stopId ?? '').trim()) {
+    return { ok: false, calls, error: `duplicateOrder: order ${stopNbr} read back with no stopId of its own — the number alone can name two orders, so there is no telling which one this would copy. Nothing was created.` };
+  }
+  const copyOf = String(raw.stopNbr ?? stopNbr).trim();
+  const base = copyBaseNbr(copyOf);
+  const opts = { pallets: want.pallets, loose: want.loose, weight: (w as any).weight, date, copyPrice: payload?.copyPrice === true };
+  const first = copyNbr(base, 1);
+  if (!first) return { ok: false, calls, error: `duplicateOrder: ${base}-1 would be longer than NuVizz's ${STOP_NBR_MAX}-character order number — nothing was created.` };
+  const draft = buildDuplicateStop(raw, first, opts);
+  if ('error' in draft) return { ok: false, calls, error: `duplicateOrder: ${draft.error} — nothing was created.` };
+
+  // 2. FIND the first free number.
+  const tenant = String((creds as any)?.companyCode || 'DAVIS');
+  const skipped: Array<{ nbr: string; why: string }> = [];
+  const taken = () => skipped.map((s) => s.nbr).join(', ');
+  let chosen: string | null = null;
+  let probes = 0;
+  for (let n = 1; n <= COPY_N_MAX && !chosen; n++) {
+    const cand = copyNbr(base, n);
+    if (!cand) return { ok: false, calls, skipped, error: `duplicateOrder: ${taken()} ${skipped.length === 1 ? 'is' : 'are'} taken and ${base}-${n} would be longer than NuVizz's ${STOP_NBR_MAX} characters — nothing was created.` };
+    if (isFirestoreEnabled()) {
+      let known = false;
+      try { known = await enrichedProKnown(tenant, cand); } catch { known = false; /* a miss proves nothing; NuVizz decides below */ }
+      if (known) { skipped.push({ nbr: cand, why: 'already in our records' }); continue; }
+    }
+    if (probes >= DUP_PROBE_MAX) {
+      return { ok: false, calls, skipped, error: `duplicateOrder: ${taken()} are already taken, and the number hunt stops after ${DUP_PROBE_MAX} NuVizz reads — nothing was created. Create ${base}-${n} in the portal if it is free.` };
+    }
+    const gs = await fireSingle(requester, 'getStop', { stopNbr: cand }, creds);
+    calls.reads += 1; probes += 1;
+    const held = rawStopFrom(gs?.raw ?? gs);
+    if (gs?.ok && (String(held?.stopId ?? '').trim() || String(held?.stopNbr ?? '').trim())) { skipped.push({ nbr: cand, why: 'already in NuVizz' }); continue; }
+    if (gs?.httpStatus === 404) {
+      // CLAIM it before creating: two duplicates racing for the same number would both read it as
+      // not found, and the second create — an upsert — would overwrite the first copy. The claim
+      // is atomic, so exactly one of them holds the number; the other moves on. Firestore off
+      // (a local build) has no claim to make; Firestore failing to answer proceeds on the NuVizz
+      // proof alone rather than block every duplicate on a cache hiccup.
+      let claimed = true;
+      if (isFirestoreEnabled()) {
+        try { claimed = await claimCopyNumber(tenant, cand, { copyOf }); } catch { claimed = true; }
+      }
+      if (!claimed) { skipped.push({ nbr: cand, why: 'being created by another duplicate right now' }); continue; }
+      chosen = cand;
+      break;
+    }
+    return {
+      ok: false, calls, skipped,
+      error: `duplicateOrder: could not prove ${cand} is free — NuVizz answered ${gs?.httpStatus ?? 'nothing'}${gs?.ok ? ' with no order in it' : ''}. Nothing was created: a create at a number NuVizz already holds REPLACES that order, so only a clear not-found counts.`,
+    };
+  }
+  if (!chosen) return { ok: false, calls, skipped, error: `duplicateOrder: no free number from ${base}-1 to ${base}-${COPY_N_MAX} — nothing was created.` };
+
+  // 3. CREATE.
+  const built = buildDuplicateStop(raw, chosen, opts);
+  if ('error' in built) return { ok: false, calls, skipped, error: `duplicateOrder: ${built.error} — nothing was created.` };
+  const wrote = await fireSingle(requester, 'createStop', { stop: built.stop }, creds);
+  calls.writes += 1;
+  if (!wrote?.ok) {
+    // Nothing was created, so the number goes back (best-effort; a stale claim only costs a skip).
+    if (isFirestoreEnabled()) { try { await releaseCopyNumber(tenant, chosen); } catch { /* the next hunt skips it */ } }
+    return { ok: false, calls, skipped, error: `duplicateOrder: NuVizz refused to create ${chosen} (${wrote?.error || 'create failed'}).` };
+  }
+  if (wrote.updated) {
+    return {
+      ok: false, created: true, alarm: true, stopNbr: chosen, copyOf, calls, skipped,
+      error: `duplicateOrder: NuVizz says it UPDATED an existing order ${chosen} instead of creating one — although ${chosen} read as not found a moment earlier. Check ${chosen} in the portal now: its details may have been replaced.`,
+    };
+  }
+
+  // 4. VERIFY.
+  const back = await fireSingle(requester, 'getStop', { stopNbr: chosen }, creds);
+  calls.reads += 1;
+  const rawBack = rawStopFrom(back?.raw ?? back);
+  const backId = String(rawBack?.stopId ?? '').trim();
+  const createdId = String(wrote?.entityId ?? '').trim();
+  const dontRetry = `Do not press Duplicate again first — it would make another copy.`;
+  if (!back?.ok || !backId) {
+    return { ok: false, created: true, unverified: true, stopNbr: chosen, stopId: createdId || null, copyOf, calls, skipped, error: `duplicateOrder: NuVizz answered that ${chosen} was created, but reading it back failed (${back?.error || 'no order in the answer'}) — check ${chosen} in the portal. ${dontRetry}` };
+  }
+  if (isIdShaped(createdId) && isIdShaped(backId) && createdId !== backId) {
+    return { ok: false, created: true, unverified: true, stopNbr: chosen, stopId: createdId, copyOf, calls, skipped, error: `duplicateOrder: ${chosen} was created as id …${createdId.slice(-6)}, but reading it back answered a different record (id …${backId.slice(-6)}) — two orders may carry ${chosen}. Check it in the portal. ${dontRetry}` };
+  }
+  const now = stopPiecesFrom(rawBack);
+  const misses = [...piecesVerdict(now, want).misses];
+  if (normStopNbr(rawBack.stopNbr) !== normStopNbr(chosen)) misses.unshift(`its number reads ${rawBack.stopNbr ?? 'nothing'}`);
+  if (!addressMatchesTyped(rawBack?.to?.address, built.stop?.to?.address || {})) misses.push(`its street reads ${String(rawBack?.to?.address?.addr1 ?? 'nothing')}`);
+  if (misses.length) {
+    return { ok: false, created: true, stopNbr: chosen, stopId: backId, copyOf, now, calls, skipped, error: `duplicateOrder: ${chosen} was created, but it reads back differently — ${misses.join('; ')}. Check it in the portal. ${dontRetry}` };
+  }
+  return {
+    ok: true, created: true, stopNbr: chosen, stopId: backId, entityNbr: chosen, entityId: backId,
+    copyOf, base, skipped, now, deliveryDate: date, priceCopied: opts.copyPrice && !!String(raw.sealNbr ?? '').trim(),
+    warnings: built.warnings, calls,
+  };
+}
+
+/**
  * runNewRoute (§R) — create an EMPTY route the dispatcher can then build onto.
  *
  * Chad, Jul 30: "I want to be able to create a route in the routing tab." Until now nothing
@@ -3541,6 +3704,8 @@ export async function runOp(requester: RequesterLike, op: WriteOp, payload: any,
     case 'setStopContact': return runSetStopContact(requester, payload, creds);
     // §P piece counts (v1.105.0): read → partialUpdate → read-back, then the board half.
     case 'setStopPieces': return runSetStopPieces(requester, payload, creds);
+    // §DUP (v1.106.0): read the original → prove {original}-N absent → create → read back.
+    case 'duplicateOrder': return runDuplicateOrder(requester, payload, creds);
     // §R — the orchestration (collision check → header write → read-back verify). The bare
     // 'createRoute' single op stays available for tests/diagnostics; the app calls 'newRoute'.
     case 'newRoute': return runNewRoute(requester, payload, creds);

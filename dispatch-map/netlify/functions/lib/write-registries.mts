@@ -143,6 +143,10 @@ export interface CreatedOrder {
   clientOpId?: string | null;
   nuvizzResponse?: any;
   error?: string | null;
+  /** A duplicate's original order number (v1.106.0). Absent on every other create. */
+  copyOf?: string | null;
+  /** A duplicate whose read-back confirmed it (v1.106.0); false = NuVizz said created, unverified. */
+  verified?: boolean;
 }
 
 export async function recordCreatedOrder(o: CreatedOrder): Promise<void> {

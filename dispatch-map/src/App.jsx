@@ -83,7 +83,8 @@ import { isTvPath, tvRailRows, tvVerdict, tvFeedState, tvRollDate, TV_RAIL_LIMIT
 import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent, tvImageFailure, boundsOf, snapBounds } from './lib/tv-static-map.js';
 import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
-import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, setStopPieces, addressReachedNuvizz } from './lib/nuvizzWrite.js';
+import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, setStopPieces, duplicateOrder, addressReachedNuvizz } from './lib/nuvizzWrite.js';
+import { copyBaseNbr, duplicateEligible, etToday, defaultCopyDate, duplicateDraft, duplicateOutcome } from './lib/order-duplicate.js';
 import { boardPiecesOf, parsePieceDraft, piecesChanged, piecesLine, piecesBoardDatesOf, piecesFoldFrom, piecesOutcome, piecesEditable } from './lib/stop-pieces.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
@@ -220,7 +221,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.105.0';
+const APP_VERSION = '1.106.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -274,6 +275,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.106.0', 'DUPLICATE AN ORDER AS A NEW ONE \u2014 ITS NUMBER -1, THEN -2, AND SO ON. Chad, 10/02: \u201cmake it where i can duplicate an order essentially we can do it as creating a new order and way we make the pro number is its original pro-1 then if we duplicate the same order twice it would be original pro-2 so on an so forth.\u201d WHERE: the stop card, under Items \u2014 \u201cDuplicate as a new order\u201d, in the same four places as Edit piece counts. Set the copy\u2019s pallets, loose, weight and delivery day (they open on the original\u2019s, and on today when the original\u2019s day has gone), tick \u201cCopy the price\u201d if you want it, and Create. THE NUMBER: the first ORIGINAL-N that NuVizz does not already hold \u2014 duplicating the same order twice gives -1 then -2, and duplicating a copy still numbers from the original (007174789-1 gives 007174789-2, never -1-1). A carrier id stays whole (ESTES-0538243875 gives ESTES-0538243875-1). IT NEVER OVERWRITES: NuVizz\u2019s order create REPLACES an order that already has the number, so each candidate must read NOT FOUND in NuVizz before it is used \u2014 one that exists is skipped, and any other answer (an error, an empty reply) stops the duplicate with nothing created. Numbers our own records already know are skipped without a NuVizz call, and a number is claimed before it is created, so two dispatchers duplicating the same order at once cannot both take it. THE COPY carries the original\u2019s consignee and address, contact, delivery window (the same times on the chosen day), commodity, driver instructions, PO and customer references, and pickup origin \u2014 built by the same builder New Order uses. NOT COPIED: the route, driver and attachments (it lands unplanned and reaches the board through the scans, as a New Order does), the price unless ticked, and an \u201cATT\u201d failed-delivery marker on the shipment number. VERIFIED: the new order is read back \u2014 its number, pieces and street must match \u2014 and a press after a lost answer goes out under the same request key, so it replays the first answer and can never make a second copy. About 4 NuVizz calls, never more than 6. NUVIZZ_DUPLICATE_ORDER=off turns it off.'],
   ['1.105.0', 'EDIT AN ORDER\u2019S PIECE COUNTS ON THE STOP CARD AND SEND THEM TO NUVIZZ. Chad, 10/02: \u201cmake it where in dispatch map i can edit an order and change piece counts and then send it to nuvizz to change as well.\u201d WHERE: the stop card, under Items \u2014 \u201cEdit piece counts\u201d. It is the same card on the Map\u2019s desktop sidebar, the Map\u2019s phone drawer, the Routing stop panel and the PRO-lookup card, so it is on all four. Two boxes, Pallets and Loose \u2014 the same two the New Order form takes; the total is their sum and is shown, never typed. Send to NuVizz reads the order, writes ONLY the counts that change (NuVizz totalCartons / volume / totalPallets \u2014 a pallets fix never sends the loose count), reads it back, and says what NuVizz now holds. 3 NuVizz calls; 1 when NuVizz already has those counts. REFUSED BEFORE ANYTHING IS WRITTEN: an order already dispatched, out for delivery, arrived or delivered; a second NuVizz order sharing the number; a record with no id of its own; zero pieces (that is a cancel, not an edit). VERIFIED, NEVER ASSUMED: no write in this app had changed a piece count before, so the read-back is the proof every time. If NuVizz takes the write but reads back a different count, or any other field moves (weight, address, the line items, the BOL), the card says exactly which one, in red. NOT CHANGED: the order\u2019s line items in NuVizz (the portal\u2019s Items table) are a separate record and keep their quantity \u2014 the card says so before you Send. THE BOARD MOVES TOO: the scans do not refresh freight (it is carried forward from an order\u2019s first read), so NuVizz\u2019s read-back counts are written onto the order\u2019s board row and its stored copy \u2014 field-masked, never creating a row \u2014 and the card, the route\u2019s skid count and the Build Panel change together. A scan that snapshotted the board before the edit could have written the old count back over it; for the hour after an edit the scan now keeps the edited counts (the same hold the plan write-through uses). NUVIZZ_PIECES_WRITE=off turns all of it off \u2014 the write and the scan\u2019s hold \u2014 with one env var.'],
   ['1.104.3', 'STOPS IS ON THE DESKTOP BAR, RIGHT OF ROUTING \u2014 IN ANY WINDOW WIDE ENOUGH TO KEEP MESSAGES ON IT. Chad: \u201ctake the stops out of the more tab drop down and I want to move it into the main bar on desktop. Um, probably to the right of routing\u201d \u2014 and then \u201cJust call it stops not stop lookup now.\u201d Stop lookup is now a tab called Stops beside Routing (beta): one click instead of two. THE FIRST CUT DID NOT FIT EVERY DESK. On Routing \u2192 Build the same bar also carries the board card, the presence chip and Build | Engine | Shadow, and in a 1180\u20131366px window (a 13\u201314\u2033 laptop, or a browser at half screen) the extra tab pushed Messages and its red unread badge off the end of the row \u2014 on Routing the only sign a driver or customer has texted. So, Chad\u2019s pick (\u201c1 i like your idea\u201d): at 1440px and wider Stops sits on the bar and More does not list it; in a narrower window it sits under More, still called Stops, and the bar keeps Messages. Never both, never neither, and it moves live as the window is resized. The phone menu is unchanged, and the screen itself still says Stop lookup at the top. THE WAY BACK: one small commit; a revert puts it back under More.'],
   ['1.104.2', 'MESSAGES ON A DESKTOP: THE LIST IS THE DRAWER, AND A CONVERSATION SLIDES OUT ONLY WHEN YOU OPEN ONE. Chad, on the v1.103.0 two-pane drawer: “why is there so much wasted space on the select a conversation seems like that should be in a drawer”. He was right: the panel opened 880px wide every time, and half of it was an empty “Select a conversation” card. NOW it opens as the 400px list alone. Opening a conversation or New message slides a second drawer out to the list’s LEFT, so the row you clicked never moves and switching between conversations is still one click; its fold button (top right of the conversation) puts it away and leaves the list, and the list’s X closes Messages. The phone and narrow windows are unchanged — one screen at a time. Nothing about sending, unread or the stored texts changes. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
@@ -9705,6 +9707,117 @@ function StopPiecesEditor({ stop, onRefreshed }) {
   );
 }
 
+// ── DUPLICATE — a NEW order numbered {original}-N (§DUP, v1.106.0) ───────────
+// Chad, 2026-10-02: "make it where i can duplicate an order essentially we can do it as creating a
+// new order and way we make the pro number is its original pro-1 then if we duplicate the same
+// order twice it would be original pro-2 so on an so forth."
+//
+// The copy's pieces, weight and day are set here (a split puts part of the freight on each order);
+// everything else comes from the original's own NuVizz record on the server. The number is not
+// promised up front: the server takes the first {original}-N that NuVizz answers NOT FOUND, so the
+// panel names the pattern and the answer names the number. ONE KEY PER REQUEST
+// (lib/single-order-op.js): a retry after a lost answer goes out under the same key and the server
+// replays the first answer, so it can never mint a second copy. Rules: lib/order-duplicate.js.
+function DuplicateOrderPanel({ stop }) {
+  const today = etToday();
+  const [open, setOpen] = useState(false);
+  const [pallets, setPallets] = useState('');
+  const [loose, setLoose] = useState('');
+  const [weight, setWeight] = useState('');
+  const [date, setDate] = useState('');
+  const [copyPrice, setCopyPrice] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);       // { kind, text, created, nbr }
+  const opRef = useRef({ id: newClientOpId(), sent: null });
+  const pro = stop?.stopNbr || stop?.pro || '';
+  const base = copyBaseNbr(pro);
+  const draft = duplicateDraft({ pallets, loose, weight, date }, today);
+  if (!duplicateEligible(stop)) return null;
+  const begin = () => {
+    const cur = boardPiecesOf(stop);
+    setOpen(true); setMsg(null);
+    setPallets(cur.pallets != null ? String(cur.pallets) : '');
+    setLoose(cur.loose ? String(cur.loose) : '');
+    setWeight(stop?.weight != null && String(stop.weight).trim() !== '' ? String(stop.weight) : '');
+    setDate(defaultCopyDate(stop, today));
+    setCopyPrice(false);
+  };
+  const create = async () => {
+    if (busy || draft.error) return;
+    setBusy(true); setMsg(null);
+    try {
+      const request = { pro, stopId: stop?.stopId || null, pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice };
+      opRef.current = singleOrderOpId(opRef.current, request, newClientOpId);
+      const r = await duplicateOrder(pro, { pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice }, {
+        stopId: stop?.stopId || undefined, clientOpId: opRef.current.id,
+      });
+      const outcome = duplicateOutcome(r);
+      // A confirmed create closes this request: the next press is a NEW copy under a new key.
+      if (outcome.created) opRef.current = { id: newClientOpId(), sent: null };
+      setMsg(outcome);
+    } catch (e) { setMsg({ kind: 'err', created: false, text: e?.message || 'Could not duplicate the order.' }); }
+    finally { setBusy(false); }
+  };
+  const inputCls = 'mt-0.5 w-full min-h-[44px] border border-slate-300 rounded px-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 disabled:bg-slate-50';
+  return (
+    <div className="pt-1.5">
+      {!open ? (
+        <button type="button" onClick={begin}
+          className="w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-blue-700 border border-blue-200 rounded-md px-3 hover:bg-blue-50 active:bg-blue-100">
+          <Plus size={13} /> Duplicate as a new order
+        </button>
+      ) : (
+        <div className="rounded-md border border-slate-200 p-2 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs uppercase font-semibold text-slate-500">Duplicate as a new order</div>
+            <button type="button" onClick={() => { setOpen(false); setMsg(null); }} aria-label="Close duplicate"
+              className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center text-slate-400 hover:text-slate-700"><X size={14} /></button>
+          </div>
+          <div className="text-[12px] text-slate-700 leading-snug">
+            New order <span className="font-mono font-semibold">{base}-1</span>, or the next number NuVizz does not already hold (-2, -3 …).
+            {base !== String(pro).trim() && <> Numbered from the original <span className="font-mono">{base}</span>, not from this copy.</>}
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <label className="block text-[11px] font-medium text-slate-500">Pallets
+              <input type="number" inputMode="numeric" min="0" step="1" value={pallets} disabled={busy}
+                onChange={(e) => setPallets(e.target.value)} className={inputCls} />
+            </label>
+            <label className="block text-[11px] font-medium text-slate-500">Loose
+              <input type="number" inputMode="numeric" min="0" step="1" value={loose} placeholder="0" disabled={busy}
+                onChange={(e) => setLoose(e.target.value)} className={inputCls} />
+            </label>
+            <label className="block text-[11px] font-medium text-slate-500">Weight (lbs)
+              <input type="number" inputMode="decimal" min="0" step="any" value={weight} placeholder="as original" disabled={busy}
+                onChange={(e) => setWeight(e.target.value)} className={inputCls} />
+            </label>
+          </div>
+          <label className="block text-[11px] font-medium text-slate-500">Delivery day
+            <input type="date" min={today} value={date} disabled={busy}
+              onChange={(e) => setDate(e.target.value)} className={inputCls} />
+          </label>
+          <label className="flex items-center gap-2 min-h-[44px] text-[12px] text-slate-700">
+            <input type="checkbox" checked={copyPrice} disabled={busy} onChange={(e) => setCopyPrice(e.target.checked)} className="w-4 h-4" />
+            Copy the price (Seal #) too
+          </label>
+          <div className="text-[12px] text-slate-700">
+            {draft.error
+              ? <span className="text-red-600">{draft.error}</span>
+              : <>= <span className="font-semibold">{draft.total} piece{draft.total === 1 ? '' : 's'}</span> on the copy</>}
+          </div>
+          <div className="text-[11px] text-slate-500 leading-snug">
+            Copies the consignee and address, contact, delivery window, commodity, driver instructions and pickup. Not copied: the route, driver and attachments, and the price unless ticked. It lands <span className="font-semibold">unplanned</span> and reaches the board through the scans, as a New Order does.
+          </div>
+          <button type="button" onClick={create} disabled={busy || !!draft.error}
+            className="w-full min-h-[44px] px-3 text-xs font-semibold text-white rounded disabled:opacity-40"
+            style={{ background: BRAND }}>{busy ? 'Creating…' : msg?.created ? 'Create another copy' : 'Create the copy in NuVizz'}</button>
+          <div className="text-[10px] text-slate-400">about 4 NuVizz calls · up to 6 when {base}-1, -2 … are already taken</div>
+          {msg && <div className={'text-[11px] leading-snug break-words ' + (msg.kind === 'ok' ? 'text-green-700' : msg.kind === 'warn' ? 'text-amber-700' : 'text-red-600')}>{msg.text}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StopLiveDetail({ stop, onRefreshed }) {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshErr, setRefreshErr] = useState(null);
@@ -10247,6 +10360,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
       <div className="pt-2">
         <OrderItemsSection stop={live} />
         <StopPiecesEditor key={stopKey} stop={live} onRefreshed={onRefreshed} />
+        <DuplicateOrderPanel key={`dup-${stopKey}`} stop={live} />
       </div>
       {showTicket && (
         <PrintDocModal
