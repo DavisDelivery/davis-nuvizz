@@ -148,7 +148,10 @@ test('the header gives the presence chip\'s text up before the tab row — never
   // column cannot shrink (an `auto` column would — the toggle is overflow-hidden).
   assert.match(CODE, /<div className="grid grid-flow-col grid-cols-\[minmax\(1\.75rem,auto\)\] auto-cols-max items-center gap-2" style=\{\{ flexShrink: 1e6 \}\}>\s*<PresenceChip presence=\{presence\} \/>\s*\{tab === 'routing' && ROUTING_FLAG && <RoutingSubTabs /);
   const topbar = readFileSync(new URL('../scripts/verify-routing-topbar.mjs', import.meta.url), 'utf8');
-  assert.match(topbar, /for \(const width of \[1180, 1194, 1366, 1440, 1920\]\)/);
+  // 1440 is STOPS_BAR_MIN_WIDTH (lib/stops-tab.js, pinned in stops-tab.test.mjs): since v1.104.3 the
+  // guard measures the Stops cutoff and the pixel below it, so both sides of it hold Messages.
+  assert.match(topbar, /for \(const width of \[1180, 1194, 1366, STOPS_BAR_MIN_WIDTH - 1, STOPS_BAR_MIN_WIDTH, 1920\]\)/);
+  assert.match(topbar, /import \{ STOPS_BAR_MIN_WIDTH \} from '\.\.\/src\/lib\/stops-tab\.js';/);
   assert.match(topbar, /the tab row overflows by/);
 });
 

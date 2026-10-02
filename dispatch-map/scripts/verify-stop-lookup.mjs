@@ -169,9 +169,8 @@ async function openLookup(dev, { keepRecent = false } = {}) {
     if (!(await item.isVisible().catch(() => false))) { await page.getByRole('menuitem', { name: /^\s*more\s*$/i }).first().click(); await page.waitForTimeout(300); }
     await item.click();
   } else {
-    await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find((x) => /^more$/i.test((x.innerText || '').trim())); if (b) b.click(); });
-    await page.waitForTimeout(400);
-    await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find((x) => /stop lookup/i.test((x.innerText || '').trim())); if (b) b.click(); });
+    // On the bar itself since v1.99.11, right of Routing, called "Stops" — one click, never through More.
+    await page.locator('header nav').getByRole('button', { name: 'Stops', exact: true }).click();
   }
   await page.getByRole('heading', { name: 'Stop lookup' }).waitFor({ timeout: ACTION_MS });
   await page.waitForTimeout(300);
@@ -189,6 +188,19 @@ const lastAsk = (dev, part) => [...dev.asks].reverse().find((u) => u.includes(pa
 async function sweep(dev) {
   const { page } = dev;
   await openLookup(dev);
+
+  if (!dev.mobile) {
+    await step(dev, 'the screen is the "Stops" tab on the bar, right of Routing, and More no longer lists it', async () => {
+      const tabs = await page.locator('header nav button').evaluateAll((els) => els.map((e) => e.innerText.trim()));
+      const at = tabs.indexOf('Stops');
+      must(at > 0 && /^Routing/.test(tabs[at - 1]), `the bar reads: ${tabs.join(' | ')}`);
+      await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find((x) => /^more$/i.test((x.innerText || '').trim())); if (b) b.click(); });
+      await page.waitForTimeout(300);
+      const inMore = await page.evaluate(() => [...document.querySelectorAll('button')].filter((x) => /^(stops|stop lookup)$/i.test((x.innerText || '').trim())).length);
+      await page.keyboard.press('Escape');
+      must(inMore === 1, `the screen is offered ${inMore} times with More open — once on the bar is the only place`);
+    });
+  }
 
   // 1. CHAD'S TAP. Several businesses match; the tapped one says so AT ONCE, in view.
   await step(dev, 'a customer name that several businesses match lists them to pick from', async () => {
