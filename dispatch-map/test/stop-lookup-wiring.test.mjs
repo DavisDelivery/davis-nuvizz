@@ -20,18 +20,29 @@ const APP = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const FN = readFileSync(new URL('../netlify/functions/stop-lookup.mts', import.meta.url), 'utf8');
 const TOML = readFileSync(new URL('../netlify.toml', import.meta.url), 'utf8');
 
-test('THE DESKTOP BAR CARRIES IT AS "Stops", RIGHT OF ROUTING — and More does not list it twice', () => {
+test('THE DESKTOP BAR CARRIES IT AS "Stops", RIGHT OF ROUTING — in a window wide enough for it', () => {
   // Chad, v1.99.11: "take the stops out of the more tab drop down and I want to move it into the
   // main bar on desktop. Um, probably to the right of routing." Then: "Just call it stops not stop
-  // lookup now."
+  // lookup now." And v1.104.1, when it pushed Messages off Routing's bar on a laptop: "1 i like
+  // your idea" — on the bar when it fits, under More when it does not.
   const routing = APP.indexOf('<TabBtn label="Routing (beta)"');
   const lookup = APP.indexOf('<TabBtn label="Stops"');
   const next = APP.indexOf('<TabBtn label="New Order"');
   assert.ok(routing > 0 && lookup > 0, 'the bar has both tabs');
   assert.ok(routing < lookup && lookup < next, 'Stops sits right after Routing, before New Order');
   // Bounded look-ahead, not [^>]*: the icon's own `<Search … />` carries a '>'.
-  assert.match(APP, /<TabBtn label="Stops"[\s\S]{0,120}?active=\{tab === 'stoplookup'\} onClick=\{\(\) => setTab\('stoplookup'\)\}/);
-  assert.ok(!/id: 'stoplookup', label: 'Stop lookup'/.test(APP), 'More no longer lists it');
+  assert.match(APP, /\{stopsBar && <TabBtn label="Stops"[\s\S]{0,120}?active=\{tab === 'stoplookup'\} onClick=\{\(\) => setTab\('stoplookup'\)\}/,
+    'the bar shows Stops only while stopsBar says it fits');
+  assert.ok(!/id: 'stoplookup', label: 'Stop lookup'/.test(APP), 'the old "Stop lookup" More row is gone');
+});
+
+test('MORE OFFERS IT EXACTLY WHEN THE BAR DOES NOT — never both, never neither', () => {
+  // One flag decides both sides, so they cannot disagree: the bar renders on stopsBar, More's row on !stopsBar.
+  assert.match(APP, /\.\.\.\(stopsBar \? \[\] : \[\{ \.\.\.STOPS_MORE_ITEM, icon: <Search size=\{14\} \/> \}\]\)/,
+    'More lists Stops only when the bar is not carrying it');
+  // And the flag is the live media query from lib/stops-tab.js, not a constant someone can forget to move.
+  assert.match(APP, /const stopsBar = useMediaQuery\(STOPS_BAR_QUERY, true\);/);
+  assert.equal(APP.match(/STOPS_MORE_ITEM/g).length, 2, 'imported once, used once');
 });
 
 test('THE PHONE CHIP MENU CARRIES IT TOO — this is the v0.54.50 failure', () => {

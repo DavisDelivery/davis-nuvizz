@@ -16,14 +16,14 @@
 import {
   DEFAULT_OBJECTIVE_WEIGHTS, DEFAULT_SERVICE_MIN, DEFAULT_DEPART_HHMM, DEPOT,
   DEFAULT_MATRIX_MODE, matrixElementCount, estimateMatrixCostUsd,
-  type SolverStop, type SolverTruck, type SolverInput, type SolverMatrix,
+  type SolverStop, type SolverTruck, type SolverInput, type SolverOutput, type SolverMatrix,
   type Strategy, type ObjectiveWeights, type EquipmentReq, type BuiltRoute, type MatrixMode,
   type WindowMode, DEFAULT_WINDOW_MODE,
 } from './routing-types.mts';
 import { deriveGeometryForStops, type GeometryAssist } from './freight-geometry.mts';
 import { parseIntentResponse, parseGeometryAssist } from './routing-intent.mts';
 import { solveRouting } from './routing-solver.mts';
-import { repair } from './routing-repair.mts';
+import { repair, runClockFor } from './routing-repair.mts';
 import type { StopTimeRestriction } from './routing-time-windows.mts';
 
 export interface PipelineStopInput {
@@ -61,6 +61,8 @@ export interface PipelineRequest {
   matrixMode?: MatrixMode;  // 'haversine' (default, free) | 'google' (paid opt-in)
   windowMode?: WindowMode;  // 'advisory' (default, flag) | 'strict' (spill on unmet window)
   leaveOffEnds?: boolean;   // full trucks give up the end of their run, not the middle (routing-assign-ends)
+  fillTrucks?: boolean;     // with leaveOffEnds: a truck with room takes a whole group of left-off orders (routing-assign-ends step 6)
+  windowReach?: boolean;    // the window order reads the truck's clock (routing-repair windowAwareOrder, ROUTING_BUILD_WINDOW_REACH)
 }
 
 export interface PipelineDeps {
@@ -204,6 +206,36 @@ function deterministicRiskFlags(input: SolverInput, plan: { routes: BuiltRoute[]
   return [...new Set(flags)];
 }
 
+// SOLVE, REPAIR, AND STEP 6'S GUARD — one Build of one input. runPipeline makes it once, and a
+// second time without the window-order fix when that fix is on (see there).
+function solveAndRepair(input: SolverInput): { solved: SolverOutput; repaired: SolverOutput } {
+  // Step 6 of the ends rule asks runClockFor what the run the repair below will ship does to the clock.
+  let solved = solveRouting(input, input.fillTrucks ? { runClock: runClockFor(input) } : undefined);
+  let repaired = repair(input, solved);
+  // STEP 6 NEVER COSTS AN ORDER THE BUILD WITHOUT IT CARRIED. It only adds to trucks, but on a strict
+  // Build repair then takes stops off for their windows and refills the room it freed — and room a
+  // group took is room that refill no longer has (measured: Sunday c/o Encore's 6 pallets, which the
+  // Build without step 6 put back on SCOTT, left off; 55 skids → 52). So when a group went on, the
+  // Build without it is made too, and the group stays only if every order that one carried rides the
+  // same truck here and no skid is lost; otherwise that plan ships and meta.groupFill says why.
+  const taken = (solved.meta as any)?.groupFill?.taken || [];
+  if (input.fillTrucks && taken.length) {
+    const withoutInput: SolverInput = { ...input, fillTrucks: false };
+    const withoutSolved = solveRouting(withoutInput);
+    const without = repair(withoutInput, withoutSolved);
+    const truckOf = (out: SolverOutput) => new Map(out.routes.flatMap((r) => r.orderedStopIds.map((id) => [id, r.truckId] as const)));
+    const skids = (out: SolverOutput) => out.routes.reduce((a, r) => a + (r.load?.skids || 0), 0);
+    const now = truckOf(repaired);
+    const lost = [...truckOf(without)].filter(([id, t]) => now.get(id) !== t).map(([id]) => id);
+    if (lost.length || skids(repaired) < skids(without)) {
+      const gf = (solved.meta as any).groupFill;
+      solved = withoutSolved;
+      repaired = { ...without, meta: { ...without.meta, fillTrucks: true, groupFill: { taken: [], refused: gf.refused || [], undone: { groups: taken, ordersItWouldCost: lost, skidsWith: skids(repaired), skidsWithout: skids(without) } } } };
+    }
+  }
+  return { solved, repaired };
+}
+
 export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Promise<RoutingPlan> {
   const depot = req.depot || { lat: DEPOT.lat, lng: DEPOT.lng };
   const chosenStrategy: Strategy = req.strategy || 'MIN_DISTANCE';
@@ -249,11 +281,33 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
     departEpochSec,
     windowMode: req.windowMode === 'strict' ? 'strict' : DEFAULT_WINDOW_MODE,
     leaveOffEnds: req.leaveOffEnds === true,
+    fillTrucks: req.fillTrucks === true,
+    windowReach: req.windowReach === true,
   };
 
   // ── P3 solve + P4 repair (deterministic) ──
-  const solved = solveRouting(solverInput);
-  const repaired = repair(solverInput, solved);
+  let { solved, repaired } = solveAndRepair(solverInput);
+  // TAKING A SHUT DOCK OFF FIRST NEVER COSTS AN ORDER OR A SKID THE BUILD WITHOUT IT CARRIED
+  // (ROUTING_BUILD_WINDOW_REACH, strict only — see routing-repair). Taking one stop off earlier can
+  // change what repair hands to which truck, so the strict Build without it is made too, and that
+  // plan ships instead when it is better on what a dispatcher counts: fewer late stops, then more
+  // orders, then more skids (freight on the truck beats miles saved), then less driving.
+  // meta.windowReachUndone says when it did.
+  if (solverInput.windowReach && solverInput.windowMode === 'strict') {
+    const plain = solveAndRepair({ ...solverInput, windowReach: false });
+    const orders = (out: SolverOutput) => out.routes.reduce((a, r) => a + r.orderedStopIds.length, 0);
+    const skidsOf = (out: SolverOutput) => out.routes.reduce((a, r) => a + (r.load?.skids || 0), 0);
+    const lateOf = (out: SolverOutput) => out.routes.reduce((a, r) => a + (r.windowViolatedIds || []).length, 0);
+    const metres = (out: SolverOutput) => out.routes.reduce((a, r) => a + r.legs.reduce((b, l) => b + (l.distanceMeters || 0), 0), 0);
+    const score = (out: SolverOutput) => [lateOf(out), -orders(out), -skidsOf(out), metres(out)];
+    const a = score(plain.repaired), b = score(repaired);
+    const k = a.findIndex((x, n) => x !== b[n]);
+    if (k >= 0 && a[k] < b[k]) {
+      const undone = { ordersWith: orders(repaired), ordersWithout: orders(plain.repaired), skidsWith: skidsOf(repaired), skidsWithout: skidsOf(plain.repaired), kmWith: Math.round(metres(repaired) / 1000), kmWithout: Math.round(metres(plain.repaired) / 1000) };
+      solved = plain.solved;
+      repaired = { ...plain.repaired, meta: { ...plain.repaired.meta, windowReachUndone: undone } };
+    }
+  }
 
   // ── P5 explain (optional model; else deterministic summary) ──
   let rationale = deterministicRationale(repaired, intent.strategy);

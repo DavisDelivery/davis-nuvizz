@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Building2, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound, LogOut } from 'lucide-react';
+  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound, LogOut, TrendingUp } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc, arrayUnion, arrayRemove, deleteField,
@@ -41,8 +41,10 @@ import { readViewportSize } from './lib/viewport.js';
 import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
 import { manifestIssues, manifestHeadline, manifestProvenance, manifestFreshness, loadStored, saveStored } from './lib/manifest-check-view.js';
-import { noteFreshness } from './lib/stop-notes-freshness.js';
+import { noteFreshness, mergedNotes, SCAN_NOTES_AUTO_ON, ticketNotes, stampNotesRead } from './lib/stop-notes-freshness.js';
 import { stopHandlingFlags, itemHandlingFlags, stopNeedsTractor, tallyHandlingFlags, HANDLING_FLAGS } from './lib/handling-flags.js';
+// The bottom grid's Restrictions cell draws its icons (v1.100.1); VITE_GRID_RESTRICTION_ICONS=off puts back words only.
+import { GRID_RESTRICTION_ICONS_ON } from './lib/grid-icons.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, usesMapId, keepView } from './lib/map-base-options.js';
 import { map3dEnabled, cameraFor2dView, hintForRange, isCtrlDragStart, dragCrossedThreshold, isEscape, cameraMoved, groundedCamera, cameraGroundPoint, twoDViewFor3dCamera, paint3dControl, control3dSpec, webglUsable, vectorFellBack, MAP3D_BUTTON_CSS, MAP3D_NO_WEBGL, MAP3D_NO_VECTOR } from './lib/map-3d.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
@@ -51,7 +53,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn, selectionAfterBuildStage, planStopsOnCards, planRouteInfo, planRoutesToPaint } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -96,6 +98,7 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUE
 import { placeParams, placeQuery, placeQueryUsable } from './lib/stop-search.js';
 import { addRecent, parseRecent, recentAgo, recentEntry, recentKindLabel, recentKey } from './lib/stop-lookup-recent.js';
 import { weekOf, weekLabel, addDays, PERIODS, periodRange, loadForRow } from './lib/load-lookup.js';
+import { STOPS_BAR_QUERY, STOPS_MORE_ITEM } from './lib/stops-tab.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -140,6 +143,12 @@ import { tabLoadFailed } from './components/TabLoadFailure.jsx';
 // (components/TabLoadFailure.jsx) — never a white page. scripts/check-shadow-chunk.mjs fails CI
 // if a start-up file the built index.html names carries the Shadow's code.
 const ClaudeShadowScreen = React.lazy(() => import('./shadow/ClaudeShadowScreen.jsx').catch((err) => tabLoadFailed('Shadow', err)));
+// MORE → PERFORMANCE (v1.100.0). Chad, 2026-09-30: "I wanted to build a stock performance UI under the
+// more tab … to track the number of stops that we've done compared to other days or like the daily
+// average at that point in time to let us know if we're behind or ahead of schedule." Its own
+// directory (src/performance/), LAZY for the same reason as the Shadow above: a screen visited on
+// purpose need not ride in the start-up file, and a failed fetch is a line on the tab, not a white page.
+const PerformanceScreen = React.lazy(() => import('./performance/PerformanceScreen.jsx').catch((err) => tabLoadFailed('Performance', err)));
 import { isUatHost } from './lib/mirror-site.js';
 import { mergeDayLoads, splitDayLoads } from './lib/day-loads.js';
 import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
@@ -210,7 +219,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.99.11';
+const APP_VERSION = '1.104.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -264,7 +273,21 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.99.11', 'STOPS IS ON THE DESKTOP BAR, RIGHT OF ROUTING. Chad: \u201ctake the stops out of the more tab drop down and I want to move it into the main bar on desktop. Um, probably to the right of routing\u201d \u2014 and then \u201cJust call it stops not stop lookup now.\u201d Stop lookup is now a tab called Stops beside Routing (beta) \u2014 one click instead of two \u2014 and More no longer lists it. The phone menu is unchanged, and the screen itself still says Stop lookup at the top. THE WAY BACK: one small commit; a revert puts it back under More.'],
+  ['1.104.1', 'STOPS IS ON THE DESKTOP BAR, RIGHT OF ROUTING \u2014 IN ANY WINDOW WIDE ENOUGH TO KEEP MESSAGES ON IT. Chad: \u201ctake the stops out of the more tab drop down and I want to move it into the main bar on desktop. Um, probably to the right of routing\u201d \u2014 and then \u201cJust call it stops not stop lookup now.\u201d Stop lookup is now a tab called Stops beside Routing (beta): one click instead of two. THE FIRST CUT DID NOT FIT EVERY DESK. On Routing \u2192 Build the same bar also carries the board card, the presence chip and Build | Engine | Shadow, and in a 1180\u20131366px window (a 13\u201314\u2033 laptop, or a browser at half screen) the extra tab pushed Messages and its red unread badge off the end of the row \u2014 on Routing the only sign a driver or customer has texted. So, Chad\u2019s pick (\u201c1 i like your idea\u201d): at 1440px and wider Stops sits on the bar and More does not list it; in a narrower window it sits under More, still called Stops, and the bar keeps Messages. Never both, never neither, and it moves live as the window is resized. The phone menu is unchanged, and the screen itself still says Stop lookup at the top. THE WAY BACK: one small commit; a revert puts it back under More.'],
+  ['1.104.0', 'A NIGHTLY SAFETY NET NAMES THE DRIVER ON AN ATTEMPT THE EVENING SCAN LEFT WITH NONE, AND IT CAN NEVER SPEND MORE THAN TEN NUVIZZ CALLS. Chad, 10/01, approving it: \u201cI\u2019m ok with this but you better triple check there is no way it could make more than 10 calls and if it needs more it should throw a flag in the ui on the scorecard.\u201d WHAT IT DOES: at 00:30 ET (nuvizz-att-fill-background) it takes yesterday\u2019s ORIGINAL attempt stops that the 8:30 plan and the all-day record both left without a driver, reads each one\u2019s NuVizz activity timeline and applies the same due-day rule the backfill uses (no staff as drivers). \u201c-1\u201d/\u201c-2\u201d duplicates are never read. WHY IT CANNOT PASS TEN: each read is ONE request with no retries and no fallback endpoint (fetchStopEventsOnce, maxRetries 0); a stop whose NuVizz id is not already in Firestore is skipped, never looked up; requests are counted before they are sent, so a timeout still uses one up; 10 is a constant, and NUVIZZ_ATT_TIMELINE_FILL_MAX can only LOWER it; the job claims the date in Firestore with an atomic create BEFORE its first request, so a second fire spends 0; it takes no parameters and only ever acts on ET-yesterday; a mirror (UAT) never scans. Pinned by test/att-fill.test.mjs, including the real loop against 25 candidates (exactly 10 requests) and the requester sending exactly one fetch on a 503, a 429, a network error and a timeout. WHEN IT CANNOT READ EVERY ONE \u2014 over ten, no NuVizz id on file, a failed request \u2014 the day\u2019s attempts manifest says so (fill.needsAttention, with each stop and why), and the Driver Scorecard shows it as a flag (scorecard v0.19.0). NUVIZZ_ATT_TIMELINE_FILL=off turns it off.'],
+  ['1.103.1', 'THE ATTEMPTS BACKFILL NO LONGER NAMES A STAFF MEMBER AS THE DRIVER. Its first run named Freddy Perez for order 007173373 on 9/9 \u2014 customer service, never on any morning plan, roster or board. The stop was on the CHAD holding route (a draft with no driver, 0 trips), and somebody dispatched it from the portal, which puts THEIR name on the \u201cStop Dispatched\u201d event. NOW a dispatch names a driver only when the same person also has driver-app activity that day \u2014 a pickup, an arrival, a departure, a confirmation. Every real driver checked so far has them at the same minute as the dispatch. A recheck that finds no driver now CLEARS the earlier answer instead of leaving it, and &stop=NNN re-reads one order, so correcting one costs one NuVizz call. Each result now says how many events its timeline held. ALSO \u2014 A \u201c-1\u201d OR \u201c-2\u201d IS A DUPLICATE ORDER. Chad: \u201c-1 and -2 are duplicate orders and have nothing to do with the original driver.\u201d They are no longer given the original stop\u2019s driver anywhere: not by the evening attempts list (the all-day record\u2019s copy-to-original fallback is gone), not by the backfill (it now reads ORIGINAL stops only, and the free \u201csibling\u201d answer is gone). nuvizz-att-backfill?revertCopies=1 lists every -1/-2 row that was given its original\u2019s driver (free); with POST and confirm=1 it clears them back to no driver, keeping what they had and why. Zero NuVizz calls.'],
+  ['1.103.0', 'MESSAGES LOOKS LIKE A PROFESSIONAL INBOX — ON THE PHONE AND, AS TWO PANES, ON THE DESKTOP. Chad, on a photo of the Messages list: “Can you design a more professional UI …” WHAT CHANGED, ON SCREEN ONLY: the rainbow avatars are gone — a contact is tinted by what they are (driver blue, contractor violet, customer green, team grey) and a number nobody has named is a plain grey phone; the unread mark moved off the avatar to the end of the row, beside a bold name and a blue time; the role chip is a quiet tag; a row’s time reads as a clock time today (9:40 AM, not “5h”), inside the hour as minutes, then Yesterday, a weekday, a date; a text with no words reads “No text” instead of a dash (the inbound webhook does not keep the vendor’s mediaItems, so what such a text carried is not known to the app and is not guessed); and a filter row — All, Unread with its count, Drivers (contractors included), Customers. ON A DESKTOP the drawer is two panes: the list stays on the left and the conversation or New message opens beside it, so moving between conversations is one click. On a phone it is still one screen at a time, and its inputs are 16px so the phone no longer zooms when you tap them. Inside a conversation: day dividers, texts grouped into runs with the time under each run, a sent text says “Sent” (send-sms answered ok) and never “Delivered” (nothing here sees the handset), a failed one says why and offers Retry, and the composer grows as you type. Opening a conversation clears its unread mark inside the panel; closing the panel marks everything seen exactly as before, so the tab badge is unchanged. Nothing about sending, the viewer gate, the roster or the stored texts changes. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
+  ['1.102.2', 'STRICT: A DOCK THE TRUCK CANNOT REACH BEFORE IT CLOSES COMES OFF FIRST, AND SAYS WHY. Found while making each load run from its measured departure (Chad: RASHEED \u201ctypically leaves\u201d around 12:10). A dock that closes before the truck can get there, even driving to it first, went into the window order FIRST (it is the least late there). It dragged the run to it and pushed docks that could be made past their close, so a strict Build took deliverable orders off with \u201cappointment window cannot be met\u201d: on a truck leaving at noon, a 2:00p dock reached at 12:14 by going there first came off because two docks that closed at noon pulled the truck south. NOW strict takes such a dock off first, with the clock in the reason: \u201cit closes 12:00p, before RASHEED leaves at 12:10p\u201d, or \u201cit closes 8:30a; leaving at 8:00a, RASHEED gets there 8:34a at the earliest\u201d. The rest of the run is ordered exactly as before. AND IT NEVER COSTS AN ORDER: the strict Build without it is made too and ships instead when it carries more: fewer late stops, then more orders, then more skids, then less driving (meta.windowReachUndone). MEASURED on 300 random boards x 3 strategies x 8:00 and noon: strict carries more orders on 17 runs and fewer on none, and never fewer skids for the same orders. ADVISORY IS NOT CHANGED: two wider versions that also moved shut docks in advisory failed independent reviews (a dock missed by minutes, a phone call, became a refusal; routes hundreds of km longer), so where a shut dock rides in advisory waits for Chad. Fill my loads is not changed. 0 NuVizz calls. PUT IT BACK: ROUTING_BUILD_WINDOW_REACH=off.'],
+  ['1.102.1', 'CLOSING A BUILD\u2019S COMPARE CARDS TAKES ITS ROUTE OFF THE MAP. Chad: \u201cif it puts the stops in the compare panel, and I then close out the compare panel, the stops should not look like they\u2019re still on that route on the map, because when I pull back up the compare panel, it\u2019s empty. However, it still shows the route that the system built on the map with the stops on it. Now, if I refresh the page, all that goes away.\u201d WHY: with no card open the map paints the Build\u2019s plan. Since v1.19.0 a Build puts its routes on the cards by itself, so closing the last card fell straight back to the plan: the same stops numbered, in the route colour and joined by a line, under an empty Compare panel. NOW: a Build\u2019s stop that has been on a Compare card stops showing on the Build\u2019s route once its card closes. It goes back to the pin a refresh shows. Remembered per stop, so a stop that never reached a card (the workbench was full, a Trucks-mode route nobody staged) still paints with its number and line. The result panel\u2019s \u201cStage onto Compare cards\u201d brings the cards, and so the paint, back. A new Build starts fresh. One rule feeds the numbered pins and the lines, so they cannot disagree (lib/routing-select.js planStopsOnCards / planRouteInfo / planRoutesToPaint, 13 tests). This is the map-paint half of v1.33.0, which was reverted with the rest of that PR on Sep 15; it is back because Chad asked for it by name, and nothing else from v1.33.0 is. Send/Save, staging, the cards, the selection tools and what a card counts are not changed. 0 NuVizz calls. PUT IT BACK: VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN=off (build-time, a redeploy).'],
+  ['1.102.0', 'THE DRIVERS BOARD READS ITS SKID COUNT OFF THIS BOARD. Chad: \u201ci want the davis delivery drivers board to have a live skid count from the dispatch map board.\u201d A new read, /.netlify/functions/board-skids?date=YYYY-MM-DD, answers the day\u2019s skid total the way the map counts it \u2014 the same stops, cancelled ones dropped, summing the skid column (NuVizz\u2019s totalCartons), so it matches the map\u2019s \u201cN total pallets\u201d \u2014 plus how many of those skids are routed and how many are not. With carryDays=7 it also counts the freight from the 7 days before that is still not routed \u2014 the map\u2019s own carry-over, the same rule as switching carry-over on here \u2014 which is how the drivers board asks for it. It says totals only: no customer, address, driver or route name leaves it, which is why it can stay open to the drivers board, which has no sign-in here. Reads Firestore only: 0 NuVizz calls. Nothing on the map, the Build Panel or the Route Workbench changes. PUT IT BACK: revert this commit.'],
+  ['1.101.3', '＋ NEW ROUTE NOW CREATES THE ROUTE THE PORTAL’S WAY, IN PRODUCTION. Chad: “switch the new way to create a load on.” WHY HE STILL COULD NOT CREATE ONE: the portal-style create built from his HAR (1.98.5) shipped switched off, and production was still on the old v7 create — the dry run read engine “v7”, and both of his ＋ New route tries on 9/30 (8:25 and 9:54 PM) died on NuVizz’s “deliverItLoad is null”, the old create’s failure. NUVIZZ_ROUTE_CREATE_RWB=on was set on the production site on 10/1, and took effect with the 7:12 AM deploy — verified, not assumed: production’s dry run then read the portal create (engine rwb). It signs in at login.nuvizz.com and creates on portal.nuvizz.com (read off the dry run, zero NuVizz calls). EVERY NEW ROUTE IS CREATED AS STRAIGHT TRUCK (NuVizz vehicle type 475, the only one the HAR shows) until the tractor’s number is known; a tractor route needs its vehicle type changed in the portal. PUT IT BACK: NUVIZZ_ROUTE_CREATE_RWB=off in Netlify and a redeploy. No code change in this release beyond this row, which records the switch.'],
+  ['1.101.2', 'AFTER A BUILD PUTS ITS ROUTES ON THE COMPARE CARDS, THE SELECTION HOLDS ONLY WHAT IT LEFT OFF. Chad, on a Build onto CRUMPTON and RASHEED: \u201call that should be left on the selection table is the orders it did not put on the route.\u201d The Build\u2019s staging never touched the selection, so all 23 orders he gave it stayed selected after 19 of them were on the two cards. The chip read \u201cPUT ON CRUMPTON (23)\u201d, all 28 skids for a 14-skid box, and a Discard left all 23 highlighted orange until a refresh. Now, once an order the Build routed is on an open card, it leaves the selection, so the Selected table, step 1\u2019s tally and the chips count only the orders still to plan. A Build again with the cards open fills only the room they have left. An order the Build routed that is not on a card stays selected (its card closed, or the workbench was full). An order is taken out once per plan, so one selected again by hand stays selected. Discard keeps the selection as it now is. The staging, the cards, Send/Save and the map are not changed; this only writes the selection (lib/routing-select.js selectionAfterBuildStage, 10 tests). 0 NuVizz calls. PUT IT BACK: VITE_ROUTING_BUILD_TRIMS_SELECTION=off (build-time, a redeploy).'],
+  ['1.101.1', 'A ROUTE CAN BE TAKEN OUT FROM THE ROUTES-TO-BUILD LIST. Chad, on Step 2 \u00b7 Plan onto\u2019s list of routes to build: \u201cshould be a check box here incase i want to remove.\u201d Each route in that list now has a ticked box beside its name; untick it and the route leaves the build \u2014 the same untick as the load\u2019s row in the list above, which then reads unticked, so the two can never disagree. Tick it again in the list above. Desktop and phone (it is the same panel). Build Panel only: the Route Workbench is not touched. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
+  ['1.101.0', 'A TRUCK WITH ROOM TAKES A WHOLE GROUP OF THE ORDERS LEFT OFF. Chad, on a Build onto CHE, SCOTT and TRAILER 1 (v1.100.0): \u201cworked better but still left orders offf the laods that only one was full and didn\u2019t have any logic to how it left them off the were orders scattered across 3 towns so i would have sent an additional truck to cover this.\u201d REPRODUCED ON THE REAL CODE from the screenshot (the same six orders off, CHE 9, SCOTT 9, TRAILER 1 28): SCOTT, the only box, shed the Dalton end of its run and then Sunday c/o Encore\u2019s 6 pallets, stopping at 9 of 14; its refill then refused each Dalton order ALONE (\u201cno trip across town for one skid\u201d \u2014 65 mi out of its way for one skid). NOW the orders left off are grouped by area (chained within 15 km), and a truck with room takes a WHOLE group of two or more when it fits and costs no more driving per order than 1.5\u00d7 the average stop already on that truck, and makes no delivery on it miss its window (checked on the stop order the Build ships); a customer shut today is in no group. And a group never costs an order the Build without it carried: on a strict Build, where repair takes stops off for their windows and refills the room, the Build without the group is made too, and if any order it carried would come off or move truck, or a skid be lost, that one ships and the job says why. ON HIS BOARD: SCOTT takes the four Dalton orders together and the Calhoun carton on its way (13 skids), and the one order left off is Sunday c/o Encore \u2014 6 pallets the box has no room for \u2014 on all three strategies. On 120 placements of the same 42 stops: nothing the old Build carried is left off, never fewer skids, and wherever SCOTT had room for the Dalton group (7) it now carries it. It never takes part of a town, never takes an order off a truck, never sends a truck across town for one order. SAID PLAINLY: where SCOTT is already full, what is left off can still be in three towns \u2014 fixing that means giving up an order for others, which is yours to decide; and on 600 random overloaded boards it changed 1 plan (+3 skids, nothing worse), because it only acts on a whole group a truck has room for. PUT IT BACK: ROUTING_BUILD_FILL_TRUCKS=off \u2014 the v1.100 Build exactly; every build says which ran and which groups went where (result.buildRules.fillTrucks, result.meta.groupFill). The Build Panel\u2019s server path only; the Compare cards, staging, Save and the map are untouched. Zero NuVizz calls.'],
+  ['1.100.3', 'A NOTE NUVIZZ NO LONGER LISTS IS LEFT OFF THE PRINTED TICKET; A NEW ONE IS PRINTED. Chad, on the card’s faded “Not in NuVizz’s latest notes”: “do this in the portal but on the print manifest don’t put them on there at all.” The card keeps the faded, struck-through line, because a dispatcher can weigh it; a driver holding the ticket cannot, so that note is now simply not printed. And the note the card marks blue “New — from the latest scan” is printed, so a ULINE “CANCELLED ORDER. STOP & RETURN PER ULINE.” or a “**DELIVER BY 3:00PM**” added after the order was first read reaches the driver (its by-line reads “From NuVizz’s latest scan” — the scan sends no author or time). This covers every printed ticket: the route panel’s Print Manifest, a Compare card’s Print manifest and a single Delivery Ticket. On a stop with no stored notes, a note that is only an amount stays off the paper — on 9/30 all 30 such stops were AVRT orders whose only note is their price, and those tickets have never printed one (ULINE’s TOTAL-AMOUNT lines print as they always have). ALSO FIXED, on the card and the paper alike: after a Refresh the stored notes can be newer than the scan’s note text, so a note added in NuVizz since the last scan read as removed — the newest note, faded on the card (and it would have been dropped off the ticket). Now nothing is judged removed on a stop whose notes a Refresh (or a note, date or contact edit from the app) has read — the safe side: that stop keeps showing and printing every stored note, as it did before 1.100.2. On the 9/30 board no stop carried such a stamp. MEASURED on the stored boards of 9/30 and 10/1 (1,543 tickets, zero NuVizz calls): 38 tickets gain a note, none loses one. THE WAY BACK, in halves (each a redeploy): VITE_MANIFEST_NEW_NOTES=off stops printing the scan’s notes but still leaves removed ones off; VITE_MANIFEST_SCAN_NOTES=off puts the paper back exactly as before; VITE_SCAN_NOTES_AUTO=off puts back the card and the paper together. Zero NuVizz calls.'],
+  ['1.100.2', 'A NEW NOTE FROM NUVIZZ SHOWS ON THE CARD WITHOUT A REFRESH. Chad, on ROBERT BOSCH (PRO 007183226) showing the amber “NuVizz has newer instructions than these — tap Refresh”: “IF there are new notes picked up in the normal scans not enrichment then use them i shouldn’t have to refresh to get them you know what they are so if some are added or deleted just auto use them.” The normal scans carry every order’s note text, free, on every pass; the full notes (who wrote it, when) come only from the one detail read, so the card used to keep showing the old ones and ask for a Refresh. NOW the card merges the two every time it draws: a note the scan carries that the stored notes do not shows straight away, on top, marked “New — from the latest scan” (the scan sends no author or time — Refresh still pulls them); the stored notes keep their author and time; and an order instruction the latest scan no longer carries is shown faded and struck through, “Not in NuVizz’s latest notes”, rather than hidden — the scan’s one-line text is known to carry less than the full notes, so a note missing from it is not proof NuVizz deleted it, and a hidden real instruction is a missed delivery. Other kinds of note (pre-visit, general, a dispatcher’s own) are left as they were. On a stop with no stored notes at all (an AVRT order, whose only note is its price) the scan’s note shows plain, “From NuVizz’s latest scan”, never “New”; and when the text was cut short nothing is struck through. MEASURED on the stored boards of 9/30 and 10/1 (1,543 stops, zero NuVizz calls): 33 cards gain a real note they were not showing — 18 of them, like “CANCELLED ORDER. STOP & RETURN PER ULINE.” and “refused”, too short for the old banner to ever ask — and nothing is struck through. The amber banner is gone; there is nothing left for it to ask. VITE_SCAN_NOTES_AUTO=off puts back the old notes and the banner (a redeploy). Zero NuVizz calls.'],
+  ['1.100.1', 'THE RESTRICTIONS COLUMN NOW SHOWS ITS ICONS. Chad, on the bottom grid: “under restrictions can we put icons as well in there if they have any special icons.” Each customer restriction in the cell now has the same icon its map pin, sidebar chip and Legend row use — the red slashed truck for No T/T, the liftgate arrow, the appointment mark, Box only — beside the word it always had. An order’s handling flag shows its own mark where it has one: the stacker’s yellow H. DO NOT DOUBLE STACK has no icon anywhere in the app, so it stays the word DNDS rather than getting an invented one. Same order as before (the customer’s restrictions first, then the order’s flags), and the column still sorts on the words, read off the same list the icons are drawn from, so an icon can never show something the words do not say. VITE_GRID_RESTRICTION_ICONS=off puts back words only (a redeploy). Zero NuVizz calls.'],
+  ['1.100.0', 'MORE → PERFORMANCE: ARE WE AHEAD OR BEHIND RIGHT NOW, AND HOW ARE THE DAYS, WEEKS AND MONTHS GOING. Chad: “I wanted to build a stock performance UI under the more tab … to track performance over days, weeks, months … and also like interday to track the number of stops that we’ve done compared to other days or like the daily average at that point in time to let us know if we’re behind or ahead of schedule.” It had never been started — nothing for it on main, on any branch or in any PR. NOW, under More on the desktop and the phone: TODAY’S PACE — stops delivered so far against a typical day AT THE SAME MINUTE (the median of the last 8 of today’s weekday, or of the last 20 weekdays for the week after a holiday, with the middle half of those days drawn as a band), judged at the board’s last scan, and called Ahead / On pace / Behind only once 4 comparison days exist; four tiles (delivered today, share of today’s board done, delivered per day and completion, each against a named comparison); the trend by day, week or month with a moving average; where the stops ended up; the average by weekday; and every day and every route as rows — sorted, searched, paged — where a ticked day is drawn over today, a holiday can be left out of the typical day, and rows copy out. Counted exactly as the 6:30 report counts: planned only, 90 and 91 both delivered, cancelled orders out of the total, CHAD and appointment routes left out. HOW: each night’s capture now also writes one small pace digest per sealed day (pace_days — 288 five-minute buckets and the route rows), and today is worked out live from the board. Days sealed before this shipped have no digest yet: the screen shows them as gaps, never zeros, and an admin builds them from its History card (ten days a step). ZERO NuVizz calls on every path. PUT IT BACK: STOP_PACE=off in Netlify switches off the screen’s read, the nightly digest and the rebuild together; reverting this commit removes all of it. 64 new tests; the phone, tablet and desktop layout guards all measure the screen.'],
   ['1.99.10', 'STOP LOOKUP: A TAPPED BUSINESS SAYS IT IS OPENING, AND A ROW\u2019S ROUTE OPENS ITS LOAD. Chad, on a phone with \u201c22 businesses match \u2018master\u2019\u201d: \u201cclicking this and nothing happens doens\u2019t show me the load \u2026 i want you to build this entire screen and test everything in it.\u201d The tap was working \u2014 a customer takes about ten seconds to read \u2014 but its only sign was \u201cLooking\u2026\u201d on the search button, a screen above on a phone, and a second tap started the read over. NOW: the tapped business says \u201cOpening \u2014 reading their deliveries\u2026\u201d with a spinner and ignores a second tap (tapping a different business switches to that one instead of waiting), and a dark line at the top of the view says what is being read (\u201cOpening MASTER WINDOW SYSTEMS\u2026\u201d) wherever the page is scrolled \u2014 for every search on this screen, not just this one. THE LOAD: on a customer\u2019s row, an order\u2019s day and an address result, the route (FRANK \u00b7 stop 15) is now a link. It opens that load under the row \u2014 the map, every stop in delivery order, this order marked \u2014 and the customer stays on screen; tap it again to close. It reads the same records as Driver\u2019s loads (no NuVizz call). If two drivers share the name it asks which; if the driver was renamed (the name on the row matches nobody that day) it lists who ran loads that day instead of saying there is no load; if none of their loads carries the route it lists that day\u2019s loads to pick, never picks one for you; if the load it opens does not hold this order (moved to another truck that day) it says so above the load; a day that has not happened says the load has not run yet. An order tapped inside the load opens there, once. Below dispatcher the route stays plain text, as Driver\u2019s loads is. Also: a business picked after the search box was edited now opens the business you picked. TESTED: a new check taps every control on Stop lookup on a phone and a desktop with every answer made to arrive late, and fails any tap that changes nothing on screen within a quarter second; it fails on the code before this. THE WAY BACK: one commit; a revert puts the screen back.'],
   ['1.99.9', 'A ULINE “STRAIGHT TRUCK ONLY” NOTE IS A FULL YELLOW DISC NOW — GREEN SHOWS ONLY WHERE A TRACTOR HAS ACTUALLY DELIVERED. Chad: “i don’t agree with this icon being half green if a tractor has never been there why would it be half green should just be a full yellow advisory.” The half-and-half mark used its green half to mean “nobody has checked this”, but on the map green means a trailer fits, and at a dock no tractor has ever delivered to nothing says one does. NOW: an unconfirmed no (a Uline note, or a scanner’s find) fills solid in the advisory yellow with the slashed truck; a no that someone here ticked stays solid red, so the two cannot be confused; and the yellow keeps a green half only in the one case worth a second look, when a tractor HAS delivered to that dock anyway (yellow beside the bright tractor-delivered lime). The Legend shows all three. Map pins and cluster pins draw the same way. THE WAY BACK: one small commit, so a revert puts the half-and-half mark back.'],
   ['1.99.8', 'ERRORS NOW READ AS PLAIN SENTENCES. Chad: “Can you make it simple sentence when there is an error that looks less like code.” When a Save, a new route, an address fix or a note was refused, the screen showed the server’s own diagnostic — “commitBoard(rwb): load DAVIS000204039 has 5 stop(s) the board isn’t showing (…) — a declarative RWB save would unplan them. Refresh and retry.” NOW it says what happened and what to do: “Not saved. NuVizz has 5 orders on this route that your screen isn’t showing yet (…). Saving now would take them off the truck — refresh, then Save again.” Every wording was written from a real refusal in the write log (September: 104 failed writes, and every one of them now reads plainly). Route names instead of load numbers, except when two routes share a name (BUFORD on two days). Nothing is claimed that the server did not say, and no instruction is dropped. A message nobody has seen before keeps its own words, with only the code-looking prefix taken off. The full technical text is still in the write log. VITE_PLAIN_ERRORS=off puts back the old words (a redeploy). Zero NuVizz calls.'],
@@ -6989,7 +7012,7 @@ export function freightSummaryLine(stop) {
 // textLength pins the advance width so the H occupies the same box whichever sans face the
 // device resolves. Colours come from HANDLING_FLAGS so the item row and any other surface
 // showing this flag cannot drift apart.
-function HandlingItemBadge({ flagKey, size = 13 }) {
+function HandlingItemBadge({ flagKey, size = 13, className = 'ml-1 inline-block align-middle flex-shrink-0' }) {
   const def = HANDLING_FLAGS[flagKey];
   if (!def?.badge) return null;
   const { fill, ink, letter } = def.badge;
@@ -7000,7 +7023,7 @@ function HandlingItemBadge({ flagKey, size = 13 }) {
       viewBox="0 0 14 14"
       role="img"
       aria-label={def.label || flagKey}
-      className="ml-1 inline-block align-middle flex-shrink-0"
+      className={className}
     >
       <title>{def.title || def.label || flagKey}</title>
       <circle cx="7" cy="7" r="7" fill={fill} stroke="#ffffff" strokeWidth="1.5" />
@@ -9010,9 +9033,9 @@ function ticketData(stop) {
   const exec = (stop && stop.raw && stop.raw.stopExecutionInfo) || {};
   const toAddr = raw.to?.address || {};
   const contact = stop.contact || raw.to?.contact || {};
-  const comments = (Array.isArray(stop.allComments) && stop.allComments.length)
-    ? stop.allComments.map((c) => ({ text: c.text, by: c.addedBy, on: c.addedOn }))
-    : (raw.comments || []).map((c) => ({ text: c.commentDescription, by: c.addedByName, on: c.addedOn }));
+  // v1.100.3: the notes NuVizz lists now — a note it no longer lists is left off the paper, one the
+  // latest scan picked up is printed (lib/stop-notes-freshness.js ticketNotes; VITE_MANIFEST_SCAN_NOTES=off).
+  const comments = ticketNotes(stop);
   const items = (Array.isArray(stop.stopDetails) && stop.stopDetails.length ? stop.stopDetails : (raw.stopDetails || []));
   const idStr = (it) => {
     const pid = it.productIdentifier ?? it.sku ?? '';
@@ -9104,7 +9127,7 @@ function ticketBody(stop, logoUrl, brandTitle = 'Delivery Ticket', { seqLabel, h
   const commentCells = d.comments.map((c) => `
       <div class="cmt">
         <div class="cmt-t">${bolEsc(c.text)}</div>
-        <div class="cmt-m"><span>~By ${bolEsc(c.by || '')}</span><span>${bolEsc(tktCommentTime(c.on))}</span></div>
+        <div class="cmt-m">${c.fromScan ? '<span>From NuVizz’s latest scan</span><span></span>' : `<span>~By ${bolEsc(c.by || '')}</span><span>${bolEsc(tktCommentTime(c.on))}</span>`}</div>
       </div>`).join('');
   return `
   <div class="brand"><img src="${bolEsc(logoUrl)}" alt="Davis Delivery Service"/><div class="t">${bolEsc(brandTitle)}</div></div>
@@ -9278,12 +9301,24 @@ function StopNotesList({ comments }) {
       <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Notes</div>
       <div className="space-y-1.5">
         {rows.map((c, i) => {
+          // v1.100.2: a note only the latest scan carries has no author or time to show (the list
+          // does not send them) — blue and "New" only when there are stored notes for it to be newer
+          // than; one the latest scan no longer carries is faded rather than hidden. See mergedNotes
+          // (lib/stop-notes-freshness.js) for why absence is not proof.
+          if (c.fromScan) {
+            return (
+              <div key={i} data-note={c.isNew ? 'scan' : 'scan-only'} className={c.isNew ? 'rounded bg-blue-50 border border-blue-200 px-2 py-1' : 'rounded bg-slate-50 border border-slate-200 px-2 py-1'}>
+                <div className="text-xs text-slate-800 whitespace-pre-wrap break-words leading-snug">{c.text}</div>
+                <div className={'text-[10px] mt-0.5 ' + (c.isNew ? 'text-blue-700' : 'text-slate-500')}>{c.isNew ? 'New — from the latest scan' : 'From NuVizz’s latest scan'}</div>
+              </div>
+            );
+          }
           const label = c.typeDesc || COMMENT_TYPE_LABEL[c.type] || c.type || 'Note';
           const meta = [c.addedBy, c.source, c.addedOn && fmtNoteTime(c.addedOn)].filter(Boolean).join(' · ');
           return (
-            <div key={i} className="rounded bg-slate-50 border border-slate-200 px-2 py-1">
-              <div className="text-xs text-slate-800 whitespace-pre-wrap break-words leading-snug">{c.text}</div>
-              <div className="text-[10px] text-slate-500 mt-0.5">{label}{meta ? ` — ${meta}` : ''}</div>
+            <div key={i} data-note={c.gone ? 'gone' : 'stored'} className={'rounded bg-slate-50 border border-slate-200 px-2 py-1' + (c.gone ? ' opacity-60' : '')}>
+              <div className={'text-xs whitespace-pre-wrap break-words leading-snug ' + (c.gone ? 'text-slate-500 line-through' : 'text-slate-800')}>{c.text}</div>
+              <div className="text-[10px] text-slate-500 mt-0.5">{c.gone ? 'Not in NuVizz’s latest notes — ' : ''}{label}{meta ? ` — ${meta}` : ''}</div>
             </div>
           );
         })}
@@ -9591,6 +9626,10 @@ function StopLiveDetail({ stop, onRefreshed }) {
   // presenting weeks-old text as current.
   const fresh = noteFreshness(stop);
   const cleaned = cleanInstructions(stop.signalSources?.orderInstructions);
+  // v1.100.2 — Chad: "IF there are new notes picked up in the normal scans not enrichment then use
+  // them i shouldn't have to refresh to get them". The scan's notes are merged in as they arrive
+  // (mergedNotes), so the banner asking for a Refresh has nothing left to say.
+  const notes = SCAN_NOTES_AUTO_ON ? mergedNotes(stop) : null;
   return (
     <div className="pt-1 space-y-2">
       <div>
@@ -9599,7 +9638,7 @@ function StopLiveDetail({ stop, onRefreshed }) {
         </button>
       </div>
       {refreshErr && <div className="text-[11px] text-amber-700">Couldn’t refresh: {refreshErr}</div>}
-      {fresh.stale && (
+      {!SCAN_NOTES_AUTO_ON && fresh.stale && (
       <div className="mt-1 mb-1 rounded border border-amber-300 bg-amber-50 px-2 py-1.5">
         <div className="text-[11px] font-semibold text-amber-800">NuVizz has newer instructions than these</div>
         <div className="text-[11px] text-amber-900 mt-0.5 whitespace-pre-wrap break-words">{fresh.liveText}</div>
@@ -9608,7 +9647,9 @@ function StopLiveDetail({ stop, onRefreshed }) {
         </div>
       </div>
     )}
-    {stop.allComments?.length ? (
+    {notes?.length ? (
+        <StopNotesList comments={notes} />
+      ) : !SCAN_NOTES_AUTO_ON && stop.allComments?.length ? (
         <StopNotesList comments={stop.allComments} />
       ) : cleaned ? (
         <div className="pt-1">
@@ -9678,7 +9719,10 @@ function useLiveStop(stop) {
     }
     // foldFreshStop, not a raw spread: a pull that returns an empty podDocs must
     // not erase the BOL already on the card (the mergeEnrich rule, client-side).
-    setFresh((prev) => foldFreshStop(prev, d));
+    // v1.100.3: notes read just now can be NEWER than the scan's note text on this card, so stamp
+    // them as refreshed — mergedNotes then judges nothing removed on this stop, instead of fading
+    // (and the ticket dropping) a note added since the last scan.
+    setFresh((prev) => foldFreshStop(prev, stampNotesRead(d, new Date().toISOString())));
     return null;
   }, []);
   return [live, onRefreshed];
@@ -11708,6 +11752,15 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                   {/* BOTH NAVIGATIONS OR NEITHER. A badge on the laptop and not the phone is
                       the v0.54.50 shape — dispatch runs on a phone. */}
                   {addrBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{addrBadge > 99 ? '99+' : addrBadge}</span>}
+                </button>
+                {/* PERFORMANCE (v1.100.0) — the same place as on the desktop menu. Both navigations or
+                    neither: a screen in one navigation only does not exist on a phone. */}
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('performance')}
+                  role="menuitem"
+                >
+                  <TrendingUp size={12} /> Performance
                 </button>
                 {/* Claude shadow is not here any more: it is Routing's third tab, Build | Engine |
                     Shadow (Chad, 2026-09-25). On a phone it is Routing → gear → Shadow view, and
@@ -17153,9 +17206,12 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     // comments and describe the freight on it. Both belong here (Chad, on 192 unplanned
     // orders: "DO ORDERS THAT HAVE DO NOT DOUBLE STACK IN THE NOTES SHOW UP HERE WITH A
     // DNDS RESTRICTION"), and the order-level ones come LAST so a customer's standing
-    // restrictions keep the position a dispatcher already reads them in. Plain text
-    // rather than a chip, because that is what every other value in this column is.
-    { k: 'restr', label: 'Restrictions', w: 160, get: (s) => restrCellText(s, notes),
+    // restrictions keep the position a dispatcher already reads them in. Each code now wears
+    // the icon its map pin and Legend use (Chad: "under restrictions can we put icons as well
+    // in there if they have any special icons") — words kept beside it, not chips. The sort
+    // key stays the words, read off the same list the icons are drawn from.
+    { k: 'restr', label: 'Restrictions', w: 160,
+      get: (s) => (GRID_RESTRICTION_ICONS_ON ? <RestrictionsCell s={s} notes={notes} /> : restrCellText(s, notes)),
       sortVal: (s) => restrCellText(s, notes) },
     // THE LOAD COLUMN IS WHY THE HOLE EXISTED. It reads NuVizz, and a Draft load carrying no
     // saved orders has nothing there to read — so a stop sitting at position 1 on an open card
@@ -20169,6 +20225,27 @@ const MANIFEST_IN_CARD_ORDER = (() => {
   try { return houseSwitchOn(import.meta.env.VITE_MANIFEST_IN_CARD_ORDER); } catch { return true; }
 })();
 
+// After a Build puts its routes on Compare cards, does the selection keep ONLY the orders it left
+// off? ON by default (v1.101.2). Chad: "all that should be left on the selection table is the
+// orders it did not put on the route". PUT IT BACK: VITE_ROUTING_BUILD_TRIMS_SELECTION=off and a
+// Build leaves every order it was given selected again, as before. It is the only thing the rule
+// does, so there is no half-reverted state. Anything malformed leaves it ON. Build-time, so it
+// costs a redeploy either way.
+const BUILD_TRIMS_SELECTION = (() => {
+  try { return houseSwitchOn(import.meta.env.VITE_ROUTING_BUILD_TRIMS_SELECTION); } catch { return true; }
+})();
+
+// Does a Build's stop that has been on a Compare card stop showing on the Build's route once the
+// card closes? ON by default (v1.102.1). Chad: "if it puts the stops in the compare panel, and I
+// then close out the compare panel, the stops should not look like they're still on that route
+// on the map". PUT IT BACK: VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN=off and the map goes back to
+// drawing the Build's whole plan (numbered pins AND lines) whenever no card is open. One switch
+// for both, so pins and lines cannot disagree. Anything malformed leaves it ON. Build-time, so it
+// costs a redeploy either way.
+const CLOSED_CARDS_CLEAR_PLAN = (() => {
+  try { return houseSwitchOn(import.meta.env.VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN); } catch { return true; }
+})();
+
 // Live-write (beta) gate — the routes-panel driver-assign + dispatch UI. UNLIKE the
 // routing beta this defaults OFF (live writes are opt-in): enable with env
 // VITE_NUVIZZ_WRITE_BETA='true', or force per-session with ?write=1 (?write=0 hides it).
@@ -20237,11 +20314,34 @@ function HandlingChips({ stop }) {
 
 // The Restrictions cell as text — shared by the column's renderer and its sort key so
 // the two can never disagree about what the cell says.
-function restrCellText(s, notes) {
+function restrCellParts(s, notes) {
   const parts = getRestrictionBadgeKeys(notes.get(s.matchKey) || null)
-    .map((k) => RESTRICTION_ICONS[k]?.short || k);
-  for (const k of stopHandlingFlags(s)) parts.push(HANDLING_FLAGS[k]?.short || k);
-  return parts.join(', ');
+    .map((k) => ({ kind: 'restriction', key: k, text: RESTRICTION_ICONS[k]?.short || k }));
+  for (const k of stopHandlingFlags(s)) parts.push({ kind: 'handling', key: k, text: HANDLING_FLAGS[k]?.short || k });
+  return parts;
+}
+function restrCellText(s, notes) {
+  return restrCellParts(s, notes).map((p) => p.text).join(', ');
+}
+
+// The Restrictions cell as the grid draws it (v1.100.1): each customer restriction beside the
+// SAME icon its map pin, sidebar chip and Legend row use (RestrictionIcon), and each handling
+// flag beside its own mark when it has one (the stacker's yellow H; DNDS has none, so it stays a
+// word). Drawn from restrCellParts, the list the words and the sort key come from, so the icons
+// can never show something the words do not say.
+function RestrictionsCell({ s, notes }) {
+  const parts = restrCellParts(s, notes);
+  if (!parts.length) return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 align-middle">
+      {parts.map((p, i) => (
+        <span key={`${p.kind}:${p.key}`} className="inline-flex items-center gap-0.5" data-restr-part={p.key}>
+          {p.kind === 'restriction' ? <RestrictionIcon kind={p.key} size={13} /> : <HandlingItemBadge flagKey={p.key} size={13} className="inline-block align-middle flex-shrink-0" />}
+          <span>{p.text}{i < parts.length - 1 ? ',' : ''}</span>
+        </span>
+      ))}
+    </span>
+  );
 }
 
 /**
@@ -25987,12 +26087,33 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     });
   }, [baseResult, viewing, routeState, stopById]);
 
+  // A BUILD'S STOPS THAT HAVE BEEN ON A CARD STOP SHOWING ON ITS ROUTE ONCE THE CARD CLOSES
+  // (v1.102.1). Chad: "if it puts the stops in the compare panel, and I then close out the compare
+  // panel, the stops should not look like they're still on that route on the map … it still shows
+  // the route that the system built on the map with the stops on it." With no card open the map
+  // paints the plan, and since v1.19.0 a Build stages itself, so closing its cards fell straight
+  // back to the plan: the same stops numbered, coloured and joined by a line under an empty
+  // Compare panel. Remembered PER STOP, per Build: a stop that has been on a card leaves the
+  // plan's pins and lines; one that never reached a card (workbench full, a Trucks-mode route
+  // nobody staged) still paints. A new Build starts fresh. The rules are lib/routing-select.js
+  // planStopsOnCards / planRouteInfo / planRoutesToPaint. VITE_ROUTING_CLOSED_CARDS_CLEAR_PLAN=off
+  // puts it back: nothing is ever remembered, so the whole plan paints exactly as before.
+  const [planOnCards, setPlanOnCards] = useState({ jobId: null, ids: [] });
+  useEffect(() => {
+    if (!CLOSED_CARDS_CLEAR_PLAN || viewing || !job?.id || job?.status !== 'done') return;
+    const jobId = String(job.id);
+    const already = planOnCards.jobId === jobId ? planOnCards.ids : [];
+    const fresh = planStopsOnCards(routesView, wbRoutes, already);
+    if (fresh.length) setPlanOnCards({ jobId, ids: [...already, ...fresh] });
+  }, [viewing, job?.id, job?.status, routesView, wbRoutes, planOnCards]);
+  const planHidden = useMemo(
+    () => new Set((!viewing && job?.id && planOnCards.jobId === String(job.id)) ? planOnCards.ids : []),
+    [viewing, job?.id, planOnCards],
+  );
+  const planPaintRoutes = useMemo(() => planRoutesToPaint(routesView, planHidden), [routesView, planHidden]);
+
   // stopId -> { color, seq } for the numbered route markers (panel & map match).
-  const routeInfo = useMemo(() => {
-    const m = new Map();
-    routesView.forEach((rv) => rv.order.forEach((id, idx) => m.set(String(id), { color: rv.color, seq: idx + 1 })));
-    return m;
-  }, [routesView]);
+  const routeInfo = useMemo(() => planRouteInfo(routesView, planHidden), [routesView, planHidden]);
 
   // Compare-panel routes on the map ("not seeing my route optimizations in the compare panel").
   // Each open card gets a stable palette color; its stops are numbered + linked by a depot-anchored
@@ -26920,12 +27041,13 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
 
   // Route polylines (one per route, depot-anchored), drawn in the CURRENT order so any reorder
   // redraws the path live. While the Compare panel has routes open it draws THOSE (the working set
-  // the dispatcher is tuning); otherwise it draws the engine Build result (routesView).
+  // the dispatcher is tuning); otherwise it draws the engine Build result, less any of its stops
+  // that have been on a card (planPaintRoutes, v1.102.1), the same rule as the numbered pins.
   useEffect(() => {
     if (!google || !mapRef.current) return;
     polylinesRef.current.forEach((p) => p.setMap(null));
     polylinesRef.current = [];
-    const toDraw = wbRoutesColored.length ? wbRoutesColored : routesView;
+    const toDraw = wbRoutesColored.length ? wbRoutesColored : planPaintRoutes;
     if (!toDraw.length) return;
     toDraw.forEach((rv) => {
       // The leading depot point is the "stem-out" leg (terminal → first stop); omit it when the
@@ -26937,7 +27059,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       pl.setMap(mapRef.current);
       polylinesRef.current.push(pl);
     });
-  }, [google, routesView, wbRoutesColored, vStopById, mapReady, routeHideStem]);
+  }, [google, planPaintRoutes, wbRoutesColored, vStopById, mapReady, routeHideStem]);
 
   // Satellite-view toggle — swap the map base between hybrid imagery and the plain roadmap without
   // re-initialising the map (which would drop markers/listeners). mapReady re-applies it after a
@@ -27469,6 +27591,29 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     setAutoStagedKeys(plannedLoadsBound.map((b) => String(b.key)).filter((k) => !openRouteKeys.has(k)));
     stagePlanOntoLoads();
   }, [job?.id, job?.status, plannedLoadsBound, routesView.length, viewing, stagePlanOntoLoads, openRouteKeys]);
+
+  // THE SELECTION HOLDS ONLY WHAT THE BUILD LEFT OFF (v1.101.2). Chad, on a Build onto CRUMPTON
+  // and RASHEED: "all that should be left on the selection table is the orders it did not put on
+  // the route". The Build's staging never wrote the selection, so all 23 orders he gave it stayed
+  // selected after 19 of them were on the cards. The chip read "PUT ON CRUMPTON (23)" (28 skids
+  // for a 14-skid box), and a Discard left all 23 highlighted until a refresh. This sits BESIDE
+  // the staging and only writes the selection. It reads the plan and the cards and takes out an
+  // order the Build routed once that order is on an open card. It is taken out once per plan, so
+  // an order selected again by hand stays selected. Discard keeps the selection as it now is: only
+  // what was left off. The rule is lib/routing-select.js selectionAfterBuildStage.
+  // VITE_ROUTING_BUILD_TRIMS_SELECTION=off puts it back.
+  const buildTrimRef = useRef({ jobId: null, ids: new Set() });
+  useEffect(() => {
+    if (!BUILD_TRIMS_SELECTION || viewing || job?.status !== 'done' || !routesView.length) return;
+    const jobId = String(job.id);
+    if (buildTrimRef.current.jobId !== jobId) buildTrimRef.current = { jobId, ids: new Set() };
+    const onCard = new Set();
+    for (const r of wbRoutes) for (const id of r.order) onCard.add(String(id));
+    const { take } = selectionAfterBuildStage({ selected: selectedIds, built: routesView.flatMap((rv) => rv.order), onCard, trimmed: buildTrimRef.current.ids });
+    if (!take.length) return;
+    for (const id of take) buildTrimRef.current.ids.add(id);
+    setSelectedIds((prev) => { const n = new Set(prev); for (const id of take) n.delete(id); return n; });
+  }, [job?.id, job?.status, viewing, routesView, wbRoutes, selectedIds]);
 
   // ── Engine draft (Assist slice 1): name 2-3 drivers, the LEARNED engine drafts
   // their routes from the day's unplanned pool. Drafting reads Firestore only
@@ -28053,7 +28198,16 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
                         return (
                           <li key={t.rowKey} className="px-1.5 py-1 text-[12px]" data-plan-build-row={t.display}>
                             <div className="flex items-center gap-1.5">
-                              <span className="font-medium truncate flex-1 min-w-0">{t.display}</span>
+                              {/* TAKE A ROUTE OUT FROM HERE. Chad, on this list: "should be a check box
+                                  here incase i want to remove". Unticking is the picker's own untick
+                                  (the same Set the load rows above write), so the route leaves the
+                                  build and its row above reads unticked — one list, two places to
+                                  change it. Tick it again in the list above. */}
+                              <label className="tap-target-y flex items-center gap-1.5 flex-1 min-w-0 cursor-pointer" title="Untick to leave this route out of the build">
+                                <input type="checkbox" checked aria-label={`Build ${t.display}`} data-plan-build-remove={t.display}
+                                  onChange={() => setPlanTargetKeys((prev) => { const n = new Set(prev); n.delete(t.rowKey); return n; })} />
+                                <span className="font-medium truncate">{t.display}</span>
+                              </label>
                               <div className="flex rounded border border-slate-300 overflow-hidden text-[10px] shrink-0"
                                 role="group" aria-label={`Vehicle for ${t.display} (routes to build)`}
                                 data-build-vehicle={t.vehicleClass || ''} data-build-vehicle-source={t.vehicleSource} data-build-vehicle-saved={saved ? '1' : '0'}>
@@ -31283,6 +31437,8 @@ function Shell() {
   const [smsSeenAt, setSmsSeenAt] = useState(() => Number(safeReadJSON(LS_SMS_SEEN, 0)) || 0);
   const smsUnread = inbound.filter((m) => m.direction === 'in' && new Date(m.at || 0).getTime() > smsSeenAt).length;
   const openMessages = () => { setMessagesOpen(true); };
+  // Stops rides the desktop bar only in a window wide enough to keep Messages' badge on it (v1.104.1).
+  const stopsBar = useMediaQuery(STOPS_BAR_QUERY, true);
   const closeMessages = () => { setMessagesOpen(false); const now = Date.now(); setSmsSeenAt(now); safeWriteJSON(LS_SMS_SEEN, now); };
 
   // Customer contacts (phone → name) from saved notes, for the Messages contact
@@ -31314,7 +31470,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'uatbench', 'users'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'labels', 'performance', 'uatbench', 'users'];
     openTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -31439,8 +31595,11 @@ function Shell() {
                   desktop. Um, probably to the right of routing." — then "Just call it stops not stop lookup
                   now." A customer on the phone is the everyday case, not an occasional visit. Desktop only:
                   the phone menu is its own view and keeps it where it was. The screen's own heading still
-                  reads "Stop lookup" (the layout guards prove arrival by it). */}
-              <TabBtn label="Stops" icon={<Search size={14} />} active={tab === 'stoplookup'} onClick={() => setTab('stoplookup')} />
+                  reads "Stop lookup" (the layout guards prove arrival by it).
+                  ONLY WHEN IT FITS (v1.104.1): under 1440px Routing's bar has no room for it — it pushed
+                  Messages' unread badge off the end — so a narrower window finds Stops under More instead
+                  (lib/stops-tab.js; Chad: "1 i like your idea"). Never both, never neither. */}
+              {stopsBar && <TabBtn label="Stops" icon={<Search size={14} />} active={tab === 'stoplookup'} onClick={() => setTab('stoplookup')} />}
               <TabBtn label="New Order" icon={<Package size={14} />} active={tab === 'neworder'} onClick={() => setTab('neworder')} />
               <TabBtn label="Quote" icon={<Calculator size={14} />} active={tab === 'quote'} onClick={() => setTab('quote')} />
               <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
@@ -31474,12 +31633,18 @@ function Shell() {
               items={[
                 { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
                 { id: 'comms', label: 'Customer emails', hint: 'Delivery-complete email program', icon: <Mail size={14} /> },
-                // Stop lookup left this menu for the bar itself, right of Routing (v1.99.11).
+                // Stop lookup left this menu for the bar itself, right of Routing (v1.99.11) — and comes back
+                // here, as "Stops", only in a window too narrow for the bar to carry it (v1.104.1).
+                ...(stopsBar ? [] : [{ ...STOPS_MORE_ITEM, icon: <Search size={14} /> }]),
                 // Davis labels for one shipper's orders on one day, one at a time or all at once.
                 // It sat beside Stop lookup because both answer about orders; phone menu below too.
                 { id: 'labels', label: 'Print labels', hint: 'Davis labels by shipper and day — 0 NuVizz calls', icon: <Tag size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
+                // PERFORMANCE (v1.100.0): stops delivered — today against a typical day at the same minute,
+                // and by day, week and month. Both navigations or neither: the phone menu carries it too,
+                // in the same place (under Address history).
+                { id: 'performance', label: 'Performance', hint: 'Ahead or behind today · days, weeks, months — 0 NuVizz calls', icon: <TrendingUp size={14} /> },
                 // Claude shadow moved to Routing's Build | Engine | Shadow toggle (Chad, 2026-09-25).
                 // Account & logins (v1.75.0): sign in, your own NuVizz login and, for admins, everyone's.
                 // Beside Diagnostics because both are about the app rather than the day. The phone menu
@@ -31532,7 +31697,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'users' ? (accountsOpen ? <AccountScreen isMobile={isMobile} loginMode={LOGIN_MODE} /> : null) : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} isMobile={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : tab === 'labels' ? <LabelsScreen /> : tab === 'performance' ? <React.Suspense fallback={<div className="flex-1 bg-zinc-950 p-6 text-sm text-zinc-400">Loading Performance…</div>}><PerformanceScreen isMobile={isMobile} canBuild={accountsOpen} /></React.Suspense> : tab === 'users' ? (accountsOpen ? <AccountScreen isMobile={isMobile} loginMode={LOGIN_MODE} /> : null) : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
@@ -44233,6 +44398,24 @@ function ManifestCheckScreen() {
       </div>
     </div>
   );
+}
+
+/**
+ * Does the window match this media query, live as it is resized? `fallback` answers when there is no
+ * matchMedia (a test, an old browser) — the caller says which side is the safe one.
+ */
+function useMediaQuery(query, fallback = false) {
+  const read = () => { try { return window.matchMedia(query).matches; } catch { return fallback; } };
+  const [matches, setMatches] = useState(read);
+  useEffect(() => {
+    let mq;
+    try { mq = window.matchMedia(query); } catch { return undefined; }
+    const onChange = () => setMatches(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [query]);
+  return matches;
 }
 
 function TabBtn({ label, icon, active, onClick, badge = 0 }) {

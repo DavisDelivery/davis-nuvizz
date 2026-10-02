@@ -35,6 +35,7 @@ import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { MEASURE } from './lib/layout-measure.mjs';
 import { accountAnswer, ADMIN_SESSION, SESSION_KEY } from './lib/account-fixture.mjs';
+import { performanceAnswer } from './lib/performance-fixture.mjs';
 
 const DIST = process.argv[2] || 'dist';
 const PORT = Number(process.env.PORT || 4183);
@@ -57,10 +58,13 @@ const SCREENS = [
   { key: 'quote', label: 'Quote', nav: /quote/i },
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
-  { key: 'stoplookup', label: 'Stop lookup', nav: /^stops$/i },   // the bar's "Stops" tab since v1.99.11; the heading still reads Stop lookup
+  { key: 'stoplookup', label: 'Stop lookup', nav: /^stops\b/i, inMore: true },   // "Stops": under More on every tablet — the bar carries it only from 1440px (v1.104.1); the heading still reads Stop lookup
   { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
+  // MORE → PERFORMANCE (v1.100.0): the desktop view on a finger — the toolbar, the tiles, the split
+  // charts and the Days table with its checkboxes, sort headers and row menus, every one 44px here.
+  { key: 'performance', label: 'Performance', nav: /^performance/i, inMore: true, arrive: 'Stop performance' },
   // Routing's third tab since v1.68.2: Routing, then the Build | Engine | Shadow toggle.
   { key: 'claudeshadow', label: 'Routing — Shadow (Claude shadow)', nav: /routing/i, sub: /^shadow$/i, arrive: 'Claude shadow' },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i, inMore: true },
@@ -109,6 +113,46 @@ const PROBES = {
     name: 'a section’s stop map open',
     open: async (page) => guardOpenStopPicker(page),
   }],
+  // MORE → PERFORMANCE (v1.100.0). Run in order on one page, so each probe opens its own state
+  // whatever the one before it left open, and PROVES it: the range dropdown, the filters in flow,
+  // two days ticked (the overlay chips and the bulk bar), a row's menu, and a day's routes.
+  performance: [
+    { name: 'date range open', open: async (page) => {
+      if (!(await openByName(page, /last 30 days/i))) return false;
+      return page.getByRole('button', { name: /^show this range$/i }).first().isVisible().catch(() => false);
+    } },
+    { name: 'filters open', open: async (page) => {
+      await page.keyboard.press('Escape').catch(() => {});
+      if (!(await page.getByText(/weekdays in the trend and the table/i).first().isVisible().catch(() => false))) {
+        if (!(await openByName(page, /^filters/i))) return false;
+      }
+      return page.getByText(/weekdays in the trend and the table/i).first().isVisible().catch(() => false);
+    } },
+    { name: 'two days ticked (drawn over today, bulk actions)', open: async (page) => {
+      const boxes = page.getByRole('checkbox', { name: /^select (?!every)/i });
+      if ((await boxes.count()) < 3) return false;
+      await boxes.nth(1).check();
+      await boxes.nth(2).check();
+      await page.waitForTimeout(500);
+      const bar = await page.getByRole('region', { name: /ticked days/i }).first().isVisible().catch(() => false);
+      const chip = await page.getByRole('button', { name: /off the pace chart$/i }).first().isVisible().catch(() => false);
+      return bar && chip;
+    } },
+    { name: 'a day’s menu open', open: async (page) => {
+      if (!(await openByName(page, /^actions for /i))) return false;
+      return page.getByRole('menuitem', { name: /show this day.s routes/i }).first().isVisible().catch(() => false);
+    } },
+    { name: 'a day’s routes', open: async (page) => {
+      await page.keyboard.press('Escape').catch(() => {});
+      const b = page.getByRole('group', { name: 'Rows' }).getByRole('button', { name: /routes/i }).first();
+      if (!(await b.isVisible().catch(() => false))) return false;
+      await b.click();
+      await page.waitForTimeout(600);
+      // PROVES the routes table drew: the heading names the day, and "Per hour" is its column alone.
+      const heading = await page.getByRole('heading', { name: /^Routes · / }).first().isVisible().catch(() => false);
+      return heading && page.getByText(/^Per hour$/).first().isVisible().catch(() => false);
+    } },
+  ],
   routing: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
   map: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
   // The queue's sub-tabs at iPad width: a segmented bar on a 1024px tablet and a chip row on a
@@ -383,6 +427,12 @@ async function gotoScreen(page, screen) {
   if (!(await use.isVisible().catch(() => false))) return false;
   await use.click();
   await page.waitForTimeout(900);
+  // A LAZY screen opened straight from the menu (Performance): WAIT (up to 15s) for its heading, then
+  // give its read the same 900ms. The sub-tab path below waits on its own.
+  if (screen.arrive && !screen.sub) {
+    await page.getByRole('heading', { name: screen.arrive }).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(900);
+  }
   // A sub-tab (Routing's Build | Engine | Shadow). It must prove it arrived, or the guard would
   // measure the Build screen under the Shadow screen's name.
   if (screen.sub) {
@@ -446,6 +496,8 @@ for (const dev of TABLETS) {
     if (u.includes('claude-shadow')) return J(claudeShadowFixtureFor(u, route.request().postData()));
     // PRINT LABELS (v1.67.0) — the same built fixture the phone guard drives.
     if (u.includes('labels-by-shipper')) return J(labelsAnswer(u));
+    // MORE → PERFORMANCE (v1.100.0) — the same built fixture the phone and desktop guards use.
+    if (u.includes('stop-performance')) return J(performanceAnswer(u));
     // A DRIVER'S WEEK (v1.69.0) — the same built fixture the phone guard drives.
     if (u.includes('driver-loads')) return J(driverWeekAnswer(u));
     // THE ORDER PANEL'S ACTIVITY TIMELINE (v1.83.0) — the same worst rows the phone guard uses.

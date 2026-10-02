@@ -44,6 +44,7 @@ import { claudeShadowFixtureFor, CLAUDE_SHADOW_FAKE_MAPS, isGoogleMapsScript, gu
 
 import { MEASURE } from './lib/layout-measure.mjs';
 import { accountAnswer, ADMIN_SESSION, SESSION_KEY } from './lib/account-fixture.mjs';
+import { performanceAnswer } from './lib/performance-fixture.mjs';
 
 const DIST = resolve(process.argv[2] || 'dist');
 const PORT = 8891;
@@ -170,6 +171,11 @@ const SCREENS = [
   { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
+  // MORE → PERFORMANCE (v1.100.0), over the BUILT fixture (scripts/lib/performance-fixture.mjs): a
+  // live day judged at 11:10a, two days still to build, a weekday never captured, a route and a
+  // driver long enough to wrap. Its code is LAZY (its own file, fetched on the tap), so the guard
+  // waits for its heading before it measures — `arrive` is that heading.
+  { key: 'performance', label: 'Performance', nav: /^\s*performance\s*$/i, inMore: true, arrive: 'Stop performance' },
   // Seeded with a recorded test call AND a rejected model value, so the longest rows on the
   // screen (the cost basis line, the ignored-value note) are the ones measured at 360.
   // ROUTING'S THIRD TAB since v1.68.2 (Chad: "add a 3rd that is called shadow"), reached the way a
@@ -869,6 +875,83 @@ const PROBES = {
       },
     },
   ],
+  // ── MORE → PERFORMANCE (v1.100.0) ─────────────────────────────────────────────
+  // At rest the phone shows the pace card, the tiles, the trend and the day cards. Everything below
+  // exists only after a tap — the range list and the filters open IN FLOW under the header, the
+  // table twins replace the charts, ticking days brings the overlay chips and the bulk bar, and the
+  // row menu is a portal — so each is a probe, and each PROVES the state it names.
+  performance: [
+    {
+      name: 'date range open',
+      open: async (page) => {
+        const b = page.getByRole('button', { name: /last 30 days/i }).first();
+        if (!(await b.isVisible().catch(() => false))) return false;
+        await b.click();
+        await page.waitForTimeout(400);
+        return page.getByRole('button', { name: /^show this range$/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'filters open',
+      open: async (page) => {
+        const b = page.getByRole('button', { name: /^filters/i }).first();
+        if (!(await b.isVisible().catch(() => false))) return false;
+        await b.click();
+        await page.waitForTimeout(400);
+        return page.getByText(/weekdays in the trend and the table/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'pace and trend as tables',
+      open: async (page) => {
+        for (const g of ['Pace: chart or table', 'Trend: chart or table']) {
+          const b = page.getByRole('group', { name: g }).getByRole('button', { name: /table/i }).first();
+          if (!(await b.isVisible().catch(() => false))) return false;
+          await b.click();
+          await page.waitForTimeout(250);
+        }
+        const pace = await page.getByRole('table', { name: /delivered by each hour/i }).first().isVisible().catch(() => false);
+        const trend = await page.getByRole('table', { name: /delivered per day/i }).first().isVisible().catch(() => false);
+        return pace && trend;
+      },
+    },
+    {
+      name: 'two days ticked (drawn over today, bulk actions)',
+      open: async (page) => {
+        const boxes = page.getByRole('checkbox', { name: /^select (?!every)/i });
+        if ((await boxes.count()) < 3) return false;
+        await boxes.nth(1).check();
+        await boxes.nth(2).check();
+        await page.waitForTimeout(500);
+        const bar = await page.getByRole('region', { name: /ticked days/i }).first().isVisible().catch(() => false);
+        const chip = await page.getByRole('button', { name: /off the pace chart$/i }).first().isVisible().catch(() => false);
+        return bar && chip;
+      },
+    },
+    {
+      name: 'today’s routes',
+      open: async (page) => {
+        const b = page.getByRole('group', { name: 'Rows' }).getByRole('button', { name: /routes/i }).first();
+        if (!(await b.isVisible().catch(() => false))) return false;
+        await b.click();
+        await page.waitForTimeout(500);
+        // PROVES the route cards drew: the heading names the day, and "Per hour" is a label only a
+        // route card carries. (Not a route's name — ten cards to a page, and which ten is the sort's.)
+        const heading = await page.getByRole('heading', { name: /^Routes · / }).first().isVisible().catch(() => false);
+        return heading && page.getByText(/^Per hour$/).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'a day’s menu open',
+      open: async (page) => {
+        const b = page.getByRole('button', { name: /^actions for /i }).first();
+        if (!(await b.isVisible().catch(() => false))) return false;
+        await b.click();
+        await page.waitForTimeout(300);
+        return page.getByRole('menuitem', { name: /show this day.s routes/i }).first().isVisible().catch(() => false);
+      },
+    },
+  ],
   comms: [
     {
       name: 'all sections open',
@@ -1131,6 +1214,10 @@ function stubRoutes(page, emailHtml) {
     // label-shippers.js (scripts/lib/labels-fixture.mjs). Before the catch-all, which would
     // answer it with an empty board and measure a screen with nothing on it.
     if (u.includes('labels-by-shipper')) return R(labelsAnswer(u));
+    // MORE → PERFORMANCE (v1.100.0) — the main read and one day's detail, BUILT by the real pace
+    // digest (scripts/lib/performance-fixture.mjs). Before the catch-all, which would answer it with
+    // a board and no days — a screen with nothing on it cannot collide.
+    if (u.includes('stop-performance')) return R(performanceAnswer(u));
     // A DRIVER'S WEEK (v1.69.0) — the chooser or the week, BUILT by the real load-lookup.js
     // (scripts/lib/driver-week-fixture.mjs). Before the catch-all, which would answer it with an
     // empty board and measure a screen with nothing on it.
@@ -1179,6 +1266,13 @@ async function gotoScreen(page, screen) {
     if (!(await item.isVisible().catch(() => false))) return false;
     await item.click();
     await page.waitForTimeout(900);
+    // A LAZY screen reached straight from the menu (Performance): its file is fetched on the tap, so
+    // WAIT (up to 15s) for its heading before the proof below — a slow file must neither read as a
+    // screen that never arrived nor be measured half-drawn. The gear path below waits on its own.
+    if (screen.arrive && !screen.gear) {
+      await page.getByRole('heading', { name: screen.arrive }).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(600);
+    }
   }
   // A screen one level down, behind the Routing app-bar gear (the phone has no Build | Engine |
   // Shadow row on Build). It must PROVE it arrived: a gear item that quietly failed would leave
