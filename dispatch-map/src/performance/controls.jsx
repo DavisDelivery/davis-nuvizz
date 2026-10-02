@@ -42,7 +42,7 @@ export function ToolbarButton({ children, active = false, className = '', ...res
     <button
       type="button"
       className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-[13px] font-medium transition-colors duration-150 motion-reduce:transition-none
-        ${active ? 'border-zinc-600 bg-zinc-800 text-zinc-100' : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800/70 hover:text-zinc-100'}
+        ${active ? 'border-slate-300 bg-slate-100 text-slate-900' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900'}
         disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
       {...rest}
     >
@@ -54,7 +54,7 @@ export function ToolbarButton({ children, active = false, className = '', ...res
 /** Two or three mutually exclusive choices. aria-pressed on each, so the state is read out. */
 export function Segmented({ value, options, onChange, label, size = 'sm', className = '' }) {
   return (
-    <div role="group" aria-label={label} className={`inline-flex items-center rounded-md border border-zinc-800 bg-zinc-900 p-0.5 ${className}`}>
+    <div role="group" aria-label={label} className={`inline-flex items-center rounded-md border border-slate-200 bg-slate-100 p-0.5 ${className}`}>
       {options.map((o) => {
         const on = o.value === value;
         return (
@@ -64,7 +64,7 @@ export function Segmented({ value, options, onChange, label, size = 'sm', classN
             aria-pressed={on}
             onClick={() => onChange(o.value)}
             className={`${size === 'lg' ? 'h-9 px-3.5 text-sm' : 'h-7 px-2.5 text-[12.5px]'} inline-flex items-center justify-center rounded-[5px] font-medium transition-colors duration-150 motion-reduce:transition-none
-              ${on ? 'bg-zinc-700/80 text-zinc-50 shadow-sm shadow-black/30' : 'text-zinc-400 hover:text-zinc-100'}`}
+              ${on ? 'bg-white text-slate-900 shadow-sm shadow-slate-900/10' : 'text-slate-600 hover:text-slate-900'}`}
           >
             {o.label}
           </button>
@@ -81,8 +81,8 @@ export function Segmented({ value, options, onChange, label, size = 'sm', classN
  */
 export function SearchField({ value, onChange, placeholder = 'Search', className = '', inputRef = null, hint = null }) {
   return (
-    <div className={`flex min-h-[32px] items-center rounded-md border border-zinc-800 bg-zinc-900 transition-colors focus-within:border-zinc-600 ${className}`}>
-      <Search size={14} className="ml-2.5 shrink-0 text-zinc-500" aria-hidden="true" />
+    <div className={`flex min-h-[32px] items-center rounded-md border border-slate-300 bg-white transition-colors focus-within:border-slate-400 ${className}`}>
+      <Search size={14} className="ml-2.5 shrink-0 text-slate-500" aria-hidden="true" />
       <input
         ref={inputRef}
         type="search"
@@ -91,15 +91,15 @@ export function SearchField({ value, onChange, placeholder = 'Search', className
         onKeyDown={(e) => { if (e.key === 'Escape' && value) { e.stopPropagation(); onChange(''); } }}
         placeholder={placeholder}
         aria-label={placeholder}
-        className="h-8 min-w-0 flex-1 bg-transparent px-2 text-[13px] text-zinc-100 placeholder:text-zinc-500 outline-none [&::-webkit-search-cancel-button]:hidden"
+        className="h-8 min-w-0 flex-1 bg-transparent px-2 text-[13px] text-slate-900 placeholder:text-slate-400 outline-none [&::-webkit-search-cancel-button]:hidden"
       />
       {value ? (
         <button type="button" onClick={() => onChange('')} aria-label="Clear search"
-          className="mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100">
+          className="mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-100 hover:text-slate-900">
           <X size={13} />
         </button>
       ) : hint ? (
-        <kbd className="mr-2 hidden shrink-0 rounded border border-zinc-700 px-1.5 font-mono text-[11px] leading-5 text-zinc-400 lg:inline-block" aria-hidden="true">{hint}</kbd>
+        <kbd className="mr-2 hidden shrink-0 rounded border border-slate-200 px-1.5 font-mono text-[11px] leading-5 text-slate-600 lg:inline-block" aria-hidden="true">{hint}</kbd>
       ) : null}
     </div>
   );
@@ -134,10 +134,10 @@ export function DateRangePicker({ selection, range, today, onChange, inline = fa
   return (
     <div className="relative" ref={ref}>
       <ToolbarButton active={open} aria-haspopup="dialog" aria-expanded={open} onClick={() => onOpenChange(!open)}>
-        <CalendarRange size={14} className="text-zinc-400" aria-hidden="true" />
-        <span className="text-zinc-100">{buttonText}</span>
-        <span className="hidden font-mono text-[12px] text-zinc-400 lg:inline">{rangeLabel(range?.from, range?.to)}</span>
-        <ChevronDown size={13} className={`text-zinc-500 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+        <CalendarRange size={14} className="text-slate-600" aria-hidden="true" />
+        <span className="text-slate-900">{buttonText}</span>
+        <span className="hidden font-mono text-[12px] text-slate-600 lg:inline">{rangeLabel(range?.from, range?.to)}</span>
+        <ChevronDown size={13} className={`text-slate-500 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
       </ToolbarButton>
       {open && <div className="absolute left-0 top-full z-40 mt-1.5">{panel}</div>}
     </div>
@@ -151,7 +151,7 @@ function DatePanel({ selection, today, from, to, setFrom, setTo, onPick, inline 
     <div
       role="dialog"
       aria-label="Date range"
-      className={`${inline ? 'w-full' : 'w-[300px] shadow-xl shadow-black/50'} rounded-lg border border-zinc-800 bg-zinc-900 py-1.5 transition duration-150 motion-reduce:transition-none
+      className={`${inline ? 'w-full' : 'w-[300px] shadow-xl shadow-slate-900/10'} rounded-lg border border-slate-200 bg-white py-1.5 transition duration-150 motion-reduce:transition-none
         ${entered ? 'translate-y-0 opacity-100' : '-translate-y-1 opacity-0'}`}
     >
       <ul>
@@ -162,36 +162,36 @@ function DatePanel({ selection, today, from, to, setFrom, setTo, onPick, inline 
               <button
                 type="button"
                 onClick={() => onPick({ id: p.id, custom: selection?.custom || {} })}
-                className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800/70"
+                className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] text-slate-800 transition-colors hover:bg-slate-100"
               >
-                <span className="inline-flex w-4 justify-center" aria-hidden="true">{on ? <Check size={16} strokeWidth={3} className="text-zinc-100" /> : null}</span>
-                <span className={`flex-1 ${on ? 'font-semibold text-zinc-50' : ''}`}>{p.label}</span>
+                <span className="inline-flex w-4 justify-center" aria-hidden="true">{on ? <Check size={16} strokeWidth={3} className="text-slate-900" /> : null}</span>
+                <span className={`flex-1 ${on ? 'font-semibold text-slate-900' : ''}`}>{p.label}</span>
               </button>
             </li>
           );
         })}
       </ul>
-      <div className="mx-3 my-1.5 border-t border-zinc-800" />
+      <div className="mx-3 my-1.5 border-t border-slate-200" />
       <form
         className="px-3 pb-1.5"
         onSubmit={(e) => { e.preventDefault(); if (valid) onPick({ id: 'custom', custom: { from, to } }); }}
       >
-        <div className="mb-1.5 text-xs text-zinc-400">Custom range</div>
+        <div className="mb-1.5 text-xs text-slate-600">Custom range</div>
         <div className="flex items-center gap-2">
           <label className="flex-1">
             <span className="sr-only">From</span>
             <input type="date" value={from} max={today} onChange={(e) => setFrom(e.target.value)}
-              className="h-8 w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 font-mono text-[12.5px] text-zinc-100 [color-scheme:dark] outline-none focus:border-zinc-600" />
+              className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 font-mono text-[12.5px] text-slate-900 [color-scheme:light] outline-none focus:border-slate-400" />
           </label>
-          <span className="text-zinc-500" aria-hidden="true">–</span>
+          <span className="text-slate-500" aria-hidden="true">–</span>
           <label className="flex-1">
             <span className="sr-only">To</span>
             <input type="date" value={to} max={today} onChange={(e) => setTo(e.target.value)}
-              className="h-8 w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 font-mono text-[12.5px] text-zinc-100 [color-scheme:dark] outline-none focus:border-zinc-600" />
+              className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 font-mono text-[12.5px] text-slate-900 [color-scheme:light] outline-none focus:border-slate-400" />
           </label>
         </div>
         <button type="submit" disabled={!valid}
-          className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-md bg-zinc-100 text-[13px] font-semibold text-zinc-900 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">
+          className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-md bg-brand text-[13px] font-semibold text-white transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500">
           Show this range
         </button>
       </form>
@@ -212,19 +212,19 @@ export function FilterPanel({ weekdays, onToggleWeekday, typical, onTypical, mea
   return (
     <section
       aria-label="Filters"
-      className={`rounded-lg border border-zinc-800 bg-zinc-900/80 transition duration-200 motion-reduce:transition-none ${entered ? 'translate-y-0 opacity-100' : '-translate-y-1 opacity-0'}
+      className={`rounded-lg border border-slate-200 bg-white transition duration-200 motion-reduce:transition-none ${entered ? 'translate-y-0 opacity-100' : '-translate-y-1 opacity-0'}
         ${compact ? 'p-3' : 'p-4'}`}
     >
       <div className={`grid gap-4 ${compact ? 'grid-cols-1' : 'grid-cols-2 xl:grid-cols-4'}`}>
         <fieldset>
-          <legend className="mb-2 text-xs font-medium text-zinc-400">Weekdays in the trend and the table</legend>
+          <legend className="mb-2 text-xs font-medium text-slate-600">Weekdays in the trend and the table</legend>
           <div className="flex flex-wrap gap-1.5">
             {[1, 2, 3, 4, 5].map((w) => {
               const on = weekdays.has(w);
               return (
                 <button key={w} type="button" aria-pressed={on} onClick={() => onToggleWeekday(w)}
                   className={`inline-flex h-7 min-w-[44px] items-center justify-center rounded-md border px-2 text-[12.5px] font-medium transition-colors
-                    ${on ? 'border-zinc-600 bg-zinc-800 text-zinc-100' : 'border-zinc-800 bg-transparent text-zinc-500 line-through decoration-zinc-600 hover:text-zinc-300'}`}>
+                    ${on ? 'border-slate-300 bg-slate-100 text-slate-900' : 'border-slate-200 bg-transparent text-slate-500 line-through decoration-slate-400 hover:text-slate-700'}`}>
                   {WEEKDAY_SHORT[w]}
                 </button>
               );
@@ -232,43 +232,43 @@ export function FilterPanel({ weekdays, onToggleWeekday, typical, onTypical, mea
           </div>
         </fieldset>
         <fieldset>
-          <legend className="mb-2 text-xs font-medium text-zinc-400">Typical day, for today's pace</legend>
+          <legend className="mb-2 text-xs font-medium text-slate-600">Typical day, for today's pace</legend>
           <Segmented label="Typical day" value={typical} onChange={onTypical}
             options={[{ value: 'weekday', label: typicalLabel || 'Same weekday' }, { value: 'recent', label: 'Last 20 weekdays' }]} />
-          <p className="mt-1.5 text-xs leading-relaxed text-zinc-400">
+          <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
             {typical === 'weekday' ? 'The last 8 of today’s weekday.' : 'The last 20 weekdays of any kind — for the week after a holiday.'}
           </p>
         </fieldset>
         <fieldset>
-          <legend className="mb-2 text-xs font-medium text-zinc-400">Judge today's pace by</legend>
+          <legend className="mb-2 text-xs font-medium text-slate-600">Judge today's pace by</legend>
           <Segmented label="Judge pace by" value={measure} onChange={onMeasure}
             options={[{ value: 'stops', label: 'Stops' }, { value: 'share', label: 'Share of board' }]} />
-          <p className="mt-1.5 text-xs leading-relaxed text-zinc-400">
+          <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
             {measure === 'stops' ? 'Stops delivered so far, against the typical day at the same minute.' : 'The share of today’s own board done — fair on a heavy or a light day.'}
           </p>
         </fieldset>
         <fieldset>
-          <legend className="mb-2 text-xs font-medium text-zinc-400">Left out of the typical day</legend>
+          <legend className="mb-2 text-xs font-medium text-slate-600">Left out of the typical day</legend>
           {days.length ? (
             <>
               <ul className="flex flex-wrap gap-1.5">
                 {days.map((d) => (
                   <li key={d}>
                     <button type="button" onClick={() => onPutBack(d)} aria-label={`Put ${dayLabel(d, today)} back in the typical day`}
-                      className="inline-flex h-7 items-center gap-1 rounded-md border border-zinc-800 bg-zinc-950 px-2 font-mono text-[12px] text-zinc-300 hover:border-zinc-600 hover:text-zinc-100">
-                      <EyeOff size={12} className="text-zinc-500" aria-hidden="true" /> {dayLabel(d, today)} <X size={12} className="text-zinc-500" aria-hidden="true" />
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-300 bg-white px-2 font-mono text-[12px] text-slate-700 hover:border-slate-400 hover:text-slate-900">
+                      <EyeOff size={12} className="text-slate-500" aria-hidden="true" /> {dayLabel(d, today)} <X size={12} className="text-slate-500" aria-hidden="true" />
                     </button>
                   </li>
                 ))}
               </ul>
-              <button type="button" onClick={onPutAllBack} className="mt-2 text-xs font-medium text-zinc-300 underline decoration-zinc-600 underline-offset-2 hover:text-zinc-100">Put them all back</button>
+              <button type="button" onClick={onPutAllBack} className="mt-2 text-xs font-medium text-slate-700 underline decoration-slate-400 underline-offset-2 hover:text-slate-900">Put them all back</button>
             </>
           ) : (
-            <p className="text-xs leading-relaxed text-zinc-400">None. A holiday or a snow day can be left out from its row in the Days table.</p>
+            <p className="text-xs leading-relaxed text-slate-600">None. A holiday or a snow day can be left out from its row in the Days table.</p>
           )}
         </fieldset>
       </div>
-      <div className="mt-3 flex justify-end border-t border-zinc-800 pt-3">
+      <div className="mt-3 flex justify-end border-t border-slate-200 pt-3">
         <ToolbarButton onClick={onReset}><RotateCcw size={13} aria-hidden="true" /> Reset filters</ToolbarButton>
       </div>
     </section>
@@ -345,7 +345,7 @@ export function RowMenu({ label, items }) {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => (open ? close() : place())}
-        className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-100 ${open ? 'bg-zinc-800 text-zinc-100' : ''}`}
+        className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 ${open ? 'bg-slate-100 text-slate-900' : ''}`}
       >
         <MoreHorizontal size={15} />
       </button>
@@ -358,9 +358,9 @@ export function RowMenu({ label, items }) {
               role="menuitem"
               disabled={it.disabled}
               onClick={() => { close(); it.onSelect(); }}
-              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-zinc-200 outline-none transition-colors hover:bg-zinc-800 focus:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-500"
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-slate-800 outline-none transition-colors hover:bg-slate-100 focus:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400"
             >
-              {it.icon ? <span className="inline-flex w-4 justify-center text-zinc-400" aria-hidden="true">{it.icon}</span> : null}
+              {it.icon ? <span className="inline-flex w-4 justify-center text-slate-600" aria-hidden="true">{it.icon}</span> : null}
               <span className="flex-1">{it.label}</span>
             </button>
           ))}
@@ -378,7 +378,7 @@ const MenuSurface = React.forwardRef(function MenuSurface({ pos, label, children
       ref={ref}
       role="menu"
       aria-label={label}
-      className={`fixed z-[70] w-[232px] rounded-lg border border-zinc-700 bg-zinc-900 py-1 shadow-xl shadow-black/50 transition duration-150 motion-reduce:transition-none
+      className={`fixed z-[70] w-[232px] rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-900/10 transition duration-150 motion-reduce:transition-none
         ${entered ? 'scale-100 opacity-100' : 'scale-95 opacity-0'}`}
       style={{ left: pos.left, ...(pos.top != null ? { top: pos.top, transformOrigin: 'top right' } : { bottom: pos.bottom, transformOrigin: 'bottom right' }) }}
     >
@@ -400,30 +400,30 @@ function pageWindow(page, pages) {
 /** A server-style footer: rows per page, "26–50 of 63", and the pages. */
 export function Pager({ page, pages, total, first, last, size, onPage, onSize, noun = 'rows' }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800 px-3 py-2 text-xs text-zinc-400">
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-3 py-2 text-xs text-slate-600">
       <label className="inline-flex items-center gap-2">
         <span>Rows per page</span>
         <select value={size} onChange={(e) => onSize(Number(e.target.value))}
-          className="h-7 rounded-md border border-zinc-800 bg-zinc-900 px-1.5 font-mono text-[12px] text-zinc-100 outline-none focus:border-zinc-600">
+          className="h-7 rounded-md border border-slate-300 bg-white px-1.5 font-mono text-[12px] text-slate-900 outline-none focus:border-slate-400">
           {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
       </label>
       <span className="font-mono tabular-nums">{total ? `${first}–${last} of ${total}` : `0 ${noun}`}</span>
       <nav className="inline-flex items-center gap-1" aria-label="Pages">
         <button type="button" onClick={() => onPage(page - 1)} disabled={page <= 1} aria-label="Previous page"
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-zinc-800 text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 text-slate-700 hover:bg-slate-100 disabled:opacity-40">
           <ChevronLeft size={14} />
         </button>
         {pageWindow(page, pages).map((p, i) => (p === '…'
-          ? <span key={`gap-${i}`} className="px-1 text-zinc-500">…</span>
+          ? <span key={`gap-${i}`} className="px-1 text-slate-500">…</span>
           : (
             <button key={p} type="button" onClick={() => onPage(p)} aria-current={p === page ? 'page' : undefined}
-              className={`inline-flex h-7 min-w-[28px] items-center justify-center rounded-md px-1.5 font-mono tabular-nums ${p === page ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-100'}`}>
+              className={`inline-flex h-7 min-w-[28px] items-center justify-center rounded-md px-1.5 font-mono tabular-nums ${p === page ? 'bg-slate-100 text-slate-900' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`}>
               {p}
             </button>
           )))}
         <button type="button" onClick={() => onPage(page + 1)} disabled={page >= pages} aria-label="Next page"
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-zinc-800 text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 text-slate-700 hover:bg-slate-100 disabled:opacity-40">
           <ChevronRight size={14} />
         </button>
       </nav>
@@ -434,13 +434,13 @@ export function Pager({ page, pages, total, first, last, size, onPage, onSize, n
 // ── status and tiles ──────────────────────────────────────────────────────────
 
 const STATUS_STYLE = {
-  ahead: { icon: TrendingUp, cls: 'border-emerald-400/30 bg-emerald-400/10', iconCls: 'text-emerald-400' },
-  'on-pace': { icon: Minus, cls: 'border-zinc-600 bg-zinc-800/60', iconCls: 'text-zinc-300' },
-  behind: { icon: TrendingDown, cls: 'border-amber-400/30 bg-amber-400/10', iconCls: 'text-amber-400' },
-  'not-started': { icon: Clock, cls: 'border-zinc-700 bg-zinc-800/40', iconCls: 'text-zinc-400' },
-  insufficient: { icon: Info, cls: 'border-zinc-700 bg-zinc-800/40', iconCls: 'text-zinc-400' },
-  'no-board': { icon: Info, cls: 'border-zinc-700 bg-zinc-800/40', iconCls: 'text-zinc-400' },
-  'no-clock': { icon: Info, cls: 'border-zinc-700 bg-zinc-800/40', iconCls: 'text-zinc-400' },
+  ahead: { icon: TrendingUp, cls: 'border-emerald-200 bg-emerald-50', iconCls: 'text-emerald-600' },
+  'on-pace': { icon: Minus, cls: 'border-slate-300 bg-slate-100', iconCls: 'text-slate-700' },
+  behind: { icon: TrendingDown, cls: 'border-amber-200 bg-amber-50', iconCls: 'text-amber-600' },
+  'not-started': { icon: Clock, cls: 'border-slate-200 bg-slate-50', iconCls: 'text-slate-600' },
+  insufficient: { icon: Info, cls: 'border-slate-200 bg-slate-50', iconCls: 'text-slate-600' },
+  'no-board': { icon: Info, cls: 'border-slate-200 bg-slate-50', iconCls: 'text-slate-600' },
+  'no-clock': { icon: Info, cls: 'border-slate-200 bg-slate-50', iconCls: 'text-slate-600' },
 };
 
 /** Today's verdict: an icon AND a word, never a colour alone. */
@@ -448,7 +448,7 @@ export function StatusChip({ status, size = 'sm' }) {
   const s = STATUS_STYLE[status] || STATUS_STYLE.insufficient;
   const Icon = s.icon;
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full border ${s.cls} ${size === 'lg' ? 'px-2.5 py-1 text-[13px]' : 'px-2 py-0.5 text-xs'} font-medium text-zinc-100`}>
+    <span className={`inline-flex items-center gap-1.5 rounded-full border ${s.cls} ${size === 'lg' ? 'px-2.5 py-1 text-[13px]' : 'px-2 py-0.5 text-xs'} font-medium text-slate-900`}>
       <Icon size={size === 'lg' ? 14 : 12} className={s.iconCls} aria-hidden="true" />
       {PACE_STATUS_LABEL[status] || status}
     </span>
@@ -457,8 +457,8 @@ export function StatusChip({ status, size = 'sm' }) {
 
 /** A change, signed, with the direction's arrow and a tone that says whether that way is good. */
 export function Delta({ text, tone = 'neutral', up = null }) {
-  if (!text || text === '—') return <span className="font-mono text-xs text-zinc-500">—</span>;
-  const cls = tone === 'good' ? 'text-emerald-300' : tone === 'bad' ? 'text-amber-300' : 'text-zinc-300';
+  if (!text || text === '—') return <span className="font-mono text-xs text-slate-500">—</span>;
+  const cls = tone === 'good' ? 'text-emerald-700' : tone === 'bad' ? 'text-amber-700' : 'text-slate-700';
   const Icon = up == null ? null : up ? ArrowUpRight : ArrowDownRight;
   return (
     <span className={`inline-flex items-center gap-0.5 font-mono text-xs tabular-nums ${cls}`}>
@@ -468,7 +468,7 @@ export function Delta({ text, tone = 'neutral', up = null }) {
 }
 
 export function Skeleton({ className = '', style }) {
-  return <div className={`animate-pulse rounded bg-zinc-800/70 motion-reduce:animate-none ${className}`} style={style} aria-hidden="true" />;
+  return <div className={`animate-pulse rounded bg-slate-100 motion-reduce:animate-none ${className}`} style={style} aria-hidden="true" />;
 }
 
 /**
@@ -479,7 +479,7 @@ export function Skeleton({ className = '', style }) {
 export function KpiTile({ label, value, unit = null, delta = null, sub = null, spark = null, status = null, loading = false, compact = false }) {
   if (loading) {
     return (
-      <div className={`rounded-lg border border-zinc-800 bg-zinc-900 ${compact ? 'p-3' : 'p-4'}`}>
+      <div className={`rounded-lg border border-slate-200 bg-white ${compact ? 'p-3' : 'p-4'}`}>
         <Skeleton className="h-3 w-24" />
         <Skeleton className="mt-3 h-7 w-28" />
         <Skeleton className="mt-3 h-3 w-40" />
@@ -487,21 +487,21 @@ export function KpiTile({ label, value, unit = null, delta = null, sub = null, s
     );
   }
   return (
-    <div className={`group rounded-lg border border-zinc-800 bg-zinc-900 transition-colors duration-150 hover:border-zinc-700 ${compact ? 'p-3' : 'p-4'}`}>
+    <div className={`group rounded-lg border border-slate-200 bg-white transition-colors duration-150 hover:border-slate-300 ${compact ? 'p-3' : 'p-4'}`}>
       <div className="flex items-start justify-between gap-2">
-        <h3 className={`${compact ? 'text-xs' : 'text-[13px]'} font-medium text-zinc-400`}>{label}</h3>
+        <h3 className={`${compact ? 'text-xs' : 'text-[13px]'} font-medium text-slate-600`}>{label}</h3>
         {status ? <StatusChip status={status} /> : null}
       </div>
       <div className="mt-2 flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <div className={`${compact ? 'text-[22px]' : 'text-[28px]'} font-semibold leading-none tracking-tight text-zinc-50`}>
-            {value}{unit ? <span className={`${compact ? 'text-sm' : 'text-base'} ml-1 font-medium text-zinc-400`}>{unit}</span> : null}
+          <div className={`${compact ? 'text-[22px]' : 'text-[28px]'} font-semibold leading-none tracking-tight text-slate-900`}>
+            {value}{unit ? <span className={`${compact ? 'text-sm' : 'text-base'} ml-1 font-medium text-slate-600`}>{unit}</span> : null}
           </div>
-          {delta ? <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5"><Delta {...delta} />{delta.against ? <span className="text-xs text-zinc-400">{delta.against}</span> : null}</div> : null}
+          {delta ? <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5"><Delta {...delta} />{delta.against ? <span className="text-xs text-slate-600">{delta.against}</span> : null}</div> : null}
         </div>
         {spark && !compact ? <div className="shrink-0 opacity-90 transition-opacity group-hover:opacity-100">{spark}</div> : null}
       </div>
-      {sub ? <p className={`mt-2 ${compact ? 'text-[11.5px]' : 'text-xs'} leading-relaxed text-zinc-400`}>{sub}</p> : null}
+      {sub ? <p className={`mt-2 ${compact ? 'text-[11.5px]' : 'text-xs'} leading-relaxed text-slate-600`}>{sub}</p> : null}
     </div>
   );
 }
@@ -510,9 +510,9 @@ export function KpiTile({ label, value, unit = null, delta = null, sub = null, s
 export function FiltersButton({ open, count, onClick }) {
   return (
     <ToolbarButton active={open} aria-expanded={open} aria-controls="perf-filters" onClick={onClick}>
-      <SlidersHorizontal size={14} className="text-zinc-400" aria-hidden="true" />
+      <SlidersHorizontal size={14} className="text-slate-600" aria-hidden="true" />
       Filters
-      {count > 0 && <span className="ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-zinc-100 px-1 font-mono text-[10px] font-semibold text-zinc-900">{count}</span>}
+      {count > 0 && <span className="ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-brand px-1 font-mono text-[10px] font-semibold text-white">{count}</span>}
     </ToolbarButton>
   );
 }

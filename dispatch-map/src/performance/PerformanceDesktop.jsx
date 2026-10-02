@@ -45,7 +45,7 @@ export default function PerformanceDesktop({ vm, act }) {
   }, []);
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-zinc-950 text-zinc-100 antialiased" style={{ fontFamily: SANS }}>
+    <div className="flex-1 min-h-0 overflow-y-auto bg-slate-50 text-slate-900 antialiased" style={{ fontFamily: SANS }}>
       <Toolbar vm={vm} act={act} searchRef={searchRef} />
       <div
         className={`mx-auto max-w-[1760px] space-y-4 px-6 pb-12 pt-4 transition duration-300 ease-out motion-reduce:transition-none
@@ -98,28 +98,28 @@ export default function PerformanceDesktop({ vm, act }) {
 function Toolbar({ vm, act, searchRef }) {
   const live = !!vm.live?.asOf && !vm.live?.scanState?.halted;
   return (
-    <div className="sticky top-0 z-30 border-b border-zinc-800 bg-zinc-950/95 backdrop-blur">
+    <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
       <div className="mx-auto flex max-w-[1760px] flex-wrap items-center justify-between gap-x-6 gap-y-3 px-6 py-3">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-zinc-800 bg-zinc-900" aria-hidden="true">
-            <Activity size={16} className="text-zinc-300" />
+          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white" aria-hidden="true">
+            <Activity size={16} className="text-slate-700" />
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-2.5">
               {/* THE LITERAL "Stop performance" IS THE DESKTOP GUARD'S PROOF OF ARRIVAL
                   (verify-desktop-layout.mjs reads the body for it). Rename it there too. */}
-              <h1 className="text-[15px] font-semibold tracking-tight text-zinc-50">Stop performance</h1>
+              <h1 className="text-[15px] font-semibold tracking-tight text-slate-900">Stop performance</h1>
               {live ? (
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-px text-[11px] font-medium text-emerald-300">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-px text-[11px] font-medium text-emerald-700">
                   <span className="relative flex h-1.5 w-1.5" aria-hidden="true">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60 motion-reduce:animate-none" />
-                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60 motion-reduce:animate-none" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
                   </span>
                   Live
                 </span>
               ) : null}
             </div>
-            <p className="mt-0.5 truncate font-mono text-[11.5px] text-zinc-400">{vm.freshness}</p>
+            <p className="mt-0.5 truncate font-mono text-[11.5px] text-slate-600">{vm.freshness}</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -192,15 +192,15 @@ function PaceCard({ vm, act, dimmed }) {
       {vm.firstLoad ? <ChartSkeleton height={300} /> : (
         <>
           {words.head
-            ? <p className="text-[15px] leading-snug text-zinc-100">{words.head}</p>
-            : words.note ? <p className="text-sm leading-relaxed text-zinc-400">{words.note}</p> : null}
+            ? <p className="text-[15px] leading-snug text-slate-900">{words.head}</p>
+            : words.note ? <p className="text-sm leading-relaxed text-slate-600">{words.note}</p> : null}
           {words.facts ? (
-            <dl className="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-md border border-zinc-800 bg-zinc-800 lg:grid-cols-4">
+            <dl className="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-100 lg:grid-cols-4">
               {words.facts.map((f) => (
-                <div key={f.key} className="bg-zinc-900 px-3 py-2.5">
-                  <dt className="truncate text-xs text-zinc-400">{f.label}</dt>
-                  <dd className={`mt-1 font-mono text-lg font-semibold tabular-nums ${f.tone === 'good' ? 'text-emerald-300' : f.tone === 'bad' ? 'text-amber-300' : 'text-zinc-50'}`}>{f.value}</dd>
-                  {f.sub ? <dd className="truncate text-[11.5px] text-zinc-400">{f.sub}</dd> : null}
+                <div key={f.key} className="bg-white px-3 py-2.5">
+                  <dt className="truncate text-xs text-slate-600">{f.label}</dt>
+                  <dd className={`mt-1 font-mono text-lg font-semibold tabular-nums ${f.tone === 'good' ? 'text-emerald-700' : f.tone === 'bad' ? 'text-amber-700' : 'text-slate-900'}`}>{f.value}</dd>
+                  {f.sub ? <dd className="truncate text-[11.5px] text-slate-600">{f.sub}</dd> : null}
                 </div>
               ))}
             </dl>
@@ -246,7 +246,7 @@ function TrendCard({ vm, act, dimmed }) {
           : vm.trendView === 'table' ? <TrendTable vm={vm} />
             : <TrendChart buckets={vm.trend} average={vm.average} averageLabel={vm.averageLabel} height={240} dimmed={dimmed} unitLabel={unit} />}
       {missing ? (
-        <p className="mt-3 text-xs leading-relaxed text-amber-300">
+        <p className="mt-3 text-xs leading-relaxed text-amber-700">
           {fmtCount(missing)} captured day{missing === 1 ? ' is' : 's are'} not built yet and {missing === 1 ? 'is' : 'are'} left out of these bars, not counted as zero — the History card builds {missing === 1 ? 'it' : 'them'}.
         </p>
       ) : null}
@@ -273,7 +273,7 @@ function WeekdayCard({ vm }) {
 }
 
 function EmptyNote({ text }) {
-  return <p className="py-6 text-center text-sm text-zinc-400">{text}</p>;
+  return <p className="py-6 text-center text-sm text-slate-600">{text}</p>;
 }
 
 // ── the rows ──────────────────────────────────────────────────────────────────
@@ -304,18 +304,18 @@ function TableCard({ vm, act, dimmed }) {
           <Segmented label="Rows" value={vm.tableMode} onChange={act.setTableMode}
             options={[{ value: 'days', label: <span className="inline-flex items-center gap-1.5"><CalendarDays size={13} aria-hidden="true" />Days</span> }, { value: 'routes', label: <span className="inline-flex items-center gap-1.5"><Truck size={13} aria-hidden="true" />Routes</span> }]} />
           {!days ? (
-            <label className="inline-flex items-center gap-2 text-xs text-zinc-400">
+            <label className="inline-flex items-center gap-2 text-xs text-slate-600">
               <span>Day</span>
               <select
                 value={vm.routeDate || ''} onChange={(e) => act.setRoutesDay(e.target.value || null)}
-                className="h-8 rounded-md border border-zinc-800 bg-zinc-900 px-2 font-mono text-[12.5px] text-zinc-100 outline-none focus:border-zinc-600"
+                className="h-8 rounded-md border border-slate-300 bg-white px-2 font-mono text-[12.5px] text-slate-900 outline-none focus:border-slate-400"
               >
                 {vm.routeDate && !vm.dayOptions.some((o) => o.date === vm.routeDate) ? <option value={vm.routeDate}>{routeDayLabel}</option> : null}
                 {vm.dayOptions.map((o) => <option key={o.date} value={o.date}>{o.label}</option>)}
               </select>
             </label>
           ) : null}
-          <span className="font-mono text-xs tabular-nums text-zinc-400">{fmtCount(n)} {days ? (n === 1 ? 'day' : 'days') : (n === 1 ? 'route' : 'routes')}{searching ? ' found' : ''}</span>
+          <span className="font-mono text-xs tabular-nums text-slate-600">{fmtCount(n)} {days ? (n === 1 ? 'day' : 'days') : (n === 1 ? 'route' : 'routes')}{searching ? ' found' : ''}</span>
         </>
       )}
     >
@@ -351,9 +351,9 @@ function BulkBar({ vm, act }) {
   const anyLeftOut = [...vm.selected].some((d) => vm.leftOut.has(d));
   const anyIn = [...vm.selected].some((d) => d !== vm.today && !vm.leftOut.has(d));
   return (
-    <div role="region" aria-label="Ticked days" className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-zinc-800 bg-indigo-400/[0.06] px-4 py-2 text-[13px]">
-      <span className="font-medium text-zinc-100">{n} day{n === 1 ? '' : 's'} ticked</span>
-      <span className="text-xs text-zinc-400">{n > 2 ? 'the newest two are drawn on the pace chart' : 'drawn on the pace chart'}</span>
+    <div role="region" aria-label="Ticked days" className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-200 bg-indigo-50 px-4 py-2 text-[13px]">
+      <span className="font-medium text-slate-900">{n} day{n === 1 ? '' : 's'} ticked</span>
+      <span className="text-xs text-slate-600">{n > 2 ? 'the newest two are drawn on the pace chart' : 'drawn on the pace chart'}</span>
       <div className="ml-auto flex flex-wrap items-center gap-2">
         {anyIn ? <ToolbarButton onClick={act.leaveOutSelected}><EyeOff size={13} aria-hidden="true" /> Leave out of the typical day</ToolbarButton> : null}
         {anyLeftOut ? <ToolbarButton onClick={act.putBackSelected}><Eye size={13} aria-hidden="true" /> Put back</ToolbarButton> : null}
