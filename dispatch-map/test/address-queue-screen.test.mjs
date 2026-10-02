@@ -191,9 +191,12 @@ test('A ROW NUVIZZ ALREADY AGREES WITH IS NOT PUSHED — 3 calls to restate thei
 test('BOARD-ONLY IS ITS OWN BUTTON, sharing the runner so the two cannot drift', () => {
   // Chad: "i want to be able to correct only in dispatch map as well".
   const bar = fnSource('QueueSummaryBar');
-  assert.match(bar, /runGroup\(q\.selected, q\.google, false\)/, 'board-only');
+  // Board-only runs the rows the board can CHANGE (v1.106.0): a "Not in NuVizz" row is already
+  // right on the board, so it is left to the vendor push rather than counted as a correction.
+  assert.match(bar, /const boardSel = q\.selected\.filter\(\(r\) => !queueBoardHasIt\(r, correctedFields\(r\)\)\)/);
+  assert.match(bar, /runGroup\(boardSel, q\.google, false\)/, 'board-only');
   assert.match(bar, /runGroup\(q\.selected, q\.google, true\)/, 'and with the vendor');
-  assert.match(bar, /Correct \{sel \|\| ''\} on the board/);
+  assert.match(bar, /Correct \{boardSel\.length \|\| ''\} on the board/);
   const run = fnSource('useQueuePush');
   assert.match(run, /async \(rows, google, push = true\)/, 'one loop, a flag — not two copies');
   assert.match(run, /if \(push\) readBudget\(\)/, 'a board-only sweep spends nothing to re-read');
@@ -285,7 +288,9 @@ test('A GROUP RUN COUNTS WHAT REACHED THE ADDRESS LOG, and says so when one did 
   // would have shown the writer was fine on the first evening instead of the third.)
   const save = fnSource('saveQueueCorrection');
   assert.match(save, /const logged = await logAddressOverride\(/, 'awaited, so its answer exists');
-  assert.match(save, /return \{ geoErr, pushed: verdict, logged \}/, 'and is carried back to the runner');
+  // …with `boardUnchanged` beside it since v1.106.0, so a board-only run can say a "Not in
+  // NuVizz" row was left alone rather than claim it was corrected.
+  assert.match(save, /return \{ geoErr, pushed: verdict, logged, boardUnchanged: boardHasIt \}/, 'and is carried back to the runner');
   const run = fnSource('useQueuePush');
   // THE OBJECT IS ALWAYS TRUTHY. `if (logged)` counts every attempt a success and reports a
   // perfect run whatever happened — the failure mode this whole counter exists to catch,
