@@ -5,28 +5,33 @@
 //
 // For attempts written before v1.99.0 (lib/att-holder.mts), nothing in Firestore holds who had the
 // order on the day it failed; the stop's NuVizz activity timeline does. The rule that reads it is
-// lib/att-timeline.mts (pure, tested on the five real timelines); this endpoint only finds the rows,
-// reads the timelines and writes the answers.
+// lib/att-timeline.mts (pure, tested on real timelines); this endpoint only finds the rows, reads the
+// timelines and writes the answers.
+//
+// v1.102.4 — ORIGINAL STOPS ONLY. Chad, 2026-10-01: "-1 and -2 are duplicate orders and have nothing
+// to do with the original driver." A "-N" row is never looked up and never given its original's
+// driver; ?revertCopies=1 takes back every one that was (see below).
 //
 //   GET  ?from=YYYY-MM-DD&to=YYYY-MM-DD
-//        DRY RUN. Firestore only, ZERO NuVizz calls. Every attempt row in the range with no driver
-//        and no earlier backfill, grouped by original stop (a "-1" copy rides with its original),
-//        and what a run would cost: 1 call per group whose stopId we hold, 2 for one we do not.
-//        v1.99.7: a row whose order already has a named row that day (the 8:30 freeze named the
-//        original, the copy was left blank) is answered from that row — free, listed separately.
-//   POST ?from=…&to=…&confirm=1[&limit=6][&recheck=1]
+//        DRY RUN. Firestore only, ZERO NuVizz calls. Every ORIGINAL stop's attempt row in the range
+//        with no driver and no earlier backfill, and what a run would cost: 1 call per stop whose
+//        stopId we hold, 2 for one we do not.
+//   POST ?from=…&to=…&confirm=1[&limit=6][&recheck=1][&stop=NNN]
 //        Reads up to `limit` timelines (default 6, max 8 — a sync function has 26 seconds), oldest
-//        day first, writes each answer onto its rows with a FIELD-MASKED update, and recounts each
-//        touched day's manifest. Returns what it did and how many groups remain. Run it again to
-//        continue: rows it has read carry timelineCheckedAt, so no call is ever spent twice on one
-//        (recheck=1 overrides that, for a rule change).
+//        day first, writes each answer with a FIELD-MASKED update, and recounts each touched day's
+//        manifest. Run it again to continue: rows it has read carry timelineCheckedAt, so no call is
+//        ever spent twice on one (recheck=1 overrides that, for a rule change — and re-reads the
+//        answers the backfill itself wrote, clearing any the rule no longer gives). &stop=NNN limits
+//        a run to one order. Each result reports how many events its timeline held.
+//   GET  ?from=…&to=…&revertCopies=1                 the "-N" rows carrying their original's driver
+//   POST ?from=…&to=…&revertCopies=1&confirm=1       …cleared back to no driver. ZERO NuVizz calls.
 //
 // NOTHING RUNS ON ITS OWN. No schedule, no background: each POST is a person asking for it, with
 // confirm=1 in the request. The calls ride the shared requester, so they count against the daily
 // ceiling and stop at the breaker like every other call, and each response reports the calls it
 // actually spent (counted, not assumed — the same before/after read nuvizz-stop-events uses).
 //
-// WHAT IT WRITES, and only this: originalDriverName / UserName / Key, matched, attributedFrom:
+// WHAT A LOOKUP WRITES, and only this: originalDriverName / UserName / Key, matched, attributedFrom:
 // 'timeline', timeline { answer, basis, dispatchedAt, atCustomer, unplannedAt, laterDrivers, via,
 // lookedUpAt } and timelineCheckedAt. Route and load are left as they were: a timeline's events all
 // carry the stop's CURRENT route, which is the redelivery's.
@@ -39,7 +44,9 @@ import { requireUser } from './lib/require-user.mts';
 import {
   listAttemptItems, getAttemptsManifest, setAttemptsManifest, recountManifest, attemptsPath,
 } from './lib/attempts-store.mts';
-import { backfillGroups, dueDayDriver, attributionPatch, siblingPatch, type BackfillGroup } from './lib/att-timeline.mts';
+import {
+  backfillGroups, dueDayDriver, attributionPatch, copyRevertPlan, copyRevertPatch, type BackfillGroup,
+} from './lib/att-timeline.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -106,6 +113,8 @@ export default async (req: Request): Promise<Response> => {
     }
   }
   const recheck = url.searchParams.get('recheck') === '1';
+  // v1.99.8: one order only (its original stop number), for correcting a single answer.
+  const stopOnly = (url.searchParams.get('stop') || '').trim() || undefined;
 
   // Firestore only from here to the first timeline read.
   let days: Array<{ date: string; items: any[] }>;
@@ -114,36 +123,46 @@ export default async (req: Request): Promise<Response> => {
   } catch (e: any) {
     return J(500, { ok: false, error: `could not read the attempts lists: ${e?.message}`, nuvizzCalls: 0 });
   }
-  const groups = backfillGroups(days, { recheck });
-  // v1.99.7 — a group whose order already has a named row that day is answered from it, free.
-  const free = groups.filter((g) => g.sibling);
-  const paid = groups.filter((g) => !g.sibling);
+  const touched = new Set<string>();
+  const recountTouched = async () => {
+    // Keep each touched day's manifest honest, the same way a delete does.
+    const recounted: string[] = [];
+    for (const date of touched) {
+      try {
+        const [items, prev] = await Promise.all([listAttemptItems(TENANT, date), getAttemptsManifest(TENANT, date)]);
+        if (prev) { await setAttemptsManifest(TENANT, date, { ...recountManifest(prev, items), lastEditedAt: new Date().toISOString(), backfilledAt: new Date().toISOString() }); recounted.push(date); }
+      } catch (e: any) { console.warn(`[att-backfill] ${date}: manifest recount failed (${e?.message})`); }
+    }
+    return recounted;
+  };
+
+  // ── v1.102.4: take back every "-N" row that was given its original's driver. Firestore only. ──
+  if (url.searchParams.get('revertCopies') === '1') {
+    const plan = copyRevertPlan(days);
+    if (!run) return J(200, { ok: true, dryRun: true, from, to, nuvizzCalls: 0, revertCopies: plan.length, rows: plan });
+    const at = new Date().toISOString();
+    const done: any[] = [];
+    const failed: any[] = [];
+    for (const r of plan) {
+      try { await updateDocFields(`${attemptsPath(TENANT, r.date)}/items/${r.stopNbr}`, copyRevertPatch(r, at)); done.push(r); touched.add(r.date); }
+      catch (e: any) { failed.push({ ...r, error: e?.message }); }
+    }
+    const recounted = await recountTouched();
+    console.log(`[att-backfill] revertCopies ${from}..${to}: ${done.length} cleared, ${failed.length} failed, 0 NuVizz calls`);
+    return J(200, { ok: failed.length === 0, from, to, nuvizzCalls: 0, reverted: done.length, failed, recounted, rows: done });
+  }
+
+  const paid = backfillGroups(days, { recheck, stop: stopOnly });
 
   if (!run) {
     const ids = await inPool(paid, 6, stopIdFor);
     const withId = ids.filter(Boolean).length;
     return J(200, {
       ok: true, dryRun: true, from, to, nuvizzCalls: 0,
-      attemptsWithoutDriver: groups.reduce((n, g) => n + g.rows.length, 0),
-      answeredFreeBySibling: free.length,
       lookups: paid.length,
       estimatedCalls: withId + 2 * (paid.length - withId),
-      free: free.map((g) => ({ date: g.date, rows: g.rows, from: g.sibling!.stopNbr, driver: g.sibling!.driverName })),
       groups: paid.map((g, i) => ({ ...g, stopId: ids[i] })),
     });
-  }
-
-  // Free rows first: no NuVizz call, so every run clears all of them.
-  const siblingWritten: any[] = [];
-  const touched = new Set<string>();
-  for (const g of free) {
-    const at = new Date().toISOString();
-    const written: string[] = [];
-    for (const nbr of g.rows) {
-      try { await updateDocFields(`${attemptsPath(TENANT, g.date)}/items/${nbr}`, siblingPatch(g.sibling!, at)); written.push(nbr); } catch { /* left for the next run */ }
-    }
-    if (written.length) touched.add(g.date);
-    siblingWritten.push({ date: g.date, rows: written, from: g.sibling!.stopNbr, driver: g.sibling!.driverName });
   }
 
   const limit = Math.max(1, Math.min(8, Number(url.searchParams.get('limit')) || 6));
@@ -166,39 +185,29 @@ export default async (req: Request): Promise<Response> => {
     const written: string[] = [];
     const failed: string[] = [];
     for (const nbr of g.rows) {
-      const via = nbr === g.original ? 'stop' : 'original';
       try {
-        await updateDocFields(`${attemptsPath(TENANT, g.date)}/items/${nbr}`, attributionPatch(answer, via, at));
+        await updateDocFields(`${attemptsPath(TENANT, g.date)}/items/${nbr}`, attributionPatch(answer, at));
         written.push(nbr);
       } catch { failed.push(nbr); }
     }
     if (written.length) touched.add(g.date);
     results.push({
-      ...g, ok: true, driver: answer?.driver ?? null, basis: answer?.basis ?? null,
+      ...g, ok: true, events: (res.events || []).length, driver: answer?.driver ?? null, basis: answer?.basis ?? null,
       dispatchedAt: answer?.dispatchedAt ?? null, atCustomer: answer?.atCustomer ?? null,
       laterDrivers: answer?.laterDrivers ?? [], written, ...(failed.length ? { failed } : {}),
     });
   }
   const nuvizzCalls = Math.max(0, reqr.getStats().totalThisInstance - before);
 
-  // Keep each touched day's manifest honest, the same way a delete does.
-  const recounted: string[] = [];
-  for (const date of touched) {
-    try {
-      const [items, prev] = await Promise.all([listAttemptItems(TENANT, date), getAttemptsManifest(TENANT, date)]);
-      // Same shape as deleteAttemptItem's recount, stamped so the edit is visible on the manifest.
-      if (prev) { await setAttemptsManifest(TENANT, date, { ...recountManifest(prev, items), lastEditedAt: new Date().toISOString(), backfilledAt: new Date().toISOString() }); recounted.push(date); }
-    } catch (e: any) { console.warn(`[att-backfill] ${date}: manifest recount failed (${e?.message})`); }
-  }
+  const recounted = await recountTouched();
   const answered = results.filter((r) => r.ok && r.driver).length;
   const remaining = paid.length - results.filter((r) => r.ok).length;
-  console.log(`[att-backfill] ${from}..${to}: ${siblingWritten.length} answered free by a sibling, ${results.length} timeline(s) read, ${answered} answered, ${nuvizzCalls} NuVizz call(s), ${remaining} left`);
+  console.log(`[att-backfill] ${from}..${to}: ${results.length} timeline(s) read, ${answered} answered, ${nuvizzCalls} NuVizz call(s), ${remaining} left`);
   return J(200, {
     ok: true, from, to, nuvizzCalls,
-    answeredFreeBySibling: siblingWritten.length,
     read: results.length, answered, noAnswer: results.filter((r) => r.ok && !r.driver).length,
     notRead: results.filter((r) => !r.ok).length,
     remaining,
-    recounted, siblings: siblingWritten, results,
+    recounted, results,
   });
 };

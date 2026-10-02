@@ -1,6 +1,6 @@
 // src/performance/theme.js — the Performance screen's colours, by the job each one does.
 //
-// LIGHT, LIKE THE REST OF THE APP (v1.103.1). Chad, on the dark version: "I don't love the dark
+// LIGHT, LIKE THE REST OF THE APP (v1.104.1). Chad, on the dark version: "I don't love the dark
 // theme of the page." It first shipped dark because his brief asked for a restrained dark surface;
 // it now wears the app's own slate-on-white, with the same hues one step darker so they hold up on
 // white. Monospace for raw numbers and times, and accents used sparingly, are kept.

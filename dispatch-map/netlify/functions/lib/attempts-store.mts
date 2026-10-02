@@ -86,6 +86,16 @@ export async function writeHolderDoc(tenant: string, date: string, doc: any): Pr
   await setDoc(holderPath(tenant, date), doc);
 }
 
+// ── the nightly fill's claim (v1.104.0, lib/att-fill.mts) ───────────────────
+//
+//   att_fill/{tenant}__{YYYY-MM-DD}   created ATOMICALLY (createDocIfAbsent) before the fill's first
+//                                     NuVizz request; its existence is what makes the fill run at most
+//                                     once per date. Then holds the run's summary.
+export const FILL_COLLECTION = 'att_fill';
+export function fillClaimPath(tenant: string, date: string): string {
+  return `${FILL_COLLECTION}/${dayId(tenant, date)}`;
+}
+
 // ── attempts list (8pm result) ────────────────────────────────────────────────
 export async function getAttemptsManifest(tenant: string, date: string): Promise<any | null> {
   return getDoc(attemptsPath(tenant, date));

@@ -16,7 +16,8 @@
 //   attempts[] items: { stopNbr, shipmentNbr, originalDriverName, originalDriverUserName,
 //                       originalLoadNbr, routeName, businessName, addr1, city, state, zip,
 //                       currentStatus, currentlyUnplanned, matched, detectedAt,
-//                       attributedFrom ('plan' | 'holder' | 'holder-original' | null, v1.99.0),
+//                       attributedFrom ('plan' | 'holder' | 'timeline' | null; v1.99.0 / v1.99.6 —
+//                       'holder-original' and 'sibling' were retired in v1.102.4: a "-N" is a duplicate order),
 //                       holderFrozen }
 
 import { isFirestoreEnabled, etDayString } from './lib/firestore.mts';

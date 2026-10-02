@@ -47,6 +47,7 @@ test('007181840, due 9/25: the 3–4 AM planning shuffle is not an assignment; D
     ev('9/28/26 06:18 AM', 'Stop Dispatched', 'Anthony Kostner'),
     ev('9/25/26 05:04 PM', 'Stop Unplanned', 'Brandi  Bradberry'),
     ev('9/25/26 03:22 PM', 'Stop Dispatched', 'Darvin  Cepeda'),
+    ev('9/25/26 03:22 PM', 'Pickup Stop Confirmation', 'Darvin  Cepeda'),
     ev('9/25/26 04:06 AM', 'Stop Unplanned', 'Zach Johnston'),
     ev('9/25/26 04:06 AM', 'Stop Planned', 'Zach Johnston'),
     ev('9/25/26 03:23 AM', 'Stop Unplanned', 'Zach Johnston'),
@@ -74,8 +75,10 @@ test('007181967, due 9/25: Chris Head reached the customer that day (4:18 PM) �
 test('a re-dispatch AFTER customer service unplanned it is the next driver, not the one who had it', () => {
   const events = [
     ev('9/11/26 03:39 PM', 'Stop Dispatched', 'Trevarr Howard'),
+    ev('9/11/26 03:39 PM', 'Pickup Stop Arrival', 'Trevarr Howard'),
     ev('9/11/26 06:07 PM', 'Stop Unplanned', 'Freddy Perez'),
     ev('9/11/26 07:30 PM', 'Stop Dispatched', 'Somebody Else'),
+    ev('9/11/26 07:30 PM', 'Pickup Stop Arrival', 'Somebody Else'),
   ];
   assert.equal(dueDayDriver(events, '2026-09-11').driver, 'Trevarr Howard');
 });
@@ -83,7 +86,9 @@ test('a re-dispatch AFTER customer service unplanned it is the next driver, not 
 test('handed from one driver to another BEFORE it failed: the last one dispatched in the window had it', () => {
   const events = [
     ev('9/11/26 09:00 AM', 'Stop Dispatched', 'Tony Smith'),
+    ev('9/11/26 09:00 AM', 'Pickup Stop Confirmation', 'Tony Smith'),
     ev('9/11/26 11:00 AM', 'Stop Dispatched', 'Trevarr Howard'),
+    ev('9/11/26 11:00 AM', 'Pickup Stop Confirmation', 'Trevarr Howard'),
     ev('9/11/26 06:07 PM', 'Stop Unplanned', 'Freddy Perez'),
   ];
   assert.equal(dueDayDriver(events, '2026-09-11').driver, 'Trevarr Howard');
@@ -116,9 +121,9 @@ test('a non-Davis user on a dispatch-shaped event is never the answer', () => {
 });
 
 // ── the backfill's plan and write ────────────────────────────────────────────
-import { backfillGroups, attributionPatch, originalOf } from '../netlify/functions/lib/att-timeline.mts';
+import { backfillGroups, attributionPatch, originalOf, isCopy, copyRevertPlan, copyRevertPatch, copyTookOriginal } from '../netlify/functions/lib/att-timeline.mts';
 
-test('backfill picks only rows with no driver and no earlier read; an original and its -1 copy are one lookup', () => {
+test('backfill looks up ORIGINAL stops only — a "-1"/"-2" duplicate is never read (v1.102.4)', () => {
   const days = [
     { date: '2026-09-11', items: [
       { stopNbr: '007174789', matched: false },
@@ -127,75 +132,102 @@ test('backfill picks only rows with no driver and no earlier read; an original a
       { stopNbr: '007174801', matched: false, timelineCheckedAt: '2026-09-30T16:00:00Z' },
     ] },
     { date: '2026-09-04', items: [{ stopNbr: '007172068-1', matched: false }] },
+    { date: '2026-08-17', items: [{ stopNbr: '007160283-1', matched: true, originalDriverName: 'Leroy  Smith' }, { stopNbr: '007160283-2', matched: false }] },
   ];
   assert.equal(originalOf('007174789-1'), '007174789');
+  assert.equal(isCopy('007174789-1'), true);
+  assert.equal(isCopy('007174789'), false);
   assert.deepEqual(backfillGroups(days), [
-    { date: '2026-09-04', original: '007172068', rows: ['007172068-1'] },   // oldest day first
-    { date: '2026-09-11', original: '007174789', rows: ['007174789', '007174789-1'] },
+    { date: '2026-09-11', original: '007174789', rows: ['007174789'] },
   ]);
   // recheck re-reads a row an earlier run already read (for a rule change), never a matched one.
-  assert.equal(backfillGroups(days, { recheck: true }).length, 3);
+  assert.deepEqual(backfillGroups(days, { recheck: true }).map((g) => g.original), ['007174789', '007174801']);
 });
 
 test('the write names the driver and its source, and leaves route and load alone', () => {
   const answer = { driver: 'Darvin  Cepeda', basis: 'dispatched', dispatchedAt: '2026-09-25T15:22', atCustomer: false, unplannedAt: '2026-09-25T17:04', laterDrivers: ['Anthony Kostner'] };
-  const p = attributionPatch(answer, 'stop', '2026-09-30T16:00:00Z');
+  const p = attributionPatch(answer, '2026-09-30T16:00:00Z');
   assert.equal(p.originalDriverName, 'Darvin  Cepeda');
   assert.equal(p.originalDriverKey, 'DARVIN_CEPEDA');
   assert.equal(p.matched, true);
   assert.equal(p.attributedFrom, 'timeline');
   assert.equal(p.timeline.atCustomer, false);
+  assert.equal(p.timeline.via, 'stop');
   assert.deepEqual(p.timeline.laterDrivers, ['Anthony Kostner']);
   assert.equal('routeName' in p, false);
   assert.equal('originalLoadNbr' in p, false);
 });
 
-test('no answer: the row is marked read (no second call ever) and stays unattributed', () => {
-  const p = attributionPatch(null, 'original', '2026-09-30T16:00:00Z');
+test('no answer: the row is marked read (no second call ever), and any earlier answer is CLEARED', () => {
+  const p = attributionPatch(null, '2026-09-30T16:00:00Z');
   assert.equal(p.timelineCheckedAt, '2026-09-30T16:00:00Z');
   assert.equal(p.timeline.answer, null);
-  assert.equal('matched' in p, false);
-  assert.equal('originalDriverName' in p, false);
+  assert.equal(p.matched, false);
+  assert.equal(p.originalDriverName, null);
+  assert.equal(p.attributedFrom, null);
 });
 
-// ── v1.99.7: a copy whose order already has a named row that day is answered from it, free ─────
-import { siblingPatch } from '../netlify/functions/lib/att-timeline.mts';
-
-test('a "-2" copy beside a named "-1" (007160283, 8/17) is answered from the sibling — no timeline read', () => {
-  const days = [{ date: '2026-08-17', items: [
-    { stopNbr: '007160283-1', matched: true, originalDriverName: 'Leroy  Smith', originalDriverUserName: 'Leroy  Smith', originalDriverKey: 'LEROY_SMITH', originalLoadNbr: 'LEROY', routeName: 'LEROY' },
-    { stopNbr: '007160283-2', matched: false },
-  ] }];
-  const [g] = backfillGroups(days);
-  assert.deepEqual(g.rows, ['007160283-2']);
-  assert.equal(g.sibling.stopNbr, '007160283-1');
-  assert.equal(g.sibling.driverName, 'Leroy  Smith');
-  assert.equal(g.sibling.source, 'plan');
-});
-
-test('the original stop\'s own named row is preferred over a named copy as the sibling', () => {
+// ── v1.102.4: taking back every "-N" that was given its original's driver ─────────────────
+test('revert finds exactly the duplicates that carry their original\'s driver, from all three routes they came by', () => {
   const days = [{ date: '2026-09-11', items: [
-    { stopNbr: '007174773-2', matched: true, originalDriverName: 'Copy Driver' },
-    { stopNbr: '007174773', matched: true, originalDriverName: 'Tyrese  Griffin', attributedFrom: 'holder' },
-    { stopNbr: '007174773-1', matched: false },
+    { stopNbr: '007160283-2', matched: true, originalDriverName: 'Leroy  Smith', attributedFrom: 'sibling' },          // v1.99.7 backfill
+    { stopNbr: '007174789-1', matched: true, originalDriverName: 'Trevarr Howard', attributedFrom: 'holder-original' }, // v1.99.0 join
+    { stopNbr: '007170313-1', matched: true, originalDriverName: 'Garry Pitts', attributedFrom: 'timeline', timeline: { via: 'original' } }, // v1.99.6 backfill
+    { stopNbr: '007160283-1', matched: true, originalDriverName: 'Leroy  Smith' },                                      // its OWN 8:30 record: kept
+    { stopNbr: '007181999-1', matched: true, originalDriverName: 'Own Driver', attributedFrom: 'holder' },               // its OWN day record: kept
+    { stopNbr: '007170313', matched: true, originalDriverName: 'Garry Pitts', attributedFrom: 'timeline', timeline: { via: 'stop' } }, // the original: kept
   ] }];
-  const [g] = backfillGroups(days);
-  assert.equal(g.sibling.stopNbr, '007174773');
-  assert.equal(g.sibling.driverName, 'Tyrese  Griffin');
-  assert.equal(g.sibling.source, 'holder');
+  assert.deepEqual(copyRevertPlan(days).map((r) => [r.stopNbr, r.from, r.was]), [
+    ['007160283-2', 'sibling', 'Leroy  Smith'],
+    ['007174789-1', 'holder-original', 'Trevarr Howard'],
+    ['007170313-1', 'timeline-original', 'Garry Pitts'],
+  ]);
+  assert.equal(copyTookOriginal({ stopNbr: '007170313', attributedFrom: 'sibling' }), null, 'an original is never a duplicate');
 });
 
-test('a row with no named sibling still needs its timeline (no sibling key)', () => {
-  const [g] = backfillGroups([{ date: '2026-09-25', items: [{ stopNbr: '007182021', matched: false }] }]);
-  assert.equal('sibling' in g, false);
+test('the revert puts the duplicate back to no driver, no route, no load — and keeps what it had, and why', () => {
+  const p = copyRevertPatch({ date: '2026-08-17', stopNbr: '007160283-2', was: 'Leroy  Smith', from: 'sibling' }, '2026-10-01T22:00:00Z');
+  assert.equal(p.originalDriverName, null);
+  assert.equal(p.originalDriverKey, null);
+  assert.equal(p.originalLoadNbr, null);
+  assert.equal(p.routeName, null);
+  assert.equal(p.matched, false);
+  assert.equal(p.attributedFrom, null);
+  assert.equal(p.sibling, null);
+  assert.equal(p.copyReverted.was, 'Leroy  Smith');
+  assert.equal(p.copyReverted.from, 'sibling');
 });
 
-test('the sibling write carries its driver, route and load, and says where it came from', () => {
-  const p = siblingPatch({ stopNbr: '007160283-1', driverName: 'Leroy  Smith', driverUserName: 'Leroy  Smith', driverKey: 'LEROY_SMITH', loadNbr: 'LEROY', routeName: 'LEROY', source: 'plan' }, '2026-09-30T20:00:00Z');
-  assert.equal(p.originalDriverName, 'Leroy  Smith');
-  assert.equal(p.originalLoadNbr, 'LEROY');
-  assert.equal(p.matched, true);
-  assert.equal(p.attributedFrom, 'sibling');
-  assert.deepEqual(p.sibling, { stopNbr: '007160283-1', source: 'plan', at: '2026-09-30T20:00:00Z' });
-  assert.equal('timelineCheckedAt' in p, false, 'no timeline was read');
+// ── v1.99.8: a portal dispatch by staff is not a driver ─────────────────────────────────────
+test('007173373, 9/9: a "Stop Dispatched" by customer service with no driver activity names nobody', () => {
+  const events = [
+    ev('9/9/26 10:15 AM', 'Stop Dispatched', 'Freddy Perez'),
+    ev('9/9/26 05:40 PM', 'Stop Unplanned', 'Freddy Perez'),
+  ];
+  assert.equal(dueDayDriver(events, '2026-09-09'), null);
+});
+
+test('staff dispatch the load, the driver then picks it up: the driver is the answer', () => {
+  const events = [
+    ev('9/9/26 10:15 AM', 'Stop Dispatched', 'Freddy Perez'),
+    ev('9/9/26 11:02 AM', 'Stop Dispatched', 'Garry Pitts'),
+    ev('9/9/26 11:02 AM', 'Pickup Stop Confirmation', 'Garry Pitts'),
+    ev('9/9/26 05:40 PM', 'Stop Unplanned', 'Freddy Perez'),
+  ];
+  const a = dueDayDriver(events, '2026-09-09');
+  assert.equal(a.driver, 'Garry Pitts');
+  assert.equal(a.basis, 'dispatched');
+});
+
+test('recheck re-reads the backfill\'s own answer on the ORIGINAL; stop= limits it to one order; the -1 is left to the revert', () => {
+  const days = [{ date: '2026-09-09', items: [
+    { stopNbr: '007173373', matched: true, originalDriverName: 'Freddy Perez', attributedFrom: 'timeline', timelineCheckedAt: 't' },
+    { stopNbr: '007173373-1', matched: true, originalDriverName: 'Freddy Perez', attributedFrom: 'timeline', timelineCheckedAt: 't' },
+    { stopNbr: '007173400', matched: true, originalDriverName: 'Plan Driver' },
+    { stopNbr: '007173500', matched: false, timelineCheckedAt: 't' },
+  ] }];
+  assert.deepEqual(backfillGroups(days), [], 'a normal run leaves all of them alone');
+  const one = backfillGroups(days, { recheck: true, stop: '007173373' });
+  assert.deepEqual(one, [{ date: '2026-09-09', original: '007173373', rows: ['007173373'] }]);
+  assert.equal(backfillGroups(days, { recheck: true }).length, 2, 'the 8:30-named row is never re-read');
 });
