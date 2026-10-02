@@ -42,7 +42,7 @@ export type SingleOp = typeof SINGLE_OPS[number];
 
 // Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save +
 // the async load-import commit with its convergence recipe).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'setStopAddress', 'setStopPieces', 'newRoute', 'cancelOrder'] as const;
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'setStopAddress', 'setStopPieces', 'duplicateOrder', 'newRoute', 'cancelOrder'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the GET reads). Used by the
@@ -53,6 +53,8 @@ export const MUTATING_OPS = new Set<WriteOp>([
   'partialUpdateStop', 'addStopNote', 'setStopDate', 'setStopContact', 'setStopAddress',
   // §P piece counts (v1.105.0) — the same read → partialUpdate → read-back ladder as the three above.
   'setStopPieces',
+  // §DUP (v1.107.0) — read the original, prove {original}-N absent, create it, read it back.
+  'duplicateOrder',
   'createRoute', 'newRoute',
   // Destructive. Gated by NUVIZZ_WRITE_ENABLED like every other mutation, and by
   // the read-then-cancel-by-id ladder in runCancelOrder — see there for why.
@@ -1473,6 +1475,190 @@ export function boardPiecesWarning(board: any): string | null {
   if (days.length && !days.some(([, o]) => o === 'patched') && !errs.length && !other.length) parts.push('no board row for this order was found on the day it is shown');
   if (board.registry === 'error') parts.push(`the stored copy later days start from could not be updated (${board.registryError || 'write failed'})`);
   return parts.length ? `NuVizz has the new counts, but ${parts.join('; ')} — the board may keep showing the old count.` : null;
+}
+
+// ── §DUP  DUPLICATE AN ORDER AS {original}-N (v1.107.0) ──────────────────────
+//
+// Chad, 2026-10-02: "make it where i can duplicate an order essentially we can do it as creating a
+// new order and way we make the pro number is its original pro-1 then if we duplicate the same
+// order twice it would be original pro-2 so on an so forth."
+//
+// THE NUMBER. A "-1" / "-2" on the ORDER number is how Davis marks a duplicate (att-timeline.mts
+// isCopy / originalOf; Chad, 10/01: "-1 and -2 are duplicate orders"), and the PRO the board shows
+// IS the order number (nuvizz-scan.mts normalizeStop: pros = [stopNbr]). A duplicate of a duplicate
+// is still numbered from the ORIGINAL: duplicating 007174789-1 gives the next free 007174789-N,
+// never 007174789-1-1.
+//
+// THE ONE RULE THAT CANNOT BEND: stop/sync/update is an UPSERT — New Order's own warning, when a
+// typed number already existed: "NuVizz UPDATED it (its address/details were replaced)". A duplicate
+// aimed at a number NuVizz already holds would overwrite that order. So a number is used only after
+// NuVizz answers it with an explicit NOT FOUND, the proof the inline-create gate already demands
+// (nuvizz-write.mts runCommitBoardImport: "only an explicit 404 proves absence"); any other answer
+// refuses the create.
+//
+// THE COPY is built by buildStopPayload — the builder New Order uses — from the original's own
+// NuVizz record: consignee and delivery address, contact, delivery window, commodity, the driver
+// instructions, and the pickup origin. The piece counts, weight and delivery day are what the
+// dispatcher set in the dialog. NOT copied: the price (Seal #) unless asked — a duplicate is not a
+// second sale; the route, driver and load (it lands unplanned); the attachments; and an "ATT"
+// re-attempt marker on the shipment number, which marks the ORIGINAL's failed delivery.
+
+/**
+ * PURE: the status a write's result earns in the idempotency ledger (nuvizz-write.mts putOpRecord),
+ * which replays only a SUCCEEDED record to a repeat of the same request (priorShortCircuits).
+ *
+ * One op differs. A duplicate whose create LANDED is done even when its read-back could not verify
+ * it: counting it failed would let a retry of the same request run the whole ladder again — find
+ * the next free number, and create a SECOND copy. Recorded as succeeded, the retry replays the first
+ * answer (including its "check it in the portal") and mints nothing.
+ */
+export function opLedgerStatus(op: string, result: any): 'succeeded' | 'failed' {
+  if (result?.ok) return 'succeeded';
+  if (op === 'duplicateOrder' && result?.created === true) return 'succeeded';
+  return 'failed';
+}
+
+/** v7 Stop schema caps stopNbr at 20 characters (lib/uat-seed.mts UAT_STOP_NBR_MAX). */
+export const STOP_NBR_MAX = 20;
+/** The highest copy suffix this will ever mint. */
+export const COPY_N_MAX = 99;
+
+/**
+ * PURE: the ORIGINAL order number a duplicate is numbered from.
+ *
+ *   007174789          → 007174789          (an original)
+ *   007174789-1        → 007174789          (a copy: duplicates are numbered off the original)
+ *   ESTES-0538243875   → ESTES-0538243875   (a carrier id is a WHOLE identifier)
+ *   ESTES-0538243875-2 → ESTES-0538243875
+ *
+ * A copy suffix is a dash and one or two digits straight after a DIGIT. That is what keeps a
+ * carrier-prefixed id whole: stripping AVRT-0028093763 to "AVRT" is the exact collapse CLAUDE.md
+ * records (every AVRT order matching every other), and eta-flag-check.mts normStopNbr guards the
+ * same trap. Its ten-digit tail is not a one- or two-digit suffix, so it is left alone.
+ */
+export function copyBaseNbr(stopNbr: any): string {
+  const s = String(stopNbr ?? '').trim();
+  const m = /^(.*\d)-(\d{1,2})$/.exec(s);
+  return m ? m[1] : s;
+}
+
+/** PURE: copy N's number, or null when it would not fit NuVizz's 20 characters. Never cut to fit:
+ *  a shortened number can be another order's, and the create is an upsert. */
+export function copyNbr(base: string, n: number): string | null {
+  const b = String(base ?? '').trim();
+  if (!b || !Number.isInteger(n) || n < 1 || n > COPY_N_MAX) return null;
+  const s = `${b}-${n}`;
+  return s.length <= STOP_NBR_MAX ? s : null;
+}
+
+/** PURE: the weight typed for a duplicate. Blank keeps the original's; anything else must be a
+ *  number from 0 up. */
+export function parseCopyWeight(v: any): { weight: number | null } | { error: string } {
+  if (v == null || String(v).trim() === '') return { weight: null };
+  const s = String(v).trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) return { error: 'weight must be a number of pounds from 0 up, or blank to keep the original order\'s' };
+  const n = Number(s);
+  return Number.isFinite(n) && n <= 9999999999 ? { weight: n } : { error: 'weight is out of range' };
+}
+
+export interface DuplicateOptions {
+  pallets: number;
+  loose: number;
+  /** Pounds for the copy; null/undefined keeps the original's weight. */
+  weight?: number | null;
+  /** The delivery day for the copy (YYYY-MM-DD). */
+  date: string;
+  /** Copy the original's price (Seal #) too. Off unless the dispatcher asks. */
+  copyPrice?: boolean;
+}
+
+const IANA_ZONE = /^[A-Za-z]+\/[A-Za-z_]+(?:\/[A-Za-z_]+)?$/;
+
+/**
+ * PURE: the createStop payload for a duplicate of `raw` (the original as NuVizz holds it), numbered
+ * `newNbr`. Refuses — before any further call is spent — a pickup, an original with no complete
+ * delivery or pickup address, or a bad day. Returns what it could not copy in `warnings`, so the
+ * dispatcher is told rather than left to find out.
+ */
+export function buildDuplicateStop(raw: any, newNbr: string, opts: DuplicateOptions): {
+  stop: any; deliveryDate: string; warnings: string[];
+} | { error: string } {
+  if (!raw || typeof raw !== 'object') return { error: 'there is no original order to copy' };
+  const nbr = String(newNbr ?? '').trim();
+  if (!nbr || nbr.length > STOP_NBR_MAX) return { error: `the new order number ${nbr || '(none)'} does not fit NuVizz's ${STOP_NBR_MAX} characters` };
+  if (primarySideKey(raw) === 'from') return { error: `order ${raw.stopNbr ?? ''} is a PICKUP — this makes delivery orders, so copy a pickup in the NuVizz portal` };
+  if (!isDayString(opts?.date)) return { error: `'${opts?.date ?? ''}' is not a YYYY-MM-DD delivery day` };
+  const str = (v: any) => (v == null ? '' : String(v).trim());
+  const a = raw.to?.address || {};
+  const name = str(a.name); const addr1 = str(a.addr1); const city = str(a.city); const zip = str(a.zip);
+  if (!name || !addr1 || !city || !zip) {
+    return { error: 'the original has no complete delivery address in NuVizz (consignee, street, city and ZIP) — NuVizz would geocode half an address to somewhere nobody chose' };
+  }
+  const f = raw.from?.address || {};
+  const origin = { name: str(f.name), addr1: str(f.addr1), city: str(f.city), state: stateCode(f.state), zip: str(f.zip) };
+  if (!origin.name || !origin.addr1 || !origin.city || !origin.zip) {
+    return { error: 'the original has no complete pickup (ship-from) address in NuVizz to copy' };
+  }
+  const warnings: string[] = [];
+  // The window rides across with its TIMES on the copy's day (shiftScheduleToDate keeps the
+  // time-of-day and a window's span), but only a whole one — both ends, in order. Half a window is
+  // worse than none (lib/uat-seed.mts buildSeedRow): the builder's 12:00–17:00 default goes instead,
+  // and the dispatcher is told.
+  const sch = raw.to?.schedule || {};
+  const from0 = isoOrNull(sch.timeFrom); const to0 = isoOrNull(sch.timeTo);
+  let deliverFrom: string | null = null; let deliverTo: string | null = null;
+  if (from0 && to0 && from0 < to0) {
+    const moved = shiftScheduleToDate({ timeFrom: from0, timeTo: to0 }, opts.date);
+    deliverFrom = moved.timeFrom; deliverTo = moved.timeTo;
+  } else {
+    warnings.push('the original has no whole delivery window, so the copy gets the standard 12:00–17:00');
+  }
+  const ordIn = (Array.isArray(raw.comments) ? raw.comments : [])
+    .filter((c: any) => c && c.cmtType === 'ORD_IN' && str(c.commentDescription))
+    .map((c: any) => str(c.commentDescription));
+  const firstLine = Array.isArray(raw.stopDetails) ? raw.stopDetails.find((d: any) => d && str(d.product)) : null;
+  const contact = raw.to?.contact || {};
+  const row: StopRow = {
+    stopNbr: nbr,
+    // pro → shipmentNbr / reference1 carry the copy's own number. Never the original's shipment
+    // number: an "ATT" there marks the ORIGINAL's failed delivery (nuvizz-scan isAttemptShipment).
+    pro: nbr,
+    name, addr1, addr2: str(a.addr2) || null, city, state: stateCode(a.state), zip,
+    // The commodity LINE comes from the original's own first line item. Not from reference2: on a
+    // carrier's order reference1/reference2 are its PO and customer refs (normalizeStop: poRef /
+    // custRef); only New Order's orders use reference2 for the commodity. Both references are
+    // echoed verbatim below instead.
+    itemDesc: firstLine ? str(firstLine.product) : null,
+    pallets: opts.pallets,
+    loose: opts.loose,
+    weight: opts.weight != null ? opts.weight : numOrNull(raw.weight),
+    price: opts.copyPrice ? (str(raw.sealNbr) || null) : null,
+    phone: str(contact.phone) || null,
+    email: str(contact.email) || null,
+    dispatchNotes: ordIn.length ? ordIn.join('\n') : null,
+    deliverFrom, deliverTo,
+    deliverConstraint: str(sch.timeConstraint) || null,
+  };
+  const tz = str(sch.timeZone);
+  const stop = buildStopPayload(row, { origin, serviceDate: opts.date, timeZone: IANA_ZONE.test(tz) ? tz : 'America/New_York' });
+  // The PRO digits field keeps the ORIGINAL's PRO. buildStopPayload's own note: proNumber carries
+  // the PRO digits "so a '-1' copy suffix can't shift the number" — which holds for a 10-digit PRO
+  // but not for Davis's 9-digit numbers, where the copy's "-1" would become a tenth digit
+  // (007174789-1 → 0071747891, a number that is nobody's PRO). Echoed from the original's record,
+  // capped at the schema's 10 characters, only when it carries one.
+  const origPro = str(raw.proNumber);
+  if (origPro) stop.proNumber = origPro.slice(0, 10);
+  // The original's references ride across verbatim — the PO and customer refs of a carrier's order
+  // belong to the shipment, not to the order number. One exception: New Order's own "PRO <number>"
+  // in reference1 names the ORIGINAL's number, so the copy keeps the "PRO <copy number>"
+  // buildStopPayload wrote.
+  const ref1 = str(raw.reference1);
+  const ownPro = /^PRO\s+/i.test(ref1) && ref1.replace(/^PRO\s+/i, '').trim() === str(raw.stopNbr);
+  if (ref1 && !ownPro) stop.reference1 = safeSlice(ref1, 50);
+  const ref2 = str(raw.reference2);
+  if (ref2) stop.reference2 = safeSlice(ref2, 50);
+  if (opts.copyPrice && !str(raw.sealNbr)) warnings.push('the original has no price (Seal #) to copy');
+  return { stop, deliveryDate: opts.date, warnings };
 }
 
 // ── what we DON'T send still has to survive ──────────────────────────────────

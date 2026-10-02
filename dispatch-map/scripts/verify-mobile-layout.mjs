@@ -402,6 +402,27 @@ const PROBES = {
         return page.getByText(/^piece counts in nuvizz$/i).first().isVisible().catch(() => false);
       },
     },
+    {
+      // v1.107.0: the Duplicate panel opens in flow under the piece editor — three number boxes on
+      // one row at 360px, a date box, a checkbox row and the Create button. Same CUSTOMER 1 reason
+      // as above (a delivered order would still offer it, but one fixture row keeps both probes
+      // measuring the same drawer).
+      name: 'stop detail drawer — duplicate open',
+      open: async (page) => {
+        await page.getByRole('button', { name: /^stops$/i }).first().click();
+        await page.waitForTimeout(500);
+        const row = page.locator('[data-stop-row], li, button').filter({ hasText: /CUSTOMER 1 WITH/i }).first();
+        if (!(await row.isVisible().catch(() => false))) return false;
+        await row.click();
+        await page.waitForTimeout(800);
+        const dup = page.getByRole('button', { name: /^duplicate as a new order$/i }).first();
+        await dup.scrollIntoViewIfNeeded().catch(() => {});
+        if (!(await dup.isVisible().catch(() => false))) return false;
+        await dup.click();
+        await page.waitForTimeout(300);
+        return page.getByRole('button', { name: /^create the copy in nuvizz$/i }).first().isVisible().catch(() => false);
+      },
+    },
   ],
   addrhistory: [
     {
@@ -1067,6 +1088,13 @@ function stubRoutes(page, emailHtml) {
     if (u.includes('coverage=1')) return R({ ok: true, pct: 100, withEmail: 599, sampled: 600, delivered: 710, bySource: { order: 599, notes: 0 }, optedOut: 0, withoutEmail: 1 });
     if (u.includes('customer-comms-test')) return R({ ok: true, preview: true, pro: '007161743', customer: 'BUFORD TILE & STONE', subject: 'Delivered — PRO 007161743', html: emailHtml.replace(/\{\{[^}]+\}\}/g, 'X'), recipientOnFile: 'receiving@buford.example.com', recipientSource: 'order', optedOut: false });
     if (u.includes('nuvizz-pull-today-stops') || u.includes('nuvizz-board')) return R({ ok: true, stops: STOPS, count: STOPS.length, date: '2026-08-17' });
+    // v1.107.0: the stop card asks nuvizz-write's dry run which switched writes are on, and offers
+    // the Duplicate panel only when the answer says so — without it the drawer has no Duplicate
+    // button and the 'duplicate open' probe cannot reach the panel it exists to measure. Dry runs
+    // only: every other nuvizz-write answer stays the fallback at the bottom, as before.
+    if (/\/\.netlify\/functions\/nuvizz-write(\?|$)/.test(u) && /"dryRun":true/.test(route.request().postData() || '')) {
+      return R({ ok: true, dryRun: true, live: false, plan: [], features: { duplicateOrder: true } });
+    }
     if (u.includes('day-completion') && u.includes('history=1')) return R({ ok: true, days: [
       { date: '2026-08-20', open: 12, completionRate: 0.94, manualRate: 0.2, counts: {}, reconciled: null },
       { date: '2026-08-19', open: 31, completionRate: 0.88, manualRate: 0.3, counts: {}, reconciled: { openAtSnapshot: 31, closedAfter: 22, failedAfter: 2, cancelledAfter: 0, stillOpen: 7, lateCloseRate: 0.71 } },
