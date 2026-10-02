@@ -53,7 +53,7 @@ export const MUTATING_OPS = new Set<WriteOp>([
   'partialUpdateStop', 'addStopNote', 'setStopDate', 'setStopContact', 'setStopAddress',
   // §P piece counts (v1.105.0) — the same read → partialUpdate → read-back ladder as the three above.
   'setStopPieces',
-  // §DUP (v1.106.0) — read the original, prove {original}-N absent, create it, read it back.
+  // §DUP (v1.107.0) — read the original, prove {original}-N absent, create it, read it back.
   'duplicateOrder',
   'createRoute', 'newRoute',
   // Destructive. Gated by NUVIZZ_WRITE_ENABLED like every other mutation, and by
@@ -1477,7 +1477,7 @@ export function boardPiecesWarning(board: any): string | null {
   return parts.length ? `NuVizz has the new counts, but ${parts.join('; ')} — the board may keep showing the old count.` : null;
 }
 
-// ── §DUP  DUPLICATE AN ORDER AS {original}-N (v1.106.0) ──────────────────────
+// ── §DUP  DUPLICATE AN ORDER AS {original}-N (v1.107.0) ──────────────────────
 //
 // Chad, 2026-10-02: "make it where i can duplicate an order essentially we can do it as creating a
 // new order and way we make the pro number is its original pro-1 then if we duplicate the same

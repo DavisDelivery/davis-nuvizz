@@ -178,7 +178,7 @@ export const setStopPieces = (stopNbr, { pallets, loose } = {}, opts = {}) =>
     ...(Array.isArray(opts.boardDates) && opts.boardDates.length ? { boardDates: opts.boardDates.map(String) } : {}),
   }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
-// DUPLICATE an order as a NEW one numbered {original}-N (§DUP, v1.106.0). The server reads the
+// DUPLICATE an order as a NEW one numbered {original}-N (§DUP, v1.107.0). The server reads the
 // original, finds the first {original}-1, -2 … that NuVizz answers NOT FOUND (a number it holds is
 // skipped, never written — the create is an upsert), creates the copy with these counts, and reads it
 // back. ~4 NuVizz calls, never more than 6. `opts.clientOpId` is REQUIRED from the caller and must be

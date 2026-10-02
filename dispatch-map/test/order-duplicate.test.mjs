@@ -1,6 +1,6 @@
 // test/order-duplicate.test.mjs
 //
-// §DUP — DUPLICATING AN ORDER AS {original}-N (v1.106.0).
+// §DUP — DUPLICATING AN ORDER AS {original}-N (v1.107.0).
 //
 // Chad, 2026-10-02: "make it where i can duplicate an order essentially we can do it as creating a
 // new order and way we make the pro number is its original pro-1 then if we duplicate the same

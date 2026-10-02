@@ -979,7 +979,7 @@ export async function patchEnrichedProPieces(tenant: string, stopNbr: string, st
 }
 
 /**
- * Does our enrichment registry already hold a record for this order number? (v1.106.0)
+ * Does our enrichment registry already hold a record for this order number? (v1.107.0)
  *
  * A FREE first look for the duplicate's number hunt (lib/nuvizz-write.mts runDuplicateOrder): an
  * order our scans ever enriched is one NuVizz has held, so the hunt skips it without spending a
@@ -991,7 +991,7 @@ export async function enrichedProKnown(tenant: string, stopNbr: string): Promise
 }
 
 /**
- * CLAIM a copy number before creating it (v1.106.0) — an atomic create (createDocIfAbsent), so of two
+ * CLAIM a copy number before creating it (v1.107.0) — an atomic create (createDocIfAbsent), so of two
  * duplicates racing for the same {original}-N exactly one wins. Both would otherwise read N as not
  * found in NuVizz, both would create it, and the second create — an UPSERT — would overwrite the
  * first copy. The loser moves on to the next number. Returns true when this call holds the number.

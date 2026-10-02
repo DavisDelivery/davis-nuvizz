@@ -177,7 +177,7 @@ function planFor(op: WriteOp, payload: any): string[] {
       `BOARD: put the read-back counts on this order's board row${days.length ? ` (${days.join(', ')})` : ''} and its stored copy — Firestore only, no NuVizz call`,
     ];
   }
-  // §DUP (v1.106.0) — a NEW order, so the plan names how its number is found before anything else.
+  // §DUP (v1.107.0) — a NEW order, so the plan names how its number is found before anything else.
   if (op === 'duplicateOrder') {
     const want = parsePieceInput(payload);
     if ('error' in want) return [`REFUSE before any call: ${want.error}`];

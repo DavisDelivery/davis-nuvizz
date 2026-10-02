@@ -1,4 +1,4 @@
-// src/lib/order-duplicate.js — the Duplicate panel's rules, PURE (v1.106.0).
+// src/lib/order-duplicate.js — the Duplicate panel's rules, PURE (v1.107.0).
 //
 // Chad, 2026-10-02: "make it where i can duplicate an order essentially we can do it as creating a
 // new order and way we make the pro number is its original pro-1 then if we duplicate the same

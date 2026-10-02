@@ -403,7 +403,7 @@ const PROBES = {
       },
     },
     {
-      // v1.106.0: the Duplicate panel opens in flow under the piece editor — three number boxes on
+      // v1.107.0: the Duplicate panel opens in flow under the piece editor — three number boxes on
       // one row at 360px, a date box, a checkbox row and the Create button. Same CUSTOMER 1 reason
       // as above (a delivered order would still offer it, but one fixture row keeps both probes
       // measuring the same drawer).
@@ -439,6 +439,22 @@ const PROBES = {
         await btn.click();
         await page.waitForTimeout(300);
         return page.getByLabel(/^address 1, the street line$/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // FIXED HERE, NOT IN NUVIZZ (v1.106.0): the editor on that row is the push-only variant —
+      // one green button and a different sentence — opened on THAT row (found by its name), and
+      // proven open by the button only that variant has.
+      name: 'Problem queue — Not in NuVizz row editor open',
+      open: async (page) => {
+        const tab = page.getByRole('tab', { name: /problem addresses/i }).first();
+        if (await tab.isVisible().catch(() => false)) { await tab.click(); await page.waitForTimeout(300); }
+        const row = page.getByText('WINDSTREAM DISTRIBUTION CENTER').first().locator('xpath=ancestor::*[.//button[normalize-space()="Correct"]][1]');
+        const btn = row.getByRole('button', { name: /^correct$/i }).first();
+        if (!(await btn.isVisible().catch(() => false))) return false;
+        await btn.click();
+        await page.waitForTimeout(300);
+        return page.getByRole('button', { name: /^send to nuvizz \(3 calls\)$/i }).first().isVisible().catch(() => false);
       },
     },
     {
@@ -1072,7 +1088,7 @@ function stubRoutes(page, emailHtml) {
     if (u.includes('coverage=1')) return R({ ok: true, pct: 100, withEmail: 599, sampled: 600, delivered: 710, bySource: { order: 599, notes: 0 }, optedOut: 0, withoutEmail: 1 });
     if (u.includes('customer-comms-test')) return R({ ok: true, preview: true, pro: '007161743', customer: 'BUFORD TILE & STONE', subject: 'Delivered — PRO 007161743', html: emailHtml.replace(/\{\{[^}]+\}\}/g, 'X'), recipientOnFile: 'receiving@buford.example.com', recipientSource: 'order', optedOut: false });
     if (u.includes('nuvizz-pull-today-stops') || u.includes('nuvizz-board')) return R({ ok: true, stops: STOPS, count: STOPS.length, date: '2026-08-17' });
-    // v1.106.0: the stop card asks nuvizz-write's dry run which switched writes are on, and offers
+    // v1.107.0: the stop card asks nuvizz-write's dry run which switched writes are on, and offers
     // the Duplicate panel only when the answer says so — without it the drawer has no Duplicate
     // button and the 'duplicate open' probe cannot reach the panel it exists to measure. Dry runs
     // only: every other nuvizz-write answer stays the fallback at the bottom, as before.
@@ -1149,7 +1165,7 @@ function stubRoutes(page, emailHtml) {
     if (u.includes('address-queue')) return R({
       ok: true, tenant: 'davis', nuvizzCalls: 0, notesLoaded: 412,
       dates: ['2026-09-14', '2026-09-15', '2026-09-16'],
-      summary: { mis_split: 2, no_pin: 2, corrected_not_pinned: 1, dismissed: 1 },
+      summary: { mis_split: 2, no_pin: 2, corrected_not_pinned: 1, not_in_nuvizz: 1, dismissed: 1 }, notInNuvizz: true,
       days: [
         { date: '2026-09-14', stopsRead: 781, rows: [
           { signal: 'no_pin', rank: 0, date: '2026-09-14', key: 'no_pin__estes-0538243875', fp: 'v1|a', stopNbr: 'ESTES-0538243875', stopId: 'sid-1', pro: '007174397',
@@ -1178,6 +1194,14 @@ function stubRoutes(page, emailHtml) {
             vendor: { addr1: '1 NOWHERE RD', addr2: '', city: 'BUFORD', state: 'GA', zip: '30518' },
             corrected: false, pinSource: null, suggestion: null,
             dismissed: true, dismissedBy: 'Dispatcher 9F2A', dismissedAt: '2026-09-14T08:02:00.000Z', dismissedWhy: null },
+          // FIXED HERE, NOT IN NUVIZZ (v1.106.0) — our board has the right split, the order in NuVizz
+          // still has the dock line first. Its worst case for layout: a second line long enough to
+          // wrap twice at 360px, in BOTH address columns (swapped), and the push-only editor.
+          { signal: 'not_in_nuvizz', rank: 3, date: '2026-09-14', key: 'not_in_nuvizz__007183673', fp: 'v1|f|nv:x', stopNbr: '007183673', stopId: 'sid-6', pro: '007183673',
+            matchKey: 'windstream|uniti|sugarhill', businessName: 'WINDSTREAM DISTRIBUTION CENTER', routeName: 'SUGAR HILL 2', loadNbr: 'DAVIS000204700', status: 'SCHEDULED',
+            shown: { addr1: '655 PEACHTREE INDUSTRIAL BLVD', addr2: 'UNITI KINETIC STE 220 — RECEIVING AT THE REAR LOADING DOCK', city: 'SUGAR HILL', state: 'GA', zip: '30518' },
+            vendor: { addr1: 'UNITI KINETIC STE 220 — RECEIVING AT THE REAR LOADING DOCK', addr2: '655 PEACHTREE INDUSTRIAL BLVD', city: 'SUGAR HILL', state: 'GA', zip: '30518' },
+            corrected: true, pinSource: 'override', suggestion: null },
         ] },
         { date: '2026-09-15', stopsRead: 402, rows: [] },
         { date: '2026-09-16', stopsRead: 118, rows: [] },

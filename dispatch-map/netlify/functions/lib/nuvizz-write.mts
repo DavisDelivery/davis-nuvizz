@@ -3228,7 +3228,7 @@ export function siteWriteFeatures(env: Record<string, any> = process.env): { dup
 export const DUP_PROBE_MAX = 3;
 
 /**
- * runDuplicateOrder (§DUP, v1.106.0) — create {original}-N as a NEW order, copied from an existing one.
+ * runDuplicateOrder (§DUP, v1.107.0) — create {original}-N as a NEW order, copied from an existing one.
  *
  * Chad, 2026-10-02: "make it where i can duplicate an order essentially we can do it as creating a
  * new order and way we make the pro number is its original pro-1 then if we duplicate the same
@@ -3715,7 +3715,7 @@ export async function runOp(requester: RequesterLike, op: WriteOp, payload: any,
     case 'setStopContact': return runSetStopContact(requester, payload, creds);
     // §P piece counts (v1.105.0): read → partialUpdate → read-back, then the board half.
     case 'setStopPieces': return runSetStopPieces(requester, payload, creds);
-    // §DUP (v1.106.0): read the original → prove {original}-N absent → create → read back.
+    // §DUP (v1.107.0): read the original → prove {original}-N absent → create → read back.
     case 'duplicateOrder': return runDuplicateOrder(requester, payload, creds);
     // §R — the orchestration (collision check → header write → read-back verify). The bare
     // 'createRoute' single op stays available for tests/diagnostics; the app calls 'newRoute'.
