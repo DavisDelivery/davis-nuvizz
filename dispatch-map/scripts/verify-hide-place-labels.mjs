@@ -344,8 +344,9 @@ console.log('\n── "Correct pin location" survives the toggle ──');
   if (!row) bad('no stop row in the grid — could not enter pin-correction mode');
   else {
     await row.click(); await page.waitForTimeout(1200);
-    const more = page.getByText(/Correct pin\b/i).first();       // the "More:" disclosure
-    if (await more.isVisible().catch(() => false)) { await more.click(); await page.waitForTimeout(500); }
+    // v1.107.1: the card's actions sit in two rows that are always on screen — there is no
+    // "More:" fold to open first. Clicking text that matched "Correct pin" here would now press
+    // the button itself and enter pin-correction before the step below asks for it.
     const correct = page.getByRole('button', { name: /correct pin location/i }).first();
     if (!(await correct.isVisible().catch(() => false))) {
       bad('could not find "Correct pin location" — this path went unverified');

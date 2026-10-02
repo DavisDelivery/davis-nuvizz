@@ -222,7 +222,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.107.0';
+const APP_VERSION = '1.107.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -276,6 +276,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.107.1', 'THE STOP CARD, TIGHTER: THE PRO IS NEVER CUT, THE OTHER ACTIONS ARE ALWAYS ON SCREEN, AND THE PROS LIST IS GONE. Chad, 10/02, of the \u201cMore:\u201d fold: \u201cDon\u2019t understand why this is in a drawer seems like it should just be fixed nice and tight in 2 rows small text\u201d \u2014 and of the PROs section: \u201cdon\u2019t think this is need on the oder screen pro number is at the top pro should never be hidden and we don\u2019t need the pro text just the number we know what it is.\u201d THE ACTIONS: Street View, Find business, Edit address, Correct pin, Text driver and History now sit in two small rows under Text / Call / Navigate / Ticket / Label \u2014 nothing to open. On a phone the same two rows have thumb-height cells. Hover one for its full name (Correct pin location, the driver\u2019s name); a \u2713 after Correct pin means a custom pin is saved. THE HEADER: just the number (007185553, not \u201cPRO 00718\u2026\u201d), at its full width \u2014 the route label beside it is what shortens now. The phone header gains the copy button the PROs list used to give it. THE PROS LIST is gone from the card: a board order carries exactly one PRO, its own number, which is the header. WHERE: the desktop sidebar (Map and Routing), the phone drawer and the PRO-lookup card. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.107.0', 'DUPLICATE AN ORDER AS A NEW ONE \u2014 ITS NUMBER -1, THEN -2, AND SO ON. Chad, 10/02: \u201cmake it where i can duplicate an order essentially we can do it as creating a new order and way we make the pro number is its original pro-1 then if we duplicate the same order twice it would be original pro-2 so on an so forth.\u201d WHERE: the stop card, under Items \u2014 \u201cDuplicate as a new order\u201d, in the same four places as Edit piece counts. Set the copy\u2019s pallets, loose, weight and delivery day (they open on the original\u2019s, and on today when the original\u2019s day has gone), tick \u201cCopy the price\u201d if you want it, and Create. THE NUMBER: the first ORIGINAL-N that NuVizz does not already hold \u2014 duplicating the same order twice gives -1 then -2, and duplicating a copy still numbers from the original (007174789-1 gives 007174789-2, never -1-1). A carrier id stays whole (ESTES-0538243875 gives ESTES-0538243875-1). IT NEVER OVERWRITES: NuVizz\u2019s order create REPLACES an order that already has the number, so each candidate must read NOT FOUND in NuVizz before it is used \u2014 one that exists is skipped, and any other answer (an error, an empty reply) stops the duplicate with nothing created. Numbers our own records already know are skipped without a NuVizz call, and a number is claimed before it is created, so two dispatchers duplicating the same order at once cannot both take it. THE COPY carries the original\u2019s consignee and address, contact, delivery window (the same times on the chosen day), commodity, driver instructions, PO and customer references, and pickup origin \u2014 built by the same builder New Order uses. NOT COPIED: the route, driver and attachments (it lands unplanned and reaches the board through the scans, as a New Order does), the price unless ticked, and an \u201cATT\u201d failed-delivery marker on the shipment number. VERIFIED: the new order is read back \u2014 its number, pieces and street must match \u2014 and a press after a lost answer goes out under the same request key, so it replays the first answer and can never make a second copy. About 4 NuVizz calls, never more than 6. NUVIZZ_DUPLICATE_ORDER=off turns it off on both sides at once \u2014 the server refuses it and the stop card stops offering the button (the card asks the server once per page load, a dry run that spends no NuVizz call).'],
   ['1.106.3', 'A SAVE THAT DOES NOT MOVE THE PLACE KEEPS THE PIN. Chad, on the proposal \u201cstop Save from replacing a pin placed by hand\u201d: \u201cyes do 1 and 2\u201d. Every address Save \u2014 Edit address on a stop card, and Correct on Problem addresses \u2014 geocoded the street and wrote Google\u2019s answer over the pin, even when the street, city and ZIP had not changed: the same address saved again to push it to NuVizz, or a fix to the suite or dock line. The geocode never looks at that second line, so for an unchanged street it can only re-find the street \u2014 it cannot improve a pin somebody dragged onto the right dock, only replace it. NOW: when the customer has a pin of our own that is not older than the address correction, and the street line, city and ZIP are the same (the usual spellings and the state aside), the Save keeps the pin and re-stamps it on the same write, so it is never listed as \u201cPin not moved\u201d. A Save that changes the street, city or ZIP geocodes exactly as before, and so does one where the pin is the feed\u2019s own or already older than the correction. The one-click Fix & move pin is unchanged \u2014 its split always moves the street. 0 NuVizz calls. PUT IT BACK: VITE_SAVE_KEEPS_PIN=off, on the next build.'],
   ['1.106.2', 'A PUSH TO NUVIZZ NO LONGER COSTS THE ORDER ITS PIN AND ITS NOTES. Chad, on the proposal \u201cdon\u2019t lose a hand-placed pin when pushing\u201d: \u201cyes do 1 and 2\u201d. WHY IT HAPPENED: a customer note \u2014 the hand-placed pin, receiving hours, closed days, the no-tractor mark, contacts, the email opt-out \u2014 is filed under the order\u2019s own first address line, city and ZIP as NuVizz has them. Correcting the address in NuVizz moves line 1 (\u201cDOCK 32\u201d becomes \u201c1200 NORTHBROOK PKWY STE 180\u201d), so on the next scan the order is filed under a new name and its note no longer reaches it. Measured on DESIGN PRINT BANNER (007183435, pushed 9/28): the next day\u2019s board had it under the new name with no note at all. Today\u2019s three Not in NuVizz rows would each have lost the pin our board has for them the same way \u2014 and EMORY UNIV HOSPITAL MIDTOWN its 7:00\u20132:30 receiving hours. NOW: when a push lands, the server copies the note to the order\u2019s new name, worked out from the address NuVizz actually STORED \u2014 the one the next scan reads. The pin goes only if it belongs to the corrected address (a pin older than the correction stays behind, it is on the old building). The address correction does not go: NuVizz holds the address now. ONLY INTO AN EMPTY PLACE: if the new name already has a note, nothing is copied and nothing is overwritten. The note is only copied when the order\u2019s address in NuVizz before the push matches the note the board joined \u2014 a board one scan behind copies nothing. The customer\u2019s next order, still arriving the old way, keeps the original note. No NuVizz calls added; each push\u2019s entry in the write log says what was carried, or why not. PUT IT BACK: ADDRESS_PUSH_CARRY_NOTE=off on the server \u2014 no redeploy.'],
@@ -6932,9 +6933,8 @@ function StreetViewLink({ stop, className }) {
       target="_blank"
       rel="noopener noreferrer"
       className={className || 'inline-flex items-center gap-1 text-xs text-blue-700 hover:underline mt-1'}
-      style={{ minHeight: 44, alignItems: 'center' }}
     >
-      <MapPinned size={13} /> Street View
+      <MapPinned size={12} className="shrink-0" /> <span className="truncate">Street View</span>
     </a>
   );
 }
@@ -6972,9 +6972,8 @@ function WebSearchLink({ stop, className }) {
       target="_blank"
       rel="noopener noreferrer"
       className={className || 'inline-flex items-center gap-1 text-xs text-blue-700 hover:underline mt-1'}
-      style={{ minHeight: 44, alignItems: 'center' }}
     >
-      <Search size={13} /> Find business
+      <Search size={12} className="shrink-0" /> <span className="truncate">Find business</span>
     </a>
   );
 }
@@ -8168,55 +8167,6 @@ function applyFilters(stops, notesByKey, filters) {
     if (filters.hasHours && !referencesReceivingHours(s, n)) return false;
     return true;
   });
-}
-
-// Right-side sidebar showing stop + metadata + edit form.
-function ProsSection({ stop }) {
-  const pros = stop.pros || (stop.pro ? [stop.pro] : []);
-  // NEVER REPORT AN INTENT AS AN OUTCOME. writeText returns a PROMISE, so its rejection
-  // never reached the try/catch around it — "copied" appeared whether or not anything
-  // reached the clipboard. On http, in a locked-down browser, or with the permission denied,
-  // the dispatcher sees the green word, pastes into NuVizz and gets whatever was on the
-  // clipboard BEFORE: usually the PRO of a different stop. A wrong PRO pasted confidently is
-  // worse than no copy at all, because nothing about it looks wrong.
-  const [copied, setCopied] = useState(null);      // { pro, ok }
-  const copy = (pro) => {
-    const settle = (ok) => {
-      setCopied({ pro, ok });
-      setTimeout(() => setCopied((c) => (c?.pro === pro ? null : c)), ok ? 1200 : 2500);
-    };
-    let w;
-    try { w = navigator.clipboard?.writeText(pro); } catch { w = null; }
-    if (!w?.then) { settle(false); return; }
-    w.then(() => settle(true), () => settle(false));
-  };
-  return (
-    <div className="px-4 py-3 border-b">
-      <div className="text-xs uppercase font-semibold text-slate-500 mb-1.5">
-        PROs ({pros.length})
-      </div>
-      {pros.length === 0 ? (
-        <div className="text-xs italic text-slate-400">— No PROs —</div>
-      ) : (
-        <div className="space-y-0.5">
-          {pros.map((p) => (
-            <button
-              key={p}
-              type="button"
-              onClick={() => copy(p)}
-              className="block w-full text-left font-mono text-xs text-slate-700 hover:bg-slate-100 px-1 py-0.5 rounded"
-              title="Click to copy"
-            >
-              {p}
-              {copied?.pro === p && (copied.ok
-                ? <span className="ml-2 text-[10px] text-emerald-600 font-sans">copied</span>
-                : <span className="ml-2 text-[10px] text-rose-600 font-sans">copy blocked — select it by hand</span>)}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
 }
 
 // ── Shared stop-detail building blocks ──────────────────────────────────────
@@ -10235,7 +10185,11 @@ function StopShiplifySection({ stop, note, limeHere = false, part = null, wrap =
   );
 }
 
-function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, onSaveContacts, savingNote = false, noteSaveError = null, shiplifyTestHere = true }) {
+// One cell of the stop card's action rows: small blue text, one line, its icon kept when the text
+// truncates. A phone's text is a size larger; the HEIGHT is the touch floor's (index.css).
+const stopActionCls = (mobile) => `inline-flex items-center gap-1 min-w-0 whitespace-nowrap text-left text-blue-700 hover:underline ${mobile ? 'text-[12px]' : 'text-[11px]'}`;
+
+function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, onSaveContacts, savingNote = false, noteSaveError = null, shiplifyTestHere = true, mobile = false }) {
   // `stop` is the already-merged "live" stop the PARENT owns (see useLiveStop). The parent
   // holds the refresh overlay so the header status badge updates too — not just this body.
   // `onRefreshed` bubbles a fresh /stop/info pull (Refresh button, timeline open, or the
@@ -10287,7 +10241,6 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
   // roster answers, and for drivers with no number on file).
   const driverPhone = useDriverPhone(live.driverName);
   // Secondary actions fold away by default; nothing is removed, only tucked (Enhancement 6).
-  const [moreOpen, setMoreOpen] = useState(false);
   // Same target GoogleMapsLink used: pin coords when we have them, else the address string.
   const mapsNavUrl = useMemo(() => {
     const addr = [live.addr1, live.city, live.state, live.zip].filter(Boolean).join(', ');
@@ -10352,8 +10305,8 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
             already exists — see StopContactBlock for why that mattered. */}
         <StopContactBlock stop={live} note={note} onSaveContacts={onSaveContacts} onRefreshed={onRefreshed} saving={savingNote} saveError={noteSaveError} />
         {/* Enhancement 6 — the four actions that account for nearly every tap, as
-            thumb-size buttons (text links are the hardest targets on a phone). The long
-            tail folds into More; every existing action stays reachable. */}
+            thumb-size buttons (text links are the hardest targets on a phone). The rest sit
+            in the two small rows right under them (v1.107.1) — no fold. */}
         <div className="grid grid-cols-5 gap-1.5 mt-2.5">
           {onText && (
             <button onClick={() => onText(live)} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title={textPhone ? 'Text customer' : 'Text customer — no number on file yet; add one in the compose box'}>
@@ -10373,35 +10326,39 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
           </button>
           <StopLabelButton stop={live} note={note} phone={textPhone} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5 disabled:opacity-60" />
         </div>
-        <button onClick={() => setMoreOpen((o) => !o)} className="mt-1.5 text-[11px] text-slate-500 hover:text-slate-800" aria-expanded={moreOpen}>
-          More: Street View · Edit address · Correct pin · History {moreOpen ? '▴' : '▾'}
-        </button>
-        {moreOpen && (
-          <div className="flex items-center gap-x-4 gap-y-1 flex-wrap">
-            <StreetViewLink stop={live} />
-            <WebSearchLink stop={live} />
-            {onEditAddress && (
-              <button onClick={() => onEditAddress(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-                <MapPin size={13} /> Edit address
-              </button>
-            )}
-            {onMoveLocation && (
-              <button onClick={() => onMoveLocation(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-                <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
-              </button>
-            )}
-            {onTextDriver && live.driverName && (
-              <button onClick={() => onTextDriver(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" title={`Text ${live.driverName} — prefilled with this order's PRO and customer`}>
-                <MessageSquare size={13} /> Text driver ({live.driverName})
-              </button>
-            )}
-            {onOpenHistory && (
-              <button onClick={() => onOpenHistory(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" title="This customer's past PROs and who delivered them">
-                <Clock size={13} /> History
-              </button>
-            )}
-          </div>
-        )}
+        {/* The rest of the actions, ALWAYS ON SCREEN (v1.107.1). Chad, 10/02, of the old "More:"
+            fold: "Don't understand why this is in a drawer seems like it should just be fixed nice
+            and tight in 2 rows small text." Three to a row, so the six are two rows. No height is
+            set here: under a mouse a row is one line of small text; under a finger the app's touch
+            floor (index.css, pointer: coarse) makes every cell 44px — a phone, a tablet or a touch
+            laptop alike. Each button's full name stays its accessible name and tooltip ("Correct
+            pin location", the driver's name). */}
+        <div className={`mt-1.5 grid grid-cols-3 ${mobile ? 'gap-x-2' : 'gap-x-1.5'}`} data-stop-actions>
+          <StreetViewLink stop={live} className={stopActionCls(mobile)} />
+          <WebSearchLink stop={live} className={stopActionCls(mobile)} />
+          {onEditAddress && (
+            <button onClick={() => onEditAddress(live)} className={stopActionCls(mobile)}>
+              <MapPin size={12} className="shrink-0" /> <span className="truncate">Edit address</span>
+            </button>
+          )}
+          {onMoveLocation && (
+            <button onClick={() => onMoveLocation(live)} className={stopActionCls(mobile)}
+              aria-label="Correct pin location" title={note?.location_override ? 'Correct pin location — a custom pin is saved' : 'Correct pin location'}>
+              <MapPin size={12} className="shrink-0" /> <span className="truncate">Correct pin{note?.location_override ? ' ✓' : ''}</span>
+            </button>
+          )}
+          {onTextDriver && live.driverName && (
+            <button onClick={() => onTextDriver(live)} className={stopActionCls(mobile)}
+              aria-label={`Text driver (${live.driverName})`} title={`Text ${live.driverName} — prefilled with this order's PRO and customer`}>
+              <MessageSquare size={12} className="shrink-0" /> <span className="truncate">Text driver</span>
+            </button>
+          )}
+          {onOpenHistory && (
+            <button onClick={() => onOpenHistory(live)} className={stopActionCls(mobile)} title="This customer's past PROs and who delivered them">
+              <Clock size={12} className="shrink-0" /> <span className="truncate">History</span>
+            </button>
+          )}
+        </div>
       </div>
       <div className="pt-2">
         <OrderItemsSection stop={live} />
@@ -11135,7 +11092,7 @@ function StopTimeline({ model }) {
 
 // Tap-to-copy PRO for the card header — for pasting into NuVizz, Estes, or a text. Uses the
 // clipboard API with a select-fallback-free design: on failure it simply doesn't flash ✓.
-function CopyProButton({ pro }) {
+function CopyProButton({ pro, light = false }) {
   const [ok, setOk] = useState(false);
   if (!pro) return null;
   return (
@@ -11144,7 +11101,9 @@ function CopyProButton({ pro }) {
         try { await navigator.clipboard.writeText(String(pro)); setOk(true); setTimeout(() => setOk(false), 1500); }
         catch { /* clipboard unavailable (http, permissions) — stay quiet */ }
       }}
-      className="ml-1.5 align-middle text-[9px] font-semibold border border-white/40 rounded px-1 py-px opacity-80 hover:opacity-100"
+      className={light
+        ? "tap-dense relative shrink-0 px-2 py-1 text-[11px] font-semibold border border-slate-300 rounded text-slate-600 hover:bg-slate-50 active:bg-slate-100 after:absolute after:content-[''] after:-inset-y-2.5 after:-inset-x-1"
+        : 'shrink-0 ml-1.5 align-middle text-[9px] font-semibold border border-white/40 rounded px-1 py-px opacity-80 hover:opacity-100'}
       title="Copy PRO"
     >{ok ? '✓ copied' : 'copy'}</button>
   );
@@ -11244,12 +11203,16 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
       <div className="px-4 py-3 border-b flex items-center justify-between gap-2" style={{ background: BRAND, color: 'white' }}>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold tracking-wide opacity-90 flex items-center min-w-0">
-            <span className="truncate">PRO {stop.pro || '—'}</span>
+            {/* THE PRO IS NEVER CUT, AND IT IS JUST THE NUMBER (v1.107.1). Chad, 10/02: "pro should
+                never be hidden and we don't need the pro text just the number we know what it
+                is." It used to be "PRO 00718…", truncated to make room for the route label; now
+                the number keeps its width and the route label is what gives way. */}
+            <span className="shrink-0 whitespace-nowrap" data-stop-pro>{stop.pro || '—'}</span>
             <CopyProButton pro={stop.pro} />
             {/* WHERE this order sits — the route + position used to live five sections down.
                 routeSeq is NuVizz's own run position; no "of N" is shown because the card
                 doesn't hold the route's stop count and a guessed total is worse than none. */}
-            {sidebarRouteLabel && <span className="ml-auto pl-2 text-[11px] font-medium opacity-85 whitespace-nowrap">{sidebarRouteLabel}</span>}
+            {sidebarRouteLabel && <span className="ml-auto pl-2 min-w-0 truncate text-[11px] font-medium opacity-85" title={sidebarRouteLabel}>{sidebarRouteLabel}</span>}
           </div>
           <div className="font-bold truncate">{stop.businessName || '(no name)'}</div>
         </div>
@@ -11276,7 +11239,6 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
 
       <div className="overflow-y-auto flex-1">
         <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} shiplifyTestHere={false} />
-        <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} stop={stop} />
         <StopRecentDeliveries stop={stop} note={note} />
         <StopShiplifyTest stop={live} note={note} />
@@ -12513,6 +12475,8 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
 // renders the stop the lookup already returned; the inner "Refresh" button is opt-in.
 function LookupStopModal({ stop, note, onClose }) {
   const [live, onRefreshed] = useLiveStop(stop);
+  // Opened from Past PRO search on a phone AND on a desktop, so it asks which it is.
+  const phone = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -12527,14 +12491,15 @@ function LookupStopModal({ stop, note, onClose }) {
         <div className="flex items-center justify-between px-4 py-3 flex-shrink-0" style={{ background: BRAND, color: 'white', paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}>
           <div className="min-w-0">
             <div className="font-bold truncate">{stop.businessName || `Stop ${pro}`}</div>
-            <div className="text-[11px] text-white/80 truncate">
-              {pro ? `PRO #${pro}` : ''}{stop.routeName || stop.loadNbr ? ` · ${stop.routeName || stop.loadNbr}` : ''}{stop.driverName ? ` · ${stop.driverName}` : ''}
+            <div className="text-[11px] text-white/80 flex items-center min-w-0">
+              {pro && <span className="shrink-0 whitespace-nowrap" data-stop-pro>{pro}</span>}
+              <span className="truncate">{stop.routeName || stop.loadNbr ? `${pro ? ' · ' : ''}${stop.routeName || stop.loadNbr}` : ''}{stop.driverName ? ` · ${stop.driverName}` : ''}</span>
             </div>
           </div>
           <button onClick={onClose} aria-label="Close" className="opacity-80 hover:opacity-100 p-1 -mr-1 flex-shrink-0"><X size={20} /></button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} />
+          <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} mobile={phone} />
         </div>
       </div>
     </div>
@@ -12978,9 +12943,9 @@ function MobileLoadsTab({ loads, onPickLoad }) {
 // ---------- M4.5 PR 2: stop-detail + driver-snapshot drawers ----------
 
 // Mobile stop-detail drawer. A bottom-sheet that renders the SAME shared
-// stop components as the desktop sidebar (StopDataSections + ProsSection +
-// StopNotesSection) in a single scroll, so mobile has full desktop parity —
-// every edit option, one inline Edit, one Save.
+// stop components as the desktop sidebar (StopDataSections + StopNotesSection)
+// in a single scroll, so mobile has full desktop parity — every edit option,
+// one inline Edit, one Save.
 function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [] }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
@@ -13038,7 +13003,12 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
       <div className="flex-shrink-0 px-4 pt-1 pb-2 border-b border-slate-200">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="text-sm font-semibold tracking-wide text-slate-600">PRO {stop.pro || '—'}</div>
+            {/* The number alone, never cut (v1.107.1 — see the desktop header). The PROs list that
+                gave a phone its copy-on-tap is gone, so the copy button sits here, thumb-sized. */}
+            <div className="text-sm font-semibold tracking-wide text-slate-600 flex items-center gap-2">
+              <span className="whitespace-nowrap" data-stop-pro>{stop.pro || '—'}</span>
+              <CopyProButton pro={stop.pro} light />
+            </div>
             <div className="font-bold text-base text-slate-900 truncate">{stop.businessName || '(no name)'}</div>
             <div className="text-[12px] text-slate-500 truncate">{stop.addr1 || '—'}</div>
           </div>
@@ -13069,8 +13039,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
           <StatusBadge kind={classifyStopStatus(live)} />
           <DnsBadge note={note} showDrivers />
         </div>
-        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} shiplifyTestHere={false} />
-        <ProsSection stop={live} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} shiplifyTestHere={false} mobile />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} stop={stop} />
         <StopRecentDeliveries stop={stop} note={note} />
         <StopShiplifyTest stop={live} note={note} />
