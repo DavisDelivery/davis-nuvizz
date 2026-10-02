@@ -301,7 +301,7 @@ for (const vp of [{ name: 'laptop', width: 1440, height: 900 }, { name: 'desktop
 // badge is injected in TabBtn's own markup because the unread count comes from Firestore, which
 // the guard does not have; the geometry is what is under test.
 //
-// STOPS ONLY WHEN IT FITS (v1.104.2). Putting Stop lookup on this row as "Stops" ran it 30px over at
+// STOPS ONLY WHEN IT FITS (v1.104.3). Putting Stop lookup on this row as "Stops" ran it 30px over at
 // 1366, 55px at 1194 and 69px at 1180 with this one-digit badge (45px at 1366 with "99+"), so Stops
 // rides the bar only from STOPS_BAR_MIN_WIDTH and sits under More below it (lib/stops-tab.js; Chad:
 // "1 i like your idea"). The badge is now "99+" — what Chad's own bar showed — and every width also
