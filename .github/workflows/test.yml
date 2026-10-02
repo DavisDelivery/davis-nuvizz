@@ -327,6 +327,16 @@ jobs:
       - run: npm run verify:tv-map
         env:
           SMOKE_PORT: '8811'
+      # THE WALL KEEPS ITS PINS. Chad, 2026-10-02, photographing the office TV: "Why are my icons
+      # not right. They keep disappearing and reappearing." Every 2-minute board refresh rebuilt every
+      # pin on the wall's live map, changed or not, and a 2020 television redraws slowly enough to
+      # watch. This drives /tv's live map with Google stood in and counts pins: a refresh that changes
+      # nothing must build and take off none, a changed board only the stops that changed, and the
+      # kept wall must draw exactly what a fresh build draws. Fails on the code before the fix.
+      # Rides the keyed build above.
+      - run: npm run verify:tv-live-pins
+        env:
+          SMOKE_PORT: '8820'
       # THE ENGINE SCREEN'S ROUTE MAP. Chad, 2026-09-24: "Map is missing on bottom right hand
       # corner." Sequencing -> Assignment -> Sequencing mounts a NEW map <div>, and the map had
       # stayed bound to the old one, so every route after that was drawn where nobody could see

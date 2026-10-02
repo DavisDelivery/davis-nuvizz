@@ -24,6 +24,7 @@
     "verify:routing-topbar": "node scripts/verify-routing-topbar.mjs dist",
     "verify:shiplify": "node scripts/verify-shiplify.mjs dist",
     "verify:tv-map": "node scripts/verify-tv-map.mjs dist",
+    "verify:tv-live-pins": "node scripts/verify-tv-live-pins.mjs dist",
     "verify:engine-map": "node scripts/verify-engine-map.mjs dist",
     "verify:shadow-map": "node scripts/verify-shadow-map.mjs dist",
     "verify:wb-own-day": "node scripts/verify-wb-own-day.mjs dist",
