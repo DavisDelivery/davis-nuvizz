@@ -44412,8 +44412,16 @@ function useMediaQuery(query, fallback = false) {
     try { mq = window.matchMedia(query); } catch { return undefined; }
     const onChange = () => setMatches(mq.matches);
     onChange();
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
+    // Safari before 14 has only the older addListener; a throw here would take the whole shell down.
+    if (mq.addEventListener) {
+      mq.addEventListener('change', onChange);
+      return () => mq.removeEventListener('change', onChange);
+    }
+    if (mq.addListener) {
+      mq.addListener(onChange);
+      return () => mq.removeListener(onChange);
+    }
+    return undefined;
   }, [query]);
   return matches;
 }
