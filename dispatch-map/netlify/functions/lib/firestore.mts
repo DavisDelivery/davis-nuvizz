@@ -232,6 +232,27 @@ export async function getDoc(path: string): Promise<any | null> {
   return docToObject(await resp.json());
 }
 
+/**
+ * A document's fields EXACTLY AS FIRESTORE STORES THEM — typed values, so a timestamp is still
+ * a `timestampValue` — or null when the document is absent.
+ *
+ * getDoc above decodes, and its decoder is one-way: a timestamp comes back as an ISO string,
+ * and objectToFields writes a string back as a string. A caller that reads a document in order
+ * to write it ELSEWHERE (createDocIfAbsentRaw) must read it here, or every `*_at` stamp it
+ * copies lands as text that no `.toMillis()` reader will ever see as a time.
+ */
+export async function getDocFieldsRaw(path: string): Promise<Record<string, any> | null> {
+  assertSafePath(path);
+  const token = await getAccessToken();
+  const sa = loadServiceAccount();
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
+  const resp = await fsFetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error(`getDocFieldsRaw ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+  const doc = await resp.json();
+  return doc && doc.fields ? doc.fields : {};
+}
+
 export async function setDoc(path: string, data: any): Promise<boolean> {
   assertSafePath(path);
   const token = await getAccessToken();
@@ -314,6 +335,16 @@ export async function updateDocFields(path: string, data: any, fieldPaths?: stri
  * it" (skip, fine) from "Firestore is unreachable" (skip, and do NOT proceed unclaimed).
  */
 export async function createDocIfAbsent(path: string, data: any): Promise<boolean> {
+  return createDocIfAbsentRaw(path, objectToFields(data));
+}
+
+/**
+ * createDocIfAbsent for fields that are ALREADY Firestore values — the same compare-and-swap,
+ * with nothing re-encoded on the way. For a COPY of another document (getDocFieldsRaw): the
+ * decoder above is one-way, so a document read through it and written back would land with every
+ * timestamp turned into a string.
+ */
+export async function createDocIfAbsentRaw(path: string, fields: Record<string, any>): Promise<boolean> {
   assertSafePath(path);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
@@ -323,7 +354,7 @@ export async function createDocIfAbsent(path: string, data: any): Promise<boolea
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       writes: [{
-        update: { name: `${db}/documents/${path}`, fields: objectToFields(data) },
+        update: { name: `${db}/documents/${path}`, fields },
         currentDocument: { exists: false },
       }],
     }),
