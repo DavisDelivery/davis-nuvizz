@@ -98,6 +98,7 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUE
 import { placeParams, placeQuery, placeQueryUsable } from './lib/stop-search.js';
 import { addRecent, parseRecent, recentAgo, recentEntry, recentKindLabel, recentKey } from './lib/stop-lookup-recent.js';
 import { weekOf, weekLabel, addDays, PERIODS, periodRange, loadForRow } from './lib/load-lookup.js';
+import { STOPS_BAR_QUERY, STOPS_MORE_ITEM } from './lib/stops-tab.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -273,6 +274,7 @@ function loadDisplayName(...vals) {
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
   ['1.104.4', 'A NEW ROUTE SHIPS FROM DAVIS DELIVERY UNLESS YOU PICK OTHERWISE. Chad, on the \u2795 New route form opening on Caliber Steel: \u201cThis should always default to davis delivery.\u201d It opened there because the form put the last pickup used in the New Order tab first, so one Caliber Steel order made every new route on that device start at Caliber\u2019s dock. Davis Delivery (943 Gainesville Hwy, Buford) is now always the first choice and the one selected. The last-used and saved pickups still follow it in the dropdown, one pick away, and Davis is never listed twice. The same rule covers the other two ways a route gets created: tapping a standard route on the Loads list, and a Save whose card carries no ship-from. The line under the dropdown now says Davis Delivery is the default instead of claiming the device has no saved pickup. Nothing about what a Save sends changes except which address starts selected. Zero NuVizz calls.'],
+  ['1.104.3', 'STOPS IS ON THE DESKTOP BAR, RIGHT OF ROUTING \u2014 IN ANY WINDOW WIDE ENOUGH TO KEEP MESSAGES ON IT. Chad: \u201ctake the stops out of the more tab drop down and I want to move it into the main bar on desktop. Um, probably to the right of routing\u201d \u2014 and then \u201cJust call it stops not stop lookup now.\u201d Stop lookup is now a tab called Stops beside Routing (beta): one click instead of two. THE FIRST CUT DID NOT FIT EVERY DESK. On Routing \u2192 Build the same bar also carries the board card, the presence chip and Build | Engine | Shadow, and in a 1180\u20131366px window (a 13\u201314\u2033 laptop, or a browser at half screen) the extra tab pushed Messages and its red unread badge off the end of the row \u2014 on Routing the only sign a driver or customer has texted. So, Chad\u2019s pick (\u201c1 i like your idea\u201d): at 1440px and wider Stops sits on the bar and More does not list it; in a narrower window it sits under More, still called Stops, and the bar keeps Messages. Never both, never neither, and it moves live as the window is resized. The phone menu is unchanged, and the screen itself still says Stop lookup at the top. THE WAY BACK: one small commit; a revert puts it back under More.'],
   ['1.104.2', 'MESSAGES ON A DESKTOP: THE LIST IS THE DRAWER, AND A CONVERSATION SLIDES OUT ONLY WHEN YOU OPEN ONE. Chad, on the v1.103.0 two-pane drawer: “why is there so much wasted space on the select a conversation seems like that should be in a drawer”. He was right: the panel opened 880px wide every time, and half of it was an empty “Select a conversation” card. NOW it opens as the 400px list alone. Opening a conversation or New message slides a second drawer out to the list’s LEFT, so the row you clicked never moves and switching between conversations is still one click; its fold button (top right of the conversation) puts it away and leaves the list, and the list’s X closes Messages. The phone and narrow windows are unchanged — one screen at a time. Nothing about sending, unread or the stored texts changes. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.104.1', 'MORE → PERFORMANCE IS LIGHT NOW, LIKE THE REST OF THE APP. Chad, on the phone view of Stop performance: “I don’t love the dark theme of the page.” It shipped dark in v1.100.0 because the brief asked for a restrained dark surface; it now wears the app’s own slate-on-white — white cards on the light grey page, slate text, the brand blue on its Apply button and filter counts — on the phone and the desktop, its date and filter panels, its tooltips and its loading line. THE CHARTS KEEP THEIR COLOURS’ MEANING AND WERE RE-CHECKED FOR WHITE, not eyeballed: today’s line is the same violet one step darker (#6457d9), the two days you tick to compare keep their orange and green, and every pair still separates under colour-blindness (worst ΔE 9.4) and sits at 3:1 or better on white; the outcome bar’s green / amber / red are the 600 steps (ΔE 7.9 — allowed because each colour has its label, count and share beside it and a 2px gap between). Nothing it counts, reads or computes changes — colours only. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.104.0', 'A NIGHTLY SAFETY NET NAMES THE DRIVER ON AN ATTEMPT THE EVENING SCAN LEFT WITH NONE, AND IT CAN NEVER SPEND MORE THAN TEN NUVIZZ CALLS. Chad, 10/01, approving it: \u201cI\u2019m ok with this but you better triple check there is no way it could make more than 10 calls and if it needs more it should throw a flag in the ui on the scorecard.\u201d WHAT IT DOES: at 00:30 ET (nuvizz-att-fill-background) it takes yesterday\u2019s ORIGINAL attempt stops that the 8:30 plan and the all-day record both left without a driver, reads each one\u2019s NuVizz activity timeline and applies the same due-day rule the backfill uses (no staff as drivers). \u201c-1\u201d/\u201c-2\u201d duplicates are never read. WHY IT CANNOT PASS TEN: each read is ONE request with no retries and no fallback endpoint (fetchStopEventsOnce, maxRetries 0); a stop whose NuVizz id is not already in Firestore is skipped, never looked up; requests are counted before they are sent, so a timeout still uses one up; 10 is a constant, and NUVIZZ_ATT_TIMELINE_FILL_MAX can only LOWER it; the job claims the date in Firestore with an atomic create BEFORE its first request, so a second fire spends 0; it takes no parameters and only ever acts on ET-yesterday; a mirror (UAT) never scans. Pinned by test/att-fill.test.mjs, including the real loop against 25 candidates (exactly 10 requests) and the requester sending exactly one fetch on a 503, a 429, a network error and a timeout. WHEN IT CANNOT READ EVERY ONE \u2014 over ten, no NuVizz id on file, a failed request \u2014 the day\u2019s attempts manifest says so (fill.needsAttention, with each stop and why), and the Driver Scorecard shows it as a flag (scorecard v0.19.0). NUVIZZ_ATT_TIMELINE_FILL=off turns it off.'],
@@ -31441,6 +31443,8 @@ function Shell() {
   const [smsSeenAt, setSmsSeenAt] = useState(() => Number(safeReadJSON(LS_SMS_SEEN, 0)) || 0);
   const smsUnread = inbound.filter((m) => m.direction === 'in' && new Date(m.at || 0).getTime() > smsSeenAt).length;
   const openMessages = () => { setMessagesOpen(true); };
+  // Stops rides the desktop bar only in a window wide enough to keep Messages' badge on it (v1.104.3).
+  const stopsBar = useMediaQuery(STOPS_BAR_QUERY, true);
   const closeMessages = () => { setMessagesOpen(false); const now = Date.now(); setSmsSeenAt(now); safeWriteJSON(LS_SMS_SEEN, now); };
 
   // Customer contacts (phone → name) from saved notes, for the Messages contact
@@ -31592,6 +31596,16 @@ function Shell() {
             <nav className="flex items-center gap-1 text-sm min-w-0 overflow-x-auto">
               <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
               {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => openTab('routing')} />}
+              {/* STOP LOOKUP IS ON THE BAR NOW, beside Routing, and it is called STOPS (v1.99.11). Chad:
+                  "take the stops out of the more tab drop down and I want to move it into the main bar on
+                  desktop. Um, probably to the right of routing." — then "Just call it stops not stop lookup
+                  now." A customer on the phone is the everyday case, not an occasional visit. Desktop only:
+                  the phone menu is its own view and keeps it where it was. The screen's own heading still
+                  reads "Stop lookup" (the layout guards prove arrival by it).
+                  ONLY WHEN IT FITS (v1.104.3): under 1440px Routing's bar has no room for it — it pushed
+                  Messages' unread badge off the end — so a narrower window finds Stops under More instead
+                  (lib/stops-tab.js; Chad: "1 i like your idea"). Never both, never neither. */}
+              {stopsBar && <TabBtn label="Stops" icon={<Search size={14} />} active={tab === 'stoplookup'} onClick={() => setTab('stoplookup')} />}
               <TabBtn label="New Order" icon={<Package size={14} />} active={tab === 'neworder'} onClick={() => setTab('neworder')} />
               <TabBtn label="Quote" icon={<Calculator size={14} />} active={tab === 'quote'} onClick={() => setTab('quote')} />
               <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
@@ -31625,13 +31639,11 @@ function Shell() {
               items={[
                 { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
                 { id: 'comms', label: 'Customer emails', hint: 'Delivery-complete email program', icon: <Mail size={14} /> },
-                // FIRST OF THE THREE HISTORY SCREENS, because it is the one a customer's
-                // phone call sends you to: the other two are LOGS you browse, this answers
-                // about ONE order. No badge, ever — nothing here is a problem waiting to be
-                // noticed, it is a question waiting to be asked.
-                { id: 'stoplookup', label: 'Stop lookup', hint: 'Everything we hold about one order — 0 NuVizz calls', icon: <Search size={14} /> },
+                // Stop lookup left this menu for the bar itself, right of Routing (v1.99.11) — and comes back
+                // here, as "Stops", only in a window too narrow for the bar to carry it (v1.104.3).
+                ...(stopsBar ? [] : [{ ...STOPS_MORE_ITEM, icon: <Search size={14} /> }]),
                 // Davis labels for one shipper's orders on one day, one at a time or all at once.
-                // Beside Stop lookup because both answer about orders; phone menu below too.
+                // It sat beside Stop lookup because both answer about orders; phone menu below too.
                 { id: 'labels', label: 'Print labels', hint: 'Davis labels by shipper and day — 0 NuVizz calls', icon: <Tag size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
@@ -44392,6 +44404,32 @@ function ManifestCheckScreen() {
       </div>
     </div>
   );
+}
+
+/**
+ * Does the window match this media query, live as it is resized? `fallback` answers when there is no
+ * matchMedia (a test, an old browser) — the caller says which side is the safe one.
+ */
+function useMediaQuery(query, fallback = false) {
+  const read = () => { try { return window.matchMedia(query).matches; } catch { return fallback; } };
+  const [matches, setMatches] = useState(read);
+  useEffect(() => {
+    let mq;
+    try { mq = window.matchMedia(query); } catch { return undefined; }
+    const onChange = () => setMatches(mq.matches);
+    onChange();
+    // Safari before 14 has only the older addListener; a throw here would take the whole shell down.
+    if (mq.addEventListener) {
+      mq.addEventListener('change', onChange);
+      return () => mq.removeEventListener('change', onChange);
+    }
+    if (mq.addListener) {
+      mq.addListener(onChange);
+      return () => mq.removeListener(onChange);
+    }
+    return undefined;
+  }, [query]);
+  return matches;
 }
 
 function TabBtn({ label, icon, active, onClick, badge = 0 }) {
