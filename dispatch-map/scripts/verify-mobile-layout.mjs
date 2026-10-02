@@ -379,6 +379,29 @@ const PROBES = {
         return page.getByRole('button', { name: /edit|customer #|notes/i }).first().isVisible().catch(() => false);
       },
     },
+    {
+      // v1.105.0: the piece-count editor opens IN FLOW inside the stop drawer — two number boxes,
+      // the total, the planned-route and line-item notes, and the Send button. Furniture that only
+      // exists after a tap is this file's whole reason to exist. CUSTOMER 1, not CUSTOMER 0: the
+      // STOP fixture makes every third order DELIVERED, starting with 0, and a delivered order
+      // offers no editor — measuring CUSTOMER 0's drawer would pass by rendering nothing.
+      name: 'stop detail drawer — piece counts open',
+      open: async (page) => {
+        await page.getByRole('button', { name: /^stops$/i }).first().click();
+        await page.waitForTimeout(500);
+        const row = page.locator('[data-stop-row], li, button').filter({ hasText: /CUSTOMER 1 WITH/i }).first();
+        if (!(await row.isVisible().catch(() => false))) return false;
+        await row.click();
+        await page.waitForTimeout(800);
+        const edit = page.getByRole('button', { name: /^edit piece counts$/i }).first();
+        await edit.scrollIntoViewIfNeeded().catch(() => {});
+        if (!(await edit.isVisible().catch(() => false))) return false;
+        await edit.click();
+        await page.waitForTimeout(300);
+        // Proven open by the editor's own heading — the date editor also says "Send to NuVizz".
+        return page.getByText(/^piece counts in nuvizz$/i).first().isVisible().catch(() => false);
+      },
+    },
   ],
   addrhistory: [
     {

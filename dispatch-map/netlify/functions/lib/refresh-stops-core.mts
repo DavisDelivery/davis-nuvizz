@@ -27,6 +27,7 @@ import type { FrozenLedgerEntry, PlanVerdictRow } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanPull, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays, LIST_MAX_RESULT, BOARD_WRITE_GRACE_MIN } from './nuvizz-list.mts';
 import type { ListLoadNbrSeen } from './nuvizz-list.mts';
 import { buildActivePool } from './active-pool.mts';
+import { applyPieceWriteHold } from './pieces-hold.mts';
 import { strayFinishedRows, openPastRows, planRefile, planOpenStrays, nextCopyDays, rotate } from './refile-core.mts';
 import type { FrozenCopy, StrayRow, Heal } from './refile-core.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterPull } from './nuvizz-loads.mts';
@@ -1124,7 +1125,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         console.error(`[refresh] date=${date} ${scan.loadProbeFailures} load probe(s) unanswered — treating loads as PARTIAL (preserve, do not prune)`);
       }
       const partialLoads = loadsArePartial({ includeLoads, loadTargets, forwardLoad, loadsComplete: scan.loadsComplete });
-      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads, partialUnplanned, rescannedLoads: loadTargets || undefined, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); } });
+      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads, partialUnplanned, rescannedLoads: loadTargets || undefined, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); applyPieceWriteHold(fresh, ex, Date.now()); } });
       // Only rebuild the fleet (load) index when we actually scanned loads — an
       // unplanned-only run would otherwise wipe the load index with an empty scan.
       // Same reasoning as the prune guard above: the fleet index is REBUILT from this scan,
@@ -2191,7 +2192,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // includeCompleted: a two-search pull fetches 77131 alongside 77128, so this write IS
         // a completed scan and stamps as one. With TWO_SCAN off there is no completed pull in
         // this path at all, and claiming one would date-stamp a scan that never happened.
-        const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true, includeCompleted: TWO_SCAN, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); } });
+        const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true, includeCompleted: TWO_SCAN, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); applyPieceWriteHold(fresh, ex, Date.now()); } });
         // v1.99.0 — who had each of TODAY's stops before it failed (lib/att-holder.mts), from the
         // rows this scan just wrote. Zero NuVizz calls; a failure here is logged and costs one
         // cycle's update, never the scan. Today only: a stop is recorded on the day it is worked.

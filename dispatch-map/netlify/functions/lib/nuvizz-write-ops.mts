@@ -42,7 +42,7 @@ export type SingleOp = typeof SINGLE_OPS[number];
 
 // Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save +
 // the async load-import commit with its convergence recipe).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'setStopAddress', 'newRoute', 'cancelOrder'] as const;
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'setStopAddress', 'setStopPieces', 'newRoute', 'cancelOrder'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the GET reads). Used by the
@@ -51,6 +51,8 @@ export const MUTATING_OPS = new Set<WriteOp>([
   'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad',
   'importLoad', 'commitLoad', 'commitBoard', 'commitImport',
   'partialUpdateStop', 'addStopNote', 'setStopDate', 'setStopContact', 'setStopAddress',
+  // §P piece counts (v1.105.0) — the same read → partialUpdate → read-back ladder as the three above.
+  'setStopPieces',
   'createRoute', 'newRoute',
   // Destructive. Gated by NUVIZZ_WRITE_ENABLED like every other mutation, and by
   // the read-then-cancel-by-id ladder in runCancelOrder — see there for why.
@@ -704,7 +706,7 @@ export function buildNoteWriteStop(rawStop: any, comments: any[]): Record<string
  * the "whole stop or NuVizz rejects it" rule and the never-send-attachments rule are stated
  * once. A note swaps `comments`; a date change swaps `to`.
  */
-export function buildPartialUpdateStop(rawStop: any, overrides: Record<string, any>): Record<string, any> {
+export function buildPartialUpdateStop(rawStop: any, overrides: Record<string, any>, opts: { send?: readonly string[] } = {}): Record<string, any> {
   if (!rawStop || typeof rawStop !== 'object') throw new Error('buildNoteWriteStop: no stop to echo');
   // Overrides are applied BEFORE the strip, never after: a `to` override is built by
   // spreading the block we read, which carries `to.documents` — applying it afterwards
@@ -715,7 +717,16 @@ export function buildPartialUpdateStop(rawStop: any, overrides: Record<string, a
   // NOT pinEchoedConsignee(merged) — see that function. It was wired here in v0.54.91 and
   // unwired again in v0.54.92 when the NuVizz portal showed the order it was meant to protect
   // was never damaged. Echo verbatim, as everything else in this file does.
-  return withoutPaths(merged, PARTIAL_UPDATE_DERIVED_KEYS);
+  //
+  // ONE NARROW EXCEPTION, and it has to be asked for by name (v1.105.0): a derived key the
+  // caller is deliberately WRITING. The piece write (§P) is the only caller — loose pieces ride
+  // `volume` on this tenant, so a loose-count change has to send it. It is honoured only for a
+  // top-level key that is itself in `overrides`: a key nobody overrode is still stripped, and a
+  // dotted path (to.documents) can never match a top-level override, so the order's files and
+  // freight lines stay off the wire by every route. Every other caller passes no opts and gets
+  // exactly the strip it always had.
+  const keep = new Set((opts.send || []).filter((k) => Object.prototype.hasOwnProperty.call(overrides || {}, k)));
+  return withoutPaths(merged, PARTIAL_UPDATE_DERIVED_KEYS.filter((p) => !keep.has(p)));
 }
 
 /**
@@ -1269,6 +1280,199 @@ export function buildStopContactOverride(
   if (phone) contact.phone = phone;
 
   return { side, block: { ...cur, contact } };
+}
+
+// ── §P  PIECE COUNTS ON AN ORDER (v1.105.0) ──────────────────────────────────
+//
+// Chad, 2026-10-02: "make it where in dispatch map i can edit an order and change piece counts
+// and then send it to nuvizz to change as well".
+//
+// THE THREE FIELDS, in Davis terms — the mapping the New Order form writes (buildStopPayload
+// above) and every reader relabels (nuvizz-scan.mts normalizeStop):
+//
+//     pallets (skids)  →  NuVizz totalCartons
+//     loose pieces     →  NuVizz volume
+//     total pieces     →  NuVizz totalPallets   = pallets + loose
+//
+// v7 documents all three on PartialStop — totalCartons and totalPallets as integers 0..99999,
+// volume as a number ≥ 0 (reference/nuvizz-openapi-v7.json) — so the write rides the same
+// read → partialUpdate echo → read-back ladder the contact, date and address writes use, with
+// those numbers swapped instead of a `to` block. No write in this app had changed them before
+// v1.105.0: the read-back is what proves NuVizz took them, every time.
+//
+// WHAT THIS DOES NOT TOUCH, said where the next reader will look: the order's LINE ITEMS
+// (`stopDetails`, the portal's "Items" table). They are a separate record NuVizz maintains
+// through its own endpoint (see PARTIAL_UPDATE_DERIVED_KEYS) and they stay off the wire here
+// exactly as on every other partialUpdate. An order created with a line item keeps that line's
+// quantity; the header totals are what Davis's board, routing and capacity math read.
+
+export const PIECES_MAX = 99999;
+
+export interface PieceCounts { pallets: number; loose: number; total: number }
+export interface PiecesRead { pallets: number | null; loose: number | null; total: number | null }
+
+/** A count as typed: a whole number 0..PIECES_MAX, or null when it is not one. Blank is null
+ *  too — the caller decides what blank means for its field. */
+function wholeCount(v: any): number | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) && n <= PIECES_MAX ? n : null;
+}
+
+/** PURE: the order's piece counts as NuVizz holds them, in Davis terms. A null is NuVizz
+ *  holding no value — not a zero — and is kept as one so a screen can say so. */
+export function stopPiecesFrom(rawStop: any): PiecesRead {
+  return {
+    pallets: numOrNull(rawStop?.totalCartons),
+    loose: numOrNull(rawStop?.volume),
+    total: numOrNull(rawStop?.totalPallets),
+  };
+}
+
+/**
+ * PURE: what the dispatcher typed → the counts to write, or why they cannot be written.
+ *
+ * Pallets is required (0 is a real answer — an order of loose pieces only). Loose may be left
+ * blank, which means none. The total is never typed: it is pallets + loose, the rule every
+ * create path writes (buildStopPayload) and every reader assumes. An order with no pieces at
+ * all is refused — that is not freight anybody delivers, and the action for it is Cancel.
+ */
+export function parsePieceInput(input: any): PieceCounts | { error: string } {
+  const pallets = wholeCount(input?.pallets);
+  if (pallets == null) return { error: `pallets must be a whole number from 0 to ${PIECES_MAX} (type 0 if there are none)` };
+  const looseRaw = input?.loose;
+  const loose = looseRaw == null || String(looseRaw).trim() === '' ? 0 : wholeCount(looseRaw);
+  if (loose == null) return { error: `loose must be a whole number from 0 to ${PIECES_MAX}, or blank for none` };
+  const total = pallets + loose;
+  if (total < 1) return { error: 'an order with no pallets and no loose pieces is not freight to deliver — cancel the order instead of setting it to zero' };
+  if (total > PIECES_MAX) return { error: `pallets + loose comes to ${total}, over NuVizz's limit of ${PIECES_MAX}` };
+  return { pallets, loose, total };
+}
+
+/**
+ * PURE: the partialUpdate overrides for a piece write — ONLY the fields that actually change.
+ *
+ * The narrowest blast radius there is: a pallets-only change sends no `volume`, so that write is
+ * the shape of every partialUpdate this app already sends, plus two changed numbers. A null and
+ * a zero both mean "none" for pallets and loose, so 0 over null is not a change. The total is
+ * compared exactly: a null total is NuVizz holding no total at all, and writing one is a change.
+ */
+export function buildStopPiecesOverride(rawStop: any, want: PieceCounts): Record<string, number> {
+  const was = stopPiecesFrom(rawStop);
+  const out: Record<string, number> = {};
+  if ((was.pallets ?? 0) !== want.pallets) out.totalCartons = want.pallets;
+  if ((was.loose ?? 0) !== want.loose) out.volume = want.loose;
+  if (was.total !== want.total) out.totalPallets = want.total;
+  return out;
+}
+
+/** The top-level keys a piece write may carry past the derived-key strip (buildPartialUpdateStop
+ *  opts.send) — `volume` only, and only when it is one of the overrides. */
+export const PIECE_WRITE_SENDS = ['volume'] as const;
+
+/**
+ * PURE: did each count land? Judged off the READ-BACK, field by field, so a failure names the
+ * number NuVizz did not take rather than "the write did not land". Loose is checked even when it
+ * was not sent: the dispatcher meant it to stay what it was, so a loose count that moved on its
+ * own is a miss too.
+ */
+export function piecesVerdict(now: PiecesRead, want: PieceCounts): { landed: boolean; misses: string[] } {
+  const misses: string[] = [];
+  const show = (v: number | null) => (v == null ? 'nothing' : String(v));
+  if ((now.pallets ?? 0) !== want.pallets) misses.push(`pallets reads ${show(now.pallets)} (expected ${want.pallets})`);
+  if ((now.loose ?? 0) !== want.loose) misses.push(`loose reads ${show(now.loose)} (expected ${want.loose})`);
+  if (now.total !== want.total) misses.push(`total pieces reads ${show(now.total)} (expected ${want.total})`);
+  return { landed: misses.length === 0, misses };
+}
+
+/** PURE: "6 pallets · 2 loose · 8 pieces" — the counts the way a dispatcher reads them. */
+export function piecesLine(p: PiecesRead): string {
+  const pallets = p?.pallets ?? 0;
+  const loose = p?.loose ?? 0;
+  const parts = [`${pallets} pallet${pallets === 1 ? '' : 's'}`];
+  if (loose) parts.push(`${loose} loose`);
+  parts.push(p?.total == null ? 'no total on file' : `${p.total} piece${p.total === 1 ? '' : 's'}`);
+  return parts.join(' · ');
+}
+
+/**
+ * PURE: NuVizz's freight summary for a raw stop — byte for byte the `itemsSummary` string
+ * normalizeStop (nuvizz-scan.mts) builds. Restated rather than imported so this module stays
+ * import-free; test/stop-pieces.test.mjs runs both over the same records so the two cannot
+ * drift. It is what a confirmed piece write puts on the board row, so the card reads exactly as
+ * a fresh enrichment of the same record would.
+ */
+export function freightItemsSummary(stop: any): string {
+  const s = stop || {};
+  const items: string[] = [];
+  if (s.totalCartons) items.push(`${s.totalCartons} pallet${s.totalCartons === 1 ? '' : 's'}`);
+  if (s.volume) items.push(`${s.volume} loose`);
+  if (s.totalPallets) items.push(`${s.totalPallets} ${s.totalPallets === 1 ? 'piece' : 'pieces'}`);
+  if (s.weight) items.push(`${s.weight} ${s.weightUOM || 'lbs'}`);
+  return items.join(' · ') || '—';
+}
+
+/**
+ * PURE: the board-row fields a CONFIRMED piece write lands on the day's row and on the order's
+ * enrichment-registry record. Built from NuVizz's READ-BACK, never from what was typed: the
+ * board may only claim what NuVizz was observed to hold. The same shapes normalizeStop gives a
+ * fresh enrichment (cartons / pallets / volume / itemsSummary — `volume` through the scan's own
+ * number rule), plus the stamp the scan's piece hold reads (lib/pieces-hold.mts).
+ *
+ * WHY THE BOARD NEEDS THIS AT ALL: freight is not a live list field. The scan carries a row's
+ * cartons/pallets/volume forward from its stored copy (nuvizz-list.mts mergeEnrich skips only
+ * LIVE_LIST_FIELDS), so a count NuVizz holds differently never reaches the board by itself.
+ */
+export function boardPiecesFields(rawAfter: any, at: string, by: string | null = null): Record<string, any> {
+  const v = rawAfter?.volume;
+  const volume = v == null ? null : (Number.isFinite(Number(v)) ? Number(v) : null);
+  return {
+    cartons: rawAfter?.totalCartons ?? null,
+    pallets: rawAfter?.totalPallets ?? null,
+    volume,
+    itemsSummary: freightItemsSummary(rawAfter),
+    pieces_set_at: at,
+    ...(by ? { pieces_set_by: by } : {}),
+  };
+}
+
+/**
+ * PURE: the board days a piece write may patch — the ones the caller named, as real
+ * YYYY-MM-DD dates, de-duplicated, at most three. The card names the day its row is shown on
+ * AND the day it is stored under: a carried-over row is served on today's board but lives in
+ * the day it came from (carryover-fold.mts: boardDate = the served day, scheduledDate = its own).
+ * Anything else is dropped rather than turned into a Firestore path.
+ */
+export function piecesBoardDates(input: any): string[] {
+  const list = Array.isArray(input) ? input : (input == null ? [] : [input]);
+  const out: string[] = [];
+  for (const v of list) {
+    const d = String(v ?? '').trim().slice(0, 10);
+    if (isDayString(d) && !out.includes(d)) out.push(d);
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
+/**
+ * PURE: what to tell the dispatcher when NuVizz took the counts but the board half did not land
+ * where it should have — or null when it did (or there was no store to write, as on a local
+ * build). "absent" on a day is not a failure: an order is stored under one day, and the card
+ * names two candidates. It is a failure only when NO named day held the order.
+ */
+export function boardPiecesWarning(board: any): string | null {
+  if (!board || board.skipped) return null;
+  const days = Object.entries(board.days || {}) as Array<[string, string]>;
+  const parts: string[] = [];
+  const errs = days.filter(([, o]) => o === 'error');
+  if (errs.length) parts.push(`the board row for ${errs.map(([d]) => d).join(', ')} could not be updated (${errs.map(([d]) => board.dayErrors?.[d] || 'write failed').join('; ')})`);
+  const other = days.filter(([, o]) => o === 'other-record');
+  if (other.length) parts.push(`the board row for ${other.map(([d]) => d).join(', ')} belongs to a different NuVizz order carrying the same number, so it was left alone`);
+  if (days.length && !days.some(([, o]) => o === 'patched') && !errs.length && !other.length) parts.push('no board row for this order was found on the day it is shown');
+  if (board.registry === 'error') parts.push(`the stored copy later days start from could not be updated (${board.registryError || 'write failed'})`);
+  return parts.length ? `NuVizz has the new counts, but ${parts.join('; ')} — the board may keep showing the old count.` : null;
 }
 
 // ── what we DON'T send still has to survive ──────────────────────────────────
