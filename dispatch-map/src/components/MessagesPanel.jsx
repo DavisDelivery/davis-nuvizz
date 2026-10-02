@@ -11,8 +11,11 @@
 //                        run, and a composer; outbound sends echo instantly (optimistic).
 //
 // PHONE (< 640px): full screen, one view at a time — list, then a conversation or the picker.
-// DESKTOP (>= 1024px): a two-pane drawer — the list on the left stays put, and the conversation
-// or the picker opens beside it, so moving between conversations is one click, not back + click.
+// DESKTOP (>= 1024px): the list is a 400px drawer on its own. Opening a conversation or New
+// message slides a second drawer out to the list's LEFT, so the row you clicked never moves and
+// moving between conversations is one click; folding it away leaves the list alone again. Chad, on
+// the v1.103.0 two-pane drawer: "why is there so much wasted space on the select a conversation
+// seems like that should be in a drawer" — nothing is drawn for a conversation nobody has opened.
 // Between the two (a narrow window, a tablet) it is the phone's stacked layout in a 400px drawer.
 //
 // Contacts come from two sources, merged by phone:
@@ -25,7 +28,7 @@
 // filters, runs, what a sent bubble may claim — live in lib/messages-view.js.
 
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { MessageSquare, X, Send, ArrowLeft, Search, SquarePen, Phone, AlertCircle, RotateCw } from 'lucide-react';
+import { MessageSquare, X, Send, ArrowLeft, Search, SquarePen, Phone, AlertCircle, RotateCw, PanelLeftClose } from 'lucide-react';
 // send-sms is one of the requireUser()-gated endpoints; apiFetch is the only thing that
 // puts the session token on a request (see lib/api.js).
 import { apiFetch } from '../lib/api.js';
@@ -261,7 +264,7 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, [draft, view]);
+  }, [draft, view, active?.phone]);
 
   const markRead = (phone) => { if (phone) setReadAt((r) => ({ ...r, [phone]: Date.now() })); };
   // Leaving a conversation (back, another conversation, New message) counts it read up to now.
@@ -344,6 +347,10 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
   const backBtn = (label) => (
     <IconButton onClick={() => goTo('list')} label={label} className="-ml-2 lg:hidden"><ArrowLeft size={18} /></IconButton>
   );
+  // Desktop: the conversation drawer folds away and leaves the list; the list's own X closes Messages.
+  const foldBtn = (label) => (
+    <IconButton onClick={() => goTo('list')} label={label} className="hidden lg:inline-flex"><PanelLeftClose size={18} /></IconButton>
+  );
 
   const emptyListText = listQuery.trim()
     ? `No conversations match “${listQuery.trim()}”.`
@@ -353,7 +360,7 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
           : null;
 
   const listPane = (
-    <section className={`${view === 'list' ? 'flex' : 'hidden lg:flex'} w-full lg:w-[360px] lg:border-r border-slate-200 flex-col min-h-0 flex-shrink-0 bg-white`}>
+    <section className={`${view === 'list' ? 'flex' : 'hidden lg:flex'} w-full lg:w-[400px] flex-col min-h-0 flex-shrink-0 bg-white`}>
       <div className="h-14 pl-4 pr-2 flex items-center gap-1 flex-shrink-0 box-content" style={headerPad}>
         <h2 className="text-[17px] font-semibold text-slate-900 flex-1 truncate">Messages</h2>
         <button
@@ -363,7 +370,7 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
         >
           <SquarePen size={15} /> New
         </button>
-        <span className="lg:hidden">{closeBtn}</span>
+        {closeBtn}
       </div>
 
       <div className="px-4 pb-3 flex-shrink-0 space-y-2.5 border-b border-slate-200">
@@ -447,10 +454,11 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
     </section>
   );
 
-  const paneHeader = (children) => (
+  const paneHeader = (children, foldLabel) => (
     <div className="h-14 pl-4 pr-2 border-b border-slate-200 flex items-center gap-2 flex-shrink-0 box-content bg-white" style={headerPad}>
       {children}
-      {closeBtn}
+      {foldBtn(foldLabel)}
+      <span className="lg:hidden">{closeBtn}</span>
     </div>
   );
 
@@ -459,7 +467,7 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
       {paneHeader(<>
         {backBtn('Back')}
         <h2 className="text-[16px] font-semibold text-slate-900 flex-1 truncate">New message</h2>
-      </>)}
+      </>, 'Close new message')}
       <div className="px-4 h-12 border-b border-slate-200 flex-shrink-0 flex items-center gap-3">
         <span className="text-[13px] text-slate-500 font-medium">To</span>
         <input
@@ -502,7 +510,7 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
           </div>
           {active.name && <div className="text-[12px] text-slate-500 truncate leading-tight mt-0.5 tabular-nums">{fmtPhone(active.phone)}</div>}
         </div>
-      </>)}
+      </>, 'Close conversation')}
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-4 bg-slate-50">
         {threadMsgs.length === 0 && (
@@ -593,25 +601,6 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
     </>
   );
 
-  // Desktop only: the right pane before anything is picked.
-  const idlePane = (
-    <>
-      {paneHeader(<div className="flex-1" />)}
-      <div className="flex-1 min-h-0 flex flex-col items-center justify-center text-center gap-3 px-8 bg-slate-50">
-        <div className="w-14 h-14 rounded-full bg-white ring-1 ring-slate-200 flex items-center justify-center text-slate-400"><MessageSquare size={26} /></div>
-        <div>
-          <div className="text-[15px] font-semibold text-slate-800">Select a conversation</div>
-          <div className="text-[13px] text-slate-500 mt-0.5">
-            {unreadCount > 0 ? `${unreadCount} unread ${unreadCount === 1 ? 'conversation' : 'conversations'} on the left.` : 'Pick one on the left, or start a new one.'}
-          </div>
-        </div>
-        <button type="button" onClick={startNew} className="inline-flex items-center gap-1.5 text-[13px] font-semibold rounded-lg px-3.5 h-9 bg-white ring-1 ring-slate-300 text-slate-700 hover:bg-slate-50">
-          <SquarePen size={15} /> New message
-        </button>
-      </div>
-    </>
-  );
-
   return (
     // Pinned to the VISIBLE viewport (height + top offset) so the bottom composer
     // stays above the iOS keyboard instead of being hidden behind it.
@@ -620,11 +609,15 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
       style={{ top: vp.top || 0, height: vp.h ? vp.h : '100%' }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="w-full sm:max-w-[400px] lg:max-w-[880px] bg-white h-full shadow-2xl flex min-h-0">
+      <div className={`w-full sm:max-w-[400px] ${view === 'list' ? '' : 'lg:max-w-[880px]'} bg-white h-full shadow-2xl flex min-h-0`}>
+        {/* The conversation drawer exists only while something is open. On a desktop it sits to
+            the list's LEFT (order-first), so widening the right-anchored panel never moves the list. */}
+        {view !== 'list' && (
+          <section className="flex flex-1 min-w-0 flex-col min-h-0 lg:order-first lg:border-r border-slate-200">
+            {view === 'new' ? newPane : threadPane}
+          </section>
+        )}
         {listPane}
-        <section className={`${view === 'list' ? 'hidden lg:flex' : 'flex'} flex-1 min-w-0 flex-col min-h-0`}>
-          {view === 'thread' && active ? threadPane : view === 'new' ? newPane : idlePane}
-        </section>
       </div>
     </div>
   );
