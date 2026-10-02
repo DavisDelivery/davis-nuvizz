@@ -47,6 +47,7 @@ import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, dailyCeilingKn
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
 import { saveSent } from './lib/save-sent.mts';
+import { carryNoteAfterPush } from './lib/note-carry.mts';
 import { outboundAllowed, outboundRefusal } from './lib/mirror-guard.mts';
 
 function writeEnabled(): boolean {
@@ -420,6 +421,14 @@ export default async (req: Request): Promise<Response> => {
     return J({ ok: false, op, tenant, live, callsUsed: callsSince(), error: e?.message || 'write failed', ...extra, ops: await opsSnapshot() }, 400);
   }
   const loginRefused = await noteRefusal();
+
+  // 6b) A PUSH THAT RE-KEYS AN ORDER TAKES ITS CUSTOMER NOTE WITH IT (lib/note-carry.mts): the
+  //     hand-placed pin, receiving hours and the rest follow the order to the key its corrected
+  //     address makes. BEFORE the journal, so the ledger row says what was carried — or why not.
+  //     It never throws and never changes `ok`: the address is on the order either way.
+  if (op === 'setStopAddress' && result && typeof result === 'object') {
+    result.carry = await carryNoteAfterPush(payload, result);
+  }
 
   // 7) Journal (best-effort) + idempotency ledger. `by` is the signed-in PERSON (null for the
   //    pre-login caller) and `nuvizzAs` the NuVizz login the write actually went out under — so

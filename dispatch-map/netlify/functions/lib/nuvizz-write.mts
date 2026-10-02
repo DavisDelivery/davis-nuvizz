@@ -2764,6 +2764,13 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
 
   const readAddr = rawAfter?.[side]?.address;
   const now = oneLine(readAddr);   // what NuVizz actually STORED — the only thing worth quoting
+  // The same two addresses as FIELDS, not one joined line, on every answer from here on. A
+  // customer note is keyed by the order's own line 1, city and ZIP (lib/customer-key.mts), so a
+  // push that moves line 1 re-keys the order on the next scan — and only the address NuVizz
+  // STORED (not the one we sent) says what that next key will be. Read by lib/note-carry.mts.
+  const fieldsOf = (a: any) => ({ addr1: String(a?.addr1 ?? ''), addr2: String(a?.addr2 ?? ''), city: String(a?.city ?? ''), state: String(a?.state ?? ''), zip: String(a?.zip ?? '') });
+  const wasAddress = fieldsOf(wasAddr);
+  const nowAddress = fieldsOf(readAddr);
   // Three layers; see the block comment above addressLanded for what each one is for and why
   // any single one of them is not enough. `addressMatchesTyped` is checked against `next` —
   // what the human typed — never against the merged block, so a field the caller left alone
@@ -2802,7 +2809,7 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   // the half that was easier to see.
   const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
   if (drift.length || losses.length) {
-    return { ok: false, calls, stopNbr, stopId, side, from, to, now, drift, driftDetails: details, addressLanded: landed, noteLanded, noteDuplicate,
+    return { ok: false, calls, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, drift, driftDetails: details, addressLanded: landed, noteLanded, noteDuplicate,
       // BOTH SIDES OF THE ATTACHMENT DIFF, ON THE LEDGER ROW, WHEN AND ONLY WHEN IT FIRED.
       //
       // Twenty address pushes on 2026-09-14 produced ten `documents: LOST to|BOL|03||pdf||01`
@@ -2822,7 +2829,7 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
       error: `setStopAddress: ${landed ? `the address changed to ${now}` : `the address did NOT change (${stopNbr} still reads ${now || '(no address)'})`} AND partialUpdate changed ${drift.length + losses.length} other field(s) on the order. ${details.slice(0, 5).join(' | ')}${details.length > 5 ? ` (+${details.length - 5} more)` : ''}. Check ${stopNbr} in the portal.` };
   }
   if (!landed) {
-    return { ok: false, calls, stopNbr, stopId, side, from, to, now, drift, noteLanded, noteDuplicate,
+    return { ok: false, calls, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, drift, noteLanded, noteDuplicate,
       // The note rode in the SAME write, so if it landed while the address did not, there is now
       // a line on the order claiming a correction that is not there. Name it — a dispatcher who
       // is not told goes looking for the address and never sees the stranded note.
@@ -2834,7 +2841,7 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   // A note that did NOT land is not a failed correction — the address is on the order and the
   // freight will go to the right door. It IS a half-done job, so it is reported rather than
   // swallowed, and the caller renders it amber.
-  return { ok: true, stopNbr, stopId, side, from, to, now, calls, noteLanded, noteDuplicate,
+  return { ok: true, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, calls, noteLanded, noteDuplicate,
     message: `Order ${stopNbr} now reads ${now}.`
       + (noteLanded === false ? ' The dispatcher note did NOT land — add it in the portal.' : '')
       + (noteDuplicate ? ' (That note was already on the order.)' : '') };
