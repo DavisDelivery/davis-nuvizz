@@ -58,7 +58,7 @@ const SCREENS = [
   { key: 'quote', label: 'Quote', nav: /quote/i },
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
-  { key: 'stoplookup', label: 'Stop lookup', nav: /^stops\b/i, inMore: true },   // "Stops": under More on every tablet — the bar carries it only from 1440px (v1.104.1); the heading still reads Stop lookup
+  { key: 'stoplookup', label: 'Stop lookup', nav: /^stops\b/i, inMore: true },   // "Stops": under More on every tablet — the bar carries it only from 1440px (v1.104.2); the heading still reads Stop lookup
   { key: 'labels', label: 'Print labels', nav: /^print labels/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },

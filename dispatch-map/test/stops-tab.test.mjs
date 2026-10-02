@@ -1,5 +1,5 @@
 // The desktop "Stops" tab sits on the bar only in a window wide enough to keep Messages on it
-// (v1.104.1). Chad, choosing between that and loosening the layout check: "1 i like your idea".
+// (v1.104.2). Chad, choosing between that and loosening the layout check: "1 i like your idea".
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { STOPS_BAR_MIN_WIDTH, STOPS_BAR_QUERY, stopsOnBar, STOPS_MORE_ITEM } from '../src/lib/stops-tab.js';

@@ -23,7 +23,7 @@ const TOML = readFileSync(new URL('../netlify.toml', import.meta.url), 'utf8');
 test('THE DESKTOP BAR CARRIES IT AS "Stops", RIGHT OF ROUTING — in a window wide enough for it', () => {
   // Chad, v1.99.11: "take the stops out of the more tab drop down and I want to move it into the
   // main bar on desktop. Um, probably to the right of routing." Then: "Just call it stops not stop
-  // lookup now." And v1.104.1, when it pushed Messages off Routing's bar on a laptop: "1 i like
+  // lookup now." And v1.104.2, when it pushed Messages off Routing's bar on a laptop: "1 i like
   // your idea" — on the bar when it fits, under More when it does not.
   const routing = APP.indexOf('<TabBtn label="Routing (beta)"');
   const lookup = APP.indexOf('<TabBtn label="Stops"');
