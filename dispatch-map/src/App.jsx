@@ -83,7 +83,8 @@ import { isTvPath, tvRailRows, tvVerdict, tvFeedState, tvRollDate, TV_RAIL_LIMIT
 import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent, tvImageFailure, boundsOf, snapBounds } from './lib/tv-static-map.js';
 import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
-import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
+import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, setStopPieces, addressReachedNuvizz } from './lib/nuvizzWrite.js';
+import { boardPiecesOf, parsePieceDraft, piecesChanged, piecesLine, piecesBoardDatesOf, piecesFoldFrom, piecesOutcome, piecesEditable } from './lib/stop-pieces.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
 import { buildLabelsHtml } from './lib/label-html.js';
@@ -218,7 +219,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.104.1';
+const APP_VERSION = '1.105.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -272,6 +273,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.105.0', 'EDIT AN ORDER\u2019S PIECE COUNTS ON THE STOP CARD AND SEND THEM TO NUVIZZ. Chad, 10/02: \u201cmake it where in dispatch map i can edit an order and change piece counts and then send it to nuvizz to change as well.\u201d WHERE: the stop card, under Items \u2014 \u201cEdit piece counts\u201d. It is the same card on the Map\u2019s desktop sidebar, the Map\u2019s phone drawer, the Routing stop panel and the PRO-lookup card, so it is on all four. Two boxes, Pallets and Loose \u2014 the same two the New Order form takes; the total is their sum and is shown, never typed. Send to NuVizz reads the order, writes ONLY the counts that change (NuVizz totalCartons / volume / totalPallets \u2014 a pallets fix never sends the loose count), reads it back, and says what NuVizz now holds. 3 NuVizz calls; 1 when NuVizz already has those counts. REFUSED BEFORE ANYTHING IS WRITTEN: an order already dispatched, out for delivery, arrived or delivered; a second NuVizz order sharing the number; a record with no id of its own; zero pieces (that is a cancel, not an edit). VERIFIED, NEVER ASSUMED: no write in this app had changed a piece count before, so the read-back is the proof every time. If NuVizz takes the write but reads back a different count, or any other field moves (weight, address, the line items, the BOL), the card says exactly which one, in red. NOT CHANGED: the order\u2019s line items in NuVizz (the portal\u2019s Items table) are a separate record and keep their quantity \u2014 the card says so before you Send. THE BOARD MOVES TOO: the scans do not refresh freight (it is carried forward from an order\u2019s first read), so NuVizz\u2019s read-back counts are written onto the order\u2019s board row and its stored copy \u2014 field-masked, never creating a row \u2014 and the card, the route\u2019s skid count and the Build Panel change together. A scan that snapshotted the board before the edit could have written the old count back over it; for the hour after an edit the scan now keeps the edited counts (the same hold the plan write-through uses). NUVIZZ_PIECES_WRITE=off turns all of it off \u2014 the write and the scan\u2019s hold \u2014 with one env var.'],
   ['1.104.1', 'MORE → PERFORMANCE IS LIGHT NOW, LIKE THE REST OF THE APP. Chad, on the phone view of Stop performance: “I don’t love the dark theme of the page.” It shipped dark in v1.100.0 because the brief asked for a restrained dark surface; it now wears the app’s own slate-on-white — white cards on the light grey page, slate text, the brand blue on its Apply button and filter counts — on the phone and the desktop, its date and filter panels, its tooltips and its loading line. THE CHARTS KEEP THEIR COLOURS’ MEANING AND WERE RE-CHECKED FOR WHITE, not eyeballed: today’s line is the same violet one step darker (#6457d9), the two days you tick to compare keep their orange and green, and every pair still separates under colour-blindness (worst ΔE 9.4) and sits at 3:1 or better on white; the outcome bar’s green / amber / red are the 600 steps (ΔE 7.9 — allowed because each colour has its label, count and share beside it and a 2px gap between). Nothing it counts, reads or computes changes — colours only. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.104.0', 'A NIGHTLY SAFETY NET NAMES THE DRIVER ON AN ATTEMPT THE EVENING SCAN LEFT WITH NONE, AND IT CAN NEVER SPEND MORE THAN TEN NUVIZZ CALLS. Chad, 10/01, approving it: \u201cI\u2019m ok with this but you better triple check there is no way it could make more than 10 calls and if it needs more it should throw a flag in the ui on the scorecard.\u201d WHAT IT DOES: at 00:30 ET (nuvizz-att-fill-background) it takes yesterday\u2019s ORIGINAL attempt stops that the 8:30 plan and the all-day record both left without a driver, reads each one\u2019s NuVizz activity timeline and applies the same due-day rule the backfill uses (no staff as drivers). \u201c-1\u201d/\u201c-2\u201d duplicates are never read. WHY IT CANNOT PASS TEN: each read is ONE request with no retries and no fallback endpoint (fetchStopEventsOnce, maxRetries 0); a stop whose NuVizz id is not already in Firestore is skipped, never looked up; requests are counted before they are sent, so a timeout still uses one up; 10 is a constant, and NUVIZZ_ATT_TIMELINE_FILL_MAX can only LOWER it; the job claims the date in Firestore with an atomic create BEFORE its first request, so a second fire spends 0; it takes no parameters and only ever acts on ET-yesterday; a mirror (UAT) never scans. Pinned by test/att-fill.test.mjs, including the real loop against 25 candidates (exactly 10 requests) and the requester sending exactly one fetch on a 503, a 429, a network error and a timeout. WHEN IT CANNOT READ EVERY ONE \u2014 over ten, no NuVizz id on file, a failed request \u2014 the day\u2019s attempts manifest says so (fill.needsAttention, with each stop and why), and the Driver Scorecard shows it as a flag (scorecard v0.19.0). NUVIZZ_ATT_TIMELINE_FILL=off turns it off.'],
   ['1.103.1', 'THE ATTEMPTS BACKFILL NO LONGER NAMES A STAFF MEMBER AS THE DRIVER. Its first run named Freddy Perez for order 007173373 on 9/9 \u2014 customer service, never on any morning plan, roster or board. The stop was on the CHAD holding route (a draft with no driver, 0 trips), and somebody dispatched it from the portal, which puts THEIR name on the \u201cStop Dispatched\u201d event. NOW a dispatch names a driver only when the same person also has driver-app activity that day \u2014 a pickup, an arrival, a departure, a confirmation. Every real driver checked so far has them at the same minute as the dispatch. A recheck that finds no driver now CLEARS the earlier answer instead of leaving it, and &stop=NNN re-reads one order, so correcting one costs one NuVizz call. Each result now says how many events its timeline held. ALSO \u2014 A \u201c-1\u201d OR \u201c-2\u201d IS A DUPLICATE ORDER. Chad: \u201c-1 and -2 are duplicate orders and have nothing to do with the original driver.\u201d They are no longer given the original stop\u2019s driver anywhere: not by the evening attempts list (the all-day record\u2019s copy-to-original fallback is gone), not by the backfill (it now reads ORIGINAL stops only, and the free \u201csibling\u201d answer is gone). nuvizz-att-backfill?revertCopies=1 lists every -1/-2 row that was given its original\u2019s driver (free); with POST and confirm=1 it clears them back to no driver, keeping what they had and why. Zero NuVizz calls.'],
@@ -9598,6 +9600,108 @@ function StopDeliveryDateEditor({ stop, onRefreshed }) {
   );
 }
 
+// ── PIECE COUNTS — changed on the order, in NuVizz (§P, v1.105.0) ─────────────
+// Chad, 2026-10-02: "make it where in dispatch map i can edit an order and change piece counts
+// and then send it to nuvizz to change as well".
+//
+// The two numbers the New Order form takes — pallets and loose — with the total shown as their
+// sum, never typed (the rule every create path writes). Send runs the server's read → write →
+// read-back ladder (lib/nuvizz-write.mts runSetStopPieces) and puts NuVizz's READ-BACK counts on
+// our board row, so this card, the route's skid count and the Build Panel move together. What the
+// card shows after a Send is what NuVizz was read back holding, never what was typed. It opens on
+// the board's counts; the server compares against NuVizz's own record, so a board that had gone
+// stale is corrected by the same Send. Rules: lib/stop-pieces.js.
+function StopPiecesEditor({ stop, onRefreshed }) {
+  const [open, setOpen] = useState(false);
+  const [pallets, setPallets] = useState('');
+  const [loose, setLoose] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);       // { kind: 'ok' | 'warn' | 'err', text }
+  const pro = stop?.stopNbr || stop?.primaryPro || stop?.pro || '';
+  const cur = boardPiecesOf(stop);
+  const want = parsePieceDraft(pallets, loose);
+  // Same as the board is still sendable: the server compares against NuVizz's OWN record, so a
+  // Send that matches a stale board costs one read and answers truthfully either way.
+  const changed = piecesChanged(cur, want);
+  const onLoad = stop?.routeName || stop?.loadNbr || null;
+  const lines = Array.isArray(stop?.stopDetails) ? stop.stopDetails.filter((d) => d && typeof d === 'object') : [];
+  if (!pro || !piecesEditable(stop)) return null;
+  const begin = () => {
+    setOpen(true); setMsg(null);
+    setPallets(cur.pallets != null ? String(cur.pallets) : '');
+    setLoose(cur.loose ? String(cur.loose) : '');
+  };
+  const send = async () => {
+    if (busy || want.error) return;
+    setBusy(true); setMsg(null);
+    try {
+      // stopId pins the write to THIS record — two NuVizz orders can share one number, and the
+      // server refuses on a mismatch rather than change the other one's freight.
+      const r = await setStopPieces(pro, { pallets: want.pallets, loose: want.loose }, {
+        stopId: stop?.stopId || undefined,
+        boardDates: piecesBoardDatesOf(stop),
+      });
+      const out = r?.result || r || {};
+      if (r?.ok) {
+        const fold = piecesFoldFrom(out);
+        if (fold) onRefreshed?.(fold);
+      }
+      setMsg(piecesOutcome(r));
+    } catch (e) { setMsg({ kind: 'err', text: e?.message || 'Could not change the piece counts.' }); }
+    finally { setBusy(false); }
+  };
+  const inputCls = 'mt-0.5 w-full min-h-[44px] border border-slate-300 rounded px-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 disabled:bg-slate-50';
+  return (
+    <div className="pt-1.5">
+      {!open ? (
+        <button type="button" onClick={begin}
+          className="w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-blue-700 border border-blue-200 rounded-md px-3 hover:bg-blue-50 active:bg-blue-100">
+          <Package size={13} /> Edit piece counts
+        </button>
+      ) : (
+        <div className="rounded-md border border-slate-200 p-2 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs uppercase font-semibold text-slate-500">Piece counts in NuVizz</div>
+            <button type="button" onClick={() => { setOpen(false); setMsg(null); }} aria-label="Close piece counts"
+              className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center text-slate-400 hover:text-slate-700"><X size={14} /></button>
+          </div>
+          <div className="text-[11px] text-slate-500">Now on the board: <span className="font-semibold text-slate-700">{piecesLine(cur)}</span></div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block text-[11px] font-medium text-slate-500">Pallets
+              <input type="number" inputMode="numeric" min="0" step="1" value={pallets} disabled={busy}
+                onChange={(e) => setPallets(e.target.value)} className={inputCls} />
+            </label>
+            <label className="block text-[11px] font-medium text-slate-500">Loose
+              <input type="number" inputMode="numeric" min="0" step="1" value={loose} placeholder="0" disabled={busy}
+                onChange={(e) => setLoose(e.target.value)} className={inputCls} />
+            </label>
+          </div>
+          <div className="text-[12px] text-slate-700">
+            {want.error
+              ? <span className="text-red-600">{want.error}</span>
+              : <>= <span className="font-semibold">{want.total} piece{want.total === 1 ? '' : 's'}</span> in total</>}
+          </div>
+          {onLoad && (
+            <div className="text-[11px] text-slate-600 leading-snug">This order is planned on <span className="font-semibold">{onLoad}</span> — that route&rsquo;s counts change with it.</div>
+          )}
+          {lines.length > 0 && (
+            // Said before the Send, not discovered after: the header totals change, NuVizz's
+            // separate line items do not (§P in nuvizz-write-ops.mts).
+            <div className="text-[11px] text-amber-700 leading-snug">
+              The order&rsquo;s {lines.length === 1 ? 'line item' : `${lines.length} line items`} in NuVizz {lines.length === 1 ? 'is a separate record and keeps its' : 'are a separate record and keep their'} quantity — only the order&rsquo;s piece totals change.
+            </div>
+          )}
+          <button type="button" onClick={send} disabled={busy || !!want.error}
+            className="w-full min-h-[44px] px-3 text-xs font-semibold text-white rounded disabled:opacity-40"
+            style={{ background: BRAND }}>{busy ? 'Sending…' : 'Send to NuVizz'}</button>
+          <div className="text-[10px] text-slate-400">writes order {pro} · 3 NuVizz calls{changed ? '' : ' (1 if NuVizz already has these counts)'}</div>
+          {msg && <div className={'text-[11px] leading-snug break-words ' + (msg.kind === 'ok' ? 'text-green-700' : msg.kind === 'warn' ? 'text-amber-700' : 'text-red-600')}>{msg.text}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StopLiveDetail({ stop, onRefreshed }) {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshErr, setRefreshErr] = useState(null);
@@ -10139,6 +10243,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
       </div>
       <div className="pt-2">
         <OrderItemsSection stop={live} />
+        <StopPiecesEditor key={stopKey} stop={live} onRefreshed={onRefreshed} />
       </div>
       {showTicket && (
         <PrintDocModal

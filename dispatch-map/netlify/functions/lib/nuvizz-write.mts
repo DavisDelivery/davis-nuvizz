@@ -30,11 +30,14 @@ import {
   buildStopAddressOverride, addressLanded, addressMatchesTyped, addressMoved,
   CANCEL_REASON_DEFAULT,
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
+  stopPiecesFrom, parsePieceInput, buildStopPiecesOverride, piecesVerdict, piecesLine, boardPiecesFields,
+  piecesBoardDates, boardPiecesWarning, PIECE_WRITE_SENDS,
   isTransportRetryable,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId, statusFromCode, isTerminalStatus } from './nuvizz-list.mts';
-import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay, readStopDoc, patchStopFields } from './firestore.mts';
+import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay, readStopDoc, patchStopFields, patchStopRowPieces, patchEnrichedProPieces } from './firestore.mts';
+import { piecesWriteEnabled } from './pieces-hold.mts';
 import { completionPatch } from './scan-completions.mts';
 import { finishedGuardEnabled } from './finished-guard.mts';
 import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes, rwbCreateRoute, rwbHosts } from './nuvizz-rwb.mts';
@@ -3065,6 +3068,142 @@ export async function runSetStopContact(requester: RequesterLike, payload: any, 
 }
 
 /**
+ * runSetStopPieces (§P, v1.105.0) — change an order's piece counts IN NUVIZZ, and on our board.
+ *
+ * Chad, 2026-10-02: "make it where in dispatch map i can edit an order and change piece counts
+ * and then send it to nuvizz to change as well".
+ *
+ * The contact/date ladder with the freight totals swapped in (see §P in nuvizz-write-ops.mts):
+ *   1. READ  the stop. Refuse a wrong twin, a record with no stopId of its own (never the
+ *            caller's id in its place — CODE-REVIEW-FIXES.md item on the four partialUpdate
+ *            ladders), and an order the driver has already acted on.
+ *   2. WRITE the echo with ONLY the totals that change (totalCartons / volume / totalPallets).
+ *   3. VERIFY on read-back: each count reads as intended, every echoed field comes back
+ *            byte-identical, and the freight lines / attachments we never send are still there.
+ *   4. BOARD — NuVizz's READ-BACK counts onto the order's stored rows (the day's row and its
+ *            enrichment-registry record), stamped for the scan's piece hold
+ *            (lib/pieces-hold.mts). Zero NuVizz calls. A failure here never un-reports a write
+ *            NuVizz confirmed, and it is never silent: it rides back as `boardWarning`.
+ *
+ * An order already holding these counts costs 1 call, writes nothing to NuVizz, and still runs
+ * the board half — freight is carried forward from an order's first enrichment, so the board's
+ * count can be the stale one, and making the board agree with NuVizz is half of this edit.
+ *
+ * NUVIZZ_PIECES_WRITE=off refuses before any call (and turns the scan's hold off with it).
+ */
+export async function runSetStopPieces(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
+  const stopNbr = req(payload?.stopNbr, 'setStopPieces: stopNbr');
+  const calls = { reads: 0, writes: 0 };
+  if (!piecesWriteEnabled()) {
+    return { ok: false, blocked: true, calls, error: 'setStopPieces: piece-count edits are switched off on this site (NUVIZZ_PIECES_WRITE) — nothing was sent to NuVizz.' };
+  }
+  const want = parsePieceInput(payload);
+  if ('error' in want) return { ok: false, calls, error: `setStopPieces: ${want.error} — nothing was sent to NuVizz.` };
+  const boardDates = piecesBoardDates(payload?.boardDates);
+
+  const before = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!before?.ok) return { ok: false, calls, error: `setStopPieces: could not read stop ${stopNbr} (${before?.error || 'read failed'}) — nothing was written.` };
+  const rawBefore = rawStopFrom(before.raw ?? before);
+  const twin = stopInstanceMismatch('setStopPieces', stopNbr, payload?.stopId, rawBefore);
+  if (twin) return { ok: false, wrongInstance: true, calls, error: twin };
+  const stopId = String(rawBefore?.stopId ?? '').trim();
+  if (!stopId) {
+    return { ok: false, calls, error: `setStopPieces: stop ${stopNbr} read back with no stopId of its own — the update cannot be aimed at one record, and the number alone can name two. Nothing was written.` };
+  }
+  const status = before.stop?.status ?? null;
+  if (isExecutedStopStatus(status)) {
+    return { ok: false, calls, error: `setStopPieces: order ${stopNbr} is already ${status} — the driver has this freight, so its piece counts can't be changed from here.` };
+  }
+  const onLoad = before.stop?.assignedLoadNbr ?? null;
+  const was = stopPiecesFrom(rawBefore);
+  const overrides = buildStopPiecesOverride(rawBefore, want);
+
+  if (!Object.keys(overrides).length) {
+    const board = await applyBoardPieces(creds, stopNbr, stopId, boardDates, rawBefore);
+    const warn = boardPiecesWarning(board);
+    return {
+      ok: true, unchanged: true, stopNbr, stopId, was, now: was, onLoad, calls, board, boardFields: board.fields,
+      ...(warn ? { boardWarning: warn } : {}),
+      message: `Order ${stopNbr} already reads ${piecesLine(was)} in NuVizz — nothing was sent there.${warn ? ` ${warn}` : ''}`,
+    };
+  }
+
+  const sent = buildPartialUpdateStop({ ...rawBefore, stopId, stopNbr: String(rawBefore.stopNbr ?? stopNbr) }, overrides, { send: PIECE_WRITE_SENDS });
+  const fpBefore = stopNoteFingerprint(rawBefore);
+  const wrote = await fireSingle(requester, 'partialUpdateStop', { stops: [sent] }, creds);
+  calls.writes += 1;
+  if (!wrote?.ok) return { ok: false, was, calls, error: `setStopPieces: NuVizz rejected the piece counts (${wrote?.error || 'write failed'}).` };
+
+  const after = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!after?.ok) {
+    return { ok: false, unverified: true, was, calls, error: `setStopPieces: NuVizz accepted the piece counts but the read-back failed (${after?.error || 'read failed'}) — check ${stopNbr} in the portal before trying again.` };
+  }
+  const rawAfter = rawStopFrom(after.raw ?? after);
+  // Read-back identity first — the same rule as the note, date and contact paths
+  // (§ ESTES-2938079387): a by-number read can answer with the OTHER order sharing the number,
+  // and every check below would then be about the twin, not the order we wrote.
+  const pinned = isIdShaped(payload?.stopId) && String(payload.stopId) === String(stopId);
+  const rbTwin = readBackInstanceMismatch('setStopPieces', stopNbr, stopId, rawAfter, pinned);
+  if (rbTwin) return { ok: false, unverified: true, wrongInstanceReadback: true, was, calls, error: rbTwin };
+  const rbNoId = readBackUnidentifiable('setStopPieces', stopNbr, stopId, rawAfter);
+  if (rbNoId) return { ok: false, unverified: true, was, calls, error: rbNoId };
+
+  const now = stopPiecesFrom(rawAfter);
+  const verdict = piecesVerdict(now, want);
+  // The counts are what we came to change, so they leave the drift diff (the verdict above judges
+  // them, field by field). Everything else must still come back byte-identical — a count NOT
+  // being changed stays in the guard, so a total that moved on its own is reported.
+  const changed = Object.keys(overrides);
+  const afterEcho = buildPartialUpdateStop(rawAfter, Object.fromEntries(changed.map((k) => [k, sent[k]])), { send: PIECE_WRITE_SENDS });
+  const drift = orderDriftPaths([...new Set([
+    ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)).filter((p) => !changed.includes(p)),
+    ...echoDrift(sent, afterEcho),
+  ])]);
+  const losses = unsentLosses(rawBefore, rawAfter);
+  if (drift.length || losses.length) {
+    const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
+    const paths = [...drift, ...losses.map((l) => l.path)];
+    return {
+      ok: false, piecesLanded: verdict.landed, was, now, drift: paths, driftDetails: details, calls,
+      error: `setStopPieces: the piece counts ${verdict.landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${paths.length} other field(s) on the order.${addressDriftWarning(paths)} ${details.join(' | ')}${paths.length > details.length ? ` (+${paths.length - details.length} more)` : ''}. Check ${stopNbr} in the portal — do not edit pieces again until this is investigated.`,
+    };
+  }
+  if (!verdict.landed) {
+    return { ok: false, was, now, calls, error: `setStopPieces: NuVizz accepted the write but ${stopNbr} reads back differently — ${verdict.misses.join('; ')}. Nothing else on the order moved. Try again, or set the counts in the portal.` };
+  }
+
+  // NuVizz agrees. Now the board — from the READ-BACK, the counts NuVizz was observed to hold.
+  const board = await applyBoardPieces(creds, stopNbr, stopId, boardDates, rawAfter);
+  const boardWarning = boardPiecesWarning(board);
+  return { ok: true, stopNbr, stopId, was, now, wrote: overrides, onLoad, calls, board, boardFields: board.fields, ...(boardWarning ? { boardWarning } : {}) };
+}
+
+/**
+ * The Firestore half of a piece write — zero NuVizz calls, best-effort by design: the counts are
+ * already true in NuVizz, so a cache hiccup must never turn a confirmed write into a reported
+ * failure. Every board day the caller named that holds this order is patched (a carried-over row
+ * lives under the day it came from, not the day it is shown on), then the registry record.
+ * Returns what happened to each, which rides into the write ledger with the op's result.
+ */
+async function applyBoardPieces(creds: WriteCreds, stopNbr: string, stopId: string, boardDates: string[], rawRecord: any): Promise<any> {
+  const at = new Date().toISOString();
+  const fields = boardPiecesFields(rawRecord, at);
+  const out: any = { at, fields, days: {} as Record<string, string>, dayErrors: {} as Record<string, string> };
+  if (!isFirestoreEnabled()) return { ...out, skipped: 'firestore-disabled' };
+  // parentId case-normalizes, so the uppercase companyCode lands on the scanner's 'davis__' tree.
+  const tenant = String((creds as any)?.companyCode || 'DAVIS');
+  for (const day of boardDates) {
+    try { out.days[day] = await patchStopRowPieces(tenant, day, stopNbr, stopId, fields); }
+    catch (e: any) { out.days[day] = 'error'; out.dayErrors[day] = e?.message || 'board row write failed'; }
+  }
+  try { out.registry = await patchEnrichedProPieces(tenant, stopNbr, stopId, fields); }
+  catch (e: any) { out.registry = 'error'; out.registryError = e?.message || 'registry write failed'; }
+  return out;
+}
+
+/**
  * runNewRoute (§R) — create an EMPTY route the dispatcher can then build onto.
  *
  * Chad, Jul 30: "I want to be able to create a route in the routing tab." Until now nothing
@@ -3400,6 +3539,8 @@ export async function runOp(requester: RequesterLike, op: WriteOp, payload: any,
     // Destructive: read → judge → cancel by id. See runCancelOrder.
     case 'cancelOrder': return runCancelOrder(requester, payload, creds);
     case 'setStopContact': return runSetStopContact(requester, payload, creds);
+    // §P piece counts (v1.105.0): read → partialUpdate → read-back, then the board half.
+    case 'setStopPieces': return runSetStopPieces(requester, payload, creds);
     // §R — the orchestration (collision check → header write → read-back verify). The bare
     // 'createRoute' single op stays available for tests/diagnostics; the app calls 'newRoute'.
     case 'newRoute': return runNewRoute(requester, payload, creds);

@@ -161,6 +161,23 @@ export const setStopAddress = (stopNbr, address = {}, opts = {}) =>
     ...(opts.note ? { note: String(opts.note), noteAudience: opts.noteAudience || 'dispatcher' } : {}),
   }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
+// Change an order's PIECE COUNTS in NuVizz (§P, v1.105.0) — pallets (skids) and loose; the total
+// is pallets + loose and is never sent as typed. The server reads the order, writes ONLY the
+// counts that change, reads it back to prove they landed and nothing else moved, then puts
+// NuVizz's READ-BACK counts on our board row (Firestore only — freight is not refreshed by the
+// scans, so without this the board would keep the old count). 3 NuVizz calls; an order already
+// holding these counts costs 1. opts.stopId: the same wrong-twin pin as the ops above.
+// opts.boardDates: the day the card's row is stored under and the day it is shown on
+// (lib/stop-pieces.js piecesBoardDatesOf).
+export const setStopPieces = (stopNbr, { pallets, loose } = {}, opts = {}) =>
+  callWrite('setStopPieces', {
+    stopNbr,
+    pallets,
+    loose,
+    ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
+    ...(Array.isArray(opts.boardDates) && opts.boardDates.length ? { boardDates: opts.boardDates.map(String) } : {}),
+  }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
+
 // Create a route from the Compare card, orders and all (§R). The server checks the load number
 // is genuinely free (routePlan/update is create-OR-UPDATE — an existing number would be EDITED,
 // so anything but a clean absent-read refuses), reads every order on the card (each must be
