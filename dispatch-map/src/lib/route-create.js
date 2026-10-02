@@ -74,9 +74,10 @@ export function validateNewRoute({ routeName, date, existingNames = [], hasOrigi
 // so "the pickup dropdown always exists (even on a fresh browser with nothing saved)". The
 // address the form needed was in the app the whole time; only this screen could not see it.
 //
-// So the origin is RESOLVED, never merely read: the last-used pickup, else the first saved
-// one, else the company terminal — and the form SHOWS which one it landed on, because a
-// route created from the wrong warehouse is not something to discover at the dock.
+// So the origin is RESOLVED, never merely read: the company terminal first (v1.104.2 — Chad:
+// "This should always default to davis delivery."), then the last-used pickup, then the saved
+// list — and the form SHOWS which one it landed on, because a route created from the wrong
+// warehouse is not something to discover at the dock.
 const originStr = (o, k) => String(o?.[k] ?? '').trim();
 /** A pickup address NuVizz can actually use: name + street + city + zip all present. */
 export function originUsable(o) {
@@ -97,16 +98,22 @@ export function originLine(o) {
 /**
  * PURE. The ship-from this route will carry, and every one the dispatcher may pick instead.
  *
+ * `terminal` — the company terminal (Davis Delivery). The default for every new route.
  * `lastUsed` — the New Order default (localStorage), or null.
  * `saved`    — that device's saved pickup list (New Order's own, terminal-seeded).
- * `fallback` — the company terminal, so a fresh device is never stuck.
  *
- * Returns { origin, source, options }: source is 'saved' when it came from the dispatcher's
- * own pickup list and 'default' when the terminal filled the gap — the form prints the
- * difference. Incomplete entries are dropped rather than offered: a half-address is exactly
- * what NuVizz accepts and silently does nothing with.
+ * DAVIS DELIVERY COMES FIRST. Chad, 2026-10-02, on the form opening on Caliber Steel because
+ * that was the last pickup used in New Order: "This should always default to davis delivery."
+ * The last-used and saved pickups still follow it in the dropdown, so a route that does leave
+ * from a customer's dock is one pick away. Every door into a create reads this one rule: the
+ * form, a standard shell tapped on the Loads list, and a Save whose card carries no origin.
+ *
+ * Returns { origin, source, options }: source is 'default' for the terminal and 'saved' for a
+ * pickup from the dispatcher's own list — the form prints the difference. Incomplete entries
+ * are dropped rather than offered: a half-address is exactly what NuVizz accepts and silently
+ * does nothing with.
  */
-export function resolveRouteOrigin({ lastUsed = null, saved = [], fallback = null } = {}) {
+export function resolveRouteOrigin({ terminal = null, lastUsed = null, saved = [] } = {}) {
   const options = [];
   const seen = new Set();
   const add = (o, source) => {
@@ -116,11 +123,11 @@ export function resolveRouteOrigin({ lastUsed = null, saved = [], fallback = nul
     seen.add(k);
     options.push({ origin: o, source, key: k });
   };
+  add(terminal, 'default');
   add(lastUsed, 'saved');
   for (const o of Array.isArray(saved) ? saved : []) add(o, 'saved');
-  add(fallback, 'default');
-  // The fallback may already be in the saved list (New Order seeds it there) — in that case it
-  // is the dispatcher's own entry and reads as 'saved', which is the truth.
+  // New Order seeds the terminal into the saved list, so it often appears there too. Added first,
+  // it keeps its 'default' label and the saved copy is skipped as a duplicate.
   const first = options[0] || null;
   return { origin: first?.origin || null, source: first ? first.source : 'none', options };
 }

@@ -218,7 +218,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.104.0';
+const APP_VERSION = '1.104.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -272,6 +272,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.104.2', 'A NEW ROUTE SHIPS FROM DAVIS DELIVERY UNLESS YOU PICK OTHERWISE. Chad, on the \u2795 New route form opening on Caliber Steel: \u201cThis should always default to davis delivery.\u201d It opened there because the form put the last pickup used in the New Order tab first, so one Caliber Steel order made every new route on that device start at Caliber\u2019s dock. Davis Delivery (943 Gainesville Hwy, Buford) is now always the first choice and the one selected. The last-used and saved pickups still follow it in the dropdown, one pick away, and Davis is never listed twice. The same rule covers the other two ways a route gets created: tapping a standard route on the Loads list, and a Save whose card carries no ship-from. The line under the dropdown now says Davis Delivery is the default instead of claiming the device has no saved pickup. Nothing about what a Save sends changes except which address starts selected. Zero NuVizz calls.'],
   ['1.104.0', 'A NIGHTLY SAFETY NET NAMES THE DRIVER ON AN ATTEMPT THE EVENING SCAN LEFT WITH NONE, AND IT CAN NEVER SPEND MORE THAN TEN NUVIZZ CALLS. Chad, 10/01, approving it: \u201cI\u2019m ok with this but you better triple check there is no way it could make more than 10 calls and if it needs more it should throw a flag in the ui on the scorecard.\u201d WHAT IT DOES: at 00:30 ET (nuvizz-att-fill-background) it takes yesterday\u2019s ORIGINAL attempt stops that the 8:30 plan and the all-day record both left without a driver, reads each one\u2019s NuVizz activity timeline and applies the same due-day rule the backfill uses (no staff as drivers). \u201c-1\u201d/\u201c-2\u201d duplicates are never read. WHY IT CANNOT PASS TEN: each read is ONE request with no retries and no fallback endpoint (fetchStopEventsOnce, maxRetries 0); a stop whose NuVizz id is not already in Firestore is skipped, never looked up; requests are counted before they are sent, so a timeout still uses one up; 10 is a constant, and NUVIZZ_ATT_TIMELINE_FILL_MAX can only LOWER it; the job claims the date in Firestore with an atomic create BEFORE its first request, so a second fire spends 0; it takes no parameters and only ever acts on ET-yesterday; a mirror (UAT) never scans. Pinned by test/att-fill.test.mjs, including the real loop against 25 candidates (exactly 10 requests) and the requester sending exactly one fetch on a 503, a 429, a network error and a timeout. WHEN IT CANNOT READ EVERY ONE \u2014 over ten, no NuVizz id on file, a failed request \u2014 the day\u2019s attempts manifest says so (fill.needsAttention, with each stop and why), and the Driver Scorecard shows it as a flag (scorecard v0.19.0). NUVIZZ_ATT_TIMELINE_FILL=off turns it off.'],
   ['1.103.1', 'THE ATTEMPTS BACKFILL NO LONGER NAMES A STAFF MEMBER AS THE DRIVER. Its first run named Freddy Perez for order 007173373 on 9/9 \u2014 customer service, never on any morning plan, roster or board. The stop was on the CHAD holding route (a draft with no driver, 0 trips), and somebody dispatched it from the portal, which puts THEIR name on the \u201cStop Dispatched\u201d event. NOW a dispatch names a driver only when the same person also has driver-app activity that day \u2014 a pickup, an arrival, a departure, a confirmation. Every real driver checked so far has them at the same minute as the dispatch. A recheck that finds no driver now CLEARS the earlier answer instead of leaving it, and &stop=NNN re-reads one order, so correcting one costs one NuVizz call. Each result now says how many events its timeline held. ALSO \u2014 A \u201c-1\u201d OR \u201c-2\u201d IS A DUPLICATE ORDER. Chad: \u201c-1 and -2 are duplicate orders and have nothing to do with the original driver.\u201d They are no longer given the original stop\u2019s driver anywhere: not by the evening attempts list (the all-day record\u2019s copy-to-original fallback is gone), not by the backfill (it now reads ORIGINAL stops only, and the free \u201csibling\u201d answer is gone). nuvizz-att-backfill?revertCopies=1 lists every -1/-2 row that was given its original\u2019s driver (free); with POST and confirm=1 it clears them back to no driver, keeping what they had and why. Zero NuVizz calls.'],
   ['1.103.0', 'MESSAGES LOOKS LIKE A PROFESSIONAL INBOX — ON THE PHONE AND, AS TWO PANES, ON THE DESKTOP. Chad, on a photo of the Messages list: “Can you design a more professional UI …” WHAT CHANGED, ON SCREEN ONLY: the rainbow avatars are gone — a contact is tinted by what they are (driver blue, contractor violet, customer green, team grey) and a number nobody has named is a plain grey phone; the unread mark moved off the avatar to the end of the row, beside a bold name and a blue time; the role chip is a quiet tag; a row’s time reads as a clock time today (9:40 AM, not “5h”), inside the hour as minutes, then Yesterday, a weekday, a date; a text with no words reads “No text” instead of a dash (the inbound webhook does not keep the vendor’s mediaItems, so what such a text carried is not known to the app and is not guessed); and a filter row — All, Unread with its count, Drivers (contractors included), Customers. ON A DESKTOP the drawer is two panes: the list stays on the left and the conversation or New message opens beside it, so moving between conversations is one click. On a phone it is still one screen at a time, and its inputs are 16px so the phone no longer zooms when you tap them. Inside a conversation: day dividers, texts grouped into runs with the time under each run, a sent text says “Sent” (send-sms answered ok) and never “Delivered” (nothing here sees the handset), a failed one says why and offers Retry, and the composer grows as you type. Opening a conversation clears its unread mark inside the panel; closing the panel marks everything seen exactly as before, so the tab badge is unchanged. Nothing about sending, the viewer gate, the roster or the stored texts changes. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
@@ -23650,7 +23651,8 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
 // New Order has shipped a built-in Davis terminal since v0.50.35, for this very reason: "the
 // pickup dropdown always exists (even on a fresh browser with nothing saved)". The address was
 // in the app the whole time; only this screen could not see it. Now every door resolves the
-// same way — last-used, else the saved pickup list, else the terminal — through one rule in
+// same way — the terminal first (v1.104.2, Chad: "This should always default to davis
+// delivery."), then last-used, then the saved pickup list — through one rule in
 // lib/route-create.js, and the form PRINTS which one it landed on, because a route created out
 // of the wrong warehouse is not a thing to discover at the dock.
 function resolveNewRouteOrigin() {
@@ -23661,7 +23663,7 @@ function resolveNewRouteOrigin() {
   // "your saved pickup location" on a device where nobody ever saved anything.
   let saved = [];
   try { const a = JSON.parse(localStorage.getItem(NEWORDER_ORIGINS_KEY) || 'null'); if (Array.isArray(a)) saved = a; } catch { saved = []; }
-  return resolveRouteOrigin({ lastUsed, saved, fallback: NEWORDER_ORIGIN_DEFAULT });
+  return resolveRouteOrigin({ terminal: NEWORDER_ORIGIN_DEFAULT, lastUsed, saved });
 }
 function readShipFromOrigin() {
   return resolveNewRouteOrigin().origin;
@@ -23764,9 +23766,11 @@ function NewRouteModal({ date, existingNames, origin, originOptions = [], busy, 
               </div>
             )}
             <div className="text-[11px] text-slate-500 mt-0.5">
-              {picked?.source === 'default'
-                ? 'The company terminal — this device has no saved pickup location, so the route leaves from here.'
-                : 'Your saved pickup location. Add others in the New Order tab.'}
+              {picked?.source !== 'default'
+                ? 'Your saved pickup location. Add others in the New Order tab.'
+                : originOptions.length > 1
+                  ? 'Davis Delivery is the default for every new route. Pick another pickup above if this one leaves from somewhere else.'
+                  : 'Davis Delivery is the default for every new route. Add other pickup locations in the New Order tab.'}
             </div>
           </div>
 
