@@ -220,7 +220,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.105.0';
+const APP_VERSION = '1.105.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -274,6 +274,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.105.1', 'A NEW ROUTE SHIPS FROM DAVIS DELIVERY UNLESS YOU PICK OTHERWISE. Chad, on the \u2795 New route form opening on Caliber Steel: \u201cThis should always default to davis delivery.\u201d It opened there because the form put the last pickup used in the New Order tab first, so one Caliber Steel order made every new route on that device start at Caliber\u2019s dock. Davis Delivery (943 Gainesville Hwy, Buford) is now always the first choice and the one selected. The last-used and saved pickups still follow it in the dropdown, one pick away, and Davis is never listed twice. The same rule covers the other two ways a route gets created: tapping a standard route on the Loads list, and a Save whose card carries no ship-from. The line under the dropdown now says Davis Delivery is the default instead of claiming the device has no saved pickup. Nothing about what a Save sends changes except which address starts selected. Zero NuVizz calls.'],
   ['1.105.0', 'EDIT AN ORDER\u2019S PIECE COUNTS ON THE STOP CARD AND SEND THEM TO NUVIZZ. Chad, 10/02: \u201cmake it where in dispatch map i can edit an order and change piece counts and then send it to nuvizz to change as well.\u201d WHERE: the stop card, under Items \u2014 \u201cEdit piece counts\u201d. It is the same card on the Map\u2019s desktop sidebar, the Map\u2019s phone drawer, the Routing stop panel and the PRO-lookup card, so it is on all four. Two boxes, Pallets and Loose \u2014 the same two the New Order form takes; the total is their sum and is shown, never typed. Send to NuVizz reads the order, writes ONLY the counts that change (NuVizz totalCartons / volume / totalPallets \u2014 a pallets fix never sends the loose count), reads it back, and says what NuVizz now holds. 3 NuVizz calls; 1 when NuVizz already has those counts. REFUSED BEFORE ANYTHING IS WRITTEN: an order already dispatched, out for delivery, arrived or delivered; a second NuVizz order sharing the number; a record with no id of its own; zero pieces (that is a cancel, not an edit). VERIFIED, NEVER ASSUMED: no write in this app had changed a piece count before, so the read-back is the proof every time. If NuVizz takes the write but reads back a different count, or any other field moves (weight, address, the line items, the BOL), the card says exactly which one, in red. NOT CHANGED: the order\u2019s line items in NuVizz (the portal\u2019s Items table) are a separate record and keep their quantity \u2014 the card says so before you Send. THE BOARD MOVES TOO: the scans do not refresh freight (it is carried forward from an order\u2019s first read), so NuVizz\u2019s read-back counts are written onto the order\u2019s board row and its stored copy \u2014 field-masked, never creating a row \u2014 and the card, the route\u2019s skid count and the Build Panel change together. A scan that snapshotted the board before the edit could have written the old count back over it; for the hour after an edit the scan now keeps the edited counts (the same hold the plan write-through uses). NUVIZZ_PIECES_WRITE=off turns all of it off \u2014 the write and the scan\u2019s hold \u2014 with one env var.'],
   ['1.104.3', 'STOPS IS ON THE DESKTOP BAR, RIGHT OF ROUTING \u2014 IN ANY WINDOW WIDE ENOUGH TO KEEP MESSAGES ON IT. Chad: \u201ctake the stops out of the more tab drop down and I want to move it into the main bar on desktop. Um, probably to the right of routing\u201d \u2014 and then \u201cJust call it stops not stop lookup now.\u201d Stop lookup is now a tab called Stops beside Routing (beta): one click instead of two. THE FIRST CUT DID NOT FIT EVERY DESK. On Routing \u2192 Build the same bar also carries the board card, the presence chip and Build | Engine | Shadow, and in a 1180\u20131366px window (a 13\u201314\u2033 laptop, or a browser at half screen) the extra tab pushed Messages and its red unread badge off the end of the row \u2014 on Routing the only sign a driver or customer has texted. So, Chad\u2019s pick (\u201c1 i like your idea\u201d): at 1440px and wider Stops sits on the bar and More does not list it; in a narrower window it sits under More, still called Stops, and the bar keeps Messages. Never both, never neither, and it moves live as the window is resized. The phone menu is unchanged, and the screen itself still says Stop lookup at the top. THE WAY BACK: one small commit; a revert puts it back under More.'],
   ['1.104.2', 'MESSAGES ON A DESKTOP: THE LIST IS THE DRAWER, AND A CONVERSATION SLIDES OUT ONLY WHEN YOU OPEN ONE. Chad, on the v1.103.0 two-pane drawer: “why is there so much wasted space on the select a conversation seems like that should be in a drawer”. He was right: the panel opened 880px wide every time, and half of it was an empty “Select a conversation” card. NOW it opens as the 400px list alone. Opening a conversation or New message slides a second drawer out to the list’s LEFT, so the row you clicked never moves and switching between conversations is still one click; its fold button (top right of the conversation) puts it away and leaves the list, and the list’s X closes Messages. The phone and narrow windows are unchanged — one screen at a time. Nothing about sending, unread or the stored texts changes. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
@@ -23759,7 +23760,8 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
 // New Order has shipped a built-in Davis terminal since v0.50.35, for this very reason: "the
 // pickup dropdown always exists (even on a fresh browser with nothing saved)". The address was
 // in the app the whole time; only this screen could not see it. Now every door resolves the
-// same way — last-used, else the saved pickup list, else the terminal — through one rule in
+// same way — the terminal first (v1.105.1, Chad: "This should always default to davis
+// delivery."), then last-used, then the saved pickup list — through one rule in
 // lib/route-create.js, and the form PRINTS which one it landed on, because a route created out
 // of the wrong warehouse is not a thing to discover at the dock.
 function resolveNewRouteOrigin() {
@@ -23770,7 +23772,7 @@ function resolveNewRouteOrigin() {
   // "your saved pickup location" on a device where nobody ever saved anything.
   let saved = [];
   try { const a = JSON.parse(localStorage.getItem(NEWORDER_ORIGINS_KEY) || 'null'); if (Array.isArray(a)) saved = a; } catch { saved = []; }
-  return resolveRouteOrigin({ lastUsed, saved, fallback: NEWORDER_ORIGIN_DEFAULT });
+  return resolveRouteOrigin({ terminal: NEWORDER_ORIGIN_DEFAULT, lastUsed, saved });
 }
 function readShipFromOrigin() {
   return resolveNewRouteOrigin().origin;
@@ -23873,9 +23875,11 @@ function NewRouteModal({ date, existingNames, origin, originOptions = [], busy, 
               </div>
             )}
             <div className="text-[11px] text-slate-500 mt-0.5">
-              {picked?.source === 'default'
-                ? 'The company terminal — this device has no saved pickup location, so the route leaves from here.'
-                : 'Your saved pickup location. Add others in the New Order tab.'}
+              {picked?.source !== 'default'
+                ? 'Your saved pickup location. Add others in the New Order tab.'
+                : originOptions.length > 1
+                  ? 'Davis Delivery is the default for every new route. Pick another pickup above if this one leaves from somewhere else.'
+                  : 'Davis Delivery is the default for every new route. Add other pickup locations in the New Order tab.'}
             </div>
           </div>
 

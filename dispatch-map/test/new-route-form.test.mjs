@@ -6,6 +6,7 @@
 // start the route (minus whatever a create is not allowed to move).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   resolveRouteOrigin, originUsable, originLine, newRouteSeed, newRouteSeedNote, validateNewRoute,
 } from '../src/lib/route-create.js';
@@ -13,8 +14,8 @@ import {
 const TERMINAL = { name: 'Davis Delivery Service', addr1: '943 Gainesville Hwy 200-4000', city: 'Buford', state: 'GA', zip: '30518' };
 const MINE = { name: 'ULINE ATLANTA', addr1: '1000 ULINE WAY', city: 'BRASELTON', state: 'GA', zip: '30517' };
 
-test('a device that has never used New Order still gets an origin — the company terminal, labelled as the fallback', () => {
-  const r = resolveRouteOrigin({ lastUsed: null, saved: [], fallback: TERMINAL });
+test('a device that has never used New Order still gets an origin — the company terminal, labelled as the default', () => {
+  const r = resolveRouteOrigin({ terminal: TERMINAL, lastUsed: null, saved: [] });
   assert.equal(r.origin.name, 'Davis Delivery Service');
   assert.equal(r.source, 'default');
   assert.equal(r.options.length, 1);
@@ -24,23 +25,52 @@ test('a device that has never used New Order still gets an origin — the compan
   assert.equal(check.loadNbr, 'TRAILER6-0909');
 });
 
-test('the dispatcher\'s own last-used pickup wins over the terminal, and both stay pickable', () => {
-  const r = resolveRouteOrigin({ lastUsed: MINE, saved: [TERMINAL, MINE], fallback: TERMINAL });
-  assert.equal(r.origin.name, 'ULINE ATLANTA');
-  assert.equal(r.source, 'saved');
-  assert.deepEqual(r.options.map((o) => o.origin.name), ['ULINE ATLANTA', 'Davis Delivery Service']);
+// Chad, 2026-10-02, on the form opening on Caliber Steel — the last pickup used in New Order:
+// "This should always default to davis delivery."
+const CALIBER = { name: 'Caliber Steel', addr1: '4485 Commerce Dr Unit 102', city: 'Buford', state: 'GA', zip: '30518' };
+
+test('a new route defaults to Davis Delivery even when New Order last used Caliber Steel — and Caliber stays one pick away', () => {
+  const r = resolveRouteOrigin({ terminal: TERMINAL, lastUsed: CALIBER, saved: [CALIBER, TERMINAL] });
+  assert.equal(r.origin.name, 'Davis Delivery Service');
+  assert.equal(r.source, 'default');
+  // The form's dropdown opens on options[0]; the other pickup follows it, listed once.
+  assert.deepEqual(r.options.map((o) => o.origin.name), ['Davis Delivery Service', 'Caliber Steel']);
+  assert.equal(r.options[1].source, 'saved');
+});
+
+test('the terminal saved into New Order\'s own list is not offered twice, and keeps the default label', () => {
+  const r = resolveRouteOrigin({ terminal: TERMINAL, lastUsed: TERMINAL, saved: [TERMINAL, MINE] });
+  assert.deepEqual(r.options.map((o) => o.origin.name), ['Davis Delivery Service', 'ULINE ATLANTA']);
+  assert.equal(r.options[0].source, 'default');
+});
+
+// The rule only holds if the screen asks it. Every door into a create reads resolveNewRouteOrigin:
+// the form's useMemo, the Loads-list shell tap and the Save's no-origin fallback (both through
+// readShipFromOrigin). If the wrapper stopped passing the terminal, the form would quietly go
+// back to opening on the last pickup used in New Order, which is the screenshot this fixed.
+test('every door into a create reads the Davis-first rule (App.jsx wiring)', () => {
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const at = src.indexOf('function resolveNewRouteOrigin()');
+  assert.ok(at > 0, 'resolveNewRouteOrigin exists');
+  const body = src.slice(at, src.indexOf('function readShipFromOrigin()', at));
+  assert.match(body, /resolveRouteOrigin\(\{\s*terminal:\s*NEWORDER_ORIGIN_DEFAULT\b/);
+  assert.match(src, /const newRouteOrigin = useMemo\(\(\) => resolveNewRouteOrigin\(\)/, 'the ＋ New route form');
+  assert.match(src, /const shipFrom = readShipFromOrigin\(\);/, 'a standard shell tapped on the Loads list');
+  assert.match(src, /const origin = r\.origin \|\| readShipFromOrigin\(\);/, 'a Save whose card carries no ship-from');
+  // The terminal really is Davis Delivery.
+  assert.match(src, /const NEWORDER_ORIGIN_DEFAULT = \{ name: 'Davis Delivery Service', addr1: '943 Gainesville Hwy/);
 });
 
 test('a half-saved address is never offered — NuVizz accepts an incomplete origin and then creates nothing', () => {
   const halfSaved = { name: 'HALF', addr1: '', city: 'BUFORD', zip: '30518' };
   assert.equal(originUsable(halfSaved), false);
-  const r = resolveRouteOrigin({ lastUsed: halfSaved, saved: [halfSaved], fallback: TERMINAL });
+  const r = resolveRouteOrigin({ terminal: TERMINAL, lastUsed: halfSaved, saved: [halfSaved] });
   assert.equal(r.origin.name, 'Davis Delivery Service');
   assert.equal(r.options.length, 1, 'the unusable entry is not in the dropdown');
 });
 
 test('with nothing anywhere, the form still refuses rather than sending a route NuVizz will silently drop', () => {
-  const r = resolveRouteOrigin({ lastUsed: null, saved: [], fallback: null });
+  const r = resolveRouteOrigin({ terminal: null, lastUsed: null, saved: [] });
   assert.equal(r.origin, null);
   assert.equal(r.source, 'none');
   const check = validateNewRoute({ routeName: 'TRAILER 6', date: '2026-09-09', hasOrigin: !!r.origin });
