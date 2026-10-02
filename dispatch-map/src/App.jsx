@@ -220,7 +220,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.105.1';
+const APP_VERSION = '1.106.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -274,6 +274,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.106.0', 'PROBLEM ADDRESSES NOW LISTS AN ORDER WHOSE CUSTOMER IS FIXED ON OUR BOARD BUT WHOSE ADDRESS IN NUVIZZ IS STILL WRONG \u2014 AND SENDS IT WITH THE SAME BUTTON. Chad, on BRENT SCARBROUGHQTS, the first stop on MONE: \u201cwhy was this address not flagged?!?\u201d \u2014 then: \u201cWhy are we not able to correct this one like we are all the others.\u201d The customer had been corrected on our board on Sep 15 (street first, the laydown yard second, the pin moved by hand), and the list stops judging an address the moment a board correction exists. But a board correction covers the CUSTOMER and a NuVizz correction covers ONE ORDER, so every new order still arrived with the dock line first \u2014 in the portal, the carrier\u2019s record and the driver\u2019s manifest \u2014 and nothing on the list could see it. WINDSTREAM DISTRIBUTION CENTER was the same. A fourth kind of row, NOT IN NUVIZZ (blue): our board has a correction for the customer and the order\u2019s address in NuVizz is different. Different means a different door: case, punctuation, RD/ROAD, STE/SUITE, CIR/CIRCLE and the other usual spellings, GA/GEORGIA, a ZIP+4 and the same words with the line break in another place (\u201c1200 MAIN ST, STE 5\u201d on one line) do not count; the dock ahead of the street, another dock or another ZIP does. Delivered, arrived and excepted orders are left off (they cannot be re-addressed). It ranks last \u2014 our truck goes to the right door; it is the paperwork that is wrong. Correct opens on the board\u2019s address with ONE button, Send to NuVizz (3 calls), and it touches nothing on our board: no re-geocode over a pin somebody placed by hand, no fresh correction stamp. Edit any field and it is an ordinary correction again. Correct + NuVizz pushes these rows with the rest; Correct on the board leaves them out (it would change nothing) and says so. Wave off expires if NuVizz re-addresses the order to something else. The badge counts them. Finding them is free (zero NuVizz calls); each push is the usual 3. A customer whose orders keep arriving the old way will show up on every order. PUT IT BACK: ADDRESS_QUEUE_NOT_IN_NUVIZZ=off on the server \u2014 no redeploy, the other three kinds untouched.'],
   ['1.105.1', 'A NEW ROUTE SHIPS FROM DAVIS DELIVERY UNLESS YOU PICK OTHERWISE. Chad, on the \u2795 New route form opening on Caliber Steel: \u201cThis should always default to davis delivery.\u201d It opened there because the form put the last pickup used in the New Order tab first, so one Caliber Steel order made every new route on that device start at Caliber\u2019s dock. Davis Delivery (943 Gainesville Hwy, Buford) is now always the first choice and the one selected. The last-used and saved pickups still follow it in the dropdown, one pick away, and Davis is never listed twice. The same rule covers the other two ways a route gets created: tapping a standard route on the Loads list, and a Save whose card carries no ship-from. The line under the dropdown now says Davis Delivery is the default instead of claiming the device has no saved pickup. Nothing about what a Save sends changes except which address starts selected. Zero NuVizz calls.'],
   ['1.105.0', 'EDIT AN ORDER\u2019S PIECE COUNTS ON THE STOP CARD AND SEND THEM TO NUVIZZ. Chad, 10/02: \u201cmake it where in dispatch map i can edit an order and change piece counts and then send it to nuvizz to change as well.\u201d WHERE: the stop card, under Items \u2014 \u201cEdit piece counts\u201d. It is the same card on the Map\u2019s desktop sidebar, the Map\u2019s phone drawer, the Routing stop panel and the PRO-lookup card, so it is on all four. Two boxes, Pallets and Loose \u2014 the same two the New Order form takes; the total is their sum and is shown, never typed. Send to NuVizz reads the order, writes ONLY the counts that change (NuVizz totalCartons / volume / totalPallets \u2014 a pallets fix never sends the loose count), reads it back, and says what NuVizz now holds. 3 NuVizz calls; 1 when NuVizz already has those counts. REFUSED BEFORE ANYTHING IS WRITTEN: an order already dispatched, out for delivery, arrived or delivered; a second NuVizz order sharing the number; a record with no id of its own; zero pieces (that is a cancel, not an edit). VERIFIED, NEVER ASSUMED: no write in this app had changed a piece count before, so the read-back is the proof every time. If NuVizz takes the write but reads back a different count, or any other field moves (weight, address, the line items, the BOL), the card says exactly which one, in red. NOT CHANGED: the order\u2019s line items in NuVizz (the portal\u2019s Items table) are a separate record and keep their quantity \u2014 the card says so before you Send. THE BOARD MOVES TOO: the scans do not refresh freight (it is carried forward from an order\u2019s first read), so NuVizz\u2019s read-back counts are written onto the order\u2019s board row and its stored copy \u2014 field-masked, never creating a row \u2014 and the card, the route\u2019s skid count and the Build Panel change together. A scan that snapshotted the board before the edit could have written the old count back over it; for the hour after an edit the scan now keeps the edited counts (the same hold the plan write-through uses). NUVIZZ_PIECES_WRITE=off turns all of it off \u2014 the write and the scan\u2019s hold \u2014 with one env var.'],
   ['1.104.3', 'STOPS IS ON THE DESKTOP BAR, RIGHT OF ROUTING \u2014 IN ANY WINDOW WIDE ENOUGH TO KEEP MESSAGES ON IT. Chad: \u201ctake the stops out of the more tab drop down and I want to move it into the main bar on desktop. Um, probably to the right of routing\u201d \u2014 and then \u201cJust call it stops not stop lookup now.\u201d Stop lookup is now a tab called Stops beside Routing (beta): one click instead of two. THE FIRST CUT DID NOT FIT EVERY DESK. On Routing \u2192 Build the same bar also carries the board card, the presence chip and Build | Engine | Shadow, and in a 1180\u20131366px window (a 13\u201314\u2033 laptop, or a browser at half screen) the extra tab pushed Messages and its red unread badge off the end of the row \u2014 on Routing the only sign a driver or customer has texted. So, Chad\u2019s pick (\u201c1 i like your idea\u201d): at 1440px and wider Stops sits on the bar and More does not list it; in a narrower window it sits under More, still called Stops, and the bar keeps Messages. Never both, never neither, and it moves live as the window is resized. The phone menu is unchanged, and the screen itself still says Stop lookup at the top. THE WAY BACK: one small commit; a revert puts it back under More.'],
@@ -31751,7 +31752,7 @@ function Shell() {
                 // It sat beside Stop lookup because both answer about orders; phone menu below too.
                 { id: 'labels', label: 'Print labels', hint: 'Davis labels by shipper and day — 0 NuVizz calls', icon: <Tag size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
-                { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
+                { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, no pin, or fixed here but not in NuVizz` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
                 // PERFORMANCE (v1.100.0): stops delivered — today against a typical day at the same minute,
                 // and by day, week and month. Both navigations or neither: the phone menu carries it too,
                 // in the same place (under Address history).
@@ -35356,6 +35357,10 @@ const QUEUE_SIGNALS = {
   no_pin: { label: 'No pin', cls: 'bg-red-100 text-red-800 border-red-200', hint: 'Never geocoded — this stop cannot be routed or lasso-selected, and is easy to miss entirely' },
   corrected_not_pinned: { label: 'Pin not moved', cls: 'bg-amber-100 text-amber-800 border-amber-200', hint: 'The address was corrected but the pin never moved — the map still points at the OLD building' },
   mis_split: { label: 'Mis-split', cls: 'bg-amber-100 text-amber-800 border-amber-200', hint: 'A suite or dock is where the street should be, so the pin was geocoded off the wrong line' },
+  // v1.106.0 — our board is right and the ORDER in NuVizz is not. Blue, not amber: our truck goes
+  // to the right door; it is the portal, the carrier's record and the driver's manifest that
+  // still carry the old address.
+  not_in_nuvizz: { label: 'Not in NuVizz', cls: 'bg-blue-100 text-blue-800 border-blue-200', hint: 'Fixed on our board, but this order in NuVizz still has the old address — the portal, the carrier’s record and the driver’s manifest show it' },
 };
 const QueueSignalBadge = ({ signal }) => {
   const m = QUEUE_SIGNALS[signal] || { label: signal, cls: 'bg-slate-100 text-slate-700 border-slate-200', hint: '' };
@@ -35387,9 +35392,25 @@ function correctedFields(row) {
 
 /** Is there anything for NuVizz to learn from this row? Pushing an address the order already
  *  holds spends 3 calls to tell the vendor what it told us. The fix for those rows is the pin,
- *  which is ours alone and never travels. */
+ *  which is ours alone and never travels. A "Not in NuVizz" row is worth it BY DEFINITION — the
+ *  server listed it because NuVizz's address differs (sameDeliveryAddress) — so the row and the
+ *  button can never disagree about whether Correct + NuVizz will send it. */
 function worthPushing(row) {
+  if (row?.signal === 'not_in_nuvizz') return true;
   return oneLineAddr(correctedFields(row)) !== oneLineAddr(row?.vendor);
+}
+
+/**
+ * FIXED HERE, NOT IN NUVIZZ, AND NOT EDITED: the board already holds exactly this address, so the
+ * only thing left to do is tell the ORDER. Saving it to the board again would change nothing but
+ * harm two things: re-geocoding the street replaces a pin somebody placed by hand, and a fresh
+ * address_override_at makes that pin read as older than the correction (pinIsStale). So such a
+ * save writes nothing to the board — it only pushes. Edit any field and it is an ordinary
+ * correction again, board half included.
+ */
+function queueBoardHasIt(row, fields) {
+  if (row?.signal !== 'not_in_nuvizz') return false;
+  return ['addr1', 'addr2', 'city', 'state', 'zip'].every((k) => String(fields?.[k] ?? '').trim() === String(row?.shown?.[k] ?? '').trim());
 }
 
 /** The dispatcher note that rides the SAME partialUpdate as the address (no extra call).
@@ -36687,21 +36708,27 @@ function useAddressQueue(nonce) {
  */
 async function saveQueueCorrection({ row, fields, google, push, today, clientOpId }) {
   if (!db || !row?.matchKey) throw new Error('This row has no customer key — open it on the Map to correct it.');
-  const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
+  // FIXED HERE, NOT IN NUVIZZ (v1.106.0): the board already holds exactly this address, so there
+  // is no board half — no geocode over a hand-placed pin, no fresh correction stamp. See
+  // queueBoardHasIt. Every other save is unchanged.
+  const boardHasIt = queueBoardHasIt(row, fields);
   let geo = null, geoErr = null;
-  try { geo = await geocodeAddress(google, q); } catch (e) { geoErr = e; }
+  if (!boardHasIt) {
+    const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
+    try { geo = await geocodeAddress(google, q); } catch (e) { geoErr = e; }
 
-  const payload = {
-    match_key: row.matchKey,
-    raw_name: row.businessName || '',
-    address_override: fields,
-    address_override_at: serverTimestamp(),
-    last_updated: serverTimestamp(),
-  };
-  if (geo) { payload.location_override = { lat: geo.lat, lng: geo.lng }; payload.location_override_at = serverTimestamp(); }
-  // The board half FIRST and unconditionally — a vendor write that fails must never cost the
-  // dispatcher the address they just typed.
-  await setDoc(doc(db, 'customer_notes', row.matchKey), payload, { merge: true });
+    const payload = {
+      match_key: row.matchKey,
+      raw_name: row.businessName || '',
+      address_override: fields,
+      address_override_at: serverTimestamp(),
+      last_updated: serverTimestamp(),
+    };
+    if (geo) { payload.location_override = { lat: geo.lat, lng: geo.lng }; payload.location_override_at = serverTimestamp(); }
+    // The board half FIRST and unconditionally — a vendor write that fails must never cost the
+    // dispatcher the address they just typed.
+    await setDoc(doc(db, 'customer_notes', row.matchKey), payload, { merge: true });
+  }
 
   const stopLike = { stopNbr: row.stopNbr, businessName: row.businessName, matchKey: row.matchKey, boardDate: row.date, routeName: row.routeName, isPlanned: true };
   // AWAITED, AND ITS ANSWER IS CARRIED BACK. It used to be fire-and-forget with a swallowed
@@ -36712,6 +36739,9 @@ async function saveQueueCorrection({ row, fields, google, push, today, clientOpI
   // cannot report it. It still cannot fail the save — the await is wrapped and the result is
   // only ever rendered as a count — but a run that logged 3 of 4 now says so out loud.
   if (!push) {
+    // NOTHING WAS SAVED, so nothing is logged and nothing claims a correction. `declined` is the
+    // log's own word for a write it rightly refused, so a group run does not count it as lost.
+    if (boardHasIt) return { geoErr: null, pushed: null, logged: { recorded: false, outcome: 'declined', detail: 'already on the board' }, boardUnchanged: true };
     const logged = await logAddressOverride({ stop: stopLike, before: row.shown, after: fields, source: 'override' });
     return { geoErr, pushed: null, logged };
   }
@@ -36729,8 +36759,10 @@ async function saveQueueCorrection({ row, fields, google, push, today, clientOpI
   // means "we asked and the vendor refused — the manifest and the board disagree", which is a
   // thing somebody is expected to go and fix. Deriving it from the clean-write verdict wrote
   // that sentence into the permanent record for six orders NuVizz had accepted.
-  const logged = await logAddressOverride({ stop: stopLike, before: row.shown, after: fields, source: 'override', nuvizz: addressReachedNuvizz(j) });
-  return { geoErr, pushed: verdict, logged };
+  // `before` IS WHAT CHANGED. A push-only row changed the ORDER, not our board — so its "before"
+  // is what NuVizz held, and the log reads "Us → NuVizz" from that to the board's address.
+  const logged = await logAddressOverride({ stop: stopLike, before: boardHasIt ? row.vendor : row.shown, after: fields, source: 'override', nuvizz: addressReachedNuvizz(j) });
+  return { geoErr, pushed: verdict, logged, boardUnchanged: boardHasIt };
 }
 
 /**
@@ -36786,7 +36818,7 @@ function useQueuePush(today, reload) {
         // fix for those is the pin, and 3 calls to restate the vendor's own address is spend
         // for nothing.
         const sendToVendor = push && worthPushing(row);
-        const { pushed, geoErr, logged } = await saveQueueCorrection({
+        const { pushed, geoErr, logged, boardUnchanged } = await saveQueueCorrection({
           row, fields: correctedFields(row), google, push: sendToVendor, today, clientOpId: queueClientOpId(row, correctedFields(row)),
         });
         // `logged` is an OBJECT now, and every object is truthy — counting it directly would
@@ -36797,7 +36829,11 @@ function useQueuePush(today, reload) {
         loggedTried += 1;
         if (logged?.recorded || logged?.outcome === 'declined') loggedOk += 1;
         if (!sendToVendor && !pushed) {
-          acc[row.key] = geoErr
+          // A "Not in NuVizz" row on a board-only run: the board already had it, nothing was
+          // written, and saying "corrected" would claim a save that never happened.
+          acc[row.key] = boardUnchanged
+            ? { kind: 'skipped', text: 'Already right on the board — only Correct + NuVizz changes this one.' }
+            : geoErr
             ? { kind: 'partial', text: 'Address saved, but the pin could not be moved — still on the queue.' }
             : { kind: 'ok', text: push ? 'Corrected on the board (NuVizz already had this address).' : 'Corrected on the board.' };
           setResults({ ...acc });
@@ -36884,7 +36920,7 @@ function useProblemAddressCount() {
  *  `dismissed` (address-queue.mts), so that answer takes them back out. */
 function problemAddressTotal(summary, withDismissed) {
   const s = summary || {};
-  const all = Number(s.mis_split || 0) + Number(s.no_pin || 0) + Number(s.corrected_not_pinned || 0);
+  const all = Number(s.mis_split || 0) + Number(s.no_pin || 0) + Number(s.corrected_not_pinned || 0) + Number(s.not_in_nuvizz || 0);
   return Math.max(0, all - (withDismissed ? Number(s.dismissed || 0) : 0));
 }
 /** A queue load's own answer IS the fresh count: hand it to every mounted badge, no second read. */
@@ -37545,6 +37581,10 @@ function QueueRowActions({ row, q, e, pushable, verdict, stacked }) {
 function QueueRowEditor({ e, row, pushable, stacked }) {
   const f = 'w-full text-sm border border-slate-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-200';
   const set = (k) => (ev) => e.setF((p) => ({ ...p, [k]: ev.target.value }));
+  // A "Not in NuVizz" row left as it is: the board already has this address, so the only action
+  // is the push, and the board half is skipped (queueBoardHasIt). Edit a field and it is an
+  // ordinary correction again, with both buttons.
+  const pushOnly = queueBoardHasIt(row, e.f);
   return (
     <div className="space-y-2">
       {/* VISIBLE LABELS, not placeholders. A placeholder disappears the moment a field has a
@@ -37585,21 +37625,32 @@ function QueueRowEditor({ e, row, pushable, stacked }) {
         </div>
       )}
       <div className="flex items-center gap-2 flex-wrap">
-        <button onClick={() => e.save(false)} disabled={e.busy} style={{ minHeight: 44 }}
-          className="rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-          {e.busy ? 'Saving…' : 'Save to board'}
-        </button>
+        {!pushOnly && (
+          <button onClick={() => e.save(false)} disabled={e.busy} style={{ minHeight: 44 }}
+            className="rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+            {e.busy ? 'Saving…' : 'Save to board'}
+          </button>
+        )}
         {pushable && (
           <button onClick={() => e.save(true)} disabled={e.busy} style={{ minHeight: 44, background: '#16a34a' }}
             className="rounded px-3 text-xs font-semibold text-white disabled:opacity-50">
-            {e.busy ? 'Saving…' : 'Save & correct NuVizz (3 calls)'}
+            {e.busy ? 'Saving…' : pushOnly ? 'Send to NuVizz (3 calls)' : 'Save & correct NuVizz (3 calls)'}
           </button>
         )}
       </div>
-      <div className="text-[10px] text-slate-400">
-        Saving fixes the board for this customer’s future orders too. Correcting NuVizz changes THIS order only —
-        the portal, the carrier’s record and the driver’s manifest — and adds a dispatcher note saying what we changed.
-      </div>
+      {pushOnly ? (
+        <div className="text-[10px] text-slate-400">
+          Our board already has this address, so nothing is saved here and the pin is not touched.
+          {pushable
+            ? ' Sending it changes THIS order in NuVizz — the portal, the carrier’s record and the driver’s manifest — and adds a dispatcher note saying what we changed.'
+            : ' This order cannot be pushed (see above), so there is nothing to do here.'}
+        </div>
+      ) : (
+        <div className="text-[10px] text-slate-400">
+          Saving fixes the board for this customer’s future orders too. Correcting NuVizz changes THIS order only —
+          the portal, the carrier’s record and the driver’s manifest — and adds a dispatcher note saying what we changed.
+        </div>
+      )}
       {e.msg && (
         <div className={`text-[11px] rounded p-2 break-words ${e.msg.kind === 'warn' ? 'bg-amber-50 border border-amber-200 text-amber-900' : 'bg-green-50 border border-green-200 text-green-900'}`}>
           {e.msg.text}
@@ -37627,13 +37678,17 @@ function QueueSummaryBar({ q, stacked }) {
   // The push is priced on the rows it would actually CHANGE, not on everything ticked — see
   // worthPushing. Quoting the wrong number here is how a dispatcher is surprised by the bill.
   const pushWorth = q.selected.filter(worthPushing).length;
+  // WHAT "ON THE BOARD" CAN ACTUALLY CHANGE. A "Not in NuVizz" row is already right on the board,
+  // so a board-only run would write nothing for it — counting it would promise a correction the
+  // button cannot make. Only Correct + NuVizz does anything for those.
+  const boardSel = q.selected.filter((r) => !queueBoardHasIt(r, correctedFields(r)));
   const b = q.push.budget;
   const overBudget = !!(b && b.ceiling && pushWorth * 3 > Math.max(0, b.ceiling - b.current));
   const offList = queueVerdictsOffList(q.push.results, q.allRows);
   return (
     <div className="rounded-xl border bg-white p-3 space-y-2">
       <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
-        {['no_pin', 'corrected_not_pinned', 'mis_split'].map((k) => (
+        {['no_pin', 'corrected_not_pinned', 'mis_split', ...(q.data?.notInNuvizz === false ? [] : ['not_in_nuvizz'])].map((k) => (
           <span key={k} className="inline-flex items-center gap-1">
             <QueueSignalBadge signal={k} /><span className="text-slate-600 font-semibold">{sum[k] || 0}</span>
           </span>
@@ -37656,9 +37711,9 @@ function QueueSummaryBar({ q, stacked }) {
               as well". Board-only applies every suggested split and re-geocodes the pin — it
               fixes our map, our routing and this customer's future orders, and spends NOTHING.
               The second does that and also tells the carrier, per order, at 3 calls each. */}
-          <button onClick={() => q.push.runGroup(q.selected, q.google, false)} disabled={!sel} style={{ minHeight: 44 }}
+          <button onClick={() => q.push.runGroup(boardSel, q.google, false)} disabled={!boardSel.length} style={{ minHeight: 44 }}
             className="rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-            Correct {sel || ''} on the board
+            Correct {boardSel.length || ''} on the board
           </button>
           <button onClick={() => q.push.runGroup(q.selected, q.google, true)} disabled={!sel || overBudget || !pushWorth} style={{ minHeight: 44, background: sel && !overBudget && pushWorth ? '#16a34a' : undefined }}
             className="rounded px-3 text-xs font-semibold text-white disabled:opacity-50 disabled:bg-slate-300">
@@ -37680,6 +37735,11 @@ function QueueSummaryBar({ q, stacked }) {
         // told us. Those rows are still corrected on the board — their fix is the pin.
         <div className="text-[11px] text-slate-500">
           {sel - pushWorth} of the {sel} selected {sel - pushWorth === 1 ? 'needs' : 'need'} only a pin moved — NuVizz already has that address, so {sel - pushWorth === 1 ? 'it is' : 'they are'} corrected on the board and not pushed.
+        </div>
+      )}
+      {sel > boardSel.length && (
+        <div className="text-[11px] text-slate-500">
+          {sel - boardSel.length} of the {sel} selected {sel - boardSel.length === 1 ? 'is' : 'are'} already right on the board — only Correct + NuVizz changes {sel - boardSel.length === 1 ? 'it' : 'them'}.
         </div>
       )}
       {overBudget && <div className="text-[11px] text-red-700">That is more calls than today’s ceiling has left. Push fewer rows, or wait for the ceiling to reset.</div>}

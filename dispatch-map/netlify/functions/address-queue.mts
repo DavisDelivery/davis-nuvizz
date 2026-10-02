@@ -11,7 +11,12 @@
 //   GET                      today + the next 2 BUSINESS days (what the scan actually writes)
 //   GET ?from=&to=           an explicit window, clamped to 3 days
 //   GET ?dismissed=1         include waved-off rows, so a dispatcher can un-wave one
-//   → { ok, tenant, dates, nuvizzCalls: 0, notesLoaded, days:[{date,stopsRead,rows}], summary }
+//   → { ok, tenant, dates, nuvizzCalls: 0, notesLoaded, notInNuvizz, days:[{date,stopsRead,rows}], summary }
+//
+// FOUR SIGNALS since v1.106.0: no_pin, corrected_not_pinned, mis_split — and not_in_nuvizz, an
+// order whose customer is corrected on OUR board while the order in NuVizz still carries the old
+// address (lib/address-queue.mts, nuvizzBehindBoard). ADDRESS_QUEUE_NOT_IN_NUVIZZ=off turns that
+// one off and leaves the other three; `notInNuvizz` in the answer says which way it is set.
 //
 //   POST { date, key, fp, signal, stopNbr, by, byName, why }   wave a row off
 //   POST { date, key, undo: true }                             put it back
@@ -36,7 +41,7 @@ import { QUEUE_STOP_FIELDS, QUEUE_NOTE_FIELDS } from './lib/board-fields.mts';
 import { withCustomerKeys } from './lib/customer-key.mts';
 import { mapEntryPatch } from './lib/firestore-field-path.mts';
 import { scanDatesFrom } from './lib/refresh-stops-core.mts';
-import { addressQueueEnabled, buildQueueRow, sortQueueRows, isDismissed } from './lib/address-queue.mts';
+import { addressQueueEnabled, notInNuvizzEnabled, buildQueueRow, sortQueueRows, isDismissed } from './lib/address-queue.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -99,7 +104,8 @@ export default async (req: Request): Promise<Response> => {
     }
 
     const out: any[] = [];
-    const summary = { mis_split: 0, no_pin: 0, corrected_not_pinned: 0, dismissed: 0 };
+    const notInNuvizz = notInNuvizzEnabled();
+    const summary = { mis_split: 0, no_pin: 0, corrected_not_pinned: 0, not_in_nuvizz: 0, dismissed: 0 };
     for (const { d, stops } of days) {
       // withCustomerKeys BEFORE anything is judged — see the header. Without it every stop
       // joins to no note and the queue reports a board full of problems that were fixed weeks
@@ -108,7 +114,7 @@ export default async (req: Request): Promise<Response> => {
       const items = dismissedFor.get(d) || {};
       const rows: any[] = [];
       for (const s of keyed) {
-        const row = buildQueueRow(s, notes.get(String(s?.matchKey || '')), d);
+        const row = buildQueueRow(s, notes.get(String(s?.matchKey || '')), d, { notInNuvizz });
         if (!row) continue;
         const waved = isDismissed(row, items);
         if (waved) {
@@ -137,6 +143,8 @@ export default async (req: Request): Promise<Response> => {
       // announcing itself instead of rendering a confident wrong list — CLAUDE.md asks for the
       // zero-cost explain BEFORE the guess, and this is it.
       notesLoaded: notes.size,
+      // THE SWITCH'S POSITION, read back — a switch that cannot be read is not a switch.
+      notInNuvizz,
       days: out,
       summary,
     });

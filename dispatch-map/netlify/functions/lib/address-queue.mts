@@ -26,18 +26,18 @@
 // pin goes to the old address while the paperwork says the new one. Chad, on being shown it:
 // "WE should flag this if it happens."
 
-import { addressLooksOff, suggestAddressFix } from '../../../src/lib/address-fix.js';
+import { addressLooksOff, suggestAddressFix, sameDeliveryAddress } from '../../../src/lib/address-fix.js';
 import { stopPosition } from '../../../src/lib/board-flags.js';
 import { shownAddress, vendorAddress } from '../../../src/lib/address-log.js';
 import { normStreetOf } from '../../../src/lib/matchKey.js';
 
-export type QueueSignal = 'no_pin' | 'corrected_not_pinned' | 'mis_split';
+export type QueueSignal = 'no_pin' | 'corrected_not_pinned' | 'mis_split' | 'not_in_nuvizz';
 
 /** Newest-first severity, and the order the queue sorts by. A stop with no pin at all cannot
  *  be routed or lasso-selected; a stale pin sends a truck somewhere specific and wrong; a
  *  mis-split is wrong text that may still have geocoded close enough. */
 export const SIGNAL_RANK: Record<QueueSignal, number> = {
-  no_pin: 0, corrected_not_pinned: 1, mis_split: 2,
+  no_pin: 0, corrected_not_pinned: 1, mis_split: 2, not_in_nuvizz: 3,
 };
 
 /**
@@ -49,6 +49,18 @@ export const SIGNAL_RANK: Record<QueueSignal, number> = {
  */
 export function addressQueueEnabled(env: any = process.env): boolean {
   const v = String(env?.ADDRESS_QUEUE ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/**
+ * THE FOURTH SIGNAL'S OWN SWITCH (v1.106.0). Default ON; an explicit off-word turns it off;
+ * anything malformed leaves it ON — the house shape, because a typo must never silently empty a
+ * list of orders whose paperwork is wrong. Its OWN variable, not ADDRESS_QUEUE: switching off
+ * the new rows must not take the three older signals with them. ADDRESS_QUEUE_NOT_IN_NUVIZZ=off
+ * puts the list back exactly as it was before this signal existed.
+ */
+export function notInNuvizzEnabled(env: any = process.env): boolean {
+  const v = String(env?.ADDRESS_QUEUE_NOT_IN_NUVIZZ ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
 }
 
@@ -103,12 +115,43 @@ export function pinIsStale(note: any): boolean {
  *      ordering: addressLooksOff returns false the moment an address_override exists
  *      (address-fix.js:28), and both of the first two require one.
  */
-export function classifyQueueRow(stop: any, note: any): QueueSignal | null {
+export function classifyQueueRow(stop: any, note: any, opts: { notInNuvizz?: boolean } = {}): QueueSignal | null {
   if (!stop) return null;
   if (stopPosition(stop, note) === null) return 'no_pin';
   if (note?.address_override && pinIsStale(note)) return 'corrected_not_pinned';
   if (addressLooksOff(stop, note)) return 'mis_split';
+  //   4. `not_in_nuvizz` — reached only when our board is RIGHT (an override exists, the pin is
+  //      not stale), which is exactly why it was invisible: every rule above is about our board.
+  if (opts.notInNuvizz !== false && nuvizzBehindBoard(stop, note)) return 'not_in_nuvizz';
   return null;
+}
+
+/** Statuses a push is refused for — the client's queueRowExecuted, the same three words. */
+const WORKED = new Set(['DELIVERED', 'ARRIVED', 'EXCEPTION']);
+
+/**
+ * PURE: FIXED HERE, NOT IN NUVIZZ — our board has a correction for this customer and the ORDER
+ * in NuVizz still carries a different address.
+ *
+ * Chad, 2026-10-01, on an order whose customer had been corrected on the board two weeks before:
+ * "Why are we not able to correct this one like we are all the others." A board correction is
+ * per CUSTOMER and follows every new order; a NuVizz correction is per ORDER and does not. So
+ * each new order arrives with the carrier's old address — the portal, the carrier's record and
+ * the driver's manifest all show it — while every check above reads our board, which is right.
+ *
+ * "Different" is sameDeliveryAddress (src/lib/address-fix.js): the words in their order (a dock
+ * ahead of the street is different; the same words with the line break moved are not), with
+ * the spellings NuVizz and people both use folded and the state left to the ZIP. Compared
+ * against what the board SHOWS (shownAddress — the card's own precedence), not the raw override,
+ * so the row says exactly what the "We show" and "NuVizz has" columns say.
+ *
+ * WORKED FREIGHT IS NOT LISTED. A delivered order cannot be re-addressed and the board is already
+ * right, so the row would offer nothing to do.
+ */
+export function nuvizzBehindBoard(stop: any, note: any): boolean {
+  if (!stop || !note?.address_override) return false;
+  if (WORKED.has((s(stop?.normalizedStatus) || s(stop?.status)).toUpperCase())) return false;
+  return !sameDeliveryAddress(shownAddress(stop, note), vendorAddress(stop));
 }
 
 /**
@@ -132,11 +175,17 @@ export function classifyQueueRow(stop: any, note: any): QueueSignal | null {
  * The `v1|` prefix invalidates every stored dismissal at once if this recipe ever changes,
  * rather than silently matching the wrong thing.
  */
-export function queueRowFingerprint(stop: any, note: any): string {
+export function queueRowFingerprint(stop: any, note: any, signal: QueueSignal | null = null): string {
   const a = shownAddress(stop, note);
   const pos = stopPosition(stop, note);
   const pin = pos ? `${pos.source}:${pos.lat.toFixed(5)},${pos.lng.toFixed(5)}` : 'nopin';
-  return ['v1', normStreetOf(a.addr1), normStreetOf(a.addr2), s(a.city), s(a.state), s(a.zip), pin].join('|');
+  const base = ['v1', normStreetOf(a.addr1), normStreetOf(a.addr2), s(a.city), s(a.state), s(a.zip), pin].join('|');
+  // A `not_in_nuvizz` row is about what NUVIZZ holds, so NuVizz's address is part of what was
+  // waved off: the carrier re-addressing the order to something else wrong brings the row back.
+  // Only this signal carries it — every stored fingerprint for the other three stays valid.
+  if (signal !== 'not_in_nuvizz') return base;
+  const v = vendorAddress(stop);
+  return `${base}|nv:${[normStreetOf(v.addr1), normStreetOf(v.addr2), s(v.city), s(v.zip)].join('|')}`;
 }
 
 /** PURE: sanitise one path-ish token. The recipe already used at App.jsx:17041. */
@@ -160,8 +209,8 @@ export function dismissalKey(signal: QueueSignal, stop: any): string | null {
 }
 
 /** PURE: the whole row the endpoint serves, or null when this stop is not a problem. */
-export function buildQueueRow(stop: any, note: any, date: string): Record<string, any> | null {
-  const signal = classifyQueueRow(stop, note);
+export function buildQueueRow(stop: any, note: any, date: string, opts: { notInNuvizz?: boolean } = {}): Record<string, any> | null {
+  const signal = classifyQueueRow(stop, note, opts);
   if (!signal) return null;
   const pos = stopPosition(stop, note);
   return {
@@ -193,7 +242,7 @@ export function buildQueueRow(stop: any, note: any, date: string): Record<string
     pin: pos ? { lat: pos.lat, lng: pos.lng, source: pos.source } : null,
     // Only meaningful for mis_split; null elsewhere, never a fabricated suggestion.
     suggestion: signal === 'mis_split' ? suggestAddressFix(stop) : null,
-    fp: queueRowFingerprint(stop, note),
+    fp: queueRowFingerprint(stop, note, signal),
     key: dismissalKey(signal, stop),
   };
 }
