@@ -159,6 +159,13 @@ export const setStopAddress = (stopNbr, address = {}, opts = {}) =>
     // The result carries `noteLanded`, because both drift diffs ignore `comments` by design and
     // a dropped note would otherwise read as a clean success.
     ...(opts.note ? { note: String(opts.note), noteAudience: opts.noteAudience || 'dispatcher' } : {}),
+    // WHICH CUSTOMER NOTE THE BOARD JOINED TO THIS ORDER, and the name it was keyed with. A push
+    // that moves line 1 re-keys the order on the next scan, so the server copies that note — the
+    // hand-placed pin, receiving hours, the rest — to the order's new key (lib/note-carry.mts).
+    // The server proves the key against the address NuVizz held before the write; it is never
+    // trusted, and an old caller that sends neither simply carries nothing.
+    ...(opts.matchKey ? { matchKey: String(opts.matchKey) } : {}),
+    ...(opts.businessName ? { businessName: String(opts.businessName) } : {}),
   }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
 // Change an order's PIECE COUNTS in NuVizz (§P, v1.105.0) — pallets (skids) and loose; the total
