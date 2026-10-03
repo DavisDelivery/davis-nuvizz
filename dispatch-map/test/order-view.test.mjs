@@ -63,7 +63,7 @@ test('a list-only row: missing is reported missing, and the next move is to load
   assert.equal(v.contact.known, false);
   assert.deepEqual(v.freight.items, []);
   // The load-wide Estimated Arrival is not dressed as this order's window, nor as an ETA.
-  assert.deepEqual(v.when.window, { text: 'around 8:00 AM', closeMin: null, strict: false, estimateOnly: true });
+  assert.deepEqual(v.when.window, { text: 'around 8:00 AM', closeMin: null, appointment: false, estimateOnly: true, otherDay: '' });
   assert.equal(v.when.eta, null);
   assert.match(v.when.etaMissing, /No live ETA/);
   // Total pieces with no NuVizz total: pallets + loose, from the fields the row has.
@@ -80,20 +80,21 @@ test('freight that is not on the board stays blank — never a misleading zero',
   assert.equal(v.freight.weight, null);
 });
 
-test('a normal enriched order: who to call, what is on it, references, and the strict window', () => {
+test('a normal enriched order: who to call, what is on it, references, and its delivery window', () => {
   const v = V(FULL());
   assert.equal(v.data.listOnly, false);
   assert.equal(v.contact.phoneDisplay, '(770) 752-0911');
   assert.equal(v.contact.source, 'order');
   assert.equal(v.contact.email, 'dock@motovario.example');
-  assert.deepEqual(v.when.window, { text: '8:00 AM – 2:00 PM', closeMin: 14 * 60, strict: true, estimateOnly: false });
+  assert.deepEqual(v.when.window, { text: '8:00 AM – 2:00 PM', closeMin: 14 * 60, appointment: false, estimateOnly: false, otherDay: '' });
   assert.equal(v.freight.total, 10, 'NuVizz total pieces wins when present');
   assert.deepEqual(v.freight.items.map((i) => [i.product, i.qty, i.uom, i.weight, i.cls, i.oversize, i.dims]), [
     ['GEAR REDUCERS', 6, 'PCS', 3600, '70', true, '96 × 40 × 50 in'],
     ['MOTOR MOUNTS', 4, 'CTN', 600, '', false, ''],
   ]);
   assert.deepEqual(v.refs.map((r) => r.label), ['PO', 'BOL', 'Customer ref', 'Order', 'Terms']);
-  assert.ok(v.requirements.some((r) => r.key === 'strict' && r.source === 'On the NuVizz order' && r.must));
+  assert.ok(v.requirements.some((r) => r.key === 'window' && r.label === 'Delivery window' && r.source === 'On the NuVizz order' && r.must));
+  assert.equal(v.requirements.some((r) => /strict/i.test(r.label)), false, 'STRICT is NuVizz’s default stamp — never shown as a commitment');
   assert.equal(v.next.key, 'call-customer');
   assert.match(v.next.reason, /Scheduled on GEORGE L for Mon, Oct 5/);
 });
@@ -229,8 +230,119 @@ test('a stale ETA: NuVizz’s planned time has passed with no arrival — said s
   assert.equal(V(stop, { nowMin: 12 * 60, today: '2026-10-04' }).alerts.some((x) => x.key === 'eta-stale'), false, 'only on the delivery day');
   assert.equal(V({ ...stop, normalizedStatus: 'ARRIVED' }, { nowMin: 12 * 60 }).alerts.some((x) => x.key === 'eta-stale'), false, 'arrived is not late');
   assert.equal(V({ ...stop, normalizedStatus: 'DELIVERED', deliveredDTTM: `${DAY}T11:50:00` }, { nowMin: 12 * 60 }).alerts.some((x) => x.key === 'eta-stale'), false);
-  // A plan written for another day is not judged against today's clock.
-  assert.equal(V(FULL({ raw: { stopExecutionInfo: { to: { plannedEtaDTTM: '2026-10-02T11:20:00' } } } }), { nowMin: 12 * 60 }).when.eta.stale, false);
+  // A plan written for another day is not today's ETA — said so, never shown as current.
+  const old = V(FULL({ raw: { stopExecutionInfo: { to: { plannedEtaDTTM: '2026-10-02T11:20:00' } } } }), { nowMin: 12 * 60 });
+  assert.equal(old.when.eta, null);
+  assert.match(old.when.etaMissing, /from Fri, Oct 2’s plan/);
+  assert.equal(old.alerts.some((x) => x.key === 'eta-stale'), false);
+});
+
+test('the window is read the way the rest of the app reads it: NuVizz placeholders and its creation stamp are not windows', () => {
+  for (const [from, to] of [['05:00', '05:00'], ['08:00', '20:00']]) {
+    const v = V(FULL({ scheduledFrom: `${DAY}T${from}:00`, scheduledTo: `${DAY}T${to}:00` }), { nowMin: 19 * 60 + 10 });
+    assert.equal(v.when.window, null, `${from}-${to} is a placeholder`);
+    assert.match(v.when.windowNote, /default schedule/);
+    assert.equal(v.alerts.some((a) => a.key.startsWith('window')), false);
+    assert.equal(v.requirements.some((r) => r.key === 'window'), false);
+    assert.equal(orderMessageDrafts(v).some((d) => / between /.test(d.text)), false, 'no placeholder in a customer message');
+  }
+  // 09:00–09:30 stamped on many unrelated customers is NuVizz's creation default (detectDefaultSlots).
+  const slot = FULL({ scheduledFrom: `${DAY}T09:00:00`, scheduledTo: `${DAY}T09:30:00` });
+  assert.equal(V(slot, { nowMin: 10 * 60, defaultSlots: new Set(['540-570']) }).when.window, null);
+  const real = V(slot, { nowMin: 10 * 60 });
+  assert.equal(real.when.window.appointment, true, 'a half-hour nobody else holds is a booked slot');
+  assert.equal(real.requirements.find((r) => r.key === 'window').label, 'Appointment slot');
+  // A carried-over order keeps day one's schedule: shown with its date, never judged against today.
+  const carried = V(FULL({ scheduledFrom: '2026-10-02T08:00:00', scheduledTo: '2026-10-02T14:00:00' }), { nowMin: 14 * 60 + 30 });
+  assert.equal(carried.when.window.otherDay, 'Fri, Oct 2');
+  assert.equal(carried.when.window.closeMin, null);
+  assert.equal(carried.alerts.some((a) => a.key.startsWith('window')), false);
+  assert.equal(carried.requirements.some((r) => r.key === 'window'), false);
+});
+
+test('our anchored ETA outranks NuVizz’s frozen plan, as on the route card; a passed plan is only raised when it is all we have', () => {
+  const stop = FULL({ normalizedStatus: 'OUT_FOR_DEL', raw: { stopExecutionInfo: { to: { plannedEtaDTTM: `${DAY}T09:30:00` } } } });
+  const v = V(stop, { nowMin: 10 * 60, eta: { etaMin: 11 * 60 + 40, errorMin: 14, anchored: true } });
+  assert.equal(v.when.eta.basis, 'model');
+  assert.equal(v.when.eta.text, 'about 11:40 AM');
+  assert.equal(v.alerts.some((a) => a.key === 'eta-stale'), false);
+  // The "as of" time carries its date when it was not read today.
+  const readEarlier = V(FULL({ enriched_at: '2026-10-02T06:10:00', raw: { stopExecutionInfo: { to: { plannedEtaDTTM: `${DAY}T11:20:00` } } } }));
+  assert.match(readEarlier.when.eta.detail, /6:10 AM on Fri, Oct 2/);
+  assert.equal(V({ ...stop, normalizedStatus: 'ARRIVED', arrivalDTTM: `${DAY}T09:50:00` }, { nowMin: 10 * 60 }).when.eta, null, 'arrived: no ETA, the arrival time shows instead');
+});
+
+test('a customer message never carries an estimate, an unplanned "schedule" or an arrival it has not seen', () => {
+  const stale = V(FULL({ normalizedStatus: 'OUT_FOR_DEL', raw: { stopExecutionInfo: { to: { plannedEtaDTTM: `${DAY}T09:00:00` } } } }), { nowMin: 11 * 60 });
+  assert.equal(stale.when.eta.stale, true);
+  for (const d of orderMessageDrafts(stale)) assert.doesNotMatch(d.text, /9:00 AM|estimated/, 'a passed plan never reaches a draft');
+  const ours = V(FULL({ normalizedStatus: 'OUT_FOR_DEL' }), { eta: { etaMin: 700, errorMin: 15, anchored: true } });
+  for (const d of orderMessageDrafts(ours)) assert.doesNotMatch(d.text, /11:40|±|estimated/, 'nor does our model');
+  const unplanned = V(FULL({ normalizedStatus: 'UNPLANNED', status: '10', loadNbr: '', routeName: '', routeSeq: null, driverName: '' }));
+  assert.equal(orderMessageDrafts(unplanned).some((d) => d.key === 'scheduled'), false);
+  const arrived = V(FULL({ normalizedStatus: 'ARRIVED', arrivalDTTM: `${DAY}T10:05:00` }));
+  assert.deepEqual(orderMessageDrafts(arrived).map((d) => d.key), ['arrived', 'delay', 'call-me']);
+});
+
+test('the flag engine’s gates hold here too: set-aside routes and unrouted unplanned orders are not blocked', () => {
+  const closedNote = { closed_days: ['mon'], manual_overrides: { closed_days: true } };
+  const typedClosed = { ...closedNote, closed_days_typed: ['mon'] };
+  const onAppt = FULL({ loadNbr: 'ULINE APPT', routeName: 'ULINE APPT', lat: null, lng: null, dupNbr: true, signalSources: { orderInstructions: 'CLOSED ON MONDAYS' }, orderInstructions: 'CLOSED ON MONDAYS' });
+  const va = V(onAppt, { note: typedClosed });
+  assert.deepEqual(va.alerts.filter((a) => ['closed', 'no-pin', 'dup'].includes(a.key)), [], 'ULINE APPT is a holding pen, not a late truck');
+  const onChad = V(FULL({ loadNbr: 'CHAD', routeName: 'CHAD', dupNbr: true }));
+  assert.equal(onChad.alerts.some((a) => a.key === 'dup'), false, 'the owner’s own truck');
+  const parked = V(FULL({ normalizedStatus: 'UNPLANNED', status: '10', loadNbr: '', routeName: '', signalSources: { orderInstructions: 'CLOSED ON MONDAYS' }, orderInstructions: 'CLOSED ON MONDAYS' }));
+  assert.equal(parked.alerts.some((a) => a.key === 'closed'), false, 'freight parked because the customer is closed is already solved');
+});
+
+test('every action offered can run: no route view without a route, no call without a number, load before guessing', () => {
+  // Unplanned, no driver, window closing: reach the customer, not a route that does not exist.
+  const unrouted = V(FULL({ normalizedStatus: 'UNPLANNED', status: '10', loadNbr: '', routeName: '', driverName: '', scheduledFrom: `${DAY}T13:00:00`, scheduledTo: `${DAY}T17:00:00` }), { nowMin: 16 * 60 + 20 });
+  const w = unrouted.alerts.find((a) => a.key === 'window-closing');
+  assert.equal(w.action.key, 'call-customer');
+  assert.notEqual(unrouted.next.key, 'open-route');
+  // A list-only row with a red hours estimate: load it (the number comes with it), never "move the date".
+  const listRed = V(LIST(), { flags: [{ rule: 'hours_risk', tier: 'red', stopNbr: '007185553', title: 'May miss receiving hours', fingerprint: 'r' }] });
+  assert.equal(listRed.next.key, 'load-order');
+  // Arrived: the call-ahead is past.
+  const arrived = V(FULL({ normalizedStatus: 'ARRIVED', arrivalDTTM: `${DAY}T10:05:00`, signalSources: { orderInstructions: 'CALL 30 MIN AHEAD' } }));
+  assert.notEqual(arrived.next.reason, 'The order asks for a call before arrival.');
+  // A barred driver on a delivered order is history, not a blocker (the requirement still records it).
+  const done = V(FULL({ normalizedStatus: 'DELIVERED', deliveredDTTM: `${DAY}T11:00:00` }), { note: { do_not_send: true, dns_drivers: ['George Leonard'] } });
+  assert.equal(done.alerts.some((a) => a.key === 'dns-driver'), false);
+  assert.ok(done.requirements.some((r) => r.key === 'dns_drivers'));
+});
+
+test('provenance is never laundered: scanner hours are not a late-delivery fact, unrecorded hours are not "saved"', () => {
+  const autoNote = { receiving_hours: { mon: { open: '06:00', close: '14:00' } }, auto_sources: { receiving_hours: ['orderInstructions'] } };
+  const late = V(FULL({ normalizedStatus: 'DELIVERED', deliveredDTTM: `${DAY}T15:10:00` }), { note: autoNote });
+  assert.equal(late.alerts.some((a) => a.key === 'late-delivery'), false);
+  const typedNote = { receiving_hours: { mon: { open: '06:00', close: '14:00' } }, manual_overrides: { receiving_hours: true } };
+  const lateTyped = V(FULL({ normalizedStatus: 'DELIVERED', deliveredDTTM: `${DAY}T15:10:00` }), { note: typedNote });
+  assert.equal(lateTyped.alerts.find((a) => a.key === 'late-delivery').title, 'Delivered 70 min after receiving closed');
+  const unrecorded = V(FULL(), { note: { receiving_hours: { mon: { open: '07:00', close: '11:00' } } } });
+  assert.equal(unrecorded.requirements.find((r) => r.key === 'hours').source, 'Source not recorded');
+});
+
+test('a flag recovered from a collapsed batch is titled by its rule, and "DO NOT CALL" is never a call-ahead', () => {
+  // The exact shape board-flags.js projects into collapsedRows: no title, no fingerprint.
+  const projected = { rule: 'hours_risk', tier: 'red', stopNbr: '007185553', routeName: 'GEORGE L', closeMin: 840, etaMin: 900, anchored: false, detail: 'Arrives after close.', servedDate: DAY, hoursTier: 'typed' };
+  const v = V(FULL(), { flags: [projected] });
+  const a = v.alerts.find((x) => x.key.startsWith('flag:hours_risk'));
+  assert.equal(a.title, 'May miss receiving hours');
+  assert.equal(a.key, `flag:hours_risk:007185553|${DAY}`);
+  assert.deepEqual(instructionCues('DO NOT CALL BEFORE ARRIVAL').map((c) => c.key), []);
+  assert.deepEqual(instructionCues("DON'T CALL AHEAD. USE DOCK 2.").map((c) => c.key), ['dock']);
+  assert.deepEqual(instructionCues('CALL AHEAD, DO NOT LEAVE AT DOOR').map((c) => c.key), ['call_ahead'], 'a negation after the call is about something else');
+});
+
+test('a Past PRO search result keeps its own day — never the day the screen is showing', () => {
+  const hist = { stopNbr: '0071', pro: '0071', businessName: 'X', scheduledDate: '2026-09-20', deliveredDTTM: '2026-09-20T14:14:00', normalizedStatus: 'DELIVERED', __historical: true };
+  const v = buildOrderView({ stop: hist, kind: 'DELIVERED', boardDate: '2026-10-03', today: '2026-10-03', nowMin: 9 * 60 });
+  assert.equal(v.when.day, '2026-09-20');
+  assert.equal(v.when.isToday, false);
+  assert.match(orderMessageDrafts(v)[0].text, /on Sun, Sep 20/);
 });
 
 test('board flags: the same rows as the flags panel, with the estimate’s basis spelled out', () => {

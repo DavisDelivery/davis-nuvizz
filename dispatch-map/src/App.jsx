@@ -10320,8 +10320,9 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
   useEffect(() => { setEditing(false); setBusy(false); setPush(null); }, [stop?.stopNbr, stop?.pro]);
 
   const startEdit = () => { setName(resolved.name); setPhone(resolved.phone); setEditing(true); };
-  // v1.113.0 — the order view's "Add a customer number" opens this editor.
-  useEffect(() => { if (editKey && canEdit) startEdit(); }, [editKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // v1.113.0 — the order view's "Add a customer number" opens this editor — and only opens it:
+  // pressed again while it is open, it must not reset a number the dispatcher is half-way through.
+  useEffect(() => { if (editKey && canEdit && !editing) startEdit(); }, [editKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const submit = async () => {
     setBusy(true); setPush(null);
     try {
@@ -11460,10 +11461,11 @@ function CopyProButton({ pro, light = false }) {
 // with the cost on the button. Every write it offers is one the card already had (date, note,
 // pieces, duplicate, contact), the same component behind the same server guards.
 // Rendered on <body> (a transformed sheet would trap a fixed window) at z-[1150]: above the
-// stop card and the history overlay, below the Text composer (1200), Duplicate (1350) and the
-// document viewers (1400), all of which it can open. data-overlay-layer: it exists to cover.
-// Two views: OrderViewDesktop (main column + supporting column) and OrderViewPhone (one
-// column in the order a call goes), over the same sections.
+// stop card and the history overlay; below Duplicate (1350) and the document viewers (1400),
+// which it can open; below the Text composer (1200) on a desktop only — on a phone the shell is
+// position:fixed, so the composer stacks under this window and the window steps aside first.
+// data-overlay-layer: it exists to cover. Two views, over the same sections: the desktop's
+// main column + supporting column, and the phone's one column in the order a call goes.
 const OV_SECTION_H = 'text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500';
 const OV_LABEL = 'text-[12px] text-slate-500';
 const OV_BTN = 'inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md border border-slate-300 bg-white text-[13px] font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1';
@@ -11508,7 +11510,7 @@ function OvStatus({ view }) {
   const meta = STATUS_META[view.status.kind];
   const color = meta?.badge || BRAND;
   return (
-    <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold" style={{ color }}>
+    <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-slate-800">
       <span className="w-2 h-2 rounded-full" style={{ background: color }} aria-hidden="true" />
       {view.status.label}
     </span>
@@ -11517,7 +11519,7 @@ function OvStatus({ view }) {
 
 // The alert the NEXT button already acts on (coveredKey) keeps its explanation and drops its own
 // button, as does any alert whose fix IS the next action — one action, never the same one twice.
-function OvAlerts({ alerts, onAct, phone = false, coveredKey = null, nextKey = null }) {
+function OvAlerts({ alerts, onAct, phone = false, coveredKey = null, nextKey = null, telHref = () => null }) {
   const [all, setAll] = useState(false);
   const [why, setWhy] = useState(null);
   if (!alerts.length) return null;
@@ -11548,7 +11550,9 @@ function OvAlerts({ alerts, onAct, phone = false, coveredKey = null, nextKey = n
                   </div>
                 )}
               </div>
-              {action && <button type="button" className={`${OV_BTN} shrink-0`} onClick={() => onAct(action.key)}>{action.label}</button>}
+              {action && (telHref(action.key)
+                ? <a href={telHref(action.key)} className={`${OV_BTN} shrink-0`}><Phone size={14} />{action.label}</a>
+                : <button type="button" className={`${OV_BTN} shrink-0`} onClick={() => onAct(action.key)}>{action.label}</button>)}
             </div>
           </li>
         );
@@ -11598,14 +11602,19 @@ function OvWhen({ view }) {
   return (
     <dl>
       <OvRow label="Delivery day">{w.dayLabel || <span className="text-slate-500">Not on file</span>}{w.isToday && <span className="ml-1.5 text-[12px] text-slate-500">today</span>}</OvRow>
-      <OvRow label={w.window?.estimateOnly ? 'Estimated' : 'Window'}>
+      <OvRow label={w.window?.estimateOnly ? 'Estimated' : w.window?.appointment ? 'Appointment' : 'Window'}>
         {w.window ? (
           <>
             <span className="tabular-nums">{w.window.text}</span>
-            {w.window.strict && <span className="ml-1.5 text-[12px] font-semibold text-slate-700">strict</span>}
+            {w.window.otherDay && <div className="text-[12px] text-slate-500 leading-snug">From {w.window.otherDay}’s plan — not judged against this day.</div>}
             {w.window.estimateOnly && <div className="text-[12px] text-slate-500 leading-snug">NuVizz’s arrival estimate for the whole load — not this order’s own window.</div>}
           </>
-        ) : <span className="text-slate-500">No window on file</span>}
+        ) : (
+          <>
+            <span className="text-slate-500">No window on file</span>
+            {w.windowNote && <div className="text-[12px] text-slate-500 leading-snug">{w.windowNote}</div>}
+          </>
+        )}
       </OvRow>
       {!view.status.finished && (
         <OvRow label="ETA">
@@ -11741,9 +11750,25 @@ function OvRequirements({ view, stop }) {
   );
 }
 
-function OvCustomer({ view, stop, note, onSaveContacts, onRefreshed, savingNote, noteSaveError, editKey, onDraft }) {
+function OvCustomer({ view, stop, note, onSaveContacts, onRefreshed, savingNote, noteSaveError, editKey, onDraft, registerEsc }) {
   const c = view.contact;
   const [drafts, setDrafts] = useState(false);
+  const draftsRef = useRef(null);
+  const draftsId = `ov-drafts-${view.pro || 'order'}`;
+  // The starter list is a plain disclosure: it closes on Esc (before the window does), on a
+  // press anywhere else in the window, or by picking one.
+  useEffect(() => {
+    if (!drafts) return undefined;
+    const unregister = registerEsc?.(() => setDrafts(false));
+    const panel = draftsRef.current?.closest('[data-order-view-panel]');
+    const onDown = (e) => { if (draftsRef.current && !draftsRef.current.contains(e.target)) setDrafts(false); };
+    panel?.addEventListener('pointerdown', onDown, true);
+    return () => { unregister?.(); panel?.removeEventListener('pointerdown', onDown, true); };
+  }, [drafts, registerEsc]);
+  // "Add a customer number" opens the editor every time it is pressed, even after the dispatcher
+  // folded it away — the open state is this component's, kept in step with the summary.
+  const [editOpen, setEditOpen] = useState(false);
+  useEffect(() => { if (editKey) setEditOpen(true); }, [editKey]);
   const tel = c.dialable ? `tel:${String(c.phone).replace(/[^\d+]/g, '')}` : null;
   return (
     <div className="space-y-3">
@@ -11754,21 +11779,27 @@ function OvCustomer({ view, stop, note, onSaveContacts, onRefreshed, savingNote,
           {c.source === 'saved' && <div className="text-[12px] text-slate-500">Saved by a dispatcher</div>}
         </div>
       ) : <div className="text-[14px] text-slate-500">{view.data.listOnly ? 'The contact isn’t on our board yet.' : 'No contact on this order.'}</div>}
-      <div className="flex flex-wrap gap-2 relative">
+      <div className="flex flex-wrap gap-2 relative" ref={draftsRef}>
         {tel && <a href={tel} className={OV_BTN}><Phone size={14} />Call</a>}
-        <button type="button" className={OV_BTN} onClick={() => setDrafts(!drafts)} aria-expanded={drafts} aria-haspopup="menu"><MessageSquare size={14} />{c.dialable ? 'Text' : 'Text (add #)'}</button>
+        <button type="button" className={OV_BTN} onClick={() => setDrafts(!drafts)} aria-expanded={drafts} aria-controls={draftsId}><MessageSquare size={14} />{c.dialable ? 'Text' : 'Text (add #)'}</button>
         {c.phone && <OvCopyButton text={c.phoneDisplay} label="phone number" />}
         {drafts && (
-          <div className="absolute left-0 top-full mt-1 z-10 w-72 max-w-[calc(100vw-48px)] bg-white border border-slate-200 rounded-lg shadow-lg py-1" role="menu" aria-label="Start a text from">
-            <div className="px-3 py-1.5 text-[11px] text-slate-500">Starts the text — you review it before it sends.</div>
-            {orderMessageDrafts(view).map((d) => (
-              <button key={d.key} type="button" role="menuitem" className="block w-full text-left px-3 py-2 hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-100"
-                onClick={() => { setDrafts(false); onDraft(d.text); }}>
-                <div className="text-[13px] font-medium text-slate-900">{d.label}</div>
-                <div className="text-[12px] text-slate-500 line-clamp-2">{d.text}</div>
-              </button>
-            ))}
-            <button type="button" role="menuitem" className="block w-full text-left px-3 py-2 text-[13px] text-slate-700 hover:bg-slate-50" onClick={() => { setDrafts(false); onDraft(null); }}>Blank message</button>
+          <div id={draftsId} className="absolute left-0 top-full mt-1 z-10 w-72 max-w-[calc(100vw-48px)] bg-white border border-slate-200 rounded-lg shadow-lg py-1" data-ov-drafts>
+            <p className="px-3 py-1.5 text-[12px] text-slate-600">Starts the text — you review it before it sends.</p>
+            <ul>
+              {orderMessageDrafts(view).map((d) => (
+                <li key={d.key}>
+                  <button type="button" className="block w-full text-left px-3 py-2 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600"
+                    onClick={() => { setDrafts(false); onDraft(d.text); }}>
+                    <span className="block text-[13px] font-medium text-slate-900">{d.label}</span>
+                    <span className="block text-[12px] text-slate-600 line-clamp-2">{d.text}</span>
+                  </button>
+                </li>
+              ))}
+              <li>
+                <button type="button" className="block w-full text-left px-3 py-2 text-[13px] text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600" onClick={() => { setDrafts(false); onDraft(null); }}>Blank message</button>
+              </li>
+            </ul>
           </div>
         )}
       </div>
@@ -11782,7 +11813,7 @@ function OvCustomer({ view, stop, note, onSaveContacts, onRefreshed, savingNote,
         </ul>
       )}
       {typeof onSaveContacts === 'function' && (
-        <details className="group" open={editKey ? true : undefined}>
+        <details className="group" open={editOpen} onToggle={(e) => setEditOpen(e.currentTarget.open)}>
           <summary className={`${OV_LINK} cursor-pointer list-none`}>Change or add the number</summary>
           <div className="mt-2"><StopContactBlock bare stop={stop} note={note} onSaveContacts={onSaveContacts} onRefreshed={onRefreshed} saving={savingNote} saveError={noteSaveError} editKey={editKey} /></div>
         </details>
@@ -11820,9 +11851,9 @@ function OvJourney({ view }) {
   return (
     <ol className="space-y-2">
       {tl.steps.map((st) => (
-        <li key={st.key} className="flex items-center gap-2.5">
+        <li key={st.key} className="flex items-center gap-2.5" aria-current={st.state === 'active' ? 'step' : undefined}>
           {st.state === 'done' ? <CheckCircle2 size={16} className="text-emerald-700" aria-label="Done" />
-            : st.state === 'active' ? <span className="w-4 h-4 rounded-full border-[3px]" style={{ borderColor: BRAND }} aria-label="Current" />
+            : st.state === 'active' ? <span role="img" className="w-4 h-4 rounded-full border-[3px]" style={{ borderColor: BRAND }} aria-label="Current" />
               : <Circle size={16} className="text-slate-300" aria-label="Not yet" />}
           <span className={`text-[14px] ${st.state === 'pending' ? 'text-slate-500' : 'text-slate-900 font-medium'}`}>{st.label}</span>
           {st.time && <span className="ml-auto text-[13px] tabular-nums text-slate-600">{st.time}</span>}
@@ -11868,7 +11899,7 @@ function OvSection({ title, label = null, children, innerRef, id, className = ''
   );
 }
 
-function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate = null, onClose, onRefreshed,
+function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate = null, defaultSlots = null, onClose, onRefreshed,
   onText, onTextDriver, onOpenHistory, onMoveLocation, onEditAddress, onOpenRoute, onEditNotes,
   onSaveContacts, savingNote = false, noteSaveError = null }) {
   const phone = useMediaQuery('(max-width: 767px)');
@@ -11876,14 +11907,18 @@ function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate =
   const [nowMin, setNowMin] = useState(() => etNowMin());
   // The clock alerts ("closes in 20 min") move with the clock, once a minute.
   useEffect(() => { const id = setInterval(() => setNowMin(etNowMin()), 60000); return () => clearInterval(id); }, []);
-  const view = useMemo(() => buildOrderView({ stop, note, kind, flags, eta, boardDate, today: etToday(), nowMin, driverPhone: driverPhone || '' }),
-    [stop, note, kind, flags, eta, boardDate, nowMin, driverPhone]);
+  const view = useMemo(() => buildOrderView({ stop, note, kind, flags, eta, boardDate, today: etToday(), nowMin, driverPhone: driverPhone || '', defaultSlots }),
+    [stop, note, kind, flags, eta, boardDate, nowMin, driverPhone, defaultSlots]);
   const [loadState, setLoadState] = useState({ state: 'idle', text: '' });
   const [dateKey, setDateKey] = useState(0);
   const [activityKey, setActivityKey] = useState(0);
   const [contactKey, setContactKey] = useState(0);
   const refs = { pod: useRef(null), actions: useRef(null), activity: useRef(null), customer: useRef(null), requirements: useRef(null) };
   const panelRef = useRef(null);
+  const rootRef = useRef(null);
+  // Small things inside the window that Esc closes first (the text starter list), newest last.
+  const escStack = useRef([]);
+  const registerEsc = useCallback((fn) => { escStack.current.push(fn); return () => { escStack.current = escStack.current.filter((f) => f !== fn); }; }, []);
   const reduced = useMediaQuery('(prefers-reduced-motion: reduce)');
   const go = (k) => refs[k]?.current?.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
 
@@ -11906,6 +11941,15 @@ function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate =
   // Hand-offs that need the board itself (the map, the address editor, the route) close this
   // window first, so the dispatcher lands exactly where the old card's buttons took them.
   const handOff = (fn) => { onClose(); fn?.(); };
+  // On a phone the shell is position:fixed, so the Text composer (z-1200, rendered inside it)
+  // stacks UNDER this body-level window — it would open hidden. There the window steps aside
+  // first, the way it does for the map; on a desktop the composer opens over it.
+  const textHandOff = (fn) => (phone ? handOff(fn) : fn?.());
+  const telHref = (key) => {
+    if (key === 'call-customer' && view.contact.dialable) return `tel:${String(view.contact.phone).replace(/[^\d+]/g, '')}`;
+    if (key === 'call-driver' && view.route.driverPhone && isDialable(view.route.driverPhone)) return `tel:${view.route.driverPhone.replace(/[^\d+]/g, '')}`;
+    return null;
+  };
   const act = (key) => {
     switch (key) {
       case 'load-order': return loadOrder();
@@ -11914,53 +11958,77 @@ function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate =
       case 'change-date': setDateKey((n) => n + 1); return go('actions');
       case 'activity': setActivityKey((n) => n + 1); return go('activity');
       case 'add-contact': setContactKey((n) => n + 1); return go('customer');
-      case 'text-customer': return onText?.(stop);
-      case 'text-driver': return onTextDriver?.(stop);
+      case 'call-customer':
+      case 'call-driver': { const tel = telHref(key); if (tel) window.location.href = tel; return undefined; }
+      case 'text-customer': return textHandOff(() => onText?.(stop));
+      case 'text-driver': return textHandOff(() => onTextDriver?.(stop));
       case 'fix-pin': return handOff(() => onMoveLocation?.(stop));
       case 'fix-address': return handOff(() => onEditAddress?.(stop));
-      case 'open-route': return handOff(() => stop?.loadNbr && onOpenRoute?.(stop.loadNbr));
+      // A route view that cannot open never closes the window on the way to nothing.
+      case 'open-route': return stop?.loadNbr && onOpenRoute ? handOff(() => onOpenRoute(stop.loadNbr)) : undefined;
       case 'edit-notes': return handOff(() => onEditNotes?.());
       case 'history': return handOff(() => onOpenHistory?.(stop));
       default: return go('requirements');
     }
   };
-  const telHref = (key) => {
-    if (key === 'call-customer' && view.contact.dialable) return `tel:${String(view.contact.phone).replace(/[^\d+]/g, '')}`;
-    if (key === 'call-driver' && view.route.driverPhone) return `tel:${view.route.driverPhone.replace(/[^\d+]/g, '')}`;
-    return null;
-  };
 
-  // Esc closes THIS window only: captured before the Routing panel's own window-level Esc (which
-  // would close the whole card), and ignored while a field has focus or a layer sits above it
-  // (the Text composer, Duplicate, a document) — those keep their own close buttons.
+  // ESC, ONE LAYER AT A TIME. Captured first, so this window decides:
+  //  · a layer ABOVE it (the Text composer, Duplicate, a lookup — rendered on <body>) owns its
+  //    own Esc, guards included, and is left to it;
+  //  · a document opened INSIDE it (ticket, label, proof photo) closes by its own Close button;
+  //  · the text starter list closes before the window; a focused field just lets go;
+  //  · otherwise the window closes — and nothing under it (the Routing panel) closes too.
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
+      const mine = rootRef.current;
+      if (!mine) return;
+      const top = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+      if (top && !mine.contains(top)) return;
       e.stopPropagation();
+      const nested = top?.closest?.('[role="dialog"]');
+      if (nested && nested !== mine && mine.contains(nested)) { nested.querySelector('button[aria-label="Close"]')?.click(); return; }
+      const inner = escStack.current[escStack.current.length - 1];
+      if (inner) { inner(); return; }
       const a = document.activeElement;
       if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable)) { a.blur(); return; }
-      const top = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
-      const mine = document.querySelector('[data-order-view]');
-      if (top && mine && !mine.contains(top)) return;
       onClose();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose]);
-  // Focus lands in the window so the keyboard starts where the eye does.
-  useEffect(() => { panelRef.current?.focus({ preventScroll: true }); }, []);
+  // FOCUS: it lands in the window, Tab stays in it (aria-modal is a promise the board behind
+  // keeps), and closing hands it back to whatever opened the window.
+  useEffect(() => {
+    const opener = document.activeElement;
+    panelRef.current?.focus({ preventScroll: true });
+    return () => {
+      const now = document.activeElement;
+      if (opener && opener.isConnected && (!now || now === document.body || !now.isConnected)) opener.focus?.({ preventScroll: true });
+    };
+  }, []);
+  const trapTab = (e) => {
+    if (e.key !== 'Tab' || !panelRef.current) return;
+    const items = [...panelRef.current.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => el.getClientRects().length > 0);
+    if (!items.length) return;
+    const first = items[0]; const last = items[items.length - 1];
+    const a = document.activeElement;
+    if (e.shiftKey && (a === first || a === panelRef.current || !panelRef.current.contains(a))) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (a === last || !panelRef.current.contains(a))) { e.preventDefault(); first.focus(); }
+  };
 
   if (!stop) return null;
   const mapsUrl = Number.isFinite(stop.lat) && Number.isFinite(stop.lng)
     ? `https://www.google.com/maps/search/?api=1&query=${stop.lat},${stop.lng}`
     : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(view.where.query)}`;
   const swallow = (e) => e.stopPropagation();
-  const onDraft = (text) => onText?.(stop, text);
+  const onDraft = (text) => textHandOff(() => onText?.(stop, text));
 
   const sections = {
     when: <OvWhen view={view} />,
     where: <OvWhere view={view} stop={stop} mapsUrl={mapsUrl} onAct={act} />,
-    customer: <OvCustomer view={view} stop={stop} note={note} onSaveContacts={onSaveContacts} onRefreshed={onRefreshed} savingNote={savingNote} noteSaveError={noteSaveError} editKey={contactKey} onDraft={onDraft} />,
+    customer: <OvCustomer view={view} stop={stop} note={note} onSaveContacts={onSaveContacts} onRefreshed={onRefreshed} savingNote={savingNote} noteSaveError={noteSaveError} editKey={contactKey} onDraft={onDraft} registerEsc={registerEsc} />,
     freight: <OvFreight view={view} onAct={act} phone={phone} />,
     requirements: <OvRequirements view={view} stop={stop} />,
     route: <OvRoute view={view} onAct={act} stop={stop} />,
@@ -11978,11 +12046,11 @@ function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate =
   const showPod = podSectionVisible(stop, { unplanned: view.status.kind === 'UNPLANNED' });
 
   return createPortal(
-    <div className={`fixed inset-0 z-[1150] flex items-center justify-center ${phone ? 'p-2' : 'p-6'}`} role="dialog" aria-modal="true"
+    <div ref={rootRef} className={`fixed inset-0 z-[1150] flex items-center justify-center ${phone ? 'p-2' : 'p-6'}`} role="dialog" aria-modal="true"
       aria-label={`Order ${view.pro} — ${view.customerName || 'customer'}`} data-overlay-layer data-order-view
       onClick={swallow} onMouseDown={swallow} onPointerDown={swallow} onTouchStart={swallow}>
       <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} aria-hidden="true" />
-      <div ref={panelRef} tabIndex={-1} className={`relative bg-white rounded-xl shadow-xl w-full flex flex-col overflow-hidden border-t-[3px] focus:outline-none ${phone ? 'h-full' : 'max-w-6xl h-[min(90dvh,920px)]'}`}
+      <div ref={panelRef} tabIndex={-1} onKeyDown={trapTab} className={`relative bg-white rounded-xl shadow-xl w-full flex flex-col overflow-hidden border-t-[3px] focus:outline-none ${phone ? 'h-full' : 'max-w-6xl h-[min(90dvh,920px)]'}`}
         style={{ borderTopColor: BRAND }} data-order-view-panel>
         {/* HEADER — who, which order, where it stands. */}
         <header className={`shrink-0 flex items-start gap-3 border-b border-slate-200 ${phone ? 'px-4 pt-3 pb-2' : 'px-6 pt-4 pb-3'}`}>
@@ -12010,7 +12078,7 @@ function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate =
           <div className="min-h-full flex flex-col">
           {view.alerts.length > 0 && (
             <OvSection title={`Needs attention · ${view.alerts.length}`} id={`${pid}-n`} className="border-b border-slate-200">
-              <OvAlerts alerts={view.alerts} onAct={act} phone={phone} coveredKey={view.next.alertKey || null} nextKey={view.next.key} />
+              <OvAlerts alerts={view.alerts} onAct={act} phone={phone} coveredKey={view.next.alertKey || null} nextKey={view.next.key} telHref={telHref} />
             </OvSection>
           )}
           {phone ? (
@@ -12029,7 +12097,7 @@ function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate =
             <div className="flex-1 grid grid-cols-[minmax(0,1fr)_minmax(300px,360px)]">
               <div className="min-w-0">
                 <OvSection title="Delivery" id={`${pid}-d`}>
-                  <div className="grid grid-cols-2 gap-8">
+                  <div className="grid grid-cols-1 gap-5 xl:grid-cols-2 xl:gap-8">
                     <div className="min-w-0">{sections.when}</div>
                     <div className="min-w-0">{sections.where}</div>
                   </div>
@@ -12060,7 +12128,7 @@ function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate =
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false, flags = null, etaEntry = null, boardDate = null }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false, flags = null, etaEntry = null, boardDate = null, defaultSlots = null }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   // v1.113.0 — the floating ORDER VIEW, opened from the header's expand button.
@@ -12229,7 +12297,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
         </div>
       )}
       {viewOpen && (
-        <OrderViewWindow stop={live} note={note} kind={sidebarStatusKind} flags={flags || []} eta={etaEntry} boardDate={boardDate || live.boardDate || null}
+        <OrderViewWindow stop={live} note={note} kind={sidebarStatusKind} flags={flags || []} eta={etaEntry} boardDate={boardDate || live.boardDate || null} defaultSlots={defaultSlots}
           onClose={closeView} onRefreshed={onRefreshed} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory}
           onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onOpenRoute={onOpenRoute} onEditNotes={() => setEditing(true)}
           onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
@@ -13909,7 +13977,7 @@ function MobileLoadsTab({ loads, onPickLoad }) {
 // stop components as the desktop sidebar (StopDataSections + StopNotesSection)
 // in a single scroll, so mobile has full desktop parity — every edit option,
 // one inline Edit, one Save.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], flags = null, etaEntry = null, boardDate = null }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], flags = null, etaEntry = null, boardDate = null, defaultSlots = null }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -14075,7 +14143,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
         </div>
       )}
       {viewOpen && (
-        <OrderViewWindow stop={live} note={note} kind={classifyStopStatus(live)} flags={flags || []} eta={etaEntry} boardDate={boardDate || live.boardDate || null}
+        <OrderViewWindow stop={live} note={note} kind={classifyStopStatus(live)} flags={flags || []} eta={etaEntry} boardDate={boardDate || live.boardDate || null} defaultSlots={defaultSlots}
           onClose={closeView} onRefreshed={onRefreshed} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory}
           onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onOpenRoute={onOpenRoute} onEditNotes={() => setEditing(true)}
           onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
@@ -14986,6 +15054,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const departTable = useRouteDepartures();
   const flagHistory = useFlagTierFloor(selectedDate);
   const tierFloorByStop = flagHistory?.tiers || null;
+  // NuVizz's creation-stamp half hour, read off this board — the order view must not show it as
+  // an appointment (time-restrictions.js detectDefaultSlots).
+  const orderViewSlots = useMemo(() => detectDefaultSlots(stops), [stops]);
   const boardFlags = useMemo(() => {
     const now = new Date();
     const out = computeBoardFlags({
@@ -17628,6 +17699,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             flags={flagsForStop(boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]), selectedStop)}
             etaEntry={boardFlags.etaByStop?.get?.(String(selectedStop.stopNbr)) || null}
             boardDate={selectedDate}
+            defaultSlots={orderViewSlots}
             drivers={notesDrivers}
             onText={textCustomer}
             onTextDriver={textDriverForStop}
@@ -17797,6 +17869,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             flags={flagsForStop(boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]), selectedStop)}
             etaEntry={boardFlags.etaByStop?.get?.(String(selectedStop.stopNbr)) || null}
             boardDate={selectedDate}
+            defaultSlots={orderViewSlots}
             drivers={notesDrivers}
             onText={textCustomer}
             onTextDriver={textDriverForStop}
@@ -22206,9 +22279,11 @@ function RoutingStopRichDetail({ stop, onRefreshed }) {
 // route/driver via RoutingStopRichDetail). Fills the rail column; closes via X or Esc.
 // Never renders empty — guards a null stop. (Replaces the old center-popup modal so a
 // clicked stop's detail always lives in the right panel — dispatcher request.)
-function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory, onText, onTextDriver, onSave, saving, saveError, saveDenied = null, drivers = [], flags = null, etaEntry = null, boardDate = null }) {
+function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory, onText, onTextDriver, onSave, saving, saveError, saveDenied = null, drivers = [], flags = null, etaEntry = null, boardDate = null, defaultSlots = null }) {
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    // While the floating ORDER VIEW is open it owns Esc (it closes itself, or the layer above
+    // it); this panel closing underneath would take the window and anything in it along.
+    const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('[data-order-view]')) onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -22237,6 +22312,7 @@ function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet,
         flags={flags}
         etaEntry={etaEntry}
         boardDate={boardDate}
+        defaultSlots={defaultSlots}
         onClose={onClose}
         onSave={onSave}
         saving={saving}
@@ -26183,6 +26259,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   const departTable = useRouteDepartures();
   const flagHistory = useFlagTierFloor(selectedDate);
   const tierFloorByStop = flagHistory?.tiers || null;
+  const orderViewSlots = useMemo(() => detectDefaultSlots(stops), [stops]);
   const routingBoardFlags = useMemo(() => {
     const now = new Date();
     const out = computeBoardFlags({
@@ -30067,6 +30144,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
                 flags={flagsForStop(routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]), panelStop)}
                 etaEntry={routingBoardFlags.etaByStop?.get?.(String(panelStop.stopNbr)) || null}
                 boardDate={selectedDate}
+                defaultSlots={orderViewSlots}
                 windowViolatedSet={windowViolatedSet}
                 onClose={() => setPanelStop(null)}
                 onOpenLoad={(key) => { openRouteInWorkbench(key); setPanelStop(null); }}
@@ -30291,6 +30369,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
             flags={flagsForStop(routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]), panelStop)}
             etaEntry={routingBoardFlags.etaByStop?.get?.(String(panelStop.stopNbr)) || null}
             boardDate={selectedDate}
+            defaultSlots={orderViewSlots}
             windowViolatedSet={windowViolatedSet}
             onClose={() => setPanelStop(null)}
             onOpenLoad={(key) => { openRouteInWorkbench(key); setPanelStop(null); }}

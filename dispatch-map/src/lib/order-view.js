@@ -23,7 +23,8 @@ import { resolveStopContact, orderContactAside, isDialable } from './stop-contac
 import { hoursProvenance } from './hours-provenance.js';
 import { addressLooksOff } from './address-fix.js';
 import { stopHandlingFlags, HANDLING_FLAGS } from './handling-flags.js';
-import { closedDayTier, dayReceivingWindow, stopPosition, isFinishedStop } from './board-flags.js';
+import { closedDayTier, dayReceivingWindow, stopPosition, isFinishedStop, isSetAsideRoute } from './board-flags.js';
+import { orderWindow } from './time-restrictions.js';
 
 const t = (v) => (v == null ? '' : String(v).trim());
 const num = (v) => {
@@ -138,14 +139,24 @@ const CUE_RULES = [
 // each cue quotes only its own sentence, falling back to the line when a match spans two.
 const sentencesOf = (line) => line.split(/(?<=[.;!?])\s+(?=\S)/).map((x) => x.trim()).filter(Boolean);
 
+// "DO NOT CALL BEFORE ARRIVAL" is the opposite of a call-ahead: a sentence that negates the
+// call before it is never read as one.
+const NEGATED_CALL = /\b(?:do\s*not|don'?t|never|no)\b[^.\n]*\b(?:call|phone)\b/i;
+const cueIn = (r, x) => r.re.test(x) && !(r.key === 'call_ahead' && NEGATED_CALL.test(x));
+
 /** Cues read out of the order's own text: [{ key, label, snippet }], each once, in rule order. */
 export function instructionCues(text) {
   const lines = cleanOrderText(text).split('\n').filter(Boolean);
   const out = [];
   for (const r of CUE_RULES) {
-    const line = lines.find((l) => r.re.test(l));
-    if (!line) continue;
-    const quote = sentencesOf(line).find((x) => r.re.test(x)) || line;
+    let quote = '';
+    for (const l of lines) {
+      const sentences = sentencesOf(l);
+      // Its own sentence first; the whole line only when the match spans two sentences.
+      quote = sentences.find((x) => cueIn(r, x)) || (cueIn(r, l) && !sentences.some((x) => r.re.test(x)) ? l : '');
+      if (quote) break;
+    }
+    if (!quote) continue;
     out.push({ key: r.key, label: r.label, snippet: quote.length > 140 ? `${quote.slice(0, 137)}…` : quote });
   }
   return out;
@@ -182,11 +193,19 @@ const STATUS_LABEL = {
 };
 
 const SAVED = 'Saved for this customer';
+const UNRECORDED = 'Source not recorded';
 const AUTO = 'Auto-detected — verify';
 const ORDER_TEXT = 'In this order’s text';
 const NUVIZZ = 'On the NuVizz order';
 
 const TIER_RANK = { block: 0, warn: 1, info: 2 };
+// A flag row's title by its rule, for the rows a collapsed batch hands over untitled
+// (board-flags.js — the rule ids its row() calls emit).
+const FLAG_RULE_TITLE = {
+  hours_risk: 'May miss receiving hours', no_driver_hours: 'No driver for a deadline',
+  trailer_conflict: 'No tractor trailer at this stop', place_trailer_conflict: 'Tight place for a tractor-trailer',
+  box_truck_conflict: 'Needs a tractor trailer', route_name_ambiguous: 'Two live loads share this route name',
+};
 
 /**
  * EVERYTHING THE ORDER VIEW SHOWS, from what the screen already holds.
@@ -201,15 +220,28 @@ const TIER_RANK = { block: 0, warn: 1, info: 2 };
  * @param {string} input.today     today in Eastern (YYYY-MM-DD)
  * @param {number} input.nowMin    minutes after midnight now, Eastern
  * @param {string} input.driverPhone the driver's number when the screen has it, else ''
+ * @param {Set} input.defaultSlots detectDefaultSlots(board) — NuVizz's creation stamp, which must
+ *                                 not pose as an appointment (time-restrictions.js), or null
  */
-export function buildOrderView({ stop, note = null, kind = null, flags = [], eta = null, boardDate = null, today = null, nowMin = null, driverPhone = '' } = {}) {
+export function buildOrderView({ stop, note = null, kind = null, flags = [], eta = null, boardDate = null, today = null, nowMin = null, driverPhone = '', defaultSlots = null } = {}) {
   const s = stop || {};
   const k = STATUS_LABEL[kind] ? kind : 'SCHEDULED';
   const finished = k === 'DELIVERED' || isFinishedStop(s);
-  const day = ymdOk(boardDate) ? t(boardDate) : (ymdOk(s.boardDate) ? t(s.boardDate) : (ymdOk(s.scheduledDate) ? t(s.scheduledDate) : null));
+  const exec = s.raw?.stopExecutionInfo || {};
+  const deliveredTs = t(s.deliveredDTTM) || t(exec.to?.confirmedDTTM) || t(exec.receiveDTTM);
+  // THE ORDER'S OWN DAY. A row on the board is that board's day. A Past PRO search result
+  // (__historical) is not a row on the screen's board, so it keeps its own date — never the
+  // day the dispatcher happens to be looking at.
+  const ownDay = [s.boardDate, s.scheduledDate, s.schedDate].map(t).find(ymdOk) || etDayOf(deliveredTs) || etDayOf(s.scheduledFrom) || null;
+  const day = s.__historical ? ownDay : (ymdOk(boardDate) ? t(boardDate) : ownDay);
   const dayKey = dayKeyOf(day);
   const isToday = !!day && day === t(today);
-  const exec = s.raw?.stopExecutionInfo || {};
+  // Route state, needed before the alerts: the flag engine judges neither its set-aside routes
+  // (ULINE APPT, the owner's truck) nor an unrouted unplanned order's day.
+  const routeKey = t(s.loadNbr || s.routeName);
+  const routed = !!routeKey;
+  const setAside = routed && isSetAsideRoute(routeKey);
+  const unscheduled = !routed && (t(s.status) === '10' || k === 'UNPLANNED');
 
   // ── identity ──
   const pro = t(s.pro || s.stopNbr);
@@ -246,43 +278,66 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
   };
 
   // ── when ──
+  // A stamp dated another day belongs to that day's plan (a carried-over order keeps day one's
+  // schedule and ETA). It is shown with its date and never judged against today's clock.
+  const otherDayOf = (ts) => { const d = etDayOf(ts); return d && day && d !== day ? d : ''; };
   const fromTs = t(s.scheduledFrom); const toTs = t(s.scheduledTo);
-  const strict = t(s.timeConstraint).toUpperCase() === 'STRICT';
+  // THE WINDOW, THE WAY THE REST OF THE APP READS IT (time-restrictions.js orderWindow): NuVizz
+  // stamps STRICT on nearly every stop and 08:00–20:00 on most, 05:00–05:00 is a placeholder and
+  // a half-hour stamped on many unrelated customers is its creation default. Only a span narrower
+  // than a working day counts, and 'strict' is never read from timeConstraint.
   let window = null;
+  let windowNote = '';
   if (fromTs && toTs) {
-    window = { text: `${clockText(fromTs)} – ${clockText(toTs)}`, closeMin: clockMinutes(toTs), strict, estimateOnly: false };
+    const ow = orderWindow(s, defaultSlots);
+    if (ow) {
+      const od = otherDayOf(toTs);
+      window = {
+        text: `${clockText(fromTs)} – ${clockText(toTs)}`, closeMin: od ? null : ow.closeMin,
+        appointment: ow.kind === 'appointment', estimateOnly: false, otherDay: od ? dayText(od, today) : '',
+      };
+    } else {
+      windowNote = 'NuVizz has only its default schedule on this order — not a delivery window.';
+    }
   } else if (fromTs) {
     // A list row's scheduledFrom is NuVizz's Estimated Arrival, shared by the whole load — a
     // schedule, not this order's window. Said so, never dressed as a window.
-    window = { text: `around ${clockText(fromTs)}`, closeMin: null, strict: false, estimateOnly: true };
+    window = { text: `around ${clockText(fromTs)}`, closeMin: null, appointment: false, estimateOnly: true, otherDay: '' };
   }
+  // THE ETA, IN THE APP'S OWN ORDER (route-stop-line.js routeStopTime): our anchored estimate
+  // first — eta-backtest put it 13-14 min off against NuVizz's 79 — then NuVizz's planned ETA.
   const nvEta = routeStopEta(s);
+  const readAt = t(s.enriched_at || s.notes_refreshed_at);
+  const asOf = readAt ? `${clockText(readAt)}${etDayOf(readAt) && etDayOf(readAt) !== t(today) ? ` on ${dayText(etDayOf(readAt), today)}` : ''}` : '';
   let etaView = null;
-  if (!finished && nvEta?.label === 'ETA') {
-    const at = clockText(s.enriched_at || s.notes_refreshed_at);
-    // A planned time that has come and gone with no arrival on our board is a stale plan, not
-    // an ETA — said so, never shown as if it still held.
-    const etaAt = clockMinutes(nvEta.ts);
-    const stale = isToday && etDayOf(nvEta.ts) === day && etaAt != null && nowMin != null && nowMin - etaAt > 15 && k !== 'ARRIVED';
-    etaView = { text: clockText(nvEta.ts), basis: 'nuvizz', stale, detail: stale
-      ? `NuVizz planned this time${at ? ` (as it had it at ${at})` : ''}. It has passed with no arrival on our board.`
-      : `NuVizz's planned ETA${at ? `, as NuVizz had it at ${at}` : ''} — it is not updated live on our board.` };
-  } else if (!finished && isToday && eta && num(eta.etaMin) != null) {
-    const band = num(eta.errorMin);
-    etaView = {
-      text: `about ${minText(num(eta.etaMin))}`, band: band != null ? `±${Math.round(band)} min` : '',
-      basis: 'model',
-      detail: `Our estimate from the route's order and drive times${band != null ? `, ±${Math.round(band)} min` : ''}. ${eta.anchored ? 'Measured from the truck’s last recorded stop today.' : 'Projected from the route’s usual departure — no truck time recorded yet today.'}`,
-    };
+  let etaMissing = '';
+  if (!finished && k !== 'ARRIVED') {
+    if (isToday && eta && num(eta.etaMin) != null) {
+      const band = num(eta.errorMin);
+      etaView = {
+        text: `about ${minText(num(eta.etaMin))}`, band: band != null ? `±${Math.round(band)} min` : '',
+        basis: 'model', stale: false,
+        detail: `Our estimate from the route's order and drive times${band != null ? `, ±${Math.round(band)} min` : ''}. ${eta.anchored ? 'Measured from the truck’s last recorded stop today.' : 'Projected from the route’s usual departure — no truck time recorded yet today.'}`,
+      };
+    } else if (nvEta?.label === 'ETA' && otherDayOf(nvEta.ts)) {
+      etaMissing = `NuVizz’s planned ETA is from ${dayText(otherDayOf(nvEta.ts), today)}’s plan, not this day’s.`;
+    } else if (nvEta?.label === 'ETA') {
+      // A planned time that has come and gone with no arrival on our board is a stale plan,
+      // not an ETA — said so, never shown as if it still held.
+      const etaAt = clockMinutes(nvEta.ts);
+      const stale = isToday && etaAt != null && nowMin != null && nowMin - etaAt > 15;
+      etaView = { text: clockText(nvEta.ts), basis: 'nuvizz', stale, detail: stale
+        ? `NuVizz planned this time${asOf ? ` (as it had it at ${asOf})` : ''}. It has passed with no arrival on our board.`
+        : `NuVizz's planned ETA${asOf ? `, as NuVizz had it at ${asOf}` : ''} — it is not updated live on our board.` };
+    }
+    if (!etaView && !etaMissing) {
+      etaMissing = isToday ? 'No live ETA for this order. NuVizz gives very few orders a per-stop ETA, and our estimate needs the route in sequence.' : 'No ETA before the delivery day.';
+    }
   }
-  const etaMissing = !finished && !etaView
-    ? (isToday ? 'No live ETA for this order. NuVizz gives very few orders a per-stop ETA, and our estimate needs the route in sequence.' : 'No ETA before the delivery day.')
-    : '';
-  const deliveredTs = t(s.deliveredDTTM) || t(exec.to?.confirmedDTTM) || t(exec.receiveDTTM);
   const arrivedTs = t(s.arrivalDTTM) || t(exec.to?.arrivalDTTM) || t(exec.arrivalDTTM);
   const when = {
     day, dayLabel: dayText(day, today), isToday,
-    window, eta: etaView, etaMissing,
+    window, windowNote, eta: etaView, etaMissing,
     arrived: (k === 'ARRIVED' || k === 'DELIVERED') && arrivedTs ? clockText(arrivedTs) : '',
     delivered: k === 'DELIVERED' && deliveredTs ? clockText(deliveredTs) : '',
     carryoverFrom: s.carryover === true && ymdOk(s.scheduledDate) && t(s.scheduledDate) !== day ? dayText(s.scheduledDate, today) : '',
@@ -326,7 +381,8 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
   const reqs = [];
   const req = (key, label, detail, source, must = false) => reqs.push({ key, label, detail: t(detail), source, must });
   const prov = hoursProvenance(note);
-  const hoursSource = prov?.kind === 'dispatcher' ? SAVED : prov?.kind === 'auto' ? AUTO : SAVED;
+  // hoursProvenance's 'unrecorded' is hours with no trail either way — never dressed as saved.
+  const hoursSource = prov?.kind === 'dispatcher' ? SAVED : prov?.kind === 'auto' ? AUTO : UNRECORDED;
   const recv = dayKey ? dayReceivingWindow(note, dayKey) : null;
   if (recv && (recv.openMin != null || recv.closeMin != null)) {
     const txt = recv.openMin != null && recv.closeMin != null ? `${minText(recv.openMin)} – ${minText(recv.closeMin)}` : recv.closeMin != null ? `until ${minText(recv.closeMin)}` : `from ${minText(recv.openMin)}`;
@@ -334,7 +390,7 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
   }
   if (note?.appointment_required) req('appointment', 'Appointment required', note.appointment_notes, SAVED, true);
   else if (t(note?.appointment_notes)) req('appointment_notes', 'Appointment notes', note.appointment_notes, SAVED);
-  if (strict && window && !window.estimateOnly) req('strict', 'Strict delivery window', window.text, NUVIZZ, true);
+  if (window && !window.estimateOnly && !window.otherDay) req('window', window.appointment ? 'Appointment slot' : 'Delivery window', window.text, NUVIZZ, true);
   if (note?.liftgate_required) req('liftgate', 'Liftgate required', '', SAVED, true);
   if (t(note?.delivery_window)) req('ampm', `${t(note.delivery_window)} delivery only`, '', SAVED, true);
   if (DOCK_LABEL[note?.dock_type]) req('dock', DOCK_LABEL[note.dock_type], note?.dock_notes, SAVED);
@@ -359,28 +415,44 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
   const alerts = [];
   const alert = (a) => { if (!alerts.some((x) => x.key === a.key)) alerts.push(a); };
   const driver = t(s.driverName);
-  if (s.dupNbr || s.dupNbrSuspect) {
+  // Every action offered must be one that can run: no "View the route" for an order on no route,
+  // no "Call" without a number. A list-only row has not loaded its contact, so the move that gets
+  // one is loading it — "no number" is not yet a fact about that order.
+  const reachDriver = driver ? { key: 'text-driver', label: 'Text the driver' } : routed ? { key: 'open-route', label: 'View the route' } : null;
+  const reachCustomer = (label) => (contact.dialable ? { key: 'call-customer', label }
+    : listOnly ? { key: 'load-order', label: 'Load the order to call' } : { key: 'add-contact', label: 'Add a customer number' });
+  // THE FLAG ENGINE'S OWN GATES (board-flags.js computeBoardFlags): a set-aside route (ULINE APPT,
+  // the owner's truck) is judged for none of these, and an unrouted unplanned order's day is not
+  // judged for closed days — freight parked BECAUSE the customer is closed is the dispatcher
+  // having already solved it.
+  if ((s.dupNbr || s.dupNbrSuspect) && !finished && !setAside) {
     alert({ key: 'dup', tier: 'block', title: 'Two NuVizz orders share this number', detail: 'Check you are looking at the right order before acting on it.', action: { key: 'load-order', label: 'Load the order from NuVizz' } });
   }
-  if (note?.do_not_send) {
+  if (note?.do_not_send && !finished) {
     if (dnsDrivers.length && driver && dnsDrivers.some((d) => d.toUpperCase() === driver.toUpperCase())) {
-      alert({ key: 'dns-driver', tier: 'block', title: `${driver} is not allowed at this customer`, detail: 'The customer notes bar this driver. Move the order to another route.', action: { key: 'open-route', label: 'View the route' } });
-    } else if (!dnsDrivers.length && !finished) {
+      alert({ key: 'dns-driver', tier: 'block', title: `${driver} is not allowed at this customer`, detail: 'The customer notes bar this driver. Move the order to another route.', action: routed ? { key: 'open-route', label: 'View the route' } : null });
+    } else if (!dnsDrivers.length) {
       alert({ key: 'dns', tier: 'block', title: 'Customer is marked Do not send', detail: 'Read the customer notes before this goes out.', action: { key: 'edit-notes', label: 'Open customer notes' } });
     }
   }
-  const closedBy = !finished && dayKey ? closedDayTier(note, dayKey, s) : null;
-  if (closedBy) {
-    alert({ key: 'closed', tier: 'block', title: `Customer is closed ${DAY_NAMES[dayKey]}s`, detail: closedBy === 'order' ? 'This order’s own text says so.' : 'Saved in the customer notes.', action: { key: 'change-date', label: 'Change the delivery date' } });
+  const closedBy = !finished && !setAside && !unscheduled && dayKey ? closedDayTier(note, dayKey, s) : null;
+  if (closedBy === 'auto') {
+    // The stored-day rule (CLOSED_DAYS_FROM_ORDER=off): the scanner read it from some order —
+    // amber on the panel, and a check here, never a blocker.
+    alert({ key: 'closed', tier: 'warn', title: `Customer may be closed ${DAY_NAMES[dayKey]}s`, detail: 'The scanner read it from an earlier order — judge the evidence before moving it.', action: reachCustomer('Call the customer') });
+  } else if (closedBy) {
+    alert({ key: 'closed', tier: 'block', title: `Customer is closed ${DAY_NAMES[dayKey]}s`, detail: closedBy === 'order' ? 'This order’s own text says so.' : 'Saved in the customer notes by a dispatcher.', action: { key: 'change-date', label: 'Change the delivery date' } });
   }
-  if (where.noPin && !finished) {
+  if (where.noPin && !finished && !setAside) {
     alert({ key: 'no-pin', tier: 'block', title: 'No map location', detail: 'Routing cannot place this order until it has a pin.', action: { key: 'fix-pin', label: 'Correct the pin' } });
   }
   if (where.looksOff) {
     alert({ key: 'address', tier: 'warn', title: 'Address may be split wrong', detail: 'Part of the street sits in address line 2.', action: { key: 'fix-address', label: 'Fix the address' } });
   }
-  // The screen's own board flags — the same rows as the flags panel, so the two never disagree.
-  // Their titles end "— CUSTOMER" for the panel's list; this window already names the customer.
+  // The screen's own board flags — the same rows as the flags panel. Their titles end
+  // "— CUSTOMER" for the panel's list; this window already names the customer. A row recovered
+  // from a collapsed batch carries no title or fingerprint (board-flags.js collapsedRows), so it
+  // is titled by its rule and keyed by rule, order and day.
   const stripName = (title) => (customerName && title.toUpperCase().endsWith(` — ${customerName.toUpperCase()}`) ? title.slice(0, -(customerName.length + 3)).trim() : title);
   for (const f of Array.isArray(flags) ? flags : []) {
     if (!f || ['dup_number', 'no_location', 'closed_today'].includes(f.rule)) continue; // read directly above
@@ -391,34 +463,37 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
       basis = `Estimate: arrives about ${minText(num(f.etaMin))}${num(f.errorMin) != null ? ` ±${Math.round(num(f.errorMin))} min` : ''}; receiving closes ${minText(num(f.closeMin))}${f.hoursTier === 'assumed' ? ' (assumed — no hours on file)' : f.hoursTier === 'auto' ? ' (auto-detected hours)' : ''}. ${f.anchored ? 'Measured from the truck.' : 'Projected from the route’s usual departure.'}`;
     }
     alert({
-      key: `flag:${f.rule}:${f.fingerprint || f.title}`, tier, estimate,
-      title: stripName(t(f.title)) || 'Board flag', detail: t(f.detail), basis,
-      action: f.rule === 'hours_risk' || f.rule === 'no_driver_hours'
-        ? (contact.dialable ? { key: 'call-customer', label: 'Call about receiving hours' } : { key: 'change-date', label: 'Change the delivery date' })
-        : { key: 'open-route', label: 'View the route' },
+      key: `flag:${f.rule}:${f.fingerprint || f.title || `${t(f.stopNbr)}|${t(f.servedDate)}`}`, tier, estimate,
+      title: stripName(t(f.title)) || FLAG_RULE_TITLE[f.rule] || 'Board flag', detail: t(f.detail), basis,
+      action: estimate
+        ? (contact.dialable || listOnly ? reachCustomer('Call about receiving hours') : { key: 'change-date', label: 'Change the delivery date' })
+        : routed ? { key: 'open-route', label: 'View the route' } : null,
     });
   }
-  // The window: only a WHOLE window (both ends) on today's board, and only before delivery.
+  // The window: only a real window (time-restrictions.js) dated this day, on today's board,
+  // and only before delivery.
   if (!finished && isToday && window && window.closeMin != null && nowMin != null) {
     const left = window.closeMin - nowMin;
     if (left < 0) {
-      alert({ key: 'window-closed', tier: 'block', title: `Delivery window closed at ${minText(window.closeMin)}`, detail: 'Our board does not show it delivered. Delivered can lag the scan by a few minutes.', action: contact.dialable ? { key: 'call-customer', label: 'Call the customer' } : { key: 'add-contact', label: 'Add a customer number' } });
+      alert({ key: 'window-closed', tier: 'block', title: `Delivery window closed at ${minText(window.closeMin)}`, detail: 'Our board does not show it delivered. Delivered can lag the scan by a few minutes.', action: reachCustomer('Call the customer') });
     } else if (left <= 60) {
-      alert({ key: 'window-closing', tier: 'warn', title: `Delivery window closes in ${left} min`, detail: `At ${minText(window.closeMin)}${window.strict ? ', strict' : ''}.`, action: driver ? { key: 'text-driver', label: 'Text the driver' } : { key: 'open-route', label: 'View the route' } });
+      alert({ key: 'window-closing', tier: 'warn', title: `Delivery window closes in ${left} min`, detail: `At ${minText(window.closeMin)}.`, action: reachDriver || reachCustomer('Call the customer') });
     }
   }
   if (etaView?.stale) {
-    alert({ key: 'eta-stale', tier: 'warn', title: `Planned ETA ${etaView.text} has passed`, detail: 'Our board shows no arrival yet. The plan is not updated live — ask the driver where the truck is.', action: driver ? { key: 'text-driver', label: 'Text the driver' } : { key: 'open-route', label: 'View the route' } });
+    alert({ key: 'eta-stale', tier: 'warn', title: `Planned ETA ${etaView.text} has passed`, detail: 'Our board shows no arrival yet. The plan is not updated live — ask the driver where the truck is.', action: reachDriver });
   }
   if (k === 'EXCEPTION') {
     alert({ key: 'exception', tier: 'block', title: 'NuVizz marked this order an exception', detail: t(s.status) === '80' ? 'Unable to deliver (code 80).' : 'Open the activity to see what the driver recorded.', action: { key: 'activity', label: 'See the activity' } });
   }
   if (when.carryoverFrom) alert({ key: 'carryover', tier: 'info', title: `Carried over from ${when.carryoverFrom}`, detail: 'It did not deliver on its first day.', action: null });
   if (s.isAttempt) alert({ key: 'attempt', tier: 'info', title: 'This is a re-attempt', detail: 'The shipment number carries ATT.', action: null });
-  if (finished && k === 'DELIVERED' && note && dayKey) {
-    const recvClose = recv?.closeMin;
+  // Late against hours a dispatcher typed — scanner-read hours are advisory (board-flags.js
+  // dayReceivingWindow) and never become a stated fact here.
+  if (finished && k === 'DELIVERED' && note && dayKey && recv?.tier === 'typed') {
+    const recvClose = recv.closeMin;
     const at = clockMinutes(deliveredTs);
-    if (recvClose != null && at != null && at > recvClose) alert({ key: 'late-delivery', tier: 'info', title: `Delivered ${at - recvClose} min after receiving closed`, detail: `Receiving closed at ${minText(recvClose)}.`, action: null });
+    if (recvClose != null && at != null && at > recvClose) alert({ key: 'late-delivery', tier: 'info', title: `Delivered ${at - recvClose} min after receiving closed`, detail: `Receiving closed at ${minText(recvClose)}, as a dispatcher saved it.`, action: null });
   }
   alerts.sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier]);
 
@@ -426,7 +501,7 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
   const route = {
     name: t(s.routeName) || (t(s.loadNbr) && !/^\d+$/.test(t(s.loadNbr)) ? t(s.loadNbr) : ''),
     seq: num(s.routeSeq), driver, driverPhone: t(driverPhone), driverPhoneDisplay: formatPhone(driverPhone),
-    planned: !!(t(s.loadNbr) || t(s.routeName)),
+    planned: routed,
   };
   const podDocs = Array.isArray(s.podDocs) ? s.podDocs : [];
   const callAhead = cues.some((cu) => cu.key === 'call_ahead');
@@ -445,8 +520,9 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
     next = { key: blocker.action.key, label: blocker.action.label, tone: 'act', reason: blocker.title, alertKey: blocker.key };
   } else if (listOnly && pro) {
     next = { key: 'load-order', label: 'Load the full order', tone: 'act', reason: 'Our board has only the list row — no contact, items or notes yet. 1 NuVizz call.' };
-  } else if (moving && (callAhead || note?.appointment_required) && contact.dialable) {
-    // The truck is on its way: a call-ahead the order asks for is due now.
+  } else if (k === 'OUT_FOR_DEL' && (callAhead || note?.appointment_required) && contact.dialable) {
+    // The truck is on its way: a call-ahead the order asks for is due now. Once it has
+    // ARRIVED the call-ahead is past — that falls to reaching the driver below.
     next = { key: 'call-customer', label: 'Call the customer', tone: 'act', reason: callAhead ? 'The order asks for a call before arrival.' : 'Appointment required for this customer.' };
   } else if (check) {
     next = { key: check.action.key, label: check.action.label, tone: 'act', reason: check.title, alertKey: check.key };
@@ -498,11 +574,19 @@ export function orderMessageDrafts(view) {
     out.push({ key: 'delivered', label: 'Delivered', text: `${lead} your order was delivered${view.when?.delivered ? ` at ${view.when.delivered}` : ''}${view.when?.dayLabel ? ` on ${view.when.dayLabel}` : ''}.` });
     return out;
   }
-  if (k === 'OUT_FOR_DEL' || k === 'ARRIVED') {
-    out.push({ key: 'on-the-way', label: 'On the way', text: `${lead} your order is out for delivery today${view.when?.eta?.basis === 'nuvizz' ? `, estimated around ${view.when.eta.text}` : ''}. Reply here with any questions.` });
+  // No time is ever put in a customer's mouth from an estimate: NuVizz's planned ETA lands a
+  // median 79 min off and ours is a model with a band. The dispatcher adds one if they choose.
+  if (k === 'OUT_FOR_DEL') {
+    out.push({ key: 'on-the-way', label: 'On the way', text: `${lead} your order is out for delivery today. Reply here with any questions.` });
   }
-  if (view.when?.dayLabel && k !== 'EXCEPTION') {
-    const win = view.when.window && !view.when.window.estimateOnly ? ` between ${view.when.window.text.replace(' – ', ' and ')}` : '';
+  if (k === 'ARRIVED') {
+    out.push({ key: 'arrived', label: 'Driver has arrived', text: `${lead} our driver has arrived with your delivery.` });
+  }
+  // "Scheduled" only for an order that is on a route — an unplanned order's day is NuVizz's
+  // estimate, not a schedule we have made.
+  if (view.when?.dayLabel && view.route?.planned && (k === 'SCHEDULED' || k === 'OUT_FOR_DEL')) {
+    const w = view.when.window;
+    const win = w && !w.estimateOnly && !w.otherDay ? ` between ${w.text.replace(' – ', ' and ')}` : '';
     out.push({ key: 'scheduled', label: 'Delivery day', text: `${lead} your delivery is scheduled for ${view.when.dayLabel}${win}. Reply here with any questions.` });
   }
   out.push({ key: 'delay', label: 'Running late', text: `${lead} we are running behind on your delivery. We will follow up with an updated time.` });
