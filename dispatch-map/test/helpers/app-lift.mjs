@@ -16,7 +16,9 @@ import { readFileSync } from 'node:fs';
 import { transformSync } from 'esbuild';
 
 const APP_URL = new URL('../../src/App.jsx', import.meta.url);
-const DECL = (name) => new RegExp(`^(?:export\\s+)?(?:const|let|function|class)\\s+${name}\\b`);
+// `async function` counts too (pullPrintLayout): a declaration this could not see was reported as
+// "already lifted but still unresolved", which names the symptom and not the cause.
+const DECL = (name) => new RegExp(`^(?:export\\s+)?(?:const|let|class|(?:async\\s+)?function)\\s+${name}\\b`);
 
 let LINES = null;
 function lines() {
@@ -28,10 +30,14 @@ function declSource(name) {
   const L = lines();
   const i = declLine(name);
   if (i < 0) return null;
+  // An EXPORTED declaration (formatPhone) is lifted without its `export`. The lifted code runs as
+  // a function body, where the keyword is a syntax error — and it would make esbuild read the
+  // whole slice as a module, where a declaration this helper lifts twice is an error as well.
+  const head = L[i].replace(/^export\s+/, '');
   const opensBlock = /[{[(]\s*(?:\/\/.*)?$/.test(L[i]) || !/;\s*(?:\/\/.*)?$/.test(L[i]);
-  if (!opensBlock) return L[i];
+  if (!opensBlock) return head;
   for (let j = i + 1; j < L.length; j++) {
-    if (/^(?:\}|\};|\]|\];|\)|\);)\s*(?:\/\/.*)?$/.test(L[j])) return L.slice(i, j + 1).join('\n');
+    if (/^(?:\}|\};|\]|\];|\)|\);)\s*(?:\/\/.*)?$/.test(L[j])) return [head, ...L.slice(i + 1, j + 1)].join('\n');
   }
   return null;
 }

@@ -18,20 +18,26 @@ import { cardManifestPages, stopOrdersAgree } from '../src/lib/card-manifest.js'
 import { isHashLikeId, looksLikeLoadNbr } from '../src/lib/route-identity.js';
 import { houseSwitchOn } from '../src/lib/routing-select.js';
 import { ticketNotes } from '../src/lib/stop-notes-freshness.js';
+import { newTicketBody, newTicketHtml, newManifestHtml, newLayoutLogoUrl } from '../src/lib/ticket-print-new.js';
 
 const APP = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 
-/** A top-level `function name(…) { … }` from App.jsx, cut at its matching close brace. */
+/** A top-level `function name(…) { … }` from App.jsx, cut at its matching close brace. An
+ *  `export function` (formatPhone) is cut without its `export`: the slice runs as a function body. */
 function fnSource(name) {
-  const start = APP.indexOf(`\nfunction ${name}(`);
+  const plain = APP.indexOf(`\nfunction ${name}(`);
+  const start = plain > 0 ? plain : APP.indexOf(`\nexport function ${name}(`);
   assert.ok(start > 0, `${name} not found in App.jsx`);
-  assert.equal(APP.indexOf(`\nfunction ${name}(`, start + 1), -1, `${name} is defined twice — the slice could test the wrong one`);
+  for (const head of [`\nfunction ${name}(`, `\nexport function ${name}(`]) {
+    assert.equal(APP.indexOf(head, start + 1), -1, `${name} is defined twice — the slice could test the wrong one`);
+  }
+  const from = start + 1 + (plain > 0 ? 0 : 'export '.length);
   const open = APP.indexOf('{', APP.indexOf(')', start));
   let depth = 0;
   for (let i = open; i < APP.length; i++) {
     const c = APP[i];
     if (c === '{') depth++;
-    else if (c === '}' && --depth === 0) return APP.slice(start + 1, i + 1);
+    else if (c === '}' && --depth === 0) return APP.slice(from, i + 1);
   }
   throw new Error(`${name}: no matching close brace`);
 }
@@ -50,11 +56,24 @@ const SRC = [
   constSource('TICKET_STYLE', '`;\n'),
   ...['loadDisplayName', 'routeSeqOf', 'compareByPlannedEta', 'hasRealRouteSequence', 'nearestNeighborOrder',
     'orderRouteStops', 'tktReqTime', 'tktReqClock', 'tktDayOffset', 'tktNextStop', 'tktCommentTime',
-    'ticketData', 'ticketBody', 'manifestOrigin', 'buildManifestHtml'].map(fnSource),
+    'formatPhone', 'ticketData', 'tktCityLine', 'tktReqLine', 'ticketView', 'ticketBody', 'manifestOrigin', 'buildManifestHtml'].map(fnSource),
 ].join('\n');
-const { buildManifestHtml, buildTicketBody } = new Function('isHashLikeId', 'looksLikeLoadNbr', 'stopOrdersAgree', 'ticketNotes',
+// THE PAPER HAS TWO LAYOUTS SINCE v1.111.0 (lib/print-layout.js) and every rule in this file is
+// about WHAT is printed and in WHICH ORDER — never about where it sits on the page. So each one
+// runs twice: on the new layout and on the old one Diagnostics can switch back to. `LAYOUT` is
+// what the builders are told the company is set to, exactly as printLayoutNow() tells them live.
+let LAYOUT = 'new';
+const { buildManifestHtml, buildTicketBody } = new Function(
+  'isHashLikeId', 'looksLikeLoadNbr', 'stopOrdersAgree', 'ticketNotes',
+  'printLayoutNow', 'newTicketBody', 'newTicketHtml', 'newManifestHtml', 'newLayoutLogoUrl',
   `"use strict";\n${SRC}\nreturn { buildManifestHtml, buildTicketBody: ticketBody };`,
-)(isHashLikeId, looksLikeLoadNbr, stopOrdersAgree, ticketNotes);
+)(isHashLikeId, looksLikeLoadNbr, stopOrdersAgree, ticketNotes, () => LAYOUT, newTicketBody, newTicketHtml, newManifestHtml, newLayoutLogoUrl);
+/** One rule, checked on both layouts. */
+const onBothLayouts = (name, fn) => {
+  for (const [layout, word] of [['new', 'new'], ['classic', 'old']]) {
+    test(`${name} [${word} layout]`, () => { LAYOUT = layout; return fn(layout); });
+  }
+};
 
 // ── fixtures: a load as the board holds it ────────────────────────────────────
 // routeSeq is NuVizz's sequence off the scan; plannedEtaDTTM its per-stop ETA for that order.
@@ -90,26 +109,26 @@ const cardHtml = (order, board = BOARD, name = 'SUW') => {
   return buildManifestHtml(stops, LOGO, name, { asGiven: true, labels });
 };
 
-test('a re-sequenced card, not yet saved, prints in the CARD order, numbered 1..N down the pages', () => {
+onBothLayouts('a re-sequenced card, not yet saved, prints in the CARD order, numbered 1..N down the pages', () => {
   const out = printed(cardHtml(ids(D, A, C, B)));
   assert.deepEqual(pros(out), ids(D, A, C, B));
   assert.deepEqual(seqs(out), ['1', '2', '3', '4']);
 });
 
-test('THE REPORTED BUG, pinned: the old call printed NuVizz\'s order (what VITE_MANIFEST_IN_CARD_ORDER=off puts back)', () => {
+onBothLayouts('THE REPORTED BUG, pinned: the old call printed NuVizz\'s order (what VITE_MANIFEST_IN_CARD_ORDER=off puts back)', () => {
   const { stops } = cardManifestPages(ids(D, A, C, B), BOARD);
   const out = printed(buildManifestHtml(stops, LOGO, 'SUW'));
   assert.deepEqual(pros(out), ids(A, B, C, D));
   assert.deepEqual(seqs(out), ['1', '2', '3', '4']);
 });
 
-test('a card nobody re-ordered prints byte for byte what it printed before this change', () => {
+onBothLayouts('a card nobody re-ordered prints byte for byte what it printed before this change', () => {
   // The seeded card IS NuVizz's order. Its paper must not move at all — numbers, ETAs, cover.
   const { stops } = cardManifestPages(ids(A, B, C, D), BOARD);
   assert.equal(cardHtml(ids(A, B, C, D)), buildManifestHtml(stops, LOGO, 'SUW'));
 });
 
-test('a re-ordered page drops NuVizz\'s ETA line — it is a time for a route that is not on the page', () => {
+onBothLayouts('a re-ordered page drops NuVizz\'s ETA line — it is a time for a route that is not on the page', () => {
   // Reversed, the old times would read 11:40 on page 1 and 08:10 on page 4: a driver told to reach
   // his first stop last.
   assert.deepEqual(printed(cardHtml(ids(D, C, B, A))).map((p) => p.eta), [null, null, null, null]);
@@ -117,7 +136,7 @@ test('a re-ordered page drops NuVizz\'s ETA line — it is a time for a route th
   assert.ok(printed(cardHtml(ids(A, B, C, D))).every((p) => p.eta && /AM/.test(p.eta)));
 });
 
-test('a brand-new route (no NuVizz sequence) prints the card order with every circle numbered', () => {
+onBothLayouts('a brand-new route (no NuVizz sequence) prints the card order with every circle numbered', () => {
   const n1 = stop('007200001', { lat: 34.00, lng: -84.00 });
   const n2 = stop('007200002', { lat: 34.90, lng: -84.90 });   // the most north-west
   const n3 = stop('007200003', { lat: 34.05, lng: -84.05 });
@@ -136,7 +155,7 @@ test('a brand-new route (no NuVizz sequence) prints the card order with every ci
   assert.deepEqual(seqs(old), ['', '', '', '']);
 });
 
-test('a new route whose card order happens to equal the map chain still gets numbered circles', () => {
+onBothLayouts('a new route whose card order happens to equal the map chain still gets numbered circles', () => {
   const n1 = stop('007210001', { lat: 34.90, lng: -84.90 });
   const n2 = stop('007210002', { lat: 34.80, lng: -84.80 });
   const n3 = stop('007210003', { lat: 34.70, lng: -84.70 });
@@ -144,7 +163,7 @@ test('a new route whose card order happens to equal the map chain still gets num
   assert.deepEqual(seqs(printed(cardHtml(ids(n1, n2, n3), board))), ['1', '2', '3']);
 });
 
-test('two orders at one dock share a number, as NuVizz and the driver\'s handheld number them', () => {
+onBothLayouts('two orders at one dock share a number, as NuVizz and the driver\'s handheld number them', () => {
   // The card rows read 1 2 3 4; NuVizz numbers the dock once, so the paper reads 1 2 2 3 — and the
   // stop after the shared dock is 3 on paper AND on the handheld, never one ahead of it.
   const dockA = stop('007400001', { routeSeq: 1, addr1: '10 DOCK RD', lat: 34.1, lng: -84.1 });
@@ -161,7 +180,7 @@ test('two orders at one dock share a number, as NuVizz and the driver\'s handhel
   assert.deepEqual(seqs(printed(cardHtml(ids(dockA, dockB1, dockB2, dockC), board))), ['1', '2', '2', '3']);
 });
 
-test('a card mixing stops from two loads prints the card order', () => {
+onBothLayouts('a card mixing stops from two loads prints the card order', () => {
   const other = stop('007300009', { routeSeq: 1, lat: 34.6, lng: -84.6, driverName: 'ANN', routeName: 'JEAN' });
   const fresh = stop('007300010', { lat: 34.7, lng: -84.7, driverName: null, routeName: null });
   const board = new Map([...BOARD, [other.stopNbr, other], [fresh.stopNbr, fresh]]);
@@ -169,7 +188,7 @@ test('a card mixing stops from two loads prints the card order', () => {
   assert.deepEqual(pros(printed(cardHtml(order, board))), order);
 });
 
-test('the cover is untouched by page order: a stop dragged in from another load cannot name its driver', () => {
+onBothLayouts('the cover is untouched by page order: a stop dragged in from another load cannot name its driver', () => {
   // SUW holds A B C (BOB). X comes off JEAN (ANN, NuVizz sequence 7) and is parked on row 1. The old
   // cover said BOB; re-ordering the pages must not make it say ANN.
   const X = stop('007300011', { routeSeq: 7, lat: 34.9, lng: -84.9, driverName: 'ANN', routeName: 'JEAN' });
@@ -181,7 +200,7 @@ test('the cover is untouched by page order: a stop dragged in from another load 
   assert.match(cover(cardHtml(order, board)), /<div class="k">Driver<\/div><div>BOB<\/div>/);
 });
 
-test('a stop the board can no longer resolve keeps its place in the count on a re-ordered card', () => {
+onBothLayouts('a stop the board can no longer resolve keeps its place in the count on a re-ordered card', () => {
   // The card shows it as a stub row; it cannot be printed (no address) and the print handler says
   // so. The numbers after it must not close up into a lie.
   const { stops, labels, missing } = cardManifestPages([B.stopNbr, '009999999', A.stopNbr], BOARD);
@@ -191,7 +210,7 @@ test('a stop the board can no longer resolve keeps its place in the count on a r
   assert.deepEqual(out.map((p) => [p.pro, p.seq]), [[B.stopNbr, '1'], [A.stopNbr, '3']]);
 });
 
-test('the route detail panel\'s manifest is untouched: no options, NuVizz order and numbers as before', () => {
+onBothLayouts('the route detail panel\'s manifest is untouched: no options, NuVizz order and numbers as before', () => {
   // RouteDetailBody passes its own orderRouteStops list and no options. Handing the builder the
   // stops shuffled proves it still sorts them itself on that path.
   const out = printed(buildManifestHtml([C, A, D, B], LOGO));
@@ -202,23 +221,23 @@ test('the route detail panel\'s manifest is untouched: no options, NuVizz order 
     'the route detail call must stay exactly as it was');
 });
 
-test('labels are never applied to a re-sorted list — one stop\'s number on another stop\'s page', () => {
+onBothLayouts('labels are never applied to a re-sorted list — one stop\'s number on another stop\'s page', () => {
   assert.deepEqual(seqs(printed(buildManifestHtml([C, A, D, B], LOGO, null, { labels: [9, 8, 7, 6] }))), ['1', '2', '3', '4']);
 });
 
-test('a label list that does not line up with the stops is ignored rather than shifted', () => {
+onBothLayouts('a label list that does not line up with the stops is ignored rather than shifted', () => {
   const out = printed(buildManifestHtml([B, A], LOGO, null, { asGiven: true, labels: [1] }));
   assert.deepEqual(pros(out), ids(B, A));
   assert.deepEqual(seqs(out), ['2', '1'], 'falls back to each stop\'s own number, never a neighbour\'s');
 });
 
-test('the cover page counts every printed stop on the card path', () => {
+onBothLayouts('the cover page counts every printed stop on the card path', () => {
   const html = cardHtml(ids(D, A));
   assert.match(html, /<div class="k">Stops<\/div><div>2 Stops<\/div>/);
   assert.match(html, /<div class="mf-route">SUW<\/div>/);
 });
 
-test('a single delivery ticket prints exactly as before: NuVizz\'s number and its ETA line', () => {
+onBothLayouts('a single delivery ticket prints exactly as before: NuVizz\'s number and its ETA line', () => {
   assert.match(buildTicketBody(C, LOGO), /<span class="seq">3<\/span>/);
   assert.match(buildTicketBody(C, LOGO), /Next Stop: 09\/30\/2026 10:30:00 AM/);
   assert.match(buildTicketBody(C, LOGO, 'Delivery Ticket', { seqLabel: null }), /<span class="seq">3<\/span>/);

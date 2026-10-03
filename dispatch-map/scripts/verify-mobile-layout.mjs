@@ -274,6 +274,10 @@ const PROBES = {
     // same edit so the new one cannot repeat it.
     ['This device', /this device/i, /Settings this browser remembers/i],
     ['Roll back', /roll back/i, /This is code only/i],
+    // ADDED WITH THE SECTION (v1.111.0), so it cannot ship unmeasured the way 'This device' did.
+    // The stub below answers its endpoint, so what is measured is the panel with its two layouts,
+    // the switch button and both Previews live — not the "could not read" state.
+    ['Manifest layout', /manifest layout/i, /Printed manifest and delivery ticket/i],
   ].map(([name, chip, proof]) => ({
     name: `${name} tab`,
     open: async (page) => {
@@ -1302,6 +1306,10 @@ function stubRoutes(page, emailHtml) {
     // THE ORDER PANEL'S ACTIVITY TIMELINE (v1.83.0), answered with the worst rows. Before the
     // catch-all, which would answer it with an empty board — a panel saying NuVizz sent nothing.
     if (u.includes('nuvizz-stop-events')) return R(ORDER_EVENTS);
+    // DIAGNOSTICS → MANIFEST LAYOUT (v1.111.0), answered as it reads once somebody has chosen: the
+    // banner's longest sentence (a name and a time) and the longer of the two switch buttons.
+    // Before the catch-all, whose body names no layout — the panel would say it could not read.
+    if (u.includes('print-layout')) return R({ ok: true, layout: 'new', stored: 'new', persistent: true, set_at: '2026-10-03T18:14:00.000Z', set_by: 'Dispatcher With A Long Name' });
     if (u.includes('stop-lookup')) return R(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.

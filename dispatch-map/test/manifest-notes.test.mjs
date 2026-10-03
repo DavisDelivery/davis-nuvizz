@@ -108,24 +108,35 @@ test('VITE_MANIFEST_SCAN_NOTES: default on, an off-word turns it off, a typo lea
 });
 
 // ── the REAL builders, lifted out of App.jsx ────────────────────────────────
-const libs = await libExports(['route-identity.js', 'card-manifest.js', 'stop-notes-freshness.js']);
+// The paper has two layouts since v1.111.0 (lib/print-layout.js). WHICH notes are printed is one
+// rule for both — they read the same ticketData — so the builder tests below run on each. Only
+// the wording differs: the new layout leaves Uline's repeated "SPL-INSTR-TEXT:" label off.
+const libs = await libExports(['route-identity.js', 'card-manifest.js', 'stop-notes-freshness.js', 'print-layout.js', 'ticket-print-new.js']);
+const LAYOUTS = [['new', 'new'], ['classic', 'old']];
 const L = liftFromApp({
   targets: ['buildManifestHtml', 'buildTicketHtml'],
   inject: { ...libs },
-  exercise: (l) => { l.buildManifestHtml([DROPPED, CANCELLED], 'logo.jpg', 'TEST'); l.buildTicketHtml(DROPPED, 'logo.jpg'); },
+  exercise: (l) => {
+    for (const [layout] of LAYOUTS) { l.buildManifestHtml([DROPPED, CANCELLED], 'logo.jpg', 'TEST', { layout }); l.buildTicketHtml(DROPPED, 'logo.jpg', { layout }); }
+  },
 });
 const commentsOf = (html) => [...html.matchAll(/<div class="cmt-t">([^<]*)<\/div>/g)].map((m) => m[1]);
 
-test('the printed manifest: the dropped note is not on the page, the scan’s new note is', () => {
-  const html = L.buildManifestHtml([DROPPED, CANCELLED], 'logo.jpg', 'TEST');
-  const all = commentsOf(html);
-  assert.equal(all.some((t) => /CALL 30 MIN AHEAD/.test(t)), false, 'no faded or struck line — it is simply not printed');
-  assert.ok(all.includes('CANCELLED ORDER. STOP &amp; RETURN PER ULINE.'));
-  assert.doesNotMatch(html, /Not in NuVizz|line-through/);
-});
+for (const [layout, word] of LAYOUTS) {
+  test(`the printed manifest: the dropped note is not on the page, the scan’s new note is [${word} layout]`, () => {
+    const html = L.buildManifestHtml([DROPPED, CANCELLED], 'logo.jpg', 'TEST', { layout });
+    const all = commentsOf(html);
+    assert.equal(all.some((t) => /CALL 30 MIN AHEAD/.test(t)), false, 'no faded or struck line — it is simply not printed');
+    assert.ok(all.includes('CANCELLED ORDER. STOP &amp; RETURN PER ULINE.'));
+    assert.doesNotMatch(html, /Not in NuVizz|line-through/);
+  });
+}
 
 test('a single Delivery Ticket follows the same rule as the manifest page', () => {
-  assert.deepEqual(commentsOf(L.buildTicketHtml(DROPPED, 'logo.jpg')), ['SPL-INSTR-TEXT: EMAIL FOR APPT', 'TOTAL-AMOUNT : 61.80']);
+  assert.deepEqual(commentsOf(L.buildTicketHtml(DROPPED, 'logo.jpg', { layout: 'classic' })), ['SPL-INSTR-TEXT: EMAIL FOR APPT', 'TOTAL-AMOUNT : 61.80']);
+  // The same two notes on the new layout, in the same order, without Uline's label (Chad, 2026-10-02:
+  // "SPL-INSTR-TEXT: remove this repetitive text").
+  assert.deepEqual(commentsOf(L.buildTicketHtml(DROPPED, 'logo.jpg', { layout: 'new' })), ['EMAIL FOR APPT', 'TOTAL-AMOUNT : 61.80']);
 });
 
 test('ticketData reads its notes through ticketNotes — the one place the paper’s rule lives', () => {
@@ -202,14 +213,17 @@ test('a New Order sent with no notes, then given a real one in NuVizz: the paper
   for (const p of ['56.06', '**166.32**', '62.96', '67.62', '77.22', '106.92', '59.00', '91.48', '58.21']) assert.deepEqual(ticketNotes({ orderInstructions: p }, { on: true }), [], p);
 });
 
-test('the scan’s note says where it came from on the paper; stored notes keep their author', () => {
-  const html = L.buildTicketHtml(CANCELLED, 'logo.jpg');
-  const boxes = [...html.matchAll(/<div class="cmt-t">([^<]*)<\/div>\s*<div class="cmt-m">(.*?)<\/div>/gs)].map((m) => [m[1], m[2]]);
-  assert.equal(boxes[0][0], 'CANCELLED ORDER. STOP &amp; RETURN PER ULINE.');
-  assert.match(boxes[0][1], /From NuVizz’s latest scan/);
-  assert.doesNotMatch(boxes[0][1], /~By/);
-  assert.ok(boxes.slice(1).every(([, m]) => /~By INTG ULINE/.test(m)));
-});
+for (const [layout, word] of LAYOUTS) {
+  test(`the scan’s note says where it came from on the paper; stored notes keep their author [${word} layout]`, () => {
+    const html = L.buildTicketHtml(CANCELLED, 'logo.jpg', { layout });
+    const boxes = [...html.matchAll(/<div class="cmt-t">([^<]*)<\/div>\s*<div class="cmt-m">(.*?)<\/div>/gs)].map((m) => [m[1], m[2]]);
+    assert.equal(boxes.length, 6, 'the scan’s note and the five stored ones');
+    assert.equal(boxes[0][0], 'CANCELLED ORDER. STOP &amp; RETURN PER ULINE.');
+    assert.match(boxes[0][1], /From NuVizz’s latest scan/);
+    assert.doesNotMatch(boxes[0][1], /~By/);
+    assert.ok(boxes.slice(1).every(([, m]) => /~By INTG ULINE/.test(m)));
+  });
+}
 
 test('a cut text’s leftover fragment is not a note — not on the card, not on the paper', () => {
   const s = { ...DROPPED, orderInstructions: 'SPL-INSTR-TEXT: EMAIL FOR APPT; SPL-INSTR-TEXT: CALL 30 MIN AHEAD; TOTAL-AMOU…' };
