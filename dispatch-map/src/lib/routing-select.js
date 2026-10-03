@@ -1351,25 +1351,93 @@ export function selectionTally(stops) {
 // The strategy dropdown. "Min time" is "Min distance" on the free estimate — the
 // haversine matrix makes every duration a constant multiple of its distance, so the
 // same order wins both (measured: 50 random boards of 10–49 stops, 50/50 identical).
-// Only live Google drive-times give the two anything to disagree about, so the option
-// is offered only then; the dispatcher's pick is REMEMBERED and comes back the moment
-// Google is ticked again (effectiveStrategy reads it, nothing overwrites it).
+// Only ROAD drive-times give the two anything to disagree about — live Google, or truck road
+// times from our own routing service (v1.113.0) — so the option is offered only then; the
+// dispatcher's pick is REMEMBERED and comes back the moment either box is ticked again
+// (effectiveStrategy reads it, nothing overwrites it). The argument is "are this build's drive
+// times from roads?", which the panel answers as useGoogle || useTruckRoads.
 export const ROUTING_STRATEGIES = [
   ['MIN_DISTANCE', 'Min distance'],
   ['MIN_TIME', 'Min time'],
   ['CLOSEST_FIRST', 'Closest first'],
   ['FARTHEST_FIRST', 'Farthest first'],
 ];
-export function strategyChoices(useGoogle) {
+export function strategyChoices(roadTimes) {
   return ROUTING_STRATEGIES.map(([value, label]) => {
-    const gated = value === 'MIN_TIME' && !useGoogle;
-    return { value, label: gated ? `${label} (needs Google drive-times)` : label, disabled: gated };
+    const gated = value === 'MIN_TIME' && !roadTimes;
+    return { value, label: gated ? `${label} (needs road drive-times)` : label, disabled: gated };
   });
 }
-export function effectiveStrategy(strategy, useGoogle) {
+export function effectiveStrategy(strategy, roadTimes) {
   const known = ROUTING_STRATEGIES.some(([v]) => v === strategy);
   if (!known) return 'MIN_DISTANCE';
-  return (strategy === 'MIN_TIME' && !useGoogle) ? 'MIN_DISTANCE' : strategy;
+  return (strategy === 'MIN_TIME' && !roadTimes) ? 'MIN_DISTANCE' : strategy;
+}
+
+// ── TRUCK ROAD TIMES — THE THIRD DRIVE-TIME SOURCE FOR A BUILD (v1.113.0) ─────────────────────
+//
+// A Build sequences on a straight-line estimate unless it asks for roads. Two boxes in step 3 ask:
+// live Google (costs money) and truck road times from our own routing service (free; the server
+// side is lib/osrm-matrix.mts, off until OSRM_TRUCK_URL is set). Only one matrix source can run,
+// so the panel unticks the other box, and this rule still reads Google first if both arrive set.
+// Neither ticked is 'haversine' — exactly the request every build sent before this existed.
+export function buildMatrixMode({ useGoogle = false, useTruckRoads = false } = {}) {
+  if (useGoogle === true) return 'google';
+  if (useTruckRoads === true) return 'osrm';
+  return 'haversine';
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// THE RESULT'S COST / QUALITY READOUT: what the build ACTUALLY used, never what was asked for.
+// meta.matrixSource is the server's account of the matrix it built with (google / osrm /
+// haversine); meta.matrixMode is what the request asked for. A truck-road build that fell back to
+// the straight line says so — the same build without the note would read "Free estimate" and
+// nobody would know the box had done nothing.
+export function matrixReadout(meta = {}) {
+  const m = meta || {};
+  if (m.matrixSource === 'google') return { title: 'Google live drive-times', tone: 'amber', note: null };
+  if (m.matrixSource === 'osrm') {
+    const d = m.matrixDetail || {};
+    const off = Array.isArray(d.offMapStops) ? d.offMapStops.length : 0;
+    const noRoute = Number(d.noRoutePairs) > 0 ? Number(d.noRoutePairs) : 0;
+    const parts = [];
+    if (off) parts.push(`${plural(off, 'stop is', 'stops are')} off the truck map (outside Georgia, or not near a truck road)`);
+    if (noRoute) parts.push(`${plural(noRoute, 'leg had', 'legs had')} no truck route`);
+    const tail = off && noRoute ? 'Those legs are straight-line estimates.'
+      : off ? `${off === 1 ? 'Its' : 'Their'} legs are straight-line estimates.`
+      : noRoute === 1 ? 'That leg is a straight-line estimate.' : 'Those legs are straight-line estimates.';
+    const note = parts.length ? `${parts.join('; ')}. ${tail}` : null;
+    return { title: 'Truck road times (free)', tone: 'green', note };
+  }
+  return {
+    title: 'Free estimate (straight-line)',
+    tone: 'green',
+    note: m.matrixMode === 'osrm' ? 'Truck road times were asked for, but the service did not answer. This build used the straight-line estimate.' : null,
+  };
+}
+
+// The route card's "Sequence edited" line names the road times the original order was built on.
+export function editedSequenceNote(meta = {}) {
+  const src = (meta || {}).matrixSource;
+  if (src === 'google') return ' (original Google road times no longer apply to this order)';
+  if (src === 'osrm') return ' (original truck road times no longer apply to this order)';
+  return '';
+}
+
+// The one line under the truck-road box, by what osrm-status last said. 'unknown' = not asked
+// yet. Never claims the service is up before it has answered.
+export function truckRoadStatusLine(status) {
+  const st = status && typeof status === 'object' ? status : { state: status };
+  switch (st.state) {
+    case 'off': return 'The truck routing service is not set up on this site yet, so builds keep the straight-line estimate.';
+    case 'set': return 'Set up on this site. Checking it answers…';
+    case 'checking': return 'Checking the truck routing service…';
+    case 'ready': return st.sample ? `Ready: Buford to Lawrenceville is ${st.sample.miles} mi, ${st.sample.minutes} min by truck road.` : 'Ready.';
+    case 'waking': return 'The truck routing service is starting up. Checking again shortly (for up to about a minute and a half)…';
+    case 'error': return `The truck routing service did not answer (${String(st.error || 'unknown error').slice(0, 140)}). A build will fall back to the straight-line estimate and say so.`;
+    default: return 'Not checked yet.';
+  }
 }
 
 // "Only put green stops on a 53′ trailer" is a rule about TRAILERS. With no tractor
