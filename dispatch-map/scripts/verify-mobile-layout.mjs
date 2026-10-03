@@ -249,6 +249,22 @@ const gearMenuOnScreen = (page) => page.evaluate(() => {
   return out;
 });
 
+// v1.113.0: open a stop's drawer on the phone Map, then its floating ORDER VIEW (the drawer's
+// expand button). False — the probe could not open — when any step is missing.
+async function openOrderView(page) {
+  await page.getByRole('button', { name: /^stops$/i }).first().click();
+  await page.waitForTimeout(500);
+  const row = page.locator('[data-stop-row], li, button').filter({ hasText: /CUSTOMER 1 WITH/i }).first();
+  if (!(await row.isVisible().catch(() => false))) return false;
+  await row.click();
+  await page.waitForTimeout(800);
+  const expand = page.locator('[data-order-view-open]').filter({ visible: true }).first();
+  if (!(await expand.isVisible().catch(() => false))) return false;
+  await expand.click();
+  await page.waitForTimeout(400);
+  return page.locator('[data-order-view-panel]').first().isVisible().catch(() => false);
+}
+
 // PROBES — the guard's biggest blind spot was that it only ever measured a screen at REST.
 // Six sub-40px controls were sitting in the note composer, the customer-# editor and the
 // notes editor, all of which only exist AFTER you open a sheet or a drawer — so the build
@@ -456,6 +472,22 @@ const PROBES = {
           await page.waitForTimeout(150);
         }
         return page.getByRole('button', { name: /^remove item line 2$/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // v1.113.0: the ORDER VIEW, the floating window the drawer's expand button opens — its
+      // header, the pinned Next band and the body, at the top and scrolled to the order actions
+      // (the editors that live at the end of the phone's single column).
+      name: 'stop detail drawer — order view open',
+      open: async (page) => openOrderView(page),
+    },
+    {
+      name: 'stop detail drawer — order view scrolled to its actions',
+      open: async (page) => {
+        if (!(await openOrderView(page))) return false;
+        await page.evaluate(() => { const b = document.querySelector('[data-order-view-body]'); if (b) b.scrollTop = b.scrollHeight; });
+        await page.waitForTimeout(300);
+        return page.locator('[data-order-view-actions]').first().isVisible().catch(() => false);
       },
     },
   ],

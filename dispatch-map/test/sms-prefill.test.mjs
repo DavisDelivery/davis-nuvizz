@@ -51,9 +51,11 @@ test('both customer-text paths open the composer prefilled', () => {
     `expected 2 customer-text call sites (Map + Routing), found ${customerOpens.length} — if a ` +
     'screen was added or removed, update this count and keep every one of them prefilled.',
   );
+  // v1.113.0: the order view can hand in a reviewed message draft; with none, the PRO prefill
+  // is still what the composer opens with.
   for (const call of customerOpens) {
     assert.ok(
-      call.includes('initialText: stopRefPrefill(stop)'),
+      /initialText: (?:typeof draft === 'string' && draft \? draft : )?stopRefPrefill\(stop\)/.test(call),
       'a customer-text composer opens without initialText: stopRefPrefill(stop) — it will open ' +
       'blank and the dispatcher has to retype the PRO. Seed it like the driver text does.',
     );

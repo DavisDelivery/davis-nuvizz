@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Building2, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound, LogOut, TrendingUp } from 'lucide-react';
+  ChevronRight, ChevronLeft, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal, KeyRound, LogOut, TrendingUp, Maximize2, Copy, Navigation, CheckCircle2, AlertCircle, Circle, CalendarClock, StickyNote, History } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc, arrayUnion, arrayRemove, deleteField,
@@ -47,6 +47,7 @@ import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_D
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
 import { manifestIssues, manifestHeadline, manifestProvenance, manifestFreshness, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness, mergedNotes, SCAN_NOTES_AUTO_ON, ticketNotes, stampNotesRead } from './lib/stop-notes-freshness.js';
+import { buildOrderView, orderMessageDrafts, flagsForStop, fmtCount } from './lib/order-view.js';
 import { stopHandlingFlags, itemHandlingFlags, stopNeedsTractor, tallyHandlingFlags, HANDLING_FLAGS } from './lib/handling-flags.js';
 // The bottom grid's Restrictions cell draws its icons (v1.100.1); VITE_GRID_RESTRICTION_ICONS=off puts back words only.
 import { GRID_RESTRICTION_ICONS_ON } from './lib/grid-icons.js';
@@ -227,7 +228,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.112.0';
+const APP_VERSION = '1.113.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -281,6 +282,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.113.0', 'ORDER VIEW \u2014 A FLOATING, CUSTOMER-SERVICE VIEW OF ONE ORDER (FOR REVIEW, NOT YET APPROVED FOR PRODUCTION). Chad, 10/03: \u201ci want to have a button that expands an order from the side bar to a floating window like when we hit the duplicate order button. I want to redesign the window to better present the full orders details from more of a customer service perspective.\u201d The expand button sits beside the \u2715 on the stop card (Map and Routing, desktop and phone). The window answers where, when, what, what needs attention and what to do next: a header with the customer, PRO, status and route; ONE next action with its reason (blockers first \u2014 two orders on one number, no pin, closed that day, a barred driver, a window already shut, an hours risk \u2014 then \u201cLoad the full order\u201d for a list-only row, then what the status calls for: call ahead, call the driver, view the proof of delivery); ranked alerts, each with its fix, estimates labelled with their basis; delivery day, window and ETA (NuVizz\u2019s \u201cas of\u201d when it was read, ours with its error band, or plainly none); the address with Copy, Navigate, Street View, Edit and Correct pin; pallets, loose, total pieces and weight that never show a missing number as zero; item lines, class and the L flag; references; requirements each tagged with where they came from (saved for this customer, auto-detected \u2014 verify, on the NuVizz order, or in this order\u2019s text) beside the full original instructions; the customer\u2019s contact with Call, Copy and Text \u2014 the Text menu starts from a draft built only from verified facts, and nothing sends until you press Send in the composer; route and driver; the journey; and the order actions the card already had (refresh, date, note, pieces, duplicate, ticket, label). It never spends a NuVizz call by itself: loading the order, the photos or the activity is always a click with its cost on the button. Two views: two columns on a desktop, one column in call order on a phone.'],
   ['1.112.0', 'DUPLICATE: AN ITEMS DRAWER \u2014 CHANGE THE COPY\u2019S ACTUAL ITEM LINES. Chad, 10/03: \u201cgive me a drawer to edit the actual items.\u201d Where the Items box was, the window now has an Items drawer. Shut, it says what the lines hold; open, each of the original\u2019s lines is there to change \u2014 what it is, how many, the weight \u2014 with Remove on each and \u201c+ Add an item line\u201d under them. The copy carries exactly the lines shown; before this, a copy kept only the original\u2019s first line. Pallets, Loose and Weight stay the order\u2019s TOTALS: measured with Chad\u2019s go-ahead, NuVizz keeps the totals and the lines exactly as sent, so when they disagree the drawer says so in amber and never blocks. ONE LINE FOLLOWS THE TOTALS: an order with a single line keeps it reading Pallets + Loose and Weight, as every order this app makes does \u2014 put 2 of 3 pallets on the copy and its line says 2, not 3. Type its quantity or weight and it is yours. CARRIED AS NUVIZZ HOLDS IT: each line\u2019s dimensions, freight class and L (long / oversize) flag ride across and show under the line \u2014 the route build reads them for oversize freight and deck length, and the old one-line copy dropped them. Never copied: the original\u2019s carton barcode; each line is numbered by the copy. The read-back checks every line landed.'],
   ['1.111.1', 'DUPLICATE COULD NOT FIND A FREE NUMBER ON THE LIVE NUVIZZ \u2014 FIXED. Found while testing item lines with Chad\u2019s go-ahead (\u201cYou can use 10 calls\u201d). Before Duplicate uses a number it asks NuVizz whether that number is free, and it only believed NuVizz\u2019s DOCUMENTED \u201cnot found\u201d (a 404). MEASURED TODAY: the live DAVIS tenant answers a number it does not hold with a 400 instead \u2014 \u201cNo Stop found with stopNbr 007185553-98 for the companycode DAVIS\u201d, reason code 923 \u2014 three numbers in a row, and the test order then created at one of them came back new. So in production every Duplicate would have stopped at \u201ccould not prove \u2026 is free \u2014 NuVizz answered 400\u201d and created nothing. It now believes exactly that answer: a 404, or a 400 carrying NuVizz\u2019s own \u201cNo Stop found\u201d (923). Anything else \u2014 another 400, a server error, an empty answer \u2014 is still \u201ccould not tell\u201d and still creates nothing, because a create at a number NuVizz already holds would REPLACE that order. Load reads already work this way (NuVizz does the same thing for loads, learned Jul 31). Nothing on screen changed.'],
   ['1.111.0', 'THE PRINTED MANIFEST AND DELIVERY TICKET HAVE THE NEW LAYOUT \u2014 AND DIAGNOSTICS HAS A PICKER TO GO BACK TO THE OLD ONE. Chad, 10/03: \u201ci want to move to production but i want a way to roll back to old one if needed in diagnostics screen somewhere i want to be able to pick which version i\u2019m running.\u201d THE NEW LAYOUT is the one worked out on paper: the PRO number large in the header; pallets / loose / total pieces / weight in one heavy row with a little space above it; the BOL on the phone\u2019s row (city \u00b7 BOL \u00b7 phone); the comments above the freight lines, without the repeated \u201cSPL-INSTR-TEXT:\u201d label; Requested Date & Time small at the foot; a smaller stop-number box, set a little below the logo; and the top-right corner left empty for the staple. WHAT DID NOT CHANGE: the information on the page, one delivery per page, page 1 still the route summary and the first ticket, and the way it prints. It is shorter than the old layout on every ticket measured (11,817 shapes of stop), so a page holds more freight lines before it spills \u2014 29 against 23 on a stop\u2019s own page with no comments, 21 against 15 on page 1, counted in a real print. WHERE: Print Manifest on a route, Print manifest on a Compare card, and every Delivery Ticket. THE PICKER: More \u2192 Diagnostics \u2192 Manifest layout (on a phone it is the fifth chip \u2014 swipe the row left). It says which layout is in use and when it was changed, has a Preview of each built from a made-up route, and one button to switch. The choice is stored for the whole company, not per browser: switching back from a phone switches the office PCs. The device you switch on changes at once; the others follow within 5 minutes, or as soon as they are reloaded. Everyone can see it; with sign-in on, only an admin can change it. The old layout prints byte for byte what it printed before (25,543 documents compared). 0 NuVizz calls. PUT IT BACK: Diagnostics \u2192 Manifest layout \u2192 Go back to the old layout.'],
@@ -9412,8 +9414,10 @@ function StopNotesList({ comments }) {
 // Activity timeline (the portal's "Activity Timeline"). Collapsed by default; the FIRST
 // time it's expanded it calls /.netlify/functions/nuvizz-stop-events on demand — even if
 // Refresh wasn't pressed. Prefers the rich /event/eventinfo (By:/From:) when stopId is known.
-function StopActivityTimeline({ stopNbr, stopId, onRefreshed }) {
+function StopActivityTimeline({ stopNbr, stopId, onRefreshed, openKey = 0 }) {
   const [open, setOpen] = useState(false);
+  // v1.113.0 — the order view's "See the activity" opens it (its first open costs the calls it always has).
+  useEffect(() => { if (openKey) setOpen(true); }, [openKey]);
   const [st, setSt] = useState({ loading: false, events: null, error: null });
   // A different ORDER under the same number (the Estes twin, a recurring PRO) does not
   // remount this section — its key is the number — so forget the previous order's events
@@ -9582,8 +9586,10 @@ function StopNuvizzNoteComposer({ stop, onRefreshed }) {
 // board override, because NuVizz never recomputes the Estimated Arrival our board files on and
 // the next scan would otherwise drag the order straight back onto today. 3 NuVizz calls; the
 // order leaves this board immediately.
-function StopDeliveryDateEditor({ stop, onRefreshed }) {
+function StopDeliveryDateEditor({ stop, onRefreshed, openKey = 0 }) {
   const [open, setOpen] = useState(false);
+  // v1.113.0 — the order view's next action ("Change the delivery date") opens this editor.
+  useEffect(() => { if (openKey) setOpen(true); }, [openKey]);
   const [date, setDate] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);       // { kind:'ok'|'err', text }
@@ -10296,7 +10302,7 @@ function useLiveStop(stop) {
 //
 // `onSaveContacts` takes { name, phone } and is supplied by whichever panel owns the note
 // draft; without it (the read-only PRO lookup) the block renders but does not offer edits.
-function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = false, saveError = null }) {
+function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = false, saveError = null, bare = false, editKey = 0 }) {
   const resolved = resolveStopContact(stop, note);
   const aside = orderContactAside(stop, resolved);
   const canEdit = typeof onSaveContacts === 'function';
@@ -10313,6 +10319,8 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
   useEffect(() => { setEditing(false); setBusy(false); setPush(null); }, [stop?.stopNbr, stop?.pro]);
 
   const startEdit = () => { setName(resolved.name); setPhone(resolved.phone); setEditing(true); };
+  // v1.113.0 — the order view's "Add a customer number" opens this editor.
+  useEffect(() => { if (editKey && canEdit) startEdit(); }, [editKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const submit = async () => {
     setBusy(true); setPush(null);
     try {
@@ -10347,13 +10355,15 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
   const typedShort = !!phone.trim() && !isDialable(phone);
 
   return (
-    <div className="mt-2 pt-2 border-t border-slate-100">
-      <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
-        Customer #
-        {resolved.source === 'saved' && (
-          <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">added here</span>
-        )}
-      </div>
+    <div className={bare ? '' : 'mt-2 pt-2 border-t border-slate-100'}>
+      {!bare && (
+        <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
+          Customer #
+          {resolved.source === 'saved' && (
+            <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">added here</span>
+          )}
+        </div>
+      )}
       {editing ? (
         <div className="mt-1 space-y-1.5">
           {/* Sized for a thumb: this block renders in the mobile sheet as well as the
@@ -11437,9 +11447,624 @@ function CopyProButton({ pro, light = false }) {
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false }) {
+// ── ORDER VIEW — the floating, customer-service view of one order (v1.113.0) ─────
+// Chad, 10/03: "i want to have a button that expands an order from the side bar to a floating
+// window like when we hit the duplicate order button. I want to redesign the window to better
+// present the full orders details from more of a customer service perspective."
+//
+// Opened from the stop card's header (desktop sidebar on Map and Routing, the phone drawer on
+// Map). Everything it SAYS comes from lib/order-view.js buildOrderView — the board row, the
+// customer's note and the screen's own board flags — and it never spends a NuVizz call by
+// itself: loading the full order, the photos or the activity is always the dispatcher's click,
+// with the cost on the button. Every write it offers is one the card already had (date, note,
+// pieces, duplicate, contact), the same component behind the same server guards.
+// Rendered on <body> (a transformed sheet would trap a fixed window) at z-[1150]: above the
+// stop card and the history overlay, below the Text composer (1200), Duplicate (1350) and the
+// document viewers (1400), all of which it can open. data-overlay-layer: it exists to cover.
+// Two views: OrderViewDesktop (main column + supporting column) and OrderViewPhone (one
+// column in the order a call goes), over the same sections.
+const OV_SECTION_H = 'text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500';
+const OV_LABEL = 'text-[12px] text-slate-500';
+const OV_BTN = 'inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md border border-slate-300 bg-white text-[13px] font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1';
+const OV_LINK = 'inline-flex items-center gap-1 text-[13px] font-medium text-blue-700 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-sm';
+const OV_TIER = {
+  block: { word: 'Blocker', Icon: AlertTriangle, ink: 'text-red-700', rule: 'border-red-600' },
+  warn: { word: 'Check', Icon: AlertCircle, ink: 'text-amber-700', rule: 'border-amber-500' },
+  info: { word: 'Note', Icon: Info, ink: 'text-slate-600', rule: 'border-slate-300' },
+};
+
+/** Minutes after midnight, Eastern — the clock Davis's windows are written in. */
+function etNowMin() {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: 'numeric', hourCycle: 'h23' }).formatToParts(new Date());
+    return Number(parts.find((p) => p.type === 'hour')?.value) * 60 + Number(parts.find((p) => p.type === 'minute')?.value);
+  } catch { return null; }
+}
+
+function OvCopyButton({ text, label }) {
+  const [done, setDone] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); setDone(true); setTimeout(() => setDone(false), 1500); } catch { /* clipboard refused — nothing claimed */ }
+  };
+  if (!text) return null;
+  return (
+    <button type="button" onClick={copy} className={OV_BTN} aria-label={`Copy ${label}`}>
+      {done ? <CheckCircle2 size={14} className="text-emerald-600" /> : <Copy size={14} />}{done ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+function OvRow({ label, children }) {
+  return (
+    <div className="grid grid-cols-[112px_minmax(0,1fr)] gap-3 py-1">
+      <dt className={OV_LABEL}>{label}</dt>
+      <dd className="min-w-0 text-[14px] text-slate-900">{children}</dd>
+    </div>
+  );
+}
+
+function OvStatus({ view }) {
+  const meta = STATUS_META[view.status.kind];
+  const color = meta?.badge || BRAND;
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold" style={{ color }}>
+      <span className="w-2 h-2 rounded-full" style={{ background: color }} aria-hidden="true" />
+      {view.status.label}
+    </span>
+  );
+}
+
+// The alert the NEXT button already acts on (coveredKey) keeps its explanation and drops its own
+// button, as does any alert whose fix IS the next action — one action, never the same one twice.
+function OvAlerts({ alerts, onAct, phone = false, coveredKey = null, nextKey = null }) {
+  const [all, setAll] = useState(false);
+  const [why, setWhy] = useState(null);
+  if (!alerts.length) return null;
+  const shown = all ? alerts : alerts.slice(0, 3);
+  return (
+    <ul className="space-y-3" aria-label="Needs attention" data-order-view-alerts>
+      {shown.map((a) => {
+        const T = OV_TIER[a.tier];
+        const action = a.action && a.key !== coveredKey && a.action.key !== nextKey ? a.action : null;
+        return (
+          <li key={a.key} className={`border-l-[3px] ${T.rule} pl-3 py-0.5`}>
+            <div className={phone ? 'space-y-2' : 'flex items-start gap-4'}>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-1.5">
+                  <T.Icon size={14} className={T.ink} aria-hidden="true" />
+                  <span className={`text-[11px] font-semibold uppercase tracking-wide ${T.ink}`}>{T.word}</span>
+                  {a.estimate && <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap">· Estimate</span>}
+                  {a.key === coveredKey && <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap">· the next step above</span>}
+                </div>
+                <div className="text-[14px] font-semibold text-slate-900 leading-snug">{a.title}</div>
+                {a.detail && <div className="text-[13px] text-slate-600 leading-snug">{a.detail}</div>}
+                {a.basis && (
+                  <div className="mt-0.5">
+                    <button type="button" className={OV_LINK} aria-expanded={why === a.key} onClick={() => setWhy(why === a.key ? null : a.key)}>
+                      {why === a.key ? 'Hide the basis' : 'Why we think so'}
+                    </button>
+                    {why === a.key && <div className="text-[12px] text-slate-600 leading-snug mt-0.5">{a.basis}</div>}
+                  </div>
+                )}
+              </div>
+              {action && <button type="button" className={`${OV_BTN} shrink-0`} onClick={() => onAct(action.key)}>{action.label}</button>}
+            </div>
+          </li>
+        );
+      })}
+      {alerts.length > 3 && (
+        <li><button type="button" className={OV_LINK} onClick={() => setAll(!all)}>{all ? 'Show fewer' : `Show ${alerts.length - 3} more`}</button></li>
+      )}
+    </ul>
+  );
+}
+
+const OV_NEXT_ICON = {
+  'load-order': RefreshCw, 'load-pod': FileCheck, 'view-pod': FileCheck, 'call-customer': Phone, 'call-driver': Phone,
+  'text-driver': MessageSquare, 'text-customer': MessageSquare, 'add-contact': Phone, 'fix-pin': MapPin, 'fix-address': MapPin,
+  'change-date': CalendarClock, 'open-route': Truck, 'edit-notes': StickyNote, activity: Activity,
+};
+
+function OvNextBand({ view, onAct, busyKey, phone, telHref }) {
+  const Icon = OV_NEXT_ICON[view.next.key] || ArrowRight;
+  const busy = busyKey === view.next.key;
+  // 'act': something needs doing — filled. 'calm': nothing is wrong — the same one action, quieter.
+  const calm = view.next.tone === 'calm';
+  const cls = `inline-flex items-center justify-center gap-2 h-10 px-4 rounded-lg text-[14px] font-semibold disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 ${calm ? 'bg-white border hover:bg-slate-50' : 'text-white shadow-sm'} ${phone ? 'w-full' : 'shrink-0'}`;
+  const look = calm ? { color: BRAND, borderColor: BRAND } : { background: BRAND };
+  const tel = telHref(view.next.key);
+  const unrouted = view.status.kind === 'UNPLANNED';
+  const head = !calm ? 'Next' : view.status.kind === 'DELIVERED' ? 'Delivered' : unrouted ? 'Not on a route yet' : 'On track';
+  return (
+    <div className={phone ? 'space-y-2' : 'flex items-center gap-4'} data-order-view-next data-tone={calm ? 'calm' : 'act'}>
+      <div className="min-w-0 flex-1">
+        <div className={`${OV_SECTION_H} flex items-center gap-1.5`}>
+          {calm && !unrouted && <CheckCircle2 size={13} className="text-emerald-700" aria-hidden="true" />}{head}
+        </div>
+        <div className="text-[14px] text-slate-700 leading-snug">{view.next.reason}</div>
+      </div>
+      {tel
+        ? <a href={tel} className={cls} style={look}><Icon size={16} />{view.next.label}</a>
+        : <button type="button" onClick={() => onAct(view.next.key)} disabled={busy} className={cls} style={look}>
+            <Icon size={16} className={busy ? 'animate-spin motion-reduce:animate-none' : ''} />{busy ? 'Working…' : view.next.label}
+          </button>}
+    </div>
+  );
+}
+
+function OvWhen({ view }) {
+  const w = view.when;
+  return (
+    <dl>
+      <OvRow label="Delivery day">{w.dayLabel || <span className="text-slate-500">Not on file</span>}{w.isToday && <span className="ml-1.5 text-[12px] text-slate-500">today</span>}</OvRow>
+      <OvRow label={w.window?.estimateOnly ? 'Estimated' : 'Window'}>
+        {w.window ? (
+          <>
+            <span className="tabular-nums">{w.window.text}</span>
+            {w.window.strict && <span className="ml-1.5 text-[12px] font-semibold text-slate-700">strict</span>}
+            {w.window.estimateOnly && <div className="text-[12px] text-slate-500 leading-snug">NuVizz’s arrival estimate for the whole load — not this order’s own window.</div>}
+          </>
+        ) : <span className="text-slate-500">No window on file</span>}
+      </OvRow>
+      {!view.status.finished && (
+        <OvRow label="ETA">
+          {w.eta ? (
+            <>
+              <span className={`tabular-nums font-medium ${w.eta.stale ? 'text-slate-500 line-through decoration-slate-400' : ''}`}>{w.eta.text}</span>{w.eta.band && <span className="ml-1 text-[12px] text-slate-500">{w.eta.band}</span>}
+              {w.eta.stale && <span className="ml-1.5 text-[12px] font-semibold text-amber-700">passed</span>}
+              <div className="text-[12px] text-slate-500 leading-snug">{w.eta.detail}</div>
+            </>
+          ) : <span className="text-[13px] text-slate-500 leading-snug">{w.etaMissing}</span>}
+        </OvRow>
+      )}
+      {w.arrived && <OvRow label="Arrived"><span className="tabular-nums">{w.arrived}</span></OvRow>}
+      {w.delivered && <OvRow label="Delivered"><span className="tabular-nums font-medium text-emerald-800">{w.delivered}</span></OvRow>}
+    </dl>
+  );
+}
+
+function OvWhere({ view, stop, mapsUrl, onAct }) {
+  const wh = view.where;
+  const svUrl = Number.isFinite(stop.lat) && Number.isFinite(stop.lng)
+    ? `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${stop.lat},${stop.lng}`
+    : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(wh.query)}`;
+  return (
+    <div>
+      {wh.lines.length ? (
+        <address className="not-italic text-[14px] text-slate-900 leading-relaxed">
+          {wh.lines.map((l, i) => <div key={i}>{l}</div>)}
+        </address>
+      ) : <div className="text-[14px] text-slate-500">No address on file</div>}
+      {(wh.corrected || wh.pinMoved) && (
+        <div className="mt-1 text-[12px] text-slate-500">{[wh.corrected && 'Address corrected by a dispatcher', wh.pinMoved && 'pin placed by hand'].filter(Boolean).join(' · ')}</div>
+      )}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <OvCopyButton text={wh.copyText} label="address" />
+        <a href={mapsUrl} target="_blank" rel="noreferrer" className={OV_BTN}><Navigation size={14} />Navigate</a>
+        <a href={svUrl} target="_blank" rel="noreferrer" className={OV_BTN}><Eye size={14} />Street View</a>
+        <button type="button" className={OV_BTN} onClick={() => onAct('fix-address')}>Edit address</button>
+        <button type="button" className={OV_BTN} onClick={() => onAct('fix-pin')}>Correct pin</button>
+      </div>
+    </div>
+  );
+}
+
+function OvFreight({ view, onAct, phone = false }) {
+  const f = view.freight;
+  const cell = (label, value, unit = '') => (
+    <div className="min-w-0">
+      <div className={OV_LABEL}>{label}</div>
+      <div className="text-[18px] leading-7 font-semibold text-slate-900 tabular-nums" title={value == null ? 'Not on our board' : undefined}>
+        {value == null ? <span className="text-slate-400">—</span> : <>{fmtCount(value)}{unit && <span className="text-[13px] font-medium text-slate-500"> {unit}</span>}</>}
+      </div>
+    </div>
+  );
+  return (
+    <div>
+      <div className={`grid ${phone ? 'grid-cols-2 gap-x-4 gap-y-3' : 'grid-cols-4 gap-4'}`}>
+        {cell('Pallets', f.pallets)}{cell('Loose', f.loose)}{cell('Total pieces', f.total)}{cell('Weight', f.weight, 'lb')}
+      </div>
+      {f.items.length > 0 ? (
+        <table className="mt-4 w-full text-[13px]" data-order-view-items>
+          <thead>
+            <tr className="text-left text-[12px] text-slate-500 border-b border-slate-200">
+              <th className="py-1.5 pr-3 font-medium">Item</th>
+              <th className="py-1.5 pr-3 font-medium">Class</th>
+              <th className="py-1.5 pr-3 font-medium text-right">Qty</th>
+              <th className="py-1.5 font-medium text-right">Weight</th>
+            </tr>
+          </thead>
+          <tbody>
+            {f.items.map((it, i) => (
+              <tr key={i} className="border-b border-slate-100 last:border-b-0 align-top">
+                <td className="py-1.5 pr-3 text-slate-900">
+                  {it.product}
+                  {(it.oversize || it.dims) && <div className="text-[12px] text-slate-500">{[it.oversize && 'Long / oversize', it.dims].filter(Boolean).join(' · ')}</div>}
+                </td>
+                <td className="py-1.5 pr-3 text-slate-700">{it.cls || '—'}</td>
+                <td className="py-1.5 pr-3 text-right tabular-nums text-slate-900 whitespace-nowrap">{it.qty == null ? '—' : `${fmtCount(it.qty)}${it.uom ? ` ${it.uom}` : ''}`}</td>
+                <td className="py-1.5 text-right tabular-nums text-slate-900 whitespace-nowrap">{it.weight == null ? '—' : `${fmtCount(it.weight)} ${/^LBS?$/i.test(it.weightUOM || 'LBS') ? 'lb' : it.weightUOM}`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <div className="mt-3 text-[13px] text-slate-500">
+          {view.data.missing.includes('items') && view.data.listOnly
+            ? <>Item lines aren’t on our board yet. <button type="button" className={OV_LINK} onClick={() => onAct('load-order')}>Load the full order</button></>
+            : 'No item lines on this order.'}
+        </div>
+      )}
+      {view.refs.length > 0 && (
+        <dl className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-2">
+          {view.refs.map((r) => (
+            <div key={r.label} className="min-w-0">
+              <dt className={OV_LABEL}>{r.label}</dt>
+              <dd className="text-[13px] text-slate-900 font-mono break-all">{r.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
+}
+
+function OvRequirements({ view, stop }) {
+  const notes = mergedNotes(stop);
+  return (
+    <div className="space-y-4">
+      {view.requirements.length > 0 ? (
+        <ul className="divide-y divide-slate-100" data-order-view-requirements>
+          {view.requirements.map((r) => (
+            <li key={r.key} className="py-2 grid grid-cols-[16px_minmax(0,1fr)] gap-x-2.5">
+              {r.must ? <AlertCircle size={15} className="mt-0.5 text-slate-700" aria-label="Required" /> : <Circle size={9} className="mt-1.5 ml-[3px] text-slate-400" aria-hidden="true" />}
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+                  <span className={`text-[14px] ${r.must ? 'font-semibold text-slate-900' : 'text-slate-800'}`}>{r.label}</span>
+                  <span className="text-[11px] text-slate-500">{r.source}</span>
+                </div>
+                {r.detail && <div className="text-[13px] text-slate-600 leading-snug break-words">{r.detail}</div>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : <div className="text-[13px] text-slate-500">No delivery requirements on file for this customer.</div>}
+      {view.instructions && (
+        <div>
+          <div className={`${OV_LABEL} mb-1`}>Order instructions, as NuVizz has them</div>
+          <p className="text-[14px] text-slate-800 whitespace-pre-wrap leading-relaxed bg-slate-50 rounded-md px-3 py-2 break-words" data-order-view-instructions>{view.instructions}</p>
+        </div>
+      )}
+      {notes.length > 0 && <StopNotesList comments={notes} />}
+    </div>
+  );
+}
+
+function OvCustomer({ view, stop, note, onSaveContacts, onRefreshed, savingNote, noteSaveError, editKey, onDraft }) {
+  const c = view.contact;
+  const [drafts, setDrafts] = useState(false);
+  const tel = c.dialable ? `tel:${String(c.phone).replace(/[^\d+]/g, '')}` : null;
+  return (
+    <div className="space-y-3">
+      {c.known ? (
+        <div>
+          <div className="text-[15px] font-semibold text-slate-900">{c.name || 'No name on file'}{c.role && <span className="ml-1.5 text-[12px] font-normal text-slate-500">{c.role}</span>}</div>
+          <div className="text-[15px] tabular-nums text-slate-900">{c.phoneDisplay || <span className="text-[13px] text-slate-500">No number to call</span>}</div>
+          {c.source === 'saved' && <div className="text-[12px] text-slate-500">Saved by a dispatcher</div>}
+        </div>
+      ) : <div className="text-[14px] text-slate-500">{view.data.listOnly ? 'The contact isn’t on our board yet.' : 'No contact on this order.'}</div>}
+      <div className="flex flex-wrap gap-2 relative">
+        {tel && <a href={tel} className={OV_BTN}><Phone size={14} />Call</a>}
+        <button type="button" className={OV_BTN} onClick={() => setDrafts(!drafts)} aria-expanded={drafts} aria-haspopup="menu"><MessageSquare size={14} />{c.dialable ? 'Text' : 'Text (add #)'}</button>
+        {c.phone && <OvCopyButton text={c.phoneDisplay} label="phone number" />}
+        {drafts && (
+          <div className="absolute left-0 top-full mt-1 z-10 w-72 max-w-[calc(100vw-48px)] bg-white border border-slate-200 rounded-lg shadow-lg py-1" role="menu" aria-label="Start a text from">
+            <div className="px-3 py-1.5 text-[11px] text-slate-500">Starts the text — you review it before it sends.</div>
+            {orderMessageDrafts(view).map((d) => (
+              <button key={d.key} type="button" role="menuitem" className="block w-full text-left px-3 py-2 hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-100"
+                onClick={() => { setDrafts(false); onDraft(d.text); }}>
+                <div className="text-[13px] font-medium text-slate-900">{d.label}</div>
+                <div className="text-[12px] text-slate-500 line-clamp-2">{d.text}</div>
+              </button>
+            ))}
+            <button type="button" role="menuitem" className="block w-full text-left px-3 py-2 text-[13px] text-slate-700 hover:bg-slate-50" onClick={() => { setDrafts(false); onDraft(null); }}>Blank message</button>
+          </div>
+        )}
+      </div>
+      {c.email && <div className="text-[13px]"><span className={OV_LABEL}>Email </span><a className={OV_LINK} href={`mailto:${c.email}`}>{c.email}</a></div>}
+      {c.aside && <div className="text-[12px] text-slate-500">The order lists {c.aside.name ? `${c.aside.name}, ` : ''}<span className="tabular-nums">{c.aside.phoneDisplay}</span></div>}
+      {c.others.length > 0 && (
+        <ul className="text-[13px] space-y-0.5">
+          {c.others.map((o, i) => (
+            <li key={i} className="flex flex-wrap gap-x-2"><span className="text-slate-900">{o.name || 'Contact'}</span>{o.role && <span className="text-slate-500">{o.role}</span>}{o.phone && (o.dialable ? <a className={`${OV_LINK} tabular-nums`} href={`tel:${o.phone.replace(/[^\d+]/g, '')}`}>{o.phoneDisplay}</a> : <span className="tabular-nums text-slate-600">{o.phoneDisplay}</span>)}</li>
+          ))}
+        </ul>
+      )}
+      {typeof onSaveContacts === 'function' && (
+        <details className="group" open={editKey ? true : undefined}>
+          <summary className={`${OV_LINK} cursor-pointer list-none`}>Change or add the number</summary>
+          <div className="mt-2"><StopContactBlock bare stop={stop} note={note} onSaveContacts={onSaveContacts} onRefreshed={onRefreshed} saving={savingNote} saveError={noteSaveError} editKey={editKey} /></div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function OvRoute({ view, onAct, stop }) {
+  const r = view.route;
+  const tel = r.driverPhone && isDialable(r.driverPhone) ? `tel:${r.driverPhone.replace(/[^\d+]/g, '')}` : null;
+  return (
+    <div className="space-y-2">
+      {r.planned ? (
+        <div>
+          <div className="text-[15px] font-semibold text-slate-900">{r.name || 'Route'}{r.seq != null && <span className="ml-1.5 text-[13px] font-normal text-slate-500">stop {r.seq}</span>}</div>
+          <div className="text-[14px] text-slate-800">{r.driver || <span className="text-slate-500">No driver assigned</span>}</div>
+          {r.driverPhoneDisplay && <div className="text-[13px] tabular-nums text-slate-600">{r.driverPhoneDisplay}</div>}
+        </div>
+      ) : <div className="text-[14px] text-slate-500">Not on a route yet.</div>}
+      <div className="flex flex-wrap gap-2">
+        {tel && <a href={tel} className={OV_BTN}><Phone size={14} />Call driver</a>}
+        {r.driver && <button type="button" className={OV_BTN} onClick={() => onAct('text-driver')}><MessageSquare size={14} />Text driver</button>}
+        {r.planned && <button type="button" className={OV_BTN} onClick={() => onAct('open-route')}><Truck size={14} />View the route</button>}
+      </div>
+      {stop.matchKey && <UsualDriverLine matchKey={stop.matchKey} />}
+    </div>
+  );
+}
+
+function OvJourney({ view }) {
+  const tl = view.timeline;
+  if (tl.variant === 'terminal') return <div className="text-[14px] font-semibold text-red-700 flex items-center gap-1.5"><AlertTriangle size={14} />{tl.label}</div>;
+  if (tl.variant !== 'flow') return <div className="text-[14px] text-slate-700"><OvStatus view={view} /></div>;
+  return (
+    <ol className="space-y-2">
+      {tl.steps.map((st) => (
+        <li key={st.key} className="flex items-center gap-2.5">
+          {st.state === 'done' ? <CheckCircle2 size={16} className="text-emerald-700" aria-label="Done" />
+            : st.state === 'active' ? <span className="w-4 h-4 rounded-full border-[3px]" style={{ borderColor: BRAND }} aria-label="Current" />
+              : <Circle size={16} className="text-slate-300" aria-label="Not yet" />}
+          <span className={`text-[14px] ${st.state === 'pending' ? 'text-slate-500' : 'text-slate-900 font-medium'}`}>{st.label}</span>
+          {st.time && <span className="ml-auto text-[13px] tabular-nums text-slate-600">{st.time}</span>}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function OvActions({ stop, note, onRefreshed, onAct, dateKey, loadState }) {
+  const [showTicket, setShowTicket] = useState(false);
+  const ticketHtml = useMemo(() => (showTicket ? buildTicketHtml(stop, (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg') : ''), [showTicket, stop]);
+  return (
+    <div className="space-y-2" data-order-view-actions>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className={OV_BTN} onClick={() => onAct('load-order')} disabled={loadState.state === 'busy'}>
+          <RefreshCw size={14} className={loadState.state === 'busy' ? 'animate-spin motion-reduce:animate-none' : ''} />{loadState.state === 'busy' ? 'Loading…' : 'Refresh from NuVizz'}
+        </button>
+        <button type="button" className={OV_BTN} onClick={() => setShowTicket(true)}><FileText size={14} />Ticket</button>
+        <StopLabelButton stop={stop} note={note} phone={resolveStopPhone(stop, note)} className={OV_BTN} />
+        <button type="button" className={OV_BTN} onClick={() => onAct('edit-notes')}><StickyNote size={14} />Customer notes</button>
+        <button type="button" className={OV_BTN} onClick={() => onAct('history')}><History size={14} />History</button>
+      </div>
+      <div className="text-[11px] text-slate-500">Refresh reads the order from NuVizz — 1 call. The answer shows at the top of this window.</div>
+      <div className={`${OV_LABEL} pt-3`}>Change this order in NuVizz</div>
+      <div className="space-y-1">
+        <StopDeliveryDateEditor key={`d-${stop.stopNbr}`} stop={stop} onRefreshed={onRefreshed} openKey={dateKey} />
+        <StopNuvizzNoteComposer key={`n-${stop.stopNbr}`} stop={stop} onRefreshed={onRefreshed} />
+        <StopPiecesEditor key={`p-${stop.stopNbr}`} stop={stop} onRefreshed={onRefreshed} />
+        <DuplicateOrderPanel key={`dup-${stop.stopNbr}`} stop={stop} note={note} />
+      </div>
+      {showTicket && <PrintDocModal title={`Delivery Ticket · PRO ${stop.pro || stop.stopNbr || ''}`} html={ticketHtml} pageW={816} onClose={() => setShowTicket(false)} />}
+    </div>
+  );
+}
+
+function OvSection({ title, label = null, children, innerRef, id, className = '' }) {
+  return (
+    <section ref={innerRef} aria-labelledby={title ? id : undefined} aria-label={title ? undefined : label} className={`px-4 sm:px-6 py-5 border-b border-slate-100 last:border-b-0 scroll-mt-2 ${className}`}>
+      {title && <h3 id={id} className={`${OV_SECTION_H} mb-3`}>{title}</h3>}
+      {children}
+    </section>
+  );
+}
+
+function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate = null, onClose, onRefreshed,
+  onText, onTextDriver, onOpenHistory, onMoveLocation, onEditAddress, onOpenRoute, onEditNotes,
+  onSaveContacts, savingNote = false, noteSaveError = null }) {
+  const phone = useMediaQuery('(max-width: 767px)');
+  const driverPhone = useDriverPhone(stop?.driverName);
+  const [nowMin, setNowMin] = useState(() => etNowMin());
+  // The clock alerts ("closes in 20 min") move with the clock, once a minute.
+  useEffect(() => { const id = setInterval(() => setNowMin(etNowMin()), 60000); return () => clearInterval(id); }, []);
+  const view = useMemo(() => buildOrderView({ stop, note, kind, flags, eta, boardDate, today: etToday(), nowMin, driverPhone: driverPhone || '' }),
+    [stop, note, kind, flags, eta, boardDate, nowMin, driverPhone]);
+  const [loadState, setLoadState] = useState({ state: 'idle', text: '' });
+  const [dateKey, setDateKey] = useState(0);
+  const [activityKey, setActivityKey] = useState(0);
+  const [contactKey, setContactKey] = useState(0);
+  const refs = { pod: useRef(null), actions: useRef(null), activity: useRef(null), customer: useRef(null), requirements: useRef(null) };
+  const panelRef = useRef(null);
+  const reduced = useMediaQuery('(prefers-reduced-motion: reduce)');
+  const go = (k) => refs[k]?.current?.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
+
+  // Loading the full order: the card's own Refresh (one /stop/info via nuvizz-pro-lookup), never
+  // automatic. The answer is only claimed once it has come back and been folded in.
+  const loadOrder = async () => {
+    const pro = stop?.primaryPro || stop?.pro || stop?.stopNbr;
+    if (!pro || loadState.state === 'busy') return;
+    setLoadState({ state: 'busy', text: 'Asking NuVizz for this order…' });
+    try {
+      const r = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
+      const d = await r.json();
+      if (d.ok && d.stop) {
+        const refusal = onRefreshed?.(d.stop);
+        if (refusal) setLoadState({ state: 'err', text: refusal });
+        else setLoadState({ state: 'ok', text: `Loaded from NuVizz at ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` });
+      } else setLoadState({ state: 'err', text: `Couldn’t load the order: ${d.reason || 'not found'}.` });
+    } catch (e) { setLoadState({ state: 'err', text: `Couldn’t load the order: ${e.message}.` }); }
+  };
+  // Hand-offs that need the board itself (the map, the address editor, the route) close this
+  // window first, so the dispatcher lands exactly where the old card's buttons took them.
+  const handOff = (fn) => { onClose(); fn?.(); };
+  const act = (key) => {
+    switch (key) {
+      case 'load-order': return loadOrder();
+      case 'load-pod': return loadOrder();
+      case 'view-pod': return go('pod');
+      case 'change-date': setDateKey((n) => n + 1); return go('actions');
+      case 'activity': setActivityKey((n) => n + 1); return go('activity');
+      case 'add-contact': setContactKey((n) => n + 1); return go('customer');
+      case 'text-customer': return onText?.(stop);
+      case 'text-driver': return onTextDriver?.(stop);
+      case 'fix-pin': return handOff(() => onMoveLocation?.(stop));
+      case 'fix-address': return handOff(() => onEditAddress?.(stop));
+      case 'open-route': return handOff(() => stop?.loadNbr && onOpenRoute?.(stop.loadNbr));
+      case 'edit-notes': return handOff(() => onEditNotes?.());
+      case 'history': return handOff(() => onOpenHistory?.(stop));
+      default: return go('requirements');
+    }
+  };
+  const telHref = (key) => {
+    if (key === 'call-customer' && view.contact.dialable) return `tel:${String(view.contact.phone).replace(/[^\d+]/g, '')}`;
+    if (key === 'call-driver' && view.route.driverPhone) return `tel:${view.route.driverPhone.replace(/[^\d+]/g, '')}`;
+    return null;
+  };
+
+  // Esc closes THIS window only: captured before the Routing panel's own window-level Esc (which
+  // would close the whole card), and ignored while a field has focus or a layer sits above it
+  // (the Text composer, Duplicate, a document) — those keep their own close buttons.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      const a = document.activeElement;
+      if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable)) { a.blur(); return; }
+      const top = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+      const mine = document.querySelector('[data-order-view]');
+      if (top && mine && !mine.contains(top)) return;
+      onClose();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+  // Focus lands in the window so the keyboard starts where the eye does.
+  useEffect(() => { panelRef.current?.focus({ preventScroll: true }); }, []);
+
+  if (!stop) return null;
+  const mapsUrl = Number.isFinite(stop.lat) && Number.isFinite(stop.lng)
+    ? `https://www.google.com/maps/search/?api=1&query=${stop.lat},${stop.lng}`
+    : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(view.where.query)}`;
+  const swallow = (e) => e.stopPropagation();
+  const onDraft = (text) => onText?.(stop, text);
+
+  const sections = {
+    when: <OvWhen view={view} />,
+    where: <OvWhere view={view} stop={stop} mapsUrl={mapsUrl} onAct={act} />,
+    customer: <OvCustomer view={view} stop={stop} note={note} onSaveContacts={onSaveContacts} onRefreshed={onRefreshed} savingNote={savingNote} noteSaveError={noteSaveError} editKey={contactKey} onDraft={onDraft} />,
+    freight: <OvFreight view={view} onAct={act} phone={phone} />,
+    requirements: <OvRequirements view={view} stop={stop} />,
+    route: <OvRoute view={view} onAct={act} stop={stop} />,
+    journey: <OvJourney view={view} />,
+    actions: <OvActions stop={stop} note={note} onRefreshed={onRefreshed} onAct={act} dateKey={dateKey} loadState={loadState} />,
+    pod: <PodDocsSection stop={stop} onRefreshed={onRefreshed} />,
+    activity: (
+      <div className="space-y-3">
+        <StopActivityTimeline key={`a-${stop.stopNbr}`} stopNbr={stop.stopNbr} stopId={stop.stopId} onRefreshed={onRefreshed} openKey={activityKey} />
+        <StopRecentDeliveries stop={stop} note={note} />
+      </div>
+    ),
+  };
+  const pid = `ov-${stop.stopNbr || 'order'}`;
+  const showPod = podSectionVisible(stop, { unplanned: view.status.kind === 'UNPLANNED' });
+
+  return createPortal(
+    <div className={`fixed inset-0 z-[1150] flex items-center justify-center ${phone ? 'p-2' : 'p-6'}`} role="dialog" aria-modal="true"
+      aria-label={`Order ${view.pro} — ${view.customerName || 'customer'}`} data-overlay-layer data-order-view
+      onClick={swallow} onMouseDown={swallow} onPointerDown={swallow} onTouchStart={swallow}>
+      <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} aria-hidden="true" />
+      <div ref={panelRef} tabIndex={-1} className={`relative bg-white rounded-xl shadow-xl w-full flex flex-col overflow-hidden border-t-[3px] focus:outline-none ${phone ? 'h-full' : 'max-w-6xl h-[min(90dvh,920px)]'}`}
+        style={{ borderTopColor: BRAND }} data-order-view-panel>
+        {/* HEADER — who, which order, where it stands. */}
+        <header className={`shrink-0 flex items-start gap-3 border-b border-slate-200 ${phone ? 'px-4 pt-3 pb-2' : 'px-6 pt-4 pb-3'}`}>
+          <div className="min-w-0 flex-1">
+            <h2 className={`${phone ? 'text-[17px]' : 'text-[19px]'} leading-6 font-semibold text-slate-900 break-words`}>{view.customerName || 'No customer name'}</h2>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-slate-600">
+              <span className="inline-flex items-center gap-1"><span className="font-mono font-semibold text-slate-800 tracking-wide" data-order-view-pro>{view.pro || '—'}</span><CopyProButton pro={view.pro} light /></span>
+              <OvStatus view={view} />
+              {view.route.planned && <span className="truncate max-w-[22rem]">{[view.route.name, view.route.seq != null && `stop ${view.route.seq}`, !phone && view.route.driver].filter(Boolean).join(' · ')}</span>}
+              <DnsBadge note={note} />
+            </div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close order view" className="shrink-0 -mr-2 inline-flex items-center justify-center w-10 h-10 rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><X size={20} /></button>
+        </header>
+        {/* NEXT — one action, with its reason. Pinned; what needs attention opens the body. */}
+        <div className={`shrink-0 border-b border-slate-200 bg-slate-50 ${phone ? 'px-4 py-3' : 'px-6 py-3'} max-h-[40%] overflow-y-auto overscroll-contain`}>
+          <OvNextBand view={view} onAct={act} busyKey={loadState.state === 'busy' ? (view.next.key === 'load-pod' ? 'load-pod' : 'load-order') : null} phone={phone} telHref={telHref} />
+          {view.data.listOnly && view.next.key !== 'load-order' && (
+            <div className="mt-2 text-[12px] text-slate-500">Contact, item lines and notes aren’t on our board for this order yet. <button type="button" className={OV_LINK} onClick={() => act('load-order')}>Load the full order (1 call)</button></div>
+          )}
+          {loadState.text && <div className={`mt-2 text-[12px] ${loadState.state === 'err' ? 'text-red-700' : 'text-slate-600'}`} role="status" aria-live="polite">{loadState.text}</div>}
+        </div>
+        {/* BODY */}
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain" data-order-view-body>
+          <div className="min-h-full flex flex-col">
+          {view.alerts.length > 0 && (
+            <OvSection title={`Needs attention · ${view.alerts.length}`} id={`${pid}-n`} className="border-b border-slate-200">
+              <OvAlerts alerts={view.alerts} onAct={act} phone={phone} coveredKey={view.next.alertKey || null} nextKey={view.next.key} />
+            </OvSection>
+          )}
+          {phone ? (
+            <div>
+              <OvSection title="When and where" id={`${pid}-ww`}>{sections.when}<div className="mt-3">{sections.where}</div></OvSection>
+              <OvSection title="Customer" id={`${pid}-c`} innerRef={refs.customer}>{sections.customer}</OvSection>
+              <OvSection title="Instructions and requirements" id={`${pid}-r`} innerRef={refs.requirements}>{sections.requirements}</OvSection>
+              <OvSection title="Freight" id={`${pid}-f`}>{sections.freight}</OvSection>
+              <OvSection title="Route and driver" id={`${pid}-rt`}>{sections.route}</OvSection>
+              <OvSection title="Status" id={`${pid}-s`}>{sections.journey}</OvSection>
+              <OvSection title="Order actions" id={`${pid}-a`} innerRef={refs.actions}>{sections.actions}</OvSection>
+              {showPod && <OvSection label="Proof of delivery" id={`${pid}-p`} innerRef={refs.pod}>{sections.pod}</OvSection>}
+              <OvSection label="Activity and history" id={`${pid}-h`} innerRef={refs.activity}>{sections.activity}</OvSection>
+            </div>
+          ) : (
+            <div className="flex-1 grid grid-cols-[minmax(0,1fr)_minmax(300px,360px)]">
+              <div className="min-w-0">
+                <OvSection title="Delivery" id={`${pid}-d`}>
+                  <div className="grid grid-cols-2 gap-8">
+                    <div className="min-w-0">{sections.when}</div>
+                    <div className="min-w-0">{sections.where}</div>
+                  </div>
+                </OvSection>
+                <OvSection title="Instructions and requirements" id={`${pid}-r`} innerRef={refs.requirements}>{sections.requirements}</OvSection>
+                <OvSection title="Freight" id={`${pid}-f`}>{sections.freight}</OvSection>
+                {showPod && <OvSection label="Proof of delivery" id={`${pid}-p`} innerRef={refs.pod}>{sections.pod}</OvSection>}
+                <OvSection label="Activity and history" id={`${pid}-h`} innerRef={refs.activity}>{sections.activity}</OvSection>
+              </div>
+              <aside className="min-w-0 border-l border-slate-200 bg-slate-50/60">
+                <OvSection title="Customer" id={`${pid}-c`} innerRef={refs.customer}>{sections.customer}</OvSection>
+                <OvSection title="Route and driver" id={`${pid}-rt`}>{sections.route}</OvSection>
+                <OvSection title="Status" id={`${pid}-s`}>{sections.journey}</OvSection>
+                <OvSection title="Order actions" id={`${pid}-a`} innerRef={refs.actions}>{sections.actions}</OvSection>
+              </aside>
+            </div>
+          )}
+          </div>
+        </div>
+        {/* FOOTER — how fresh this is, said plainly. */}
+        <footer className={`shrink-0 border-t border-slate-200 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-[12px] text-slate-500 ${phone ? 'px-4 py-2' : 'px-6 py-2'}`} style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}>
+          <span>{[view.freshness.board && `Board updated ${view.freshness.board}`, view.freshness.details && `order details read from NuVizz ${view.freshness.details}`].filter(Boolean).join(' · ') || 'From our board'}</span>
+          {!phone && <span>Esc closes</span>}
+        </footer>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false, flags = null, etaEntry = null, boardDate = null }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
+  // v1.113.0 — the floating ORDER VIEW, opened from the header's expand button.
+  const [viewOpen, setViewOpen] = useState(false);
+  const closeView = useCallback(() => setViewOpen(false), []);
   // True once the dispatcher edits the draft; cleared on stop-change and save.
   // Guards against a background note write (async load, scanner, another device)
   // resetting the draft mid-edit and silently wiping in-progress changes — the
@@ -11457,6 +12082,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
   useEffect(() => {
     setDraft(note || emptyNote(stop));
     setEditing(!note);
+    setViewOpen(false);
     dirtyRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stop?.stopNbr]);
@@ -11544,6 +12170,8 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
           </div>
           <div className="font-bold truncate">{stop.businessName || '(no name)'}</div>
         </div>
+        <button type="button" onClick={() => setViewOpen(true)} aria-label="Open the full order view" title="Open the full order view"
+          className="p-1 hover:bg-white/20 rounded flex-shrink-0" data-order-view-open><Maximize2 size={18} /></button>
         <button onClick={onClose} className="p-1 hover:bg-white/20 rounded flex-shrink-0"><X size={20} /></button>
       </div>
 
@@ -11598,6 +12226,12 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
             </button>
           </div>
         </div>
+      )}
+      {viewOpen && (
+        <OrderViewWindow stop={live} note={note} kind={sidebarStatusKind} flags={flags || []} eta={etaEntry} boardDate={boardDate || live.boardDate || null}
+          onClose={closeView} onRefreshed={onRefreshed} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory}
+          onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onOpenRoute={onOpenRoute} onEditNotes={() => setEditing(true)}
+          onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
       )}
     </aside>
   );
@@ -13274,10 +13908,13 @@ function MobileLoadsTab({ loads, onPickLoad }) {
 // stop components as the desktop sidebar (StopDataSections + StopNotesSection)
 // in a single scroll, so mobile has full desktop parity — every edit option,
 // one inline Edit, one Save.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [] }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], flags = null, etaEntry = null, boardDate = null }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // v1.113.0 — the ORDER VIEW, opened from the header (its phone layout: one column).
+  const [viewOpen, setViewOpen] = useState(false);
+  const closeView = useCallback(() => setViewOpen(false), []);
   // See StopSidebar: guards an open edit from being wiped by a background note
   // write (the root cause of an empty saved note / lost receiving hours).
   const dirtyRef = useRef(false);
@@ -13292,6 +13929,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
     setDraft(note || emptyNote(stop));
     setEditing(false);
     setConfirmDiscard(false);
+    setViewOpen(false);
     dirtyRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stop?.stopNbr]);
@@ -13340,14 +13978,20 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
             <div className="font-bold text-base text-slate-900 truncate">{stop.businessName || '(no name)'}</div>
             <div className="text-[12px] text-slate-500 truncate">{stop.addr1 || '—'}</div>
           </div>
-          <button
-            onClick={tryClose}
-            className="flex-shrink-0 p-2 -mr-1 rounded-full hover:bg-slate-100 active:bg-slate-200"
-            style={{ minWidth: 44, minHeight: 44 }}
-            aria-label="Close stop details"
-          >
-            <X size={20} />
-          </button>
+          <div className="flex-shrink-0 flex items-center -mr-1">
+            <button type="button" onClick={() => setViewOpen(true)} aria-label="Open the full order view" data-order-view-open
+              className="p-2 rounded-full hover:bg-slate-100 active:bg-slate-200 text-slate-600" style={{ minWidth: 44, minHeight: 44 }}>
+              <Maximize2 size={18} />
+            </button>
+            <button
+              onClick={tryClose}
+              className="p-2 rounded-full hover:bg-slate-100 active:bg-slate-200"
+              style={{ minWidth: 44, minHeight: 44 }}
+              aria-label="Close stop details"
+            >
+              <X size={20} />
+            </button>
+          </div>
         </div>
       </div>
       {/* Single scroll — the SAME shared detail + full editor as desktop, so
@@ -13428,6 +14072,12 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
             </div>
           </div>
         </div>
+      )}
+      {viewOpen && (
+        <OrderViewWindow stop={live} note={note} kind={classifyStopStatus(live)} flags={flags || []} eta={etaEntry} boardDate={boardDate || live.boardDate || null}
+          onClose={closeView} onRefreshed={onRefreshed} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory}
+          onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onOpenRoute={onOpenRoute} onEditNotes={() => setEditing(true)}
+          onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
       )}
     </BottomSheet>
   );
@@ -15004,13 +15654,14 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // SMS compose target ({ title, recipients }) — null = closed. Set by the
   // single-stop "Text" button and the bulk "Text selected" action.
   const [smsTargets, setSmsTargets] = useState(null);
-  const textCustomer = useCallback((stop) => {
+  const textCustomer = useCallback((stop, draft = null) => {
     if (!stop) return;
     const phone = resolveStopPhone(stop, notes.get(stop.matchKey));
     // Always open the composer; if no number is on file the dispatcher can type
     // one in (the modal validates before allowing send). Opens on the order's
-    // reference line (PRO + customer), same as the driver text.
-    setSmsTargets({ title: `Text ${stop.businessName || 'customer'}`, recipients: [{ to: phone, label: stop.businessName || stop.stopNbr }], initialText: stopRefPrefill(stop) });
+    // reference line (PRO + customer), same as the driver text — or on a draft the order view
+    // built from verified facts (v1.113.0), which the dispatcher still reviews and sends.
+    setSmsTargets({ title: `Text ${stop.businessName || 'customer'}`, recipients: [{ to: phone, label: stop.businessName || stop.stopNbr }], initialText: typeof draft === 'string' && draft ? draft : stopRefPrefill(stop) });
   }, [notes]);
   const textSelected = useCallback(() => {
     if (!selectionSet?.size) return;
@@ -16973,6 +17624,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           <MobileStopDetailDrawer
             stop={selectedStop}
             note={notes.get(selectedStop.matchKey)}
+            flags={flagsForStop(boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]), selectedStop)}
+            etaEntry={boardFlags.etaByStop?.get?.(String(selectedStop.stopNbr)) || null}
+            boardDate={selectedDate}
             drivers={notesDrivers}
             onText={textCustomer}
             onTextDriver={textDriverForStop}
@@ -17139,6 +17793,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             embedded
             stop={selectedStop}
             note={notes.get(selectedStop.matchKey)}
+            flags={flagsForStop(boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]), selectedStop)}
+            etaEntry={boardFlags.etaByStop?.get?.(String(selectedStop.stopNbr)) || null}
+            boardDate={selectedDate}
             drivers={notesDrivers}
             onText={textCustomer}
             onTextDriver={textDriverForStop}
@@ -21548,7 +22205,7 @@ function RoutingStopRichDetail({ stop, onRefreshed }) {
 // route/driver via RoutingStopRichDetail). Fills the rail column; closes via X or Esc.
 // Never renders empty — guards a null stop. (Replaces the old center-popup modal so a
 // clicked stop's detail always lives in the right panel — dispatcher request.)
-function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory, onText, onTextDriver, onSave, saving, saveError, saveDenied = null, drivers = [] }) {
+function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory, onText, onTextDriver, onSave, saving, saveError, saveDenied = null, drivers = [], flags = null, etaEntry = null, boardDate = null }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -21576,6 +22233,9 @@ function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet,
         embedded
         stop={stop}
         note={note}
+        flags={flags}
+        etaEntry={etaEntry}
+        boardDate={boardDate}
         onClose={onClose}
         onSave={onSave}
         saving={saving}
@@ -27325,10 +27985,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   // bumpProHistory are the shared helpers the Map path uses; saves write customer_notes by
   // matchKey (zero NuVizz calls) then re-read the board.
   const [routingSmsTargets, setRoutingSmsTargets] = useState(null);
-  const textCustomer = useCallback((stop) => {
+  const textCustomer = useCallback((stop, draft = null) => {
     if (!stop) return;
     const phone = resolveStopPhone(stop, notes.get(stop.matchKey));
-    setRoutingSmsTargets({ title: `Text ${stop.businessName || 'customer'}`, recipients: [{ to: phone, label: stop.businessName || stop.stopNbr }], initialText: stopRefPrefill(stop) });
+    setRoutingSmsTargets({ title: `Text ${stop.businessName || 'customer'}`, recipients: [{ to: phone, label: stop.businessName || stop.stopNbr }], initialText: typeof draft === 'string' && draft ? draft : stopRefPrefill(stop) });
   }, [notes]);
   // Text the driver assigned to THIS order, prefilled with PRO + customer (parity with the Map
   // stop panel). Number resolves server-side from the roster; zero NuVizz calls.
@@ -29403,6 +30063,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
               <RoutingStopPanel
                 stop={panelStop}
                 notes={notes}
+                flags={flagsForStop(routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]), panelStop)}
+                etaEntry={routingBoardFlags.etaByStop?.get?.(String(panelStop.stopNbr)) || null}
+                boardDate={selectedDate}
                 windowViolatedSet={windowViolatedSet}
                 onClose={() => setPanelStop(null)}
                 onOpenLoad={(key) => { openRouteInWorkbench(key); setPanelStop(null); }}
@@ -29624,6 +30287,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
           <RoutingStopPanel
             stop={panelStop}
             notes={notes}
+            flags={flagsForStop(routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]), panelStop)}
+            etaEntry={routingBoardFlags.etaByStop?.get?.(String(panelStop.stopNbr)) || null}
+            boardDate={selectedDate}
             windowViolatedSet={windowViolatedSet}
             onClose={() => setPanelStop(null)}
             onOpenLoad={(key) => { openRouteInWorkbench(key); setPanelStop(null); }}
