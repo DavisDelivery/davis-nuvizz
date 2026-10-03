@@ -102,8 +102,14 @@ export function duplicateBaseline(stop) {
   return {
     name: t(stop?.businessName), addr1: t(stop?.addr1), addr2: t(stop?.addr2), city: t(stop?.city),
     state: t(stop?.state), zip: t(stop?.zip), phone: t(stop?.contact?.phone), email: t(stop?.contact?.email),
-    itemDesc: firstProduct(stop), dispatchNotes: t(stop?.signalSources?.orderInstructions), price: '',
+    itemDesc: firstProduct(stop), dispatchNotes: t(stop?.signalSources?.orderInstructions), price: originalPrice(stop),
   };
+}
+
+/** The original's price as the board row holds it: NuVizz's Seal # (sealNbr), kept inside `raw` by
+ *  every enrichment and served to the Map feed (board-fields.mts 'raw.stop.sealNbr'). '' = not held. */
+export function originalPrice(stop) {
+  return t(stop?.raw?.stop?.sealNbr);
 }
 
 /** The form as it opens: what the CARD shows — its corrected address and the number it would dial. */
@@ -120,6 +126,11 @@ export function duplicateFormFrom(stop, note) {
     zip: t(ov?.zip ?? stop?.zip),
     phone: t(resolveStopPhone(stop, note)) || base.phone,
     copyNbr: '',
+    // v1.110.0 — Chad: "put the original price in the box but leave the copy to duplicate unchecked
+    // default and also make it an editable field". The box opens on the original's price; nothing
+    // goes on the copy until the tick is set.
+    priceOn: false,
+    notes: [],
   };
 }
 
@@ -135,7 +146,7 @@ const same = (key, a, b) => {
 export function duplicateEdits(form, baseline) {
   const out = {};
   for (const f of DUPLICATE_FIELDS) {
-    if (f.key === 'price') { if (t(form?.price)) out.price = t(form.price); continue; }
+    if (f.key === 'price') { if (form?.priceOn && t(form?.price)) out.price = t(form.price); continue; }
     if (!same(f.key, form?.[f.key], baseline?.[f.key])) out[f.key] = t(form?.[f.key]);
   }
   return out;
@@ -170,9 +181,11 @@ export function duplicateCountChanges(stop, draft) {
 }
 
 /** Everything the copy changes, in the panel's words and in the form's order. */
-export function duplicateChangeLabels(edits, countKeys = []) {
+export function duplicateChangeLabels(edits, countKeys = [], baseline = null) {
   const out = [];
   for (const f of DUPLICATE_FIELDS) {
+    // The original's own price put on the copy is a copy, not a change — the price line says it.
+    if (f.key === 'price' && baseline && t(edits?.price) === t(baseline.price)) continue;
     if (Object.prototype.hasOwnProperty.call(edits || {}, f.key)) out.push(f.label);
     if (f.key === 'itemDesc') for (const k of Object.keys(COUNT_LABELS)) if (countKeys.includes(k)) out.push(COUNT_LABELS[k]);
   }
@@ -203,7 +216,9 @@ export function duplicateFormError(form, baseline) {
   if (changed('zip') && !/^\d{5}(-\d{4})?$/.test(t(form?.zip))) return `'${t(form?.zip)}' is not a ZIP — 5 digits, or ZIP+4`;
   const c = copyNbrDraft(form?.copyNbr);
   if (c.error) return c.error;
-  if (t(form?.price).length > 20) return 'the price is longer than NuVizz takes (20 characters)';
+  if (form?.priceOn && t(form?.price).length > 20) return 'the price is longer than NuVizz takes (20 characters)';
+  const n = duplicateNotesDraft(form?.notes);
+  if (n.error) return n.error;
   return null;
 }
 
@@ -220,7 +235,7 @@ export function duplicateOutcome(r) {
     const notes = Array.isArray(out.warnings) && out.warnings.length ? ` Note: ${out.warnings.join('; ')}.` : '';
     return {
       kind: 'ok', created: true, nbr: out.stopNbr,
-      text: `Created ${out.stopNbr} in NuVizz${replay} — ${piecesLine(out.now)}${day}, unplanned${Array.isArray(out.edited) && out.edited.length ? `, with your changes to its ${duplicateEditLabels(Object.fromEntries(out.edited.map((k) => [k, true]))).join(', ')}` : ''}. It reaches the board through the scans, as a New Order does; plan it in Routing.${notes}`,
+      text: `Created ${out.stopNbr} in NuVizz${replay} — ${piecesLine(out.now)}${day}, unplanned${Array.isArray(out.edited) && out.edited.length ? `, with your changes to its ${duplicateEditLabels(Object.fromEntries(out.edited.map((k) => [k, true]))).join(', ')}` : ''}${out.notesAdded ? `, ${out.notesAdded} new note${out.notesAdded === 1 ? '' : 's'}` : ''}${out.price ? `, price ${out.price}` : (out.price === null ? ', no price' : '')}. It reaches the board through the scans, as a New Order does; plan it in Routing.${notes}`,
     };
   }
   if (out.created) return { kind: 'warn', created: true, nbr: out.stopNbr, text: (r?.error || out.error || `${out.stopNbr} was created but could not be verified.`) + replay };
@@ -256,7 +271,8 @@ export function duplicateCopiedFacts(stop, copyNbr) {
   const from = clockOf(stop?.scheduledFrom);
   const to = stop?.scheduledTo ? clockOf(stop.scheduledTo) : '';
   const strict = t(stop?.timeConstraint).toUpperCase() === 'STRICT';
-  const o = stop?.origin || null;
+  // The Map feed serves the original's own pickup block (board-fields.mts 'raw.stop.from'), never `origin`.
+  const o = stop?.origin || stop?.raw?.stop?.from?.address || null;
   const place = [t(o?.city), t(o?.state)].filter(Boolean).join(' ');
   const pickup = [t(o?.name), t(o?.addr1), place].filter(Boolean).join(', ');
   const po = t(stop?.poRef);
@@ -276,4 +292,47 @@ export function duplicateNotCopied(stop) {
   const driver = t(stop?.driverName);
   const on = [route && `route ${route}`, driver && `driver ${driver}`].filter(Boolean).join(', ');
   return `Not copied: ${on ? `${on}, ` : 'the route, the driver, '}and attachments. The copy lands unplanned.`;
+}
+
+// ── PRICE AND NOTES ON THE COPY (v1.110.0) ────────────────────────────────────
+// Chad, 10/03: "give me a spot to add notes for dispatcher or driver also put the original price in
+// the box but leave the copy to duplicate unchecked default and also make it an editable field the
+// price incase it's more or [less]."
+
+/** The server's copyPrice: the tick is set and the box is empty — NuVizz's own price is copied. */
+export const duplicateCopyPrice = (form) => !!form?.priceOn && !t(form?.price);
+
+/** The sentence under the form that says what price the copy gets. */
+export function duplicatePriceLine(form, baseline) {
+  if (!form?.priceOn) return 'No price on the copy.';
+  const v = t(form?.price);
+  if (!v) return 'Price on the copy: the original\'s, as NuVizz holds it.';
+  const was = t(baseline?.price);
+  return `Price on the copy: ${v}${was && was !== v ? ` (the original's is ${was})` : ''}.`;
+}
+
+/** Who sees a note, in the stop card's own words (its "Show to" picker). */
+export const NOTE_SHOW_TO = [['both', 'Both'], ['dispatcher', 'Dispatcher'], ['driver', 'Driver']];
+const NOTE_FOR = { both: 'driver and dispatcher', dispatcher: 'dispatcher only', driver: 'driver only' };
+export const DUPLICATE_NOTES_MAX = 5;
+
+/** The note rows as typed → the notes to send, checked as the server checks them (parseDuplicateNotes). */
+export function duplicateNotesDraft(rows) {
+  const notes = [];
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const text = t(r?.text);
+    if (!text) continue;
+    if (text.length > 500) return { error: 'a note for the copy is longer than NuVizz takes (500 characters)' };
+    const audience = NOTE_FOR[r?.audience] ? r.audience : 'both';
+    notes.push({ text, audience });
+  }
+  if (notes.length > DUPLICATE_NOTES_MAX) return { error: `the copy takes up to ${DUPLICATE_NOTES_MAX} new notes` };
+  return { notes };
+}
+
+/** The sentence that says which notes the copy gets, or '' for none. */
+export function duplicateNotesLine(rows) {
+  const d = duplicateNotesDraft(rows);
+  if (d.error || !d.notes.length) return '';
+  return `Adds ${d.notes.length} note${d.notes.length === 1 ? '' : 's'}: ${d.notes.map((n) => NOTE_FOR[n.audience]).join(', ')}.`;
 }

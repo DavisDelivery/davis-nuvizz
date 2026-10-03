@@ -33,6 +33,7 @@ import {
   stopPiecesFrom, parsePieceInput, buildStopPiecesOverride, piecesVerdict, piecesLine, boardPiecesFields,
   piecesBoardDates, boardPiecesWarning, PIECE_WRITE_SENDS,
   copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, STOP_NBR_MAX, COPY_N_MAX, parseDuplicateEdits, parseCopyNumber,
+  parseDuplicateNotes, duplicateNotesMissing,
   isTransportRetryable,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
@@ -3285,6 +3286,8 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   if ('error' in ed) return { ok: false, calls, error: `duplicateOrder: ${ed.error} — nothing was sent to NuVizz.` };
   const typedNbr = parseCopyNumber(payload?.copyNbr);
   if ('error' in typedNbr) return { ok: false, calls, error: `duplicateOrder: ${typedNbr.error} — nothing was sent to NuVizz.` };
+  const nt = parseDuplicateNotes(payload?.notes);
+  if ('error' in nt) return { ok: false, calls, error: `duplicateOrder: ${nt.error} — nothing was sent to NuVizz.` };
   const edited = Object.keys(ed.edits);
 
   // 1. READ the original.
@@ -3299,7 +3302,7 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   }
   const copyOf = String(raw.stopNbr ?? stopNbr).trim();
   const base = copyBaseNbr(copyOf);
-  const opts = { pallets: want.pallets, loose: want.loose, weight: (w as any).weight, date, copyPrice: payload?.copyPrice === true, edits: ed.edits };
+  const opts = { pallets: want.pallets, loose: want.loose, weight: (w as any).weight, date, copyPrice: payload?.copyPrice === true, edits: ed.edits, notes: nt.notes };
   const tenant = String((creds as any)?.companyCode || 'DAVIS');
   const skipped: Array<{ nbr: string; why: string }> = [];
   const taken = () => skipped.map((s) => s.nbr).join(', ');
@@ -3382,6 +3385,13 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   if ('error' in built) return { ok: false, calls, skipped, error: `duplicateOrder: ${built.error} — nothing was created.` };
   // What the create carries for NuVizz's order profile, for the ledger (buildDuplicateStop set it).
   const profile = built.stop?.profile || null;
+  // The price box opens on the price as our BOARD last read it (v1.110.0). Left as shown while NuVizz
+  // now holds another, the copy still gets what the dispatcher saw and sent — and the answer says so.
+  const priceWas = typeof payload?.priceWas === 'string' ? payload.priceWas.trim() : '';
+  const heldPrice = String(raw?.sealNbr ?? '').trim();
+  if (ed.edits.price !== undefined && priceWas && ed.edits.price === priceWas && heldPrice && heldPrice !== priceWas) {
+    built.warnings.push(`the copy got ${priceWas}, the price our board showed — NuVizz holds ${heldPrice} for the original now`);
+  }
   const wrote = await fireSingle(requester, 'createStop', { stop: built.stop }, creds);
   calls.writes += 1;
   if (!wrote?.ok) {
@@ -3413,6 +3423,8 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   const misses = [...piecesVerdict(now, want).misses];
   if (normStopNbr(rawBack.stopNbr) !== normStopNbr(chosen)) misses.unshift(`its number reads ${rawBack.stopNbr ?? 'nothing'}`);
   if (!addressMatchesTyped(rawBack?.to?.address, built.stop?.to?.address || {})) misses.push(`its street reads ${String(rawBack?.to?.address?.addr1 ?? 'nothing')}`);
+  const lost = duplicateNotesMissing(rawBack, nt.notes);
+  if (lost.length) misses.push(`${lost.length === 1 ? 'a new note' : `${lost.length} new notes`} did not come back as sent (${lost.map((n) => `“${n.text.slice(0, 40)}”`).join(', ')})`);
   if (misses.length) {
     return { ok: false, created: true, stopNbr: chosen, stopId: backId, copyOf, profile, now, calls, skipped, error: `duplicateOrder: ${chosen} was created, but it reads back differently — ${misses.join('; ')}. Check it in the portal. ${dontRetry}` };
   }
@@ -3420,7 +3432,7 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
     ok: true, created: true, stopNbr: chosen, stopId: backId, entityNbr: chosen, entityId: backId,
     copyOf, profile, base, skipped, now, deliveryDate: date,
     priceCopied: ed.edits.price === undefined && opts.copyPrice && !!String(raw.sealNbr ?? '').trim(),
-    edited, numberTyped: !!typedNbr.nbr,
+    edited, numberTyped: !!typedNbr.nbr, notesAdded: nt.notes.length, price: built.stop?.sealNbr ?? null,
     warnings: built.warnings, calls,
   };
 }

@@ -1648,6 +1648,8 @@ export interface DuplicateOptions {
   copyPrice?: boolean;
   /** What the dispatcher CHANGED on the copy (v1.109.0) — parseDuplicateEdits. Absent = all copied. */
   edits?: DuplicateEdits;
+  /** New notes for the copy, each shown to the dispatcher, the driver or both (v1.110.0). */
+  notes?: DuplicateNote[];
 }
 
 // ── §DUP-E  EDIT THE COPY BEFORE IT IS CREATED (v1.109.0) ─────────────────────
@@ -1704,6 +1706,47 @@ export function parseDuplicateEdits(input: any): { edits: DuplicateEdits } | { e
     edits[f.key] = v;
   }
   return { edits };
+}
+
+// ── §DUP-N  NOTES ON THE COPY (v1.110.0) ─────────────────────────────────────
+// Chad, 10/03: "give me a spot to add notes for dispatcher or driver". Each note is the comment the
+// stop card's "Add note in NuVizz" writes (buildStopNoteComment: cmtType PVST_IN, accessLevels = who
+// sees it), riding the create: the v7 spec allows RTE_IN, ORD_IN, ACC_IN and PVST_IN "during route or
+// stop create/update" (reference/nuvizz-openapi-v7.json, Comment.cmtType). No `key`: that is the
+// portal's client identity on partialUpdate, and the create's Comment schema has no such property.
+// The read-back proves each one landed with its audience (duplicateNotesMissing).
+export interface DuplicateNote { text: string; audience: NoteAudience }
+export const DUPLICATE_NOTES_MAX = 5;
+
+/** PURE: the copy's new notes as typed → the notes to send, or why they cannot be. Empty rows drop. */
+export function parseDuplicateNotes(input: any): { notes: DuplicateNote[] } | { error: string } {
+  if (input == null) return { notes: [] };
+  if (!Array.isArray(input)) return { error: 'the notes for the copy did not arrive as a list' };
+  const notes: DuplicateNote[] = [];
+  for (const n of input) {
+    if (!n || typeof n !== 'object') return { error: 'a note for the copy did not arrive as a note' };
+    const text = String(n.text ?? '').trim();
+    if (!text) continue;
+    if (text.length > NOTE_MAX_CHARS) return { error: `a note for the copy is longer than NuVizz takes (${NOTE_MAX_CHARS} characters)` };
+    const audience = String(n.audience ?? 'both');
+    if (!Object.prototype.hasOwnProperty.call(NOTE_AUDIENCES, audience)) return { error: `a note for the copy says to show it to '${audience}' — Both, Dispatcher or Driver` };
+    notes.push({ text, audience: audience as NoteAudience });
+  }
+  if (notes.length > DUPLICATE_NOTES_MAX) return { error: `the copy takes up to ${DUPLICATE_NOTES_MAX} new notes` };
+  return { notes };
+}
+
+/** PURE: one new note → the comment the create carries. */
+export function duplicateNoteComment(n: DuplicateNote): any {
+  return { cmtType: STOP_NOTE_CMT_TYPE, accessLevels: [...NOTE_AUDIENCES[n.audience]], commentDescription: n.text };
+}
+
+/** PURE: the notes the read-back does NOT show with the text AND the audience that were sent. */
+export function duplicateNotesMissing(rawStop: any, notes: DuplicateNote[]): DuplicateNote[] {
+  const have = stopCommentsFrom(rawStop);
+  const levels = (a: any) => JSON.stringify([...(Array.isArray(a) ? a : [])].map((x) => String(x).toUpperCase()).sort());
+  return (notes || []).filter((n) => !have.some((c: any) => String(c?.commentDescription ?? '').trim() === n.text
+    && levels(c?.accessLevels) === levels(NOTE_AUDIENCES[n.audience])));
 }
 
 /**
@@ -1813,6 +1856,9 @@ export function buildDuplicateStop(raw: any, newNbr: string, opts: DuplicateOpti
   const ref2 = str(raw.reference2);
   if (ref2) stop.reference2 = safeSlice(ref2, 50);
   if (opts.copyPrice && e.price === undefined && !str(raw.sealNbr)) warnings.push('the original has no price (Seal #) to copy');
+  // §DUP-N: the notes typed for the copy, after the driver instructions the copy carries.
+  const added = (opts.notes || []).map(duplicateNoteComment);
+  if (added.length) stop.comments = [...(Array.isArray(stop.comments) ? stop.comments : []), ...added];
   // §EP: the copy of an Estes order keeps NuVizz's ESTES profile whatever number it was given.
   const profile = duplicateProfileFor(raw, stop);
   if (profile) stop.profile = profile;
