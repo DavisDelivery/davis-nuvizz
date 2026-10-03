@@ -772,6 +772,7 @@ test('a field left as it opened never blocks the copy: a board row with no state
   const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   assert.match(src, /const formError = form \? duplicateFormError\(form, baselineRef\.current\) : null;/);
   assert.match(src, /const asOriginal = \(k\) => \(String\(baselineRef\.current\?\.\[k\] \?\? ''\)\.trim\(\) \? undefined : 'as the original'\);/, 'a blank box says the copy takes the original\'s');
+  assert.match(src, /field\('state', 'State', \{ maxLength: 30, placeholder: asOriginal\('state'\) && 'same' \}\)/, 'the narrow State box says it in a word that fits');
 });
 
 test('the answer names the changes, and the panel sends them with the typed number under ONE key', () => {

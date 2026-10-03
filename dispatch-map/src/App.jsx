@@ -9805,8 +9805,8 @@ function DuplicateOrderPanel({ stop, note }) {
           {field('addr2', 'Address 2')}
           <div className="grid grid-cols-[minmax(0,1fr)_56px_84px] gap-2">
             {field('city', 'City')}
-            {field('state', 'State', { maxLength: 30 })}
-            {field('zip', 'ZIP', { inputMode: 'numeric', maxLength: 10 })}
+            {field('state', 'State', { maxLength: 30, placeholder: asOriginal('state') && 'same' })}
+            {field('zip', 'ZIP', { inputMode: 'numeric', maxLength: 10, placeholder: asOriginal('zip') && 'same' })}
           </div>
           <div className="grid grid-cols-2 gap-2">
             {field('phone', 'Phone', { inputMode: 'tel', type: 'tel' })}
