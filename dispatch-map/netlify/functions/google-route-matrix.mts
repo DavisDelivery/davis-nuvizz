@@ -18,7 +18,8 @@ const ROUTES_URL = 'https://routes.googleapis.com/distanceMatrix/v2:computeRoute
 const MAX_ELEMENTS = 600;         // under Google's 625 element cap, with margin
 const MAX_STOPS = 150;            // sane selection bound (surfaced as an error)
 const AVG_SPEED_MPS = 13.4;       // ~30 mph fallback effective speed
-const GOOGLE_TIMEOUT_MS = 8000;   // hard cap per chunk — a stalled call aborts → haversine fallback
+const GOOGLE_TIMEOUT_MS = 8000;
+export const ROAD_BOX_OSRM_TIMEOUT_MS = 7000;   // the card's truck-road call, under the 10 s function limit   // hard cap per chunk — a stalled call aborts → haversine fallback
 
 export interface LatLng { lat: number; lng: number }
 export interface Matrix { durationSec: number[][]; distanceMeters: number[][] }
@@ -108,7 +109,8 @@ async function computeChunk(origins: LatLng[], destinations: LatLng[], apiKey: s
 }
 
 // Full (depot + stops) matrix via Google, chunked to respect the element cap.
-export interface MatrixOpts { estimateUnroutable?: boolean }
+// osrmTimeoutMs: the truck-road call's whole budget (lib/osrm-matrix.mts OSRM_TIMEOUT_MS when absent).
+export interface MatrixOpts { estimateUnroutable?: boolean; osrmTimeoutMs?: number }
 export async function buildMatrixViaGoogle(depot: LatLng, stops: LatLng[], apiKey: string, opts: MatrixOpts = {}): Promise<Matrix> {
   const nodes = [depot, ...stops];
   const n = nodes.length;
@@ -149,7 +151,7 @@ export async function resolveMatrix(depot: LatLng, stops: LatLng[], mode: 'haver
   if (stops.length > MAX_STOPS) throw new Error(`selection too large: ${stops.length} stops (max ${MAX_STOPS})`);
   if (mode === 'osrm') {
     try {
-      const { matrix, detail } = await buildMatrixViaOsrm(depot, stops, haversineMatrix(depot, stops));
+      const { matrix, detail } = await buildMatrixViaOsrm(depot, stops, haversineMatrix(depot, stops), opts.osrmTimeoutMs ? { timeoutMs: opts.osrmTimeoutMs } : {});
       return { matrix, source: 'osrm', detail };
     } catch (e: any) { console.error('google-route-matrix: mode=osrm — falling back to haversine —', e?.message); }
   }
@@ -176,13 +178,20 @@ export default async function handler(req: Request): Promise<Response> {
   try { body = await req.json(); } catch { return new Response(JSON.stringify({ error: 'bad json' }), { status: 400 }); }
   const depot = body?.depot;
   const stops = Array.isArray(body?.stops) ? body.stops : null;
-  const mode = body?.mode === 'google' || body?.matrixMode === 'google' ? 'google' : 'haversine';
+  // 'osrm' (truck road times, v1.115.0): the Compare card's second road box. Same resolveMatrix
+  // path as a Build, so a service that is not set up, not answering or answering wrong falls back
+  // to the straight-line estimate and `source` says 'haversine'.
+  const mode = body?.mode === 'google' || body?.matrixMode === 'google' ? 'google'
+    : body?.mode === 'osrm' || body?.matrixMode === 'osrm' ? 'osrm' : 'haversine';
   if (!depot || !stops) return new Response(JSON.stringify({ error: 'depot and stops required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   try {
     // The only caller is the Compare card's road-distance re-sequence: an unroutable leg takes the
     // road estimate unless ROAD_BOX_ESTIMATE_UNROUTABLE is off (see above).
-    const { matrix, source } = await resolveMatrix(depot, stops, mode, { estimateUnroutable: roadBoxUnroutableEstimateEnabled() });
-    return new Response(JSON.stringify({ matrix, source, available: isGoogleRoutesEnabled() }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    // ROAD_BOX_OSRM_TIMEOUT_MS: this function runs on Netlify's 10 s default, so a cold truck-road
+    // service must give up first and leave the straight-line fallback time to answer — otherwise
+    // Netlify kills the call and the card reads an HTML 502 instead of "unavailable".
+    const { matrix, source, detail } = await resolveMatrix(depot, stops, mode, { estimateUnroutable: roadBoxUnroutableEstimateEnabled(), osrmTimeoutMs: ROAD_BOX_OSRM_TIMEOUT_MS });
+    return new Response(JSON.stringify({ matrix, source, available: isGoogleRoutesEnabled(), ...(detail ? { detail } : {}) }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (e: any) {
     return new Response(JSON.stringify({ error: e?.message }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }

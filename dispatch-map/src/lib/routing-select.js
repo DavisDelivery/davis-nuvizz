@@ -1425,6 +1425,22 @@ export function editedSequenceNote(meta = {}) {
   return '';
 }
 
+// THE COMPARE CARD'S TWO ROAD BOXES (v1.115.0). Chad: "In both places Google's 'real road
+// distances / drive-times' checkbox appears, put 'Use truck road times (free)' on the same row".
+// The re-sequence asks the server for Google, truck roads or nothing; Google first, as the Build
+// Panel's rule reads it. Nothing ticked is null: the straight-line order stands, as it always did.
+export function cardMatrixMode({ roadMatrixOn = false, truckMatrixOn = false } = {}) {
+  if (roadMatrixOn === true) return 'google';
+  if (truckMatrixOn === true) return 'osrm';
+  return null;
+}
+// The words the re-sequence reports with: Google's are exactly the ones it has always used.
+export function cardRoadWords(mode) {
+  return mode === 'osrm'
+    ? { applied: 'truck road times', name: 'truck road times', suffix: 'truck' }
+    : { applied: 'real road distances', name: 'road distances', suffix: 'road' };
+}
+
 // The one line under the truck-road box, by what osrm-status last said. 'unknown' = not asked
 // yet. Never claims the service is up before it has answered.
 export function truckRoadStatusLine(status) {
