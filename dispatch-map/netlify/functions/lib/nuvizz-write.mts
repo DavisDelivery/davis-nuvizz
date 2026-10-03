@@ -33,7 +33,7 @@ import {
   stopPiecesFrom, parsePieceInput, buildStopPiecesOverride, piecesVerdict, piecesLine, boardPiecesFields,
   piecesBoardDates, boardPiecesWarning, PIECE_WRITE_SENDS,
   copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, STOP_NBR_MAX, COPY_N_MAX, parseDuplicateEdits, parseCopyNumber,
-  parseDuplicateNotes, duplicateNotesMissing, stopNumberAbsent,
+  parseDuplicateNotes, duplicateNotesMissing, stopNumberAbsent, parseDuplicateLines, duplicateLinesMissing,
   isTransportRetryable,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
@@ -3288,6 +3288,8 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   if ('error' in typedNbr) return { ok: false, calls, error: `duplicateOrder: ${typedNbr.error} — nothing was sent to NuVizz.` };
   const nt = parseDuplicateNotes(payload?.notes);
   if ('error' in nt) return { ok: false, calls, error: `duplicateOrder: ${nt.error} — nothing was sent to NuVizz.` };
+  const ln = parseDuplicateLines(payload?.lines);
+  if ('error' in ln) return { ok: false, calls, error: `duplicateOrder: ${ln.error} — nothing was sent to NuVizz.` };
   const edited = Object.keys(ed.edits);
 
   // 1. READ the original.
@@ -3302,7 +3304,7 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   }
   const copyOf = String(raw.stopNbr ?? stopNbr).trim();
   const base = copyBaseNbr(copyOf);
-  const opts = { pallets: want.pallets, loose: want.loose, weight: (w as any).weight, date, copyPrice: payload?.copyPrice === true, edits: ed.edits, notes: nt.notes };
+  const opts = { pallets: want.pallets, loose: want.loose, weight: (w as any).weight, date, copyPrice: payload?.copyPrice === true, edits: ed.edits, notes: nt.notes, lines: ln.lines };
   const tenant = String((creds as any)?.companyCode || 'DAVIS');
   const skipped: Array<{ nbr: string; why: string }> = [];
   const taken = () => skipped.map((s) => s.nbr).join(', ');
@@ -3425,6 +3427,14 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   const misses = [...piecesVerdict(now, want).misses];
   if (normStopNbr(rawBack.stopNbr) !== normStopNbr(chosen)) misses.unshift(`its number reads ${rawBack.stopNbr ?? 'nothing'}`);
   if (!addressMatchesTyped(rawBack?.to?.address, built.stop?.to?.address || {})) misses.push(`its street reads ${String(rawBack?.to?.address?.addr1 ?? 'nothing')}`);
+  if (ln.lines) {
+    // §DUP-L: the lines as the create SENT them (a line that follows the totals, resolved).
+    const sentLines = Array.isArray(built.stop?.stopDetails) ? built.stop.stopDetails : [];
+    const backLines = Array.isArray(rawBack?.stopDetails) ? rawBack.stopDetails.length : 0;
+    const lostLines = duplicateLinesMissing(rawBack, sentLines);
+    if (backLines !== sentLines.length) misses.push(`its item lines read ${backLines}, not the ${sentLines.length} sent`);
+    else if (lostLines.length) misses.push(`${lostLines.length === 1 ? 'an item line' : `${lostLines.length} item lines`} did not come back as sent (${lostLines.map((d) => `${d.quantity} ${d.quantityUOM} “${String(d.product).slice(0, 30)}”`).join(', ')})`);
+  }
   const lost = duplicateNotesMissing(rawBack, nt.notes);
   if (lost.length) misses.push(`${lost.length === 1 ? 'a new note' : `${lost.length} new notes`} did not come back as sent (${lost.map((n) => `“${n.text.slice(0, 40)}”`).join(', ')})`);
   if (misses.length) {
@@ -3434,7 +3444,7 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
     ok: true, created: true, stopNbr: chosen, stopId: backId, entityNbr: chosen, entityId: backId,
     copyOf, profile, base, skipped, now, deliveryDate: date,
     priceCopied: ed.edits.price === undefined && opts.copyPrice && !!String(raw.sealNbr ?? '').trim(),
-    edited, numberTyped: !!typedNbr.nbr, notesAdded: nt.notes.length, price: built.stop?.sealNbr ?? null,
+    edited, numberTyped: !!typedNbr.nbr, notesAdded: nt.notes.length, price: built.stop?.sealNbr ?? null, lines: ln.lines ? ln.lines.length : null,
     warnings: built.warnings, calls,
   };
 }

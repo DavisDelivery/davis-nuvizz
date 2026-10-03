@@ -1650,6 +1650,9 @@ export interface DuplicateOptions {
   edits?: DuplicateEdits;
   /** New notes for the copy, each shown to the dispatcher, the driver or both (v1.110.0). */
   notes?: DuplicateNote[];
+  /** The copy's item lines as the dispatcher left them in the Items drawer (v1.111.0) — parseDuplicateLines.
+   *  null/absent = the one line built from the item description, as before; [] = no item lines. */
+  lines?: DuplicateLine[] | null;
 }
 
 // ── §DUP-E  EDIT THE COPY BEFORE IT IS CREATED (v1.109.0) ─────────────────────
@@ -1658,10 +1661,12 @@ export interface DuplicateOptions {
 // record; a field the dispatcher changed replaces the copied one, and a field left alone is copied
 // exactly as before (the panel sends only what differs from the original — order-duplicate.js
 // duplicateEdits). '' clears an optional field on the copy; a required one can never be blanked.
-// The freight stays ONE line (the item description + the header totals), as on every order this
-// app creates: NuVizz recomputes `volume` — the LOOSE count on this tenant — from the detail lines
-// (PARTIAL_UPDATE_DERIVED_KEYS), so sending the original's lines one by one would let NuVizz move
-// the copy's loose count by a rule this code cannot see.
+// The freight lines (v1.111.0, §DUP-L below): the copy carries the lines the dispatcher edits in the
+// window's Items drawer; the Pallets/Loose/Weight boxes stay the order's TOTALS. MEASURED 2026-10-03
+// (Chad: "You can use 10 calls"): a stop/sync/update create whose two lines disagreed with the header
+// on every count — quantities, weights, a line volume and dimensions — came back with the header
+// EXACTLY as sent and both lines exactly as sent. NuVizz's recompute from the lines
+// (PARTIAL_UPDATE_DERIVED_KEYS) belongs to the portal's stopdetail/update flow, not to a create.
 export interface DuplicateEdits {
   name?: string; addr1?: string; addr2?: string; city?: string; state?: string; zip?: string;
   phone?: string; email?: string; itemDesc?: string; dispatchNotes?: string; price?: string;
@@ -1706,6 +1711,137 @@ export function parseDuplicateEdits(input: any): { edits: DuplicateEdits } | { e
     edits[f.key] = v;
   }
   return { edits };
+}
+
+// ── §DUP-L  THE COPY'S ITEM LINES (v1.111.0) ─────────────────────────────────
+// Chad, 10/03: "give me a drawer to edit the actual items". The drawer opens on the original's lines
+// as the board row holds them (stopDetails, which the Map feed serves — board-fields.mts); what it
+// sends becomes the copy's stopDetails, one StopDetail each (v7: product, productIdentifier,
+// quantity > 0, quantityUOM and stopDetailSeq are required; additionalProperties:false, so nothing
+// else is invented, and every text is cut to the schema's own length).
+//  · The header totals are NOT derived from the lines: NuVizz keeps both as sent (measured — §DUP-E).
+//  · A LONE line can FOLLOW the copy's totals — quantity = Pallets + Loose (PCS), weight = the copy's
+//    weight — exactly the one line every order this app creates carries (buildStopPayload: "the line
+//    mirrors them"). Resolved here from the header the create sends, so the two cannot disagree: a
+//    split that puts 2 of 3 pallets on the copy must not leave its line reading 3. Typing the line's
+//    quantity or weight in the drawer turns that off (order-duplicate.js duplicateLinesFrom).
+//  · The line's dimensions, freight class (referenceText) and category ride across as NuVizz holds
+//    them, units and all: the route build reads category 'L' and the lengths to find oversize freight
+//    and size the deck (freight-geometry.mts, freight-class.mts). Never the original's
+//    productIdentifier — the spec's "barcode of the item or carton", which belongs to the original's
+//    freight — each line is identified by the copy's own number, as New Order's line is.
+export interface DuplicateLine {
+  product: string;
+  /** The lone line follows the copy's totals (quantity/weight/quantityUOM below are then not used). */
+  followsTotals?: boolean;
+  quantity: number | null; quantityUOM: string;
+  weight: number | null; weightUOM?: string;
+  referenceText?: string; productCategory?: string;
+  length?: number | null; width?: number | null; height?: number | null; criticalDimension?: number | null;
+  lengthUOM?: string; widthUOM?: string; heightUOM?: string; criticalDimensionUOM?: string;
+}
+export const DUPLICATE_LINES_MAX = 200;
+// The StopDetail schema's own bounds (reference/nuvizz-openapi-v7.json).
+const LINE_QTY_MAX = 99999;
+const LINE_WEIGHT_MAX = 9999999999;
+const LINE_DIM_MAX = 99999;
+
+/**
+ * PURE: the drawer's lines as sent → the lines the copy carries, or why they cannot be.
+ * null/absent → { lines: null } (a panel from before v1.111.0: the one line, as before); [] → no lines.
+ */
+export function parseDuplicateLines(input: any): { lines: DuplicateLine[] | null } | { error: string } {
+  if (input == null) return { lines: null };
+  if (!Array.isArray(input)) return { error: 'the item lines for the copy did not arrive as a list' };
+  if (input.length > DUPLICATE_LINES_MAX) return { error: `the copy takes up to ${DUPLICATE_LINES_MAX} item lines` };
+  const cut = (v: any, max: number) => (v == null ? '' : String(v).trim().slice(0, max));
+  const given = (v: any) => v != null && String(v).trim() !== '';
+  // A dimension is NuVizz's own value carried across, never typed here: one it could not hold is left off.
+  const dim = (v: any) => { const n = Number(v); return given(v) && Number.isFinite(n) && n > 0 && n <= LINE_DIM_MAX ? n : null; };
+  const lines: DuplicateLine[] = [];
+  for (let i = 0; i < input.length; i++) {
+    const l = input[i];
+    const at = `item line ${i + 1}`;
+    if (!l || typeof l !== 'object' || Array.isArray(l)) return { error: `${at} did not arrive as a line` };
+    const product = String(l.product ?? '').trim();
+    if (!product) return { error: `${at} needs a description` };
+    if (product.length > 100) return { error: `${at}'s description is longer than NuVizz takes (100 characters)` };
+    const followsTotals = l.followsTotals === true && input.length === 1;
+    let quantity: number | null = null;
+    let weight: number | null = null;
+    if (!followsTotals) {
+      const q = Number(l.quantity);
+      if (!given(l.quantity) || !Number.isFinite(q) || q <= 0 || q > LINE_QTY_MAX) return { error: `${at} needs a quantity above 0 (up to ${LINE_QTY_MAX})` };
+      quantity = q;
+      if (given(l.weight)) {
+        const w = Number(l.weight);
+        if (!Number.isFinite(w) || w < 0 || w > LINE_WEIGHT_MAX) return { error: `${at}'s weight must be a number of pounds from 0 up` };
+        weight = w;
+      }
+    }
+    const text = (k: string, max: number) => (cut(l[k], max) ? { [k]: cut(l[k], max) } : {});
+    const sized = (k: 'length' | 'width' | 'height' | 'criticalDimension', uomMax: number) => {
+      const v = dim(l[k]);
+      return v == null ? {} : { [k]: v, ...text(`${k}UOM`, uomMax) };
+    };
+    lines.push({
+      product,
+      ...(followsTotals ? { followsTotals: true } : {}),
+      quantity, quantityUOM: followsTotals ? 'PCS' : (cut(l.quantityUOM, 20) || 'PCS'),
+      weight, ...(weight != null ? { weightUOM: cut(l.weightUOM, 20) || 'LBS' } : {}),
+      ...text('referenceText', 50), ...text('productCategory', 45),
+      ...sized('length', 10), ...sized('width', 10), ...sized('height', 10), ...sized('criticalDimension', 20),
+    } as DuplicateLine);
+  }
+  return { lines };
+}
+
+/**
+ * PURE: the copy's item lines → the StopDetail rows the create carries, numbered 1..N. `header` is
+ * what the create's own header says (totalPallets = the total pieces, weight), so a line that follows
+ * the totals reads exactly what the order reads — as buildStopPayload's one line does.
+ */
+export function duplicateStopDetails(lines: DuplicateLine[], nbr: string, header: { pieces: number | null; weight: number | null }): any[] {
+  return lines.map((l, i) => {
+    const follows = !!l.followsTotals && lines.length === 1;
+    const pieces = Number(header?.pieces);
+    const quantity = follows ? (Number.isFinite(pieces) && pieces > 0 ? pieces : 1) : l.quantity;
+    const weight = follows ? (header?.weight ?? null) : l.weight;
+    const d: any = {
+      product: safeSlice(l.product, 100),
+      // One line keeps the identifier New Order writes (the order's number); several need one each.
+      productIdentifier: safeSlice(lines.length === 1 ? nbr : `${nbr}-${i + 1}`, 50),
+      quantity, quantityUOM: follows ? 'PCS' : (l.quantityUOM || 'PCS'), stopDetailSeq: i + 1, lineType: '01',
+    };
+    if (weight != null) { d.weight = weight; d.weightUOM = follows ? 'LBS' : (l.weightUOM || 'LBS'); }
+    if (l.referenceText) d.referenceText = l.referenceText;
+    if (l.productCategory) d.productCategory = l.productCategory;
+    for (const k of ['length', 'width', 'height', 'criticalDimension'] as const) {
+      if (l[k] == null) continue;
+      d[k] = l[k];
+      // The unit as NuVizz holds it, or none — never one made up here.
+      const uom = (l as any)[`${k}UOM`];
+      if (uom) d[`${k}UOM`] = uom;
+    }
+    return d;
+  });
+}
+
+/**
+ * PURE: the item lines the create sent that did not come back from NuVizz as sent — the same product
+ * (case and spacing aside), quantity and weight — matched one for one, in any order.
+ */
+export function duplicateLinesMissing(rawStop: any, sent: any[]): any[] {
+  const norm = (v: any) => String(v ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+  const num = (v: any) => (v == null || String(v).trim() === '' ? null : Number(v));
+  const left = (Array.isArray(rawStop?.stopDetails) ? rawStop.stopDetails : []).slice();
+  const out: any[] = [];
+  for (const s of Array.isArray(sent) ? sent : []) {
+    const at = left.findIndex((b: any) => norm(b?.product) === norm(s.product) && num(b?.quantity) === num(s.quantity)
+      && (s.weight == null || num(b?.weight) === num(s.weight)));
+    if (at < 0) out.push(s); else left.splice(at, 1);
+  }
+  return out;
 }
 
 // ── §DUP-N  NOTES ON THE COPY (v1.110.0) ─────────────────────────────────────
@@ -1848,8 +1984,8 @@ export function buildDuplicateStop(raw: any, newNbr: string, opts: DuplicateOpti
     // The commodity LINE comes from the original's own first line item. Not from reference2: on a
     // carrier's order reference1/reference2 are its PO and customer refs (normalizeStop: poRef /
     // custRef); only New Order's orders use reference2 for the commodity. Both references are
-    // echoed verbatim below instead.
-    itemDesc: pick('itemDesc', firstLine ? str(firstLine.product) : '') || null,
+    // echoed verbatim below instead. With the drawer's lines (§DUP-L) it is their first line's.
+    itemDesc: pick('itemDesc', opts.lines ? str(opts.lines[0]?.product) : (firstLine ? str(firstLine.product) : '')) || null,
     pallets: opts.pallets,
     loose: opts.loose,
     weight: opts.weight != null ? opts.weight : numOrNull(raw.weight),
@@ -1880,6 +2016,14 @@ export function buildDuplicateStop(raw: any, newNbr: string, opts: DuplicateOpti
   const ref2 = str(raw.reference2);
   if (ref2) stop.reference2 = safeSlice(ref2, 50);
   if (opts.copyPrice && e.price === undefined && !str(raw.sealNbr)) warnings.push('the original has no price (Seal #) to copy');
+  // §DUP-L: the item lines from the drawer replace the one line built from the item description —
+  // all of them, or none when the drawer was emptied. A lone line that follows the totals reads the
+  // header this create sends.
+  if (opts.lines) {
+    stop.stopDetails = opts.lines.length
+      ? duplicateStopDetails(opts.lines, nbr, { pieces: numOrNull(stop.totalPallets), weight: numOrNull(stop.weight) })
+      : undefined;
+  }
   // §DUP-N: the notes typed for the copy, after the driver instructions the copy carries.
   const added = (opts.notes || []).map(duplicateNoteComment);
   if (added.length) stop.comments = [...(Array.isArray(stop.comments) ? stop.comments : []), ...added];

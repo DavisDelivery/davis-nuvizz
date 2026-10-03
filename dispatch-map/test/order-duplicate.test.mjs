@@ -22,6 +22,7 @@ import {
   WRITE_OPS, MUTATING_OPS, parseDuplicateEdits, parseCopyNumber, DUPLICATE_EDIT_FIELDS,
   parseDuplicateNotes, duplicateNoteComment, duplicateNotesMissing, DUPLICATE_NOTES_MAX,
   stopNumberAbsent, STOP_NOT_FOUND_REASON,
+  parseDuplicateLines, duplicateStopDetails, duplicateLinesMissing, DUPLICATE_LINES_MAX,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 import { LEAN_STOP_FIELDS, CUSTOMER_STOP_FIELDS } from '../netlify/functions/lib/board-fields.mts';
 import { runDuplicateOrder, runOp, DUP_PROBE_MAX, siteWriteFeatures as serverWriteFeatures } from '../netlify/functions/lib/nuvizz-write.mts';
@@ -35,8 +36,12 @@ import {
   clockOf, duplicateCopiedFacts, duplicateNotCopied,
   originalPrice, duplicateCopyPrice, duplicatePriceLine, duplicateNotesDraft, duplicateNotesLine, NOTE_SHOW_TO,
   DUPLICATE_NOTES_MAX as CLIENT_NOTES_MAX,
+  DUPLICATE_LINES_MAX as CLIENT_LINES_MAX, duplicateLineBlank, duplicateLinesFrom, duplicateLineShown, duplicateLinesEdit,
+  duplicateLinesAdd, duplicateLinesRemove, duplicateLinesDraft, duplicateLinesChanged, duplicateLinesSummary,
+  duplicateLinesMismatch, duplicateLineFacts,
 } from '../src/lib/order-duplicate.js';
 import { installFirestoreFake } from './_firestore-fake.mjs';
+import { parsePieceDraft } from '../src/lib/stop-pieces.js';
 
 // The fake installs a throwaway service account into process.env and never takes it out, so every
 // test after it would see Firestore as ENABLED with the real fetch back in place — a registry read
@@ -567,8 +572,10 @@ test('the copy\'s edits are checked before any call: a whole address, a real ZIP
   assert.match(parseDuplicateEdits({ email: 'dock at acme' }).error, /not an email/);
   assert.match(parseDuplicateEdits({ price: '$1234567890123456789012' }).error, /longer than NuVizz takes/);
   assert.match(parseDuplicateEdits([1]).error, /list of fields/);
-  // The screen and the server name the same fields.
-  assert.deepEqual(DUPLICATE_FIELDS.map((f) => f.key), DUPLICATE_EDIT_FIELDS.map((f) => f.key));
+  // The screen and the server name the same fields — but the item description: since v1.111.0 the
+  // screen edits the item LINES in its drawer, and the server still takes an itemDesc from a panel
+  // loaded before that, so an edit typed there is never dropped.
+  assert.deepEqual(DUPLICATE_FIELDS.map((f) => f.key), DUPLICATE_EDIT_FIELDS.map((f) => f.key).filter((k) => k !== 'itemDesc'));
   assert.deepEqual(DUPLICATE_FIELDS.filter((f) => f.required).map((f) => f.key), DUPLICATE_EDIT_FIELDS.filter((f) => f.required).map((f) => f.key));
 });
 
@@ -746,12 +753,12 @@ test('the line that says what the copy changes names the pallets, weight and day
   assert.deepEqual(duplicateCountChanges({ ...stop, volume: null }, as('8', '0', '', TOMORROW)), []);
   // A draft that cannot be sent claims nothing: the error is what the panel shows.
   assert.deepEqual(duplicateCountChanges(stop, as('x', '', '', TOMORROW)), []);
-  assert.deepEqual(duplicateChangeLabels({ addr1: 'x', city: 'y', zip: 'z', itemDesc: 'i', dispatchNotes: 'n' }, ['date', 'pallets']),
-    ['street address', 'city', 'ZIP', 'items', 'pallets', 'delivery day', 'driver instructions']);
+  assert.deepEqual(duplicateChangeLabels({ addr1: 'x', city: 'y', zip: 'z', dispatchNotes: 'n' }, ['date', 'pallets', 'lines']),
+    ['street address', 'city', 'ZIP', 'item lines', 'pallets', 'delivery day', 'driver instructions']);
   assert.deepEqual(duplicateChangeLabels({}, ['weight']), ['weight']);
   assert.deepEqual(duplicateChangeLabels({}, []), []);
   const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-  assert.match(src, /const editLabels = duplicateChangeLabels\(edits, duplicateCountChanges\(stop, draft\), baselineRef\.current\);/, 'the panel\'s line is built from both');
+  assert.match(src, /const editLabels = duplicateChangeLabels\(edits, \[\.\.\.\(linesChanged \? \['lines'\] : \[\]\), \.\.\.duplicateCountChanges\(stop, draft\)\], baselineRef\.current\);/, 'the panel\'s line is built from all three');
 });
 
 test('the form refuses before a call what the server would: a missing address part, a bad ZIP or number', () => {
@@ -787,11 +794,12 @@ test('the answer names the changes, and the panel sends them with the typed numb
   assert.match(o.text, /, with your changes to its street address, phone\./);
   const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   const panel = src.slice(src.indexOf('function DuplicateOrderPanel('), src.indexOf('\nfunction ', src.indexOf('function DuplicateOrderPanel(') + 10));
-  for (const k of ['copyNbr', 'name', 'addr1', 'addr2', 'city', 'state', 'zip', 'phone', 'email', 'itemDesc', 'price']) {
+  for (const k of ['copyNbr', 'name', 'addr1', 'addr2', 'city', 'state', 'zip', 'phone', 'email', 'price']) {
     assert.match(panel, new RegExp(`field\\('${k}', `), `${k} is on the form`);
   }
+  assert.doesNotMatch(panel, /field\('itemDesc', /, 'v1.111.0: the Items box is the Items drawer now');
   assert.match(panel, /value=\{form\?\.dispatchNotes \?\? ''\}/);
-  assert.match(panel, /const request = \{ pro, stopId: stop\?\.stopId \|\| null, pallets: draft\.pallets, loose: draft\.loose, weight: draft\.weight, date: draft\.date, copyPrice, copyNbr, edits, notes \};/);
+  assert.match(panel, /const request = \{ pro, stopId: stop\?\.stopId \|\| null, pallets: draft\.pallets, loose: draft\.loose, weight: draft\.weight, date: draft\.date, copyPrice, copyNbr, edits, notes, lines \};/);
   assert.match(panel, /setForm\(duplicateFormFrom\(stop, note\)\);/);
   assert.match(panel, /baselineRef\.current = duplicateBaseline\(stop\);/);
 });
@@ -1059,4 +1067,271 @@ test('on the live tenant\'s answer the duplicate finds its free number and creat
   }));
   const plan = (await res.json()).plan;
   assert.ok(plan.some((l) => l.includes('NOT FOUND in NuVizz (a 404, or the 400 "No Stop found" this tenant answers)')), JSON.stringify(plan));
+});
+
+// ── THE ITEMS DRAWER (§DUP-L, v1.111.0) ──────────────────────────────────────
+// Chad, 10/03: "give me a drawer to edit the actual items". MEASURED the same day with his go-ahead
+// ("You can use 10 calls"): a create whose two lines disagreed with the header on every count came
+// back with the header and both lines exactly as sent — so the copy carries the drawer's lines, the
+// Pallets/Loose/Weight boxes stay the totals, and a LONE line follows those totals as New Order's does.
+
+const row = (over = {}) => ({ ...duplicateLineBlank(over.id || 'n1'), ...over });
+const asWire = (r) => ({ product: r.product, quantity: r.quantity, weight: r.weight, ...(r.follows ? { followsTotals: true } : {}) });
+// Two lines as the board serves them (normalizeStopDetail), the first long, classed and dimensioned.
+const BOARD_LINES = [
+  { product: 'APPLIANCES', productIdentifier: 'ACME-CARTON-1', sku: 'ACME-CARTON-1', quantity: 3, quantityUOM: 'PCS', weight: 900, weightUOM: 'LBS',
+    productCategory: 'L', referenceText: '70', length: 96, lengthUOM: 'IN', width: 40, widthUOM: 'IN', height: 50, heightUOM: 'IN', criticalDimension: null, criticalDimensionUOM: null },
+  { product: 'FILTERS', productIdentifier: null, sku: null, quantity: 2, quantityUOM: 'CTN', weight: null, weightUOM: null,
+    productCategory: null, referenceText: null, length: null, lengthUOM: null, width: null, widthUOM: null, height: null, heightUOM: null, criticalDimension: null, criticalDimensionUOM: null },
+];
+
+test('item lines: the screen and the server check them the same, before any call', () => {
+  assert.equal(CLIENT_LINES_MAX, DUPLICATE_LINES_MAX);
+  const cases = [
+    ['no lines', [], null],
+    ['a line with no description', [row({ quantity: '1' })], 'item line 1 needs a description'],
+    ['a description past 100', [row({ product: 'X'.repeat(101), quantity: '1' })], "item line 1's description is longer than NuVizz takes (100 characters)"],
+    ['no quantity', [row({ product: 'A' })], 'item line 1 needs a quantity above 0 (up to 99999)'],
+    ['a quantity of 0', [row({ product: 'A', quantity: '0' })], 'item line 1 needs a quantity above 0 (up to 99999)'],
+    ['a quantity past the schema', [row({ product: 'A', quantity: '100000' })], 'item line 1 needs a quantity above 0 (up to 99999)'],
+    ['a weight below 0', [row({ product: 'A', quantity: '2', weight: '-1' })], "item line 1's weight must be a number of pounds from 0 up"],
+    ['a lone line following the totals needs no quantity', [row({ product: 'A', follows: true })], null],
+    ['following is for a lone line only', [row({ product: 'A', follows: true }), row({ id: 'n2', product: 'B', quantity: '1' })], 'item line 1 needs a quantity above 0 (up to 99999)'],
+    ['the second line is named', [row({ product: 'A', quantity: '1' }), row({ id: 'n2', product: 'B', quantity: 'x' })], 'item line 2 needs a quantity above 0 (up to 99999)'],
+    ['too many lines', Array.from({ length: DUPLICATE_LINES_MAX + 1 }, (_, i) => row({ id: `n${i}`, product: 'A', quantity: '1' })), `the copy takes up to ${DUPLICATE_LINES_MAX} item lines`],
+    ['good lines', [row({ product: ' A ', quantity: '2.5', weight: '10' }), row({ id: 'n2', product: 'B', quantity: '1' })], null],
+  ];
+  for (const [label, rows, error] of cases) {
+    const c = duplicateLinesDraft(rows);
+    const sv = parseDuplicateLines(rows.map(asWire));
+    assert.equal(c.error ?? null, error, `screen: ${label}`);
+    assert.equal(sv.error ?? null, error, `server: ${label}`);
+    // What the screen sends, the server takes as it is.
+    if (!error) assert.deepEqual(parseDuplicateLines(c.lines).lines.map((l) => [l.product, l.quantity, l.weight, !!l.followsTotals]), c.lines.map((l) => [l.product, l.quantity ?? null, l.weight ?? null, !!l.followsTotals]), label);
+  }
+  assert.deepEqual(duplicateLinesDraft([row({ product: ' A ', quantity: '2.5', weight: '10' }), row({ id: 'n2', product: 'B', quantity: '1', quantityUOM: 'CTN' })]).lines, [
+    { product: 'A', quantity: 2.5, quantityUOM: 'PCS', weight: 10, weightUOM: 'LBS' },
+    { product: 'B', quantity: 1, quantityUOM: 'CTN' },
+  ]);
+  // The server's own edges: absent is the old one line, a non-list or a non-line is refused.
+  assert.deepEqual(parseDuplicateLines(undefined), { lines: null });
+  assert.deepEqual(parseDuplicateLines(null), { lines: null });
+  assert.match(parseDuplicateLines({ product: 'A' }).error, /did not arrive as a list/);
+  assert.match(parseDuplicateLines(['A']).error, /item line 1 did not arrive as a line/);
+  // Every text is cut to the StopDetail schema's own length; a dimension NuVizz could not hold is left off.
+  const [cut] = parseDuplicateLines([{ product: 'A', quantity: 1, quantityUOM: 'U'.repeat(30), weight: 5, weightUOM: 'W'.repeat(30),
+    referenceText: 'R'.repeat(60), productCategory: 'C'.repeat(60), length: 96, lengthUOM: 'L'.repeat(15), width: 0, height: 100000, criticalDimension: 12 }]).lines;
+  assert.equal(cut.quantityUOM.length, 20);
+  assert.equal(cut.weightUOM.length, 20);
+  assert.equal(cut.referenceText.length, 50);
+  assert.equal(cut.productCategory.length, 45);
+  assert.equal(cut.lengthUOM.length, 10);
+  assert.equal(cut.width, undefined, 'a 0 width is no width');
+  assert.equal(cut.height, undefined, 'past the schema\'s 99999');
+  assert.equal(cut.criticalDimension, 12);
+  assert.equal(cut.criticalDimensionUOM, undefined, 'no unit given, none made up');
+});
+
+test('item lines: the copy carries exactly the drawer\'s lines — numbered by the copy, dimensions and class as NuVizz holds them', () => {
+  const lines = parseDuplicateLines([
+    { product: 'APPLIANCES', quantity: 3, quantityUOM: 'PCS', weight: 900, weightUOM: 'LBS', productCategory: 'L', referenceText: '70', length: 96, lengthUOM: 'IN', width: 40, widthUOM: 'IN', height: 50, heightUOM: 'IN' },
+    { product: 'FILTERS', quantity: 2, quantityUOM: 'CTN', length: 30 },
+  ]).lines;
+  const s = buildDuplicateStop(original(), '007174789-1', OPTS({ lines })).stop;
+  assert.deepEqual(s.stopDetails, [
+    { product: 'APPLIANCES', productIdentifier: '007174789-1-1', quantity: 3, quantityUOM: 'PCS', stopDetailSeq: 1, lineType: '01',
+      weight: 900, weightUOM: 'LBS', referenceText: '70', productCategory: 'L', length: 96, lengthUOM: 'IN', width: 40, widthUOM: 'IN', height: 50, heightUOM: 'IN' },
+    { product: 'FILTERS', productIdentifier: '007174789-1-2', quantity: 2, quantityUOM: 'CTN', stopDetailSeq: 2, lineType: '01', length: 30 },
+  ], 'no unit made up for the second line\'s length');
+  // The totals stay what the boxes say — 4 pallets, 1680 lb — though the lines read 5 pieces and 900 lb.
+  assert.deepEqual([s.totalCartons, s.volume, s.totalPallets, s.weight], [4, 0, 4, 1680]);
+  // Never the original's identifier — the spec's carton barcode belongs to the original's freight.
+  const one = buildDuplicateStop(original(), '007174789-1', OPTS({ lines: [lines[1]] })).stop;
+  assert.equal(one.stopDetails[0].productIdentifier, '007174789-1', 'one line: the copy\'s number, as New Order writes');
+  // An emptied drawer: no item lines at all. The original's references still ride across.
+  const none = buildDuplicateStop(original(), '007174789-1', OPTS({ lines: [] })).stop;
+  assert.equal(none.stopDetails, undefined);
+  assert.equal(none.reference2, 'ACME CUST 55');
+  // No lines sent (a panel from before v1.111.0): the one line it always built, exactly.
+  assert.deepEqual(buildDuplicateStop(original(), '007174789-1', OPTS()).stop.stopDetails, [
+    { product: 'APPLIANCES', productIdentifier: '007174789-1', quantity: 4, quantityUOM: 'PCS', stopDetailSeq: 1, lineType: '01', weight: 1680, weightUOM: 'LBS' },
+  ]);
+  // The commodity reference follows the drawer's first line when the original has none of its own.
+  const noRef = buildDuplicateStop(original({ reference2: undefined }), 'X-1', OPTS({ lines: [{ ...lines[1], product: 'NEW THING' }] })).stop;
+  assert.equal(noRef.reference2, 'NEW THING');
+});
+
+test('item lines: a lone line follows the copy\'s totals — a split copy\'s line reads what its header reads', () => {
+  const [lone] = parseDuplicateLines([{ product: 'APPLIANCES', followsTotals: true, quantity: 99, weight: 99, length: 48, lengthUOM: 'IN' }]).lines;
+  assert.equal(lone.followsTotals, true);
+  // 2 pallets + 1 loose of the original's 10, at 900 lb: the line says 3 PCS and 900 LBS, as the header does.
+  const split = buildDuplicateStop(original(), 'X-1', OPTS({ pallets: 2, loose: 1, weight: 900, lines: [lone] })).stop;
+  assert.deepEqual(split.stopDetails, [{ product: 'APPLIANCES', productIdentifier: 'X-1', quantity: 3, quantityUOM: 'PCS', stopDetailSeq: 1, lineType: '01', weight: 900, weightUOM: 'LBS', length: 48, lengthUOM: 'IN' }]);
+  assert.deepEqual([split.totalPallets, split.weight], [3, 900]);
+  // The weight box left blank: the copy keeps the original's weight, and so does its line.
+  assert.equal(buildDuplicateStop(original(), 'X-1', OPTS({ weight: null, lines: [lone] })).stop.stopDetails[0].weight, 4200);
+  // duplicateStopDetails on its own: following needs the line to be alone — beside another, a line
+  // flagged to follow keeps its own count (the parser never sends that, the builder still holds the rule).
+  assert.equal(duplicateStopDetails([{ ...lone, quantity: 99 }, { product: 'B', quantity: 2, quantityUOM: 'PCS', weight: null }], 'X-1', { pieces: 7, weight: 10 })[0].quantity, 99, 'two lines: nobody follows');
+
+  // The screen: a lone original line opens following, shows the totals live, and is the dispatcher's
+  // own once its quantity or weight is typed — starting from what it showed.
+  const stop = { stopNbr: '007174789', stopDetails: [BOARD_LINES[0]] };
+  const rows = duplicateLinesFrom(stop);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].follows, true);
+  const d = duplicateDraft({ pallets: '2', loose: '1', weight: '900', date: TOMORROW }, TODAY);
+  assert.deepEqual(duplicateLineShown(rows[0], rows, d, '900'), { follows: true, quantity: '3', quantityUOM: 'PCS', weight: '900', weightUOM: 'LBS' });
+  assert.equal(duplicateLinesEdit(rows, 0, { product: 'APPLIANCES (2)' }, d, '900')[0].follows, true, 'its description alone does not stop it following');
+  // The window hands it the two count boxes alone (parsePieceDraft), so a day already gone — which the
+  // footer refuses on its own — never blanks the line's count.
+  assert.match(duplicateDraft({ pallets: '2', loose: '1', weight: '900', date: addDays(TODAY, -1) }, TODAY).error, /has already gone/);
+  assert.equal(duplicateLineShown(rows[0], rows, parsePieceDraft('2', '1'), '900').quantity, '3');
+  const panelSrc = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(panelSrc, /const counts = parsePieceDraft\(pallets, loose\);/);
+  assert.match(panelSrc, /duplicateLineShown\(l, lineRows, counts, weight\)/);
+  const typed = duplicateLinesEdit(rows, 0, { quantity: '5' }, d, '900')[0];
+  assert.deepEqual([typed.follows, typed.quantity, typed.quantityUOM, typed.weight], [false, '5', 'PCS', '900']);
+  // A second line: the first keeps the numbers it showed, as its own; the new one starts empty.
+  const two = duplicateLinesAdd(rows, 'n1', d, '900');
+  assert.deepEqual(two.map((r) => [r.id, r.follows, r.quantity, r.weight]), [['o0', false, '3', '900'], ['n1', false, '', '']]);
+  assert.equal(duplicateLinesDraft(two).error, 'item line 2 needs a description', 'the new line asks what it is …');
+  assert.equal(duplicateLinesDraft(duplicateLinesEdit(two, 1, { product: 'FILTERS' })).error, 'item line 2 needs a quantity above 0 (up to 99999)', '… then how many');
+  // A first line added to an original with none follows the totals, as the old Items box did.
+  assert.equal(duplicateLinesAdd([], 'n1', d, '900')[0].follows, true);
+  assert.deepEqual(duplicateLinesRemove(two, 0).map((r) => r.id), ['n1']);
+  assert.equal(duplicateLinesRemove(two, 0)[0].follows, false, 'a line the dispatcher took over stays theirs');
+});
+
+test('item lines: the drawer opens on the original\'s lines as the Map feed serves them', () => {
+  assert.ok(LEAN_STOP_FIELDS.includes('stopDetails'), 'the Map feed serves the lines');
+  const stop = { stopNbr: '007174789', stopDetails: [BOARD_LINES[0], BOARD_LINES[1], null, { product: ' ' }] };
+  const rows = duplicateLinesFrom(stop);
+  assert.deepEqual(rows.map((r) => [r.id, r.product, r.quantity, r.quantityUOM, r.weight, r.weightUOM, r.follows]), [
+    ['o0', 'APPLIANCES', '3', 'PCS', '900', 'LBS', false],
+    ['o1', 'FILTERS', '2', 'CTN', '', 'LBS', false],
+  ], 'an empty entry is not a line; several lines are the dispatcher\'s own');
+  // A line NuVizz holds with a blank description is still freight: kept, and it asks for a description.
+  const blank = duplicateLinesFrom({ stopDetails: [BOARD_LINES[0], { product: '', quantity: 4, quantityUOM: 'PCS' }] });
+  assert.deepEqual(blank.map((r) => [r.product, r.quantity]), [['APPLIANCES', '3'], ['', '4']]);
+  assert.equal(duplicateLinesDraft(blank).error, 'item line 2 needs a description');
+  assert.deepEqual([rows[0].length, rows[0].lengthUOM, rows[0].productCategory, rows[0].referenceText], [96, 'IN', 'L', '70']);
+  assert.equal('sku' in rows[0] || 'productIdentifier' in rows[0], false, 'the original\'s carton barcode is not carried');
+  assert.deepEqual(duplicateLinesFrom({}), []);
+  // The baseline and the form both hold them; nothing has changed until the dispatcher changes it.
+  const base = duplicateBaseline(stop);
+  const form = duplicateFormFrom(stop, null);
+  assert.deepEqual(form.lines, base.lines);
+  assert.equal(duplicateLinesChanged(form.lines, base.lines), false);
+  assert.equal(duplicateLinesChanged(duplicateLinesEdit(form.lines, 1, { quantity: '3' }), base.lines), true, 'a quantity');
+  assert.equal(duplicateLinesChanged(duplicateLinesEdit(form.lines, 0, { product: 'APPLIANCE' }), base.lines), true, 'a description');
+  assert.equal(duplicateLinesChanged(duplicateLinesRemove(form.lines, 1), base.lines), true, 'a line taken out');
+  assert.equal(duplicateLinesChanged(duplicateLinesAdd(form.lines, 'n1'), base.lines), true, 'a line put in');
+  assert.equal(duplicateLinesChanged(duplicateLinesEdit(form.lines, 1, { quantity: '2.0' }), base.lines), false, 'the same number typed again');
+  // A line that follows the totals is not "changed" by the totals moving — the change line names those.
+  const lone = duplicateLinesFrom({ stopDetails: [BOARD_LINES[0]] });
+  assert.equal(duplicateLinesChanged(lone, duplicateLinesFrom({ stopDetails: [BOARD_LINES[0]] })), false);
+  assert.match(duplicateFormError({ ...form, lines: duplicateLinesEdit(form.lines, 1, { quantity: '' }) }, base), /item line 2 needs a quantity/);
+});
+
+test('item lines: the window says what they hold, and where they disagree with the totals — never a block', () => {
+  const d = (p, l, w) => duplicateDraft({ pallets: p, loose: l, weight: w, date: TOMORROW }, TODAY);
+  const two = duplicateLinesFrom({ stopDetails: BOARD_LINES });
+  const lone = duplicateLinesFrom({ stopDetails: [BOARD_LINES[0]] });
+  assert.equal(duplicateLinesSummary([], d('4', '', '1680'), '1680'), 'No item lines on the copy');
+  assert.equal(duplicateLinesSummary(lone, d('4', '', '1680'), '1680'), 'APPLIANCES · 4 PCS · 1680 lb — follows the totals');
+  assert.equal(duplicateLinesSummary(lone, d('4', '', ''), ''), 'APPLIANCES · 4 PCS — follows the totals', 'the weight box blank: the original\'s weight, not a number we do not have');
+  assert.equal(duplicateLinesSummary(duplicateLinesEdit(lone, 0, { quantity: '6' }, d('4', '', '1680'), '1680'), d('4', '', '1680'), '1680'), 'APPLIANCES · 6 PCS · 1680 lb');
+  assert.equal(duplicateLinesSummary(two, d('4', '', ''), ''), '2 lines: APPLIANCES, FILTERS');
+  assert.equal(duplicateLinesSummary([...two, row({ id: 'n9' })], d('4', '', ''), ''), '3 lines: APPLIANCES, FILTERS, +1 more');
+  // The lines read 3 + 2 = 5; the boxes say 4 pallets.
+  assert.equal(duplicateLinesMismatch(two, d('4', '', ''), ''), "The item lines' quantities add up to 5; Pallets + Loose make 4. NuVizz keeps both as you leave them.");
+  assert.equal(duplicateLinesMismatch(two, d('3', '2', ''), ''), '', 'they agree');
+  const weighed = duplicateLinesEdit(two, 1, { weight: '100' });
+  assert.equal(duplicateLinesMismatch(weighed, d('3', '2', '1680'), '1680'), 'Their weights add up to 1000 lb; the Weight box says 1680. NuVizz keeps both as you leave them.');
+  assert.equal(duplicateLinesMismatch(two, d('3', '2', '1680'), '1680'), '', 'a line with no weight: the weights are not summed');
+  assert.equal(duplicateLinesMismatch(lone, d('9', '', '1'), '1'), '', 'a following line cannot disagree');
+  assert.equal(duplicateLinesMismatch(two, d('x', '', ''), ''), '', 'a draft the footer already refuses');
+  // What the drawer shows but does not edit, in the paperwork's words.
+  assert.equal(duplicateLineFacts(two[0]), '96 × 40 × 50 in · class 70 · L (long / oversize)');
+  assert.equal(duplicateLineFacts(two[1]), '');
+  assert.equal(duplicateLineFacts(row({ length: 8, lengthUOM: 'FT', height: 40, heightUOM: 'inch', criticalDimension: 9, criticalDimensionUOM: 'FT', productCategory: 'S' })), 'length 8 ft · height 40 in · critical dimension 9 ft · category S');
+  assert.equal(duplicateLineFacts(row({ length: 48, width: 40, height: 50 })), '48 × 40 × 50', 'no unit held, none claimed');
+});
+
+test('item lines: the create sends the drawer\'s lines, and the read-back proves each one landed', async () => {
+  const lines = [
+    { product: 'APPLIANCES', quantity: 3, quantityUOM: 'PCS', weight: 900, weightUOM: 'LBS', productCategory: 'L', length: 96, lengthUOM: 'IN' },
+    { product: 'FILTERS', quantity: 2, quantityUOM: 'CTN' },
+  ];
+  const nv = fakeNuvizz({ held: { '007174789': original() } });
+  const r = await runDuplicateOrder(nv.requester, P({ lines }), CREDS);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.lines, 2);
+  const sent = JSON.parse(created(nv.calls)[0].body).stop;
+  assert.deepEqual(sent.stopDetails.map((x) => [x.productIdentifier, x.product, x.quantity, x.quantityUOM, x.weight ?? null, x.productCategory ?? null, x.length ?? null]), [
+    ['007174789-1-1', 'APPLIANCES', 3, 'PCS', 900, 'L', 96],
+    ['007174789-1-2', 'FILTERS', 2, 'CTN', null, null, null],
+  ]);
+  assert.deepEqual([sent.totalCartons, sent.totalPallets, sent.weight], [4, 4, 1680], 'the totals are the boxes\'');
+  // A NuVizz that drops a line, or changes one: the copy exists, and the answer says what did not land.
+  const dropped = await runDuplicateOrder(fakeNuvizz({ held: { '007174789': original() }, onCreate: (stop) => ({ ...stop, stopDetails: stop.stopDetails.slice(0, 1) }) }).requester, P({ lines }), CREDS);
+  assert.deepEqual([dropped.created, dropped.ok], [true, false]);
+  assert.match(dropped.error, /its item lines read 1, not the 2 sent/);
+  const changed = await runDuplicateOrder(fakeNuvizz({ held: { '007174789': original() }, onCreate: (stop) => ({ ...stop, stopDetails: stop.stopDetails.map((x) => (x.product === 'FILTERS' ? { ...x, quantity: 1 } : x)) }) }).requester, P({ lines }), CREDS);
+  assert.match(changed.error, /an item line did not come back as sent \(2 CTN “FILTERS”\)/);
+  // NuVizz's own case and spacing, and its own order of lines, are not a lost line.
+  assert.deepEqual(duplicateLinesMissing({ stopDetails: [{ product: 'filters ', quantity: '2' }, { product: 'Appliances', quantity: 3, weight: 900 }] }, sent.stopDetails), []);
+  assert.equal(duplicateLinesMissing({ stopDetails: [{ product: 'APPLIANCES', quantity: 3, weight: 899 }] }, [sent.stopDetails[0]]).length, 1, 'a weight sent is a weight checked');
+  // A lone line following the totals is sent as the header reads, and proven so.
+  const lone = await runDuplicateOrder(fakeNuvizz({ held: { '007174789': original() } }).requester, P({ pallets: 2, loose: 1, weight: '900', lines: [{ product: 'APPLIANCES', followsTotals: true }] }), CREDS);
+  assert.equal(lone.ok, true, JSON.stringify(lone));
+  // An emptied drawer: no lines sent, none expected back.
+  const emptyNv = fakeNuvizz({ held: { '007174789': original() } });
+  const empty = await runDuplicateOrder(emptyNv.requester, P({ lines: [] }), CREDS);
+  assert.equal(empty.ok, true, JSON.stringify(empty));
+  assert.equal(empty.lines, 0);
+  assert.equal(JSON.parse(created(emptyNv.calls)[0].body).stop.stopDetails, undefined);
+  // A bad line is refused before ANY NuVizz call.
+  const none = fakeNuvizz({ held: { '007174789': original() } });
+  const refused = await runDuplicateOrder(none.requester, P({ lines: [{ product: 'A', quantity: 0 }] }), CREDS);
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /item line 1 needs a quantity above 0/);
+  assert.equal(none.calls.length, 0);
+  // The answer counts them.
+  const say = (lines) => duplicateOutcome({ ok: true, result: { ok: true, created: true, stopNbr: 'X-1', now: { pallets: 4, total: 4 }, edited: [], lines, price: null, warnings: [] } }).text;
+  assert.match(say(2), /unplanned, 2 item lines, no price\./);
+  assert.match(say(1), /unplanned, 1 item line, no price\./);
+  assert.match(say(0), /unplanned, no item lines, no price\./);
+  assert.match(say(undefined), /unplanned, no price\./, 'an answer from before v1.111.0 claims nothing');
+});
+
+test('item lines: the dry run names them, and the window sends them every time', async () => {
+  const dry = async (payload) => (await (await writeHandler(new Request('http://localhost/.netlify/functions/nuvizz-write', {
+    method: 'POST', body: JSON.stringify({ op: 'duplicateOrder', dryRun: true, payload: { stopNbr: '007174789', pallets: 4, weight: 1680, ...payload } }),
+  }))).json()).plan;
+  const many = await dry({ lines: [{ product: 'APPLIANCES', quantity: 3, quantityUOM: 'PCS' }, { product: 'FILTERS', quantity: 2, quantityUOM: 'CTN' }] });
+  assert.ok(many.includes("ITEMS on the copy: 2 lines as edited (3 PCS APPLIANCES; 2 CTN FILTERS) — the order's totals stay the Pallets/Loose/Weight given; NuVizz keeps both as sent"), JSON.stringify(many));
+  assert.ok(many.includes('VERIFY by reading the new order back — its number, pieces and street, and its item lines, must read as created'));
+  const lone = await dry({ lines: [{ product: 'APPLIANCES', followsTotals: true }] });
+  assert.ok(lone.includes("ITEMS on the copy: 1 line, APPLIANCES, FOLLOWING the copy's totals — 4 PCS, 1680 lbs — as every order this app creates carries it"), JSON.stringify(lone));
+  assert.ok((await dry({ lines: [] })).includes('ITEMS on the copy: NONE — the drawer was emptied, so the copy carries no item lines'));
+  const old = await dry({});
+  assert.ok(!old.some((l) => l.startsWith('ITEMS')), 'no lines sent: nothing claimed');
+  assert.ok(old.includes('VERIFY by reading the new order back — its number, pieces and street must read as created'));
+  assert.deepEqual(await dry({ lines: [{ product: '', quantity: 1 }] }), ['REFUSE before any call: item line 1 needs a description']);
+  // The window: a drawer, shut until opened, that the request always carries.
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const panel = src.slice(src.indexOf('function DuplicateOrderPanel('), src.indexOf('function StopLiveDetail('));
+  assert.match(panel, /data-duplicate-items/);
+  assert.match(panel, /aria-expanded=\{itemsOpen\}/);
+  assert.match(panel, /setForm\(duplicateFormFrom\(stop, note\)\);\n\s*setItemsOpen\(false\);/, 'each opening starts with the drawer shut');
+  assert.match(panel, /const lines = duplicateLinesDraft\(form\?\.lines\)\.lines \|\| \[\];/);
+  assert.match(panel, /copyPrice, copyNbr, edits, notes, lines, priceWas:/, 'the call carries them');
+  assert.match(panel, /\|\| linesChanged;/, 'an edited drawer is never lost to a stray click');
+  assert.match(panel, /aria-label=\{`Remove item line \$\{i \+ 1\}`\}/);
+  assert.match(panel, /Add an item line/);
+  // nuvizzWrite sends them whenever the panel passes a list — [] included.
+  const nw = readFileSync(new URL('../src/lib/nuvizzWrite.js', import.meta.url), 'utf8');
+  assert.match(nw, /\.\.\.\(Array\.isArray\(lines\) \? \{ lines \} : \{\}\),/);
 });
