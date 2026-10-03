@@ -409,7 +409,7 @@ const PROBES = {
     {
       // v1.109.1: Duplicate opens a FLOATING WINDOW over the drawer (portal on <body>, a margin all
       // round): every field of the copy in one column on a phone — number, address, City/State/ZIP
-      // on one row, phone/email, items, three number boxes, date, instructions, price — the strip of
+      // on one row, phone/email, the Items drawer (shut), three number boxes, date, instructions, price — the strip of
       // what is copied as it is, and Cancel beside Create on one row. Same CUSTOMER 1 reason as above
       // (a delivered order would still offer it, but one fixture row keeps both probes measuring the
       // same drawer).
@@ -427,6 +427,35 @@ const PROBES = {
         await dup.click();
         await page.waitForTimeout(300);
         return page.getByRole('button', { name: /^create the copy in nuvizz$/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // v1.112.0: the window's Items drawer, OPEN, with two item lines — each a description, then a
+      // quantity, a weight and Remove on one row, and "Add an item line" under them. The fixture's
+      // orders carry no lines, so two are added: the drawer's furniture only exists after the taps.
+      name: 'stop detail drawer — duplicate items drawer open',
+      open: async (page) => {
+        await page.getByRole('button', { name: /^stops$/i }).first().click();
+        await page.waitForTimeout(500);
+        const row = page.locator('[data-stop-row], li, button').filter({ hasText: /CUSTOMER 1 WITH/i }).first();
+        if (!(await row.isVisible().catch(() => false))) return false;
+        await row.click();
+        await page.waitForTimeout(800);
+        const dup = page.getByRole('button', { name: /^duplicate as a new order$/i }).first();
+        await dup.scrollIntoViewIfNeeded().catch(() => {});
+        if (!(await dup.isVisible().catch(() => false))) return false;
+        await dup.click();
+        await page.waitForTimeout(300);
+        const items = page.locator('[data-duplicate-items] button[aria-expanded]').first();
+        if (!(await items.isVisible().catch(() => false))) return false;
+        await items.click();
+        for (let i = 0; i < 2; i++) {
+          const add = page.getByRole('button', { name: /^add an item line$/i }).first();
+          if (!(await add.isVisible().catch(() => false))) return false;
+          await add.click();
+          await page.waitForTimeout(150);
+        }
+        return page.getByRole('button', { name: /^remove item line 2$/i }).first().isVisible().catch(() => false);
       },
     },
   ],

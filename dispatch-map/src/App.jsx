@@ -90,7 +90,7 @@ import { pinKeyer, pinSig } from './lib/tv-pin-reuse.js';
 import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, setStopPieces, duplicateOrder, siteWriteFeatures, siteWriteFeaturesNow, addressReachedNuvizz } from './lib/nuvizzWrite.js';
-import { copyBaseNbr, duplicateEligible, etToday, defaultCopyDate, duplicateDraft, duplicateOutcome, duplicateBaseline, duplicateFormFrom, duplicateEdits, duplicateCountChanges, duplicateChangeLabels, duplicateFormError, copyNbrDraft, duplicateCopiedFacts, duplicateNotCopied, duplicateCopyPrice, duplicatePriceLine, duplicateNotesDraft, duplicateNotesLine, NOTE_SHOW_TO, DUPLICATE_NOTES_MAX } from './lib/order-duplicate.js';
+import { copyBaseNbr, duplicateEligible, etToday, defaultCopyDate, duplicateDraft, duplicateOutcome, duplicateBaseline, duplicateFormFrom, duplicateEdits, duplicateCountChanges, duplicateChangeLabels, duplicateFormError, copyNbrDraft, duplicateCopiedFacts, duplicateNotCopied, duplicateCopyPrice, duplicatePriceLine, duplicateNotesDraft, duplicateNotesLine, NOTE_SHOW_TO, DUPLICATE_NOTES_MAX, DUPLICATE_LINES_MAX, duplicateLineShown, duplicateLinesEdit, duplicateLinesAdd, duplicateLinesRemove, duplicateLinesDraft, duplicateLinesChanged, duplicateLinesSummary, duplicateLinesMismatch, duplicateLineFacts } from './lib/order-duplicate.js';
 import { boardPiecesOf, parsePieceDraft, piecesChanged, piecesLine, piecesBoardDatesOf, piecesFoldFrom, piecesOutcome, piecesEditable } from './lib/stop-pieces.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
@@ -227,7 +227,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.111.1';
+const APP_VERSION = '1.112.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -281,6 +281,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.112.0', 'DUPLICATE: AN ITEMS DRAWER \u2014 CHANGE THE COPY\u2019S ACTUAL ITEM LINES. Chad, 10/03: \u201cgive me a drawer to edit the actual items.\u201d Where the Items box was, the window now has an Items drawer. Shut, it says what the lines hold; open, each of the original\u2019s lines is there to change \u2014 what it is, how many, the weight \u2014 with Remove on each and \u201c+ Add an item line\u201d under them. The copy carries exactly the lines shown; before this, a copy kept only the original\u2019s first line. Pallets, Loose and Weight stay the order\u2019s TOTALS: measured with Chad\u2019s go-ahead, NuVizz keeps the totals and the lines exactly as sent, so when they disagree the drawer says so in amber and never blocks. ONE LINE FOLLOWS THE TOTALS: an order with a single line keeps it reading Pallets + Loose and Weight, as every order this app makes does \u2014 put 2 of 3 pallets on the copy and its line says 2, not 3. Type its quantity or weight and it is yours. CARRIED AS NUVIZZ HOLDS IT: each line\u2019s dimensions, freight class and L (long / oversize) flag ride across and show under the line \u2014 the route build reads them for oversize freight and deck length, and the old one-line copy dropped them. Never copied: the original\u2019s carton barcode; each line is numbered by the copy. The read-back checks every line landed.'],
   ['1.111.1', 'DUPLICATE COULD NOT FIND A FREE NUMBER ON THE LIVE NUVIZZ \u2014 FIXED. Found while testing item lines with Chad\u2019s go-ahead (\u201cYou can use 10 calls\u201d). Before Duplicate uses a number it asks NuVizz whether that number is free, and it only believed NuVizz\u2019s DOCUMENTED \u201cnot found\u201d (a 404). MEASURED TODAY: the live DAVIS tenant answers a number it does not hold with a 400 instead \u2014 \u201cNo Stop found with stopNbr 007185553-98 for the companycode DAVIS\u201d, reason code 923 \u2014 three numbers in a row, and the test order then created at one of them came back new. So in production every Duplicate would have stopped at \u201ccould not prove \u2026 is free \u2014 NuVizz answered 400\u201d and created nothing. It now believes exactly that answer: a 404, or a 400 carrying NuVizz\u2019s own \u201cNo Stop found\u201d (923). Anything else \u2014 another 400, a server error, an empty answer \u2014 is still \u201ccould not tell\u201d and still creates nothing, because a create at a number NuVizz already holds would REPLACE that order. Load reads already work this way (NuVizz does the same thing for loads, learned Jul 31). Nothing on screen changed.'],
   ['1.111.0', 'THE PRINTED MANIFEST AND DELIVERY TICKET HAVE THE NEW LAYOUT \u2014 AND DIAGNOSTICS HAS A PICKER TO GO BACK TO THE OLD ONE. Chad, 10/03: \u201ci want to move to production but i want a way to roll back to old one if needed in diagnostics screen somewhere i want to be able to pick which version i\u2019m running.\u201d THE NEW LAYOUT is the one worked out on paper: the PRO number large in the header; pallets / loose / total pieces / weight in one heavy row with a little space above it; the BOL on the phone\u2019s row (city \u00b7 BOL \u00b7 phone); the comments above the freight lines, without the repeated \u201cSPL-INSTR-TEXT:\u201d label; Requested Date & Time small at the foot; a smaller stop-number box, set a little below the logo; and the top-right corner left empty for the staple. WHAT DID NOT CHANGE: the information on the page, one delivery per page, page 1 still the route summary and the first ticket, and the way it prints. It is shorter than the old layout on every ticket measured (11,817 shapes of stop), so a page holds more freight lines before it spills \u2014 29 against 23 on a stop\u2019s own page with no comments, 21 against 15 on page 1, counted in a real print. WHERE: Print Manifest on a route, Print manifest on a Compare card, and every Delivery Ticket. THE PICKER: More \u2192 Diagnostics \u2192 Manifest layout (on a phone it is the fifth chip \u2014 swipe the row left). It says which layout is in use and when it was changed, has a Preview of each built from a made-up route, and one button to switch. The choice is stored for the whole company, not per browser: switching back from a phone switches the office PCs. The device you switch on changes at once; the others follow within 5 minutes, or as soon as they are reloaded. Everyone can see it; with sign-in on, only an admin can change it. The old layout prints byte for byte what it printed before (25,543 documents compared). 0 NuVizz calls. PUT IT BACK: Diagnostics \u2192 Manifest layout \u2192 Go back to the old layout.'],
   ['1.110.0', 'DUPLICATE: NOTES FOR THE DISPATCHER OR DRIVER, AND THE ORIGINAL\u2019S PRICE IN THE BOX. Chad, 10/03: \u201cgive me a stop to add notes for dispatcher or driver also put the original price in the box but leave the copy to duplicate unchecked default and also make it an editable field the price incase it\u2019s more or know.\u201d NOTES: under Driver instructions, \u201c+ Add a note for the dispatcher or driver\u201d \u2014 up to five, each with the stop card\u2019s own Show to: Both | Dispatcher | Driver. They go on the new order as the same kind of note the card\u2019s Add note in NuVizz writes, and the read-back checks each one came back with the right people able to see it. PRICE: the Price box now opens on the original\u2019s price and you can change it if the copy costs more or less. Nothing goes on the copy until you tick \u201cPut this price on the copy\u201d \u2014 off by default. Where our board doesn\u2019t hold the original\u2019s price, ticking with the box empty copies NuVizz\u2019s own, as before. The line at the bottom says which price the copy gets. ALSO: the Pickup line now shows the original\u2019s real pickup on the Map (it was reading a field the Map feed does not carry). The ITEMS drawer is not in this one: how NuVizz recounts loose pieces from several item lines is something the code cannot see yet \u2014 asked first.'],
@@ -9819,22 +9820,28 @@ function DuplicateOrderPanel({ stop, note }) {
   // v1.109.0 — the rest of the copy, editable (lib/order-duplicate.js duplicateFormFrom).
   const [form, setForm] = useState(null);
   const baselineRef = useRef(null);
+  // v1.111.0 — the Items drawer (lib/order-duplicate.js §DUP-L): shut until opened; ids for added lines.
+  const [itemsOpen, setItemsOpen] = useState(false);
+  const lineSeqRef = useRef(0);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);       // { kind, text, created, nbr }
   const opRef = useRef({ id: newClientOpId(), sent: null });
   const pro = stop?.stopNbr || stop?.pro || '';
   const base = copyBaseNbr(pro);
   const draft = duplicateDraft({ pallets, loose, weight, date }, today);
+  // v1.112.0 — what the Items drawer's following line reads: the two count boxes alone.
+  const counts = parsePieceDraft(pallets, loose);
   const formError = form ? duplicateFormError(form, baselineRef.current) : null;
   const edits = form ? duplicateEdits(form, baselineRef.current) : {};
-  const editLabels = duplicateChangeLabels(edits, duplicateCountChanges(stop, draft), baselineRef.current);
+  const linesChanged = form ? duplicateLinesChanged(form.lines, baselineRef.current?.lines) : false;
+  const editLabels = duplicateChangeLabels(edits, [...(linesChanged ? ['lines'] : []), ...duplicateCountChanges(stop, draft)], baselineRef.current);
   // v1.110.0 — the tick puts the price box on the copy; set with an empty box it copies NuVizz's own.
   const copyPrice = duplicateCopyPrice(form);
   // v1.109.1 — the form is a large floating window over the page, not a panel inside the card.
   // Esc and a click on the backdrop close it only while nothing has been typed, so a long edit is
   // never lost to a stray key or click; Cancel and the ✕ always close.
   const touched = editLabels.length > 0 || !!String(form?.copyNbr ?? '').trim() || !!form?.priceOn
-    || (form?.notes || []).some((n) => !!String(n?.text ?? '').trim());
+    || (form?.notes || []).some((n) => !!String(n?.text ?? '').trim()) || linesChanged;
   const softCloseRef = useRef(null);
   useEffect(() => {
     if (!open) return undefined;
@@ -9864,6 +9871,7 @@ function DuplicateOrderPanel({ stop, note }) {
     setDate(defaultCopyDate(stop, today));
     baselineRef.current = duplicateBaseline(stop);
     setForm(duplicateFormFrom(stop, note));
+    setItemsOpen(false);
   };
   const setField = (k) => (e) => { const v = e.target.value; setForm((f) => ({ ...(f || {}), [k]: v })); };
   const error = draft.error || formError;
@@ -9873,9 +9881,10 @@ function DuplicateOrderPanel({ stop, note }) {
     try {
       const copyNbr = copyNbrDraft(form?.copyNbr).nbr;
       const notes = duplicateNotesDraft(form?.notes).notes || [];
-      const request = { pro, stopId: stop?.stopId || null, pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits, notes };
+      const lines = duplicateLinesDraft(form?.lines).lines || [];
+      const request = { pro, stopId: stop?.stopId || null, pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits, notes, lines };
       opRef.current = singleOrderOpId(opRef.current, request, newClientOpId);
-      const r = await duplicateOrder(pro, { pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits, notes, priceWas: edits.price !== undefined ? baselineRef.current?.price || '' : '' }, {
+      const r = await duplicateOrder(pro, { pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits, notes, lines, priceWas: edits.price !== undefined ? baselineRef.current?.price || '' : '' }, {
         stopId: stop?.stopId || undefined, clientOpId: opRef.current.id,
       });
       const outcome = duplicateOutcome(r);
@@ -9901,6 +9910,12 @@ function DuplicateOrderPanel({ stop, note }) {
   const setNote = (i, patch) => setForm((f) => ({ ...(f || {}), notes: (f?.notes || []).map((n, j) => (j === i ? { ...n, ...patch } : n)) }));
   const addNote = () => setForm((f) => ({ ...(f || {}), notes: [...(f?.notes || []), { text: '', audience: 'both' }] }));
   const removeNote = (i) => setForm((f) => ({ ...(f || {}), notes: (f?.notes || []).filter((_, j) => j !== i) }));
+  const lineRows = form?.lines || [];
+  const editLine = (i, patch) => setForm((f) => ({ ...(f || {}), lines: duplicateLinesEdit(f?.lines || [], i, patch, counts, weight) }));
+  const addLine = () => { const id = `n${++lineSeqRef.current}`; setForm((f) => ({ ...(f || {}), lines: duplicateLinesAdd(f?.lines || [], id, counts, weight) })); };
+  const removeLine = (i) => setForm((f) => ({ ...(f || {}), lines: duplicateLinesRemove(f?.lines || [], i) }));
+  const linesError = duplicateLinesDraft(lineRows).error || null;
+  const linesMismatch = duplicateLinesMismatch(lineRows, counts, weight);
   const heldPrice = String(baselineRef.current?.price ?? '').trim();
   const sectionCls = 'text-[11px] uppercase tracking-wide font-semibold text-slate-500';
   const copied = duplicateCopiedFacts(stop, copyNbrDraft(form?.copyNbr).nbr);
@@ -9960,7 +9975,66 @@ function DuplicateOrderPanel({ stop, note }) {
                 </section>
                 <section className="space-y-2 min-w-0">
                   <h3 className={sectionCls}>Freight and delivery</h3>
-                  {field('itemDesc', 'Items', { maxLength: 100 })}
+                  {/* THE ITEMS DRAWER (v1.111.0) — Chad, 10/03: "give me a drawer to edit the actual items". The
+                      copy carries exactly the lines shown (lib/order-duplicate.js §DUP-L); Pallets / Loose /
+                      Weight below stay the order's totals. Each line stacks — its description on its own row,
+                      then quantity and weight — on both views, so a long description is never squeezed into
+                      half a window's column. */}
+                  {/* No min-h class on its buttons: a class outranks index.css's bare `button` touch floor, so
+                      padding sizes them under a mouse and the floor makes them 44px under a finger. */}
+                  <div className="rounded border border-slate-200" data-duplicate-items>
+                    <button type="button" onClick={() => setItemsOpen((o) => !o)} disabled={busy} aria-expanded={itemsOpen}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-slate-50 disabled:opacity-60">
+                      <span className="text-[11px] font-medium text-slate-500 shrink-0">Items{lineRows.length ? ` (${lineRows.length})` : ''}</span>
+                      <span className={'flex-1 min-w-0 truncate text-[12px] ' + (linesError ? 'text-red-600' : 'text-slate-800')}>{linesError || duplicateLinesSummary(lineRows, counts, weight)}</span>
+                      {itemsOpen ? <ChevronUp size={14} className="shrink-0 text-slate-500" /> : <ChevronDown size={14} className="shrink-0 text-slate-500" />}
+                    </button>
+                    {itemsOpen && (
+                      <div className="border-t border-slate-200 p-2 space-y-2">
+                        {lineRows.map((l, i) => {
+                          const shown = duplicateLineShown(l, lineRows, counts, weight);
+                          const facts = duplicateLineFacts(l);
+                          return (
+                            <div key={l.id} className="space-y-1 pb-2 border-b border-slate-100 last:border-b-0 last:pb-0" data-duplicate-item-line>
+                              <label className={labelCls}>Item {i + 1}
+                                <input type="text" value={l.product} disabled={busy} maxLength={100} placeholder="what it is, e.g. SKIDS OF TILE"
+                                  onChange={(e) => editLine(i, { product: e.target.value })} className={inputCls} />
+                              </label>
+                              <div className="flex items-end gap-2">
+                                <label className={labelCls + ' w-[88px] shrink-0'}><span className="block truncate" title={shown.quantityUOM}>Qty ({shown.quantityUOM})</span>
+                                  <input type="number" inputMode="decimal" min="0" step="any" value={shown.quantity} disabled={busy}
+                                    onChange={(e) => editLine(i, { quantity: e.target.value })} className={inputCls} />
+                                </label>
+                                <label className={labelCls + ' w-[104px] shrink-0'}><span className="block truncate">Weight ({/^LBS?$/i.test(shown.weightUOM) ? 'lb' : shown.weightUOM})</span>
+                                  <input type="number" inputMode="decimal" min="0" step="any" value={shown.weight} disabled={busy}
+                                    placeholder={shown.follows ? 'as original' : undefined}
+                                    onChange={(e) => editLine(i, { weight: e.target.value })} className={inputCls} />
+                                </label>
+                                <button type="button" onClick={() => removeLine(i)} disabled={busy} aria-label={`Remove item line ${i + 1}`}
+                                  className="ml-auto px-2 py-1.5 text-[12px] text-slate-500 hover:text-red-600 shrink-0">Remove</button>
+                              </div>
+                              {(shown.follows || facts) && (
+                                <div className="text-[11px] text-slate-500 leading-snug">
+                                  {shown.follows && <>Follows Pallets + Loose and Weight until you change it. </>}
+                                  {facts && <>Copied as it is: {facts}.</>}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {lineRows.length < DUPLICATE_LINES_MAX && (
+                          <button type="button" onClick={addLine} disabled={busy}
+                            className="inline-flex items-center gap-1 text-[12px] font-semibold text-blue-700 hover:underline">
+                            <Plus size={12} /> Add an item line
+                          </button>
+                        )}
+                        <div className="text-[11px] text-slate-500 leading-snug">
+                          The copy carries these lines as shown{lineRows.length ? '' : ' — none'}. Pallets, Loose and Weight below stay the order&rsquo;s totals.
+                        </div>
+                      </div>
+                    )}
+                    {linesMismatch && <div className="border-t border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 leading-snug" data-duplicate-items-mismatch>{linesMismatch}</div>}
+                  </div>
                   <div className="grid grid-cols-3 gap-2">
                     <label className={labelCls}>Pallets
                       <input type="number" inputMode="numeric" min="0" step="1" value={pallets} disabled={busy}

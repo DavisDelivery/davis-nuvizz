@@ -34,7 +34,7 @@
 //     (`identity`). NUVIZZ_PERSONAL_LOGINS=off puts every write back on the shared login;
 //     =required refuses a write with no personal login behind it. See lib/nuvizz-identity.mts.
 
-import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, parsePieceInput, piecesBoardDates, parseCopyWeight, copyBaseNbr, opLedgerStatus, type WriteOp, createProfileFor, orderProfileFor, parseDuplicateEdits, parseCopyNumber, parseDuplicateNotes } from './lib/nuvizz-write-ops.mts';
+import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, parsePieceInput, piecesBoardDates, parseCopyWeight, copyBaseNbr, opLedgerStatus, type WriteOp, createProfileFor, orderProfileFor, parseDuplicateEdits, parseCopyNumber, parseDuplicateNotes, parseDuplicateLines } from './lib/nuvizz-write-ops.mts';
 import { piecesWriteEnabled } from './lib/pieces-hold.mts';
 import { requireUser } from './lib/require-user.mts';
 import { bearerFromHeaders } from './lib/auth-core.mts';
@@ -190,9 +190,17 @@ function planFor(op: WriteOp, payload: any): string[] {
     if ('error' in typed) return [`REFUSE before any call: ${typed.error}`];
     const nt = parseDuplicateNotes(payload?.notes);
     if ('error' in nt) return [`REFUSE before any call: ${nt.error}`];
+    const ln = parseDuplicateLines(payload?.lines);
+    if ('error' in ln) return [`REFUSE before any call: ${ln.error}`];
     const shown = { both: 'driver and dispatcher', dispatcher: 'dispatcher only', driver: 'driver only' } as const;
     const base = copyBaseNbr(payload?.stopNbr);
     const changed = Object.keys(ed.edits);
+    // §DUP-L (v1.111.0): the copy's item lines from the drawer, as the create will send them.
+    const items = ln.lines == null ? null
+      : !ln.lines.length ? 'ITEMS on the copy: NONE — the drawer was emptied, so the copy carries no item lines'
+        : ln.lines.length === 1 && ln.lines[0].followsTotals
+          ? `ITEMS on the copy: 1 line, ${ln.lines[0].product.slice(0, 100)}, FOLLOWING the copy's totals — ${want.total} PCS, ${(w as any).weight != null ? `${(w as any).weight} lbs` : "the original's weight"} — as every order this app creates carries it`
+          : `ITEMS on the copy: ${ln.lines.length} line${ln.lines.length === 1 ? '' : 's'} as edited (${ln.lines.map((l) => `${l.quantity} ${l.quantityUOM} ${l.product}`).join('; ').slice(0, 300)}) — the order's totals stay the Pallets/Loose/Weight given; NuVizz keeps both as sent`;
     return [
       ...(duplicateOrderBlocked() ? ['REFUSE before any call: duplicating orders is switched off on this site (NUVIZZ_DUPLICATE_ORDER)'] : []),
       `READ order ${payload?.stopNbr ?? '?'} — the original to copy; refuse a second order sharing the number`,
@@ -200,9 +208,10 @@ function planFor(op: WriteOp, payload: any): string[] {
         ? `USE the number typed for the copy, ${typed.nbr}: our own records must not know it, and it must read NOT FOUND in NuVizz (a 404, or the 400 "No Stop found" this tenant answers) — a number NuVizz holds is refused, never written (stop/sync/update would REPLACE that order)`
         : `FIND the first free number from ${base}-1: a number our own records know is skipped for free; any other must read NOT FOUND in NuVizz (a 404, or the 400 "No Stop found" this tenant answers) before it is used — a number NuVizz holds is skipped, never written (stop/sync/update would REPLACE that order); at most ${DUP_PROBE_MAX} reads`,
       ...(changed.length ? [`CHANGED on the copy (the rest is copied from the original): ${changed.join(', ')}`] : []),
+      ...(items ? [items] : []),
       ...(nt.notes.length ? [`ADD ${nt.notes.length} note${nt.notes.length === 1 ? '' : 's'} on the copy (PVST_IN): ${nt.notes.map((n) => shown[n.audience]).join(', ')}`] : []),
       `CREATE it (stop/sync/update, as New Order does) for ${String(payload?.date ?? '').trim() || 'today'}: consignee, address, contact, delivery window, commodity, instructions and pickup origin copied from the original; ${want.pallets} pallet(s) + ${want.loose} loose = ${want.total} piece(s), ${(w as any).weight != null ? `${(w as any).weight} lbs` : "the original's weight"}; price ${payload?.copyPrice === true ? 'copied' : 'NOT copied'}; lands UNPLANNED`,
-      'VERIFY by reading the new order back — its number, pieces and street must read as created',
+      `VERIFY by reading the new order back — its number, pieces and street${ln.lines ? ', and its item lines,' : ''} must read as created`,
     ];
   }
   if (op === 'addStopNote' || op === 'setStopDate' || op === 'setStopContact' || op === 'setStopAddress') {

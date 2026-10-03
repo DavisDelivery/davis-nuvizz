@@ -86,23 +86,20 @@ export const DUPLICATE_FIELDS = [
   { key: 'zip', label: 'ZIP', required: true },
   { key: 'phone', label: 'phone' },
   { key: 'email', label: 'email' },
-  { key: 'itemDesc', label: 'items' },
+  // v1.111.0: no 'itemDesc' — the Items drawer edits the copy's lines themselves (§DUP-L below).
   { key: 'dispatchNotes', label: 'driver instructions' },
   { key: 'price', label: 'price' },
 ];
 
 const t = (v) => (v == null ? '' : String(v).trim());
-const firstProduct = (stop) => {
-  const line = (Array.isArray(stop?.stopDetails) ? stop.stopDetails : []).find((d) => d && t(d.product));
-  return line ? t(line.product) : '';
-};
 
 /** What the original holds in NuVizz, as the board row knows it — the server copies these. */
 export function duplicateBaseline(stop) {
   return {
     name: t(stop?.businessName), addr1: t(stop?.addr1), addr2: t(stop?.addr2), city: t(stop?.city),
     state: t(stop?.state), zip: t(stop?.zip), phone: t(stop?.contact?.phone), email: t(stop?.contact?.email),
-    itemDesc: firstProduct(stop), dispatchNotes: t(stop?.signalSources?.orderInstructions), price: originalPrice(stop),
+    dispatchNotes: t(stop?.signalSources?.orderInstructions), price: originalPrice(stop),
+    lines: duplicateLinesFrom(stop),
   };
 }
 
@@ -131,6 +128,8 @@ export function duplicateFormFrom(stop, note) {
     // goes on the copy until the tick is set.
     priceOn: false,
     notes: [],
+    // v1.111.0 — the Items drawer opens on the original's lines (§DUP-L).
+    lines: duplicateLinesFrom(stop),
   };
 }
 
@@ -156,8 +155,8 @@ export function duplicateEdits(form, baseline) {
 export const duplicateEditLabels = (edits) =>
   DUPLICATE_FIELDS.filter((f) => Object.prototype.hasOwnProperty.call(edits || {}, f.key)).map((f) => f.label);
 
-/** The copy's own boxes, in the panel's words: its counts, weight and day. */
-const COUNT_LABELS = { pallets: 'pallets', loose: 'loose pieces', weight: 'weight', date: 'delivery day' };
+/** The copy's own boxes, in the panel's words: its item lines, counts, weight and day. */
+const COUNT_LABELS = { lines: 'item lines', pallets: 'pallets', loose: 'loose pieces', weight: 'weight', date: 'delivery day' };
 
 /**
  * Which of the copy's counts, weight and day differ from the original's (the board row), so the
@@ -186,8 +185,9 @@ export function duplicateChangeLabels(edits, countKeys = [], baseline = null) {
   for (const f of DUPLICATE_FIELDS) {
     // The original's own price put on the copy is a copy, not a change — the price line says it.
     if (f.key === 'price' && baseline && t(edits?.price) === t(baseline.price)) continue;
+    // The freight — item lines, counts, weight, day — reads before the driver instructions.
+    if (f.key === 'dispatchNotes') for (const k of Object.keys(COUNT_LABELS)) if (countKeys.includes(k)) out.push(COUNT_LABELS[k]);
     if (Object.prototype.hasOwnProperty.call(edits || {}, f.key)) out.push(f.label);
-    if (f.key === 'itemDesc') for (const k of Object.keys(COUNT_LABELS)) if (countKeys.includes(k)) out.push(COUNT_LABELS[k]);
   }
   return out;
 }
@@ -219,6 +219,8 @@ export function duplicateFormError(form, baseline) {
   if (form?.priceOn && t(form?.price).length > 20) return 'the price is longer than NuVizz takes (20 characters)';
   const n = duplicateNotesDraft(form?.notes);
   if (n.error) return n.error;
+  const l = duplicateLinesDraft(form?.lines);
+  if (l.error) return l.error;
   return null;
 }
 
@@ -235,7 +237,7 @@ export function duplicateOutcome(r) {
     const notes = Array.isArray(out.warnings) && out.warnings.length ? ` Note: ${out.warnings.join('; ')}.` : '';
     return {
       kind: 'ok', created: true, nbr: out.stopNbr,
-      text: `Created ${out.stopNbr} in NuVizz${replay} — ${piecesLine(out.now)}${day}, unplanned${Array.isArray(out.edited) && out.edited.length ? `, with your changes to its ${duplicateEditLabels(Object.fromEntries(out.edited.map((k) => [k, true]))).join(', ')}` : ''}${out.notesAdded ? `, ${out.notesAdded} new note${out.notesAdded === 1 ? '' : 's'}` : ''}${out.price ? `, price ${out.price}` : (out.price === null ? ', no price' : '')}. It reaches the board through the scans, as a New Order does; plan it in Routing.${notes}`,
+      text: `Created ${out.stopNbr} in NuVizz${replay} — ${piecesLine(out.now)}${day}, unplanned${Array.isArray(out.edited) && out.edited.length ? `, with your changes to its ${duplicateEditLabels(Object.fromEntries(out.edited.map((k) => [k, true]))).join(', ')}` : ''}${out.notesAdded ? `, ${out.notesAdded} new note${out.notesAdded === 1 ? '' : 's'}` : ''}${Number.isInteger(out.lines) ? (out.lines ? `, ${out.lines} item line${out.lines === 1 ? '' : 's'}` : ', no item lines') : ''}${out.price ? `, price ${out.price}` : (out.price === null ? ', no price' : '')}. It reaches the board through the scans, as a New Order does; plan it in Routing.${notes}`,
     };
   }
   if (out.created) return { kind: 'warn', created: true, nbr: out.stopNbr, text: (r?.error || out.error || `${out.stopNbr} was created but could not be verified.`) + replay };
@@ -335,4 +337,205 @@ export function duplicateNotesLine(rows) {
   const d = duplicateNotesDraft(rows);
   if (d.error || !d.notes.length) return '';
   return `Adds ${d.notes.length} note${d.notes.length === 1 ? '' : 's'}: ${d.notes.map((n) => NOTE_FOR[n.audience]).join(', ')}.`;
+}
+
+// ── THE ITEMS DRAWER (§DUP-L, v1.111.0) ───────────────────────────────────────
+// Chad, 10/03: "give me a drawer to edit the actual items". The drawer opens on the original's item
+// lines as the board row holds them (stopDetails — the Map feed serves them, board-fields.mts), and the
+// copy carries exactly the lines it shows: this panel always sends them, [] when emptied. The server's
+// rules are nuvizz-write-ops.mts parseDuplicateLines / duplicateStopDetails, and
+// test/order-duplicate.test.mjs runs both checks over one table so they cannot drift.
+//  · Pallets / Loose / Weight stay the order's TOTALS. On a create NuVizz keeps the totals and the
+//    lines exactly as sent (measured 2026-10-03, with Chad's go-ahead), so the panel says when they
+//    disagree and never blocks on it.
+//  · A LONE line follows the copy's totals — quantity = Pallets + Loose, weight = the Weight box — as
+//    the one line every order this app creates carries. Typing its quantity or weight, or adding a
+//    second line, makes it the dispatcher's own from then on.
+//  · Dimensions, class and the L flag ride across as NuVizz holds them and are shown, not edited: the
+//    route build reads them for oversize freight and deck length (freight-geometry.mts).
+// `counts` below is the Pallets / Loose boxes as parsePieceDraft reads them — those two alone, so a
+// day already gone or a bad weight never blanks a following line's count; `weightText` is the Weight box.
+
+export const DUPLICATE_LINES_MAX = 200;
+const LINE_QTY_MAX = 99999;
+const LINE_WEIGHT_MAX = 9999999999;
+const DIMS = ['length', 'width', 'height', 'criticalDimension'];
+const numText = (v) => (v != null && String(v).trim() !== '' && Number.isFinite(Number(v)) ? String(Number(v)) : '');
+const dimOf = (v) => { const n = Number(v); return v != null && String(v).trim() !== '' && Number.isFinite(n) && n > 0 && n <= 99999 ? n : null; };
+const round2 = (n) => Math.round(n * 100) / 100;
+const lbWord = (u) => { const x = t(u).toUpperCase(); return !x || x === 'LBS' || x === 'LB' ? 'lb' : t(u); };
+
+/** A new, empty line for the drawer. */
+export function duplicateLineBlank(id) {
+  return {
+    id, product: '', quantity: '', quantityUOM: 'PCS', weight: '', weightUOM: 'LBS', referenceText: '', productCategory: '',
+    length: null, lengthUOM: '', width: null, widthUOM: '', height: null, heightUOM: '', criticalDimension: null, criticalDimensionUOM: '',
+    follows: false,
+  };
+}
+
+/** The original's item lines as the drawer opens on them. A lone line follows the copy's totals.
+ *  A line NuVizz holds with a blank description is still freight: it is kept, and asks for one
+ *  before the copy can be made — never dropped from the copy without a word. */
+export function duplicateLinesFrom(stop) {
+  const rows = (Array.isArray(stop?.stopDetails) ? stop.stopDetails : [])
+    .filter((d) => d && typeof d === 'object' && (t(d.product) || numText(d.quantity) || numText(d.weight)))
+    .map((d, i) => {
+      const row = {
+        ...duplicateLineBlank(`o${i}`),
+        product: t(d.product).slice(0, 100),
+        quantity: numText(d.quantity), quantityUOM: t(d.quantityUOM).slice(0, 20) || 'PCS',
+        weight: numText(d.weight), weightUOM: t(d.weightUOM).slice(0, 20) || 'LBS',
+        referenceText: t(d.referenceText).slice(0, 50), productCategory: t(d.productCategory).slice(0, 45),
+      };
+      for (const k of DIMS) {
+        const v = dimOf(d[k]);
+        if (v != null) { row[k] = v; row[`${k}UOM`] = t(d[`${k}UOM`]).slice(0, k === 'criticalDimension' ? 20 : 10); }
+      }
+      return row;
+    });
+  if (rows.length === 1) rows[0].follows = true;
+  return rows;
+}
+
+/** What line `row`'s quantity and weight boxes show now: a following line shows the copy's totals. */
+export function duplicateLineShown(row, rows, counts, weightText) {
+  const follows = !!row?.follows && (Array.isArray(rows) ? rows.length : 0) === 1;
+  if (!follows) {
+    return { follows: false, quantity: t(row?.quantity), quantityUOM: t(row?.quantityUOM) || 'PCS', weight: t(row?.weight), weightUOM: t(row?.weightUOM) || 'LBS' };
+  }
+  const total = counts && !counts.error ? (counts.total > 0 ? counts.total : 1) : null;
+  return { follows: true, quantity: total == null ? '' : String(total), quantityUOM: 'PCS', weight: t(weightText), weightUOM: 'LBS' };
+}
+
+// A following line made the dispatcher's own keeps exactly the numbers it showed.
+const takeOver = (r, shown) => ({ ...r, follows: false, quantity: shown.quantity, quantityUOM: 'PCS', weight: shown.weight, weightUOM: 'LBS' });
+
+/** The lines after a box in line i changed. Typing a following line's quantity or weight makes it the
+ *  dispatcher's own, starting from what it showed; its description alone does not. */
+export function duplicateLinesEdit(rows, i, patch, counts, weightText) {
+  const list = Array.isArray(rows) ? rows : [];
+  return list.map((r, j) => {
+    if (j !== i) return r;
+    const shown = duplicateLineShown(r, list, counts, weightText);
+    return shown.follows && ('quantity' in patch || 'weight' in patch) ? { ...takeOver(r, shown), ...patch } : { ...r, ...patch };
+  });
+}
+
+/** The lines with one more, empty, at the end. A first line follows the totals; a line that was
+ *  following them keeps the numbers it showed, now as the dispatcher's own. */
+export function duplicateLinesAdd(rows, id, counts, weightText) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (list.length >= DUPLICATE_LINES_MAX) return list;
+  if (!list.length) return [{ ...duplicateLineBlank(id), follows: true }];
+  const kept = list.map((r) => { const shown = duplicateLineShown(r, list, counts, weightText); return shown.follows ? takeOver(r, shown) : r; });
+  return [...kept, duplicateLineBlank(id)];
+}
+
+/** The lines without line i. */
+export const duplicateLinesRemove = (rows, i) => (Array.isArray(rows) ? rows : []).filter((_, j) => j !== i);
+
+/** The drawer's lines → the lines to send, checked as the server checks them (parseDuplicateLines). */
+export function duplicateLinesDraft(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (list.length > DUPLICATE_LINES_MAX) return { error: `the copy takes up to ${DUPLICATE_LINES_MAX} item lines` };
+  const lines = [];
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i] || {};
+    const at = `item line ${i + 1}`;
+    const product = t(r.product);
+    if (!product) return { error: `${at} needs a description` };
+    if (product.length > 100) return { error: `${at}'s description is longer than NuVizz takes (100 characters)` };
+    const line = { product };
+    if (r.follows && list.length === 1) line.followsTotals = true;
+    else {
+      const q = Number(t(r.quantity));
+      if (!t(r.quantity) || !Number.isFinite(q) || q <= 0 || q > LINE_QTY_MAX) return { error: `${at} needs a quantity above 0 (up to ${LINE_QTY_MAX})` };
+      line.quantity = q;
+      line.quantityUOM = t(r.quantityUOM) || 'PCS';
+      if (t(r.weight)) {
+        const w = Number(t(r.weight));
+        if (!Number.isFinite(w) || w < 0 || w > LINE_WEIGHT_MAX) return { error: `${at}'s weight must be a number of pounds from 0 up` };
+        line.weight = w;
+        line.weightUOM = t(r.weightUOM) || 'LBS';
+      }
+    }
+    if (t(r.referenceText)) line.referenceText = t(r.referenceText);
+    if (t(r.productCategory)) line.productCategory = t(r.productCategory);
+    for (const k of DIMS) {
+      if (r[k] == null) continue;
+      line[k] = r[k];
+      if (t(r[`${k}UOM`])) line[`${k}UOM`] = t(r[`${k}UOM`]);
+    }
+    lines.push(line);
+  }
+  return { lines };
+}
+
+/** Did the dispatcher change the lines from the ones the drawer opened on? A following line's numbers
+ *  are the copy's totals, which the change line names on their own. */
+export function duplicateLinesChanged(rows, base) {
+  const a = Array.isArray(rows) ? rows : [];
+  const b = Array.isArray(base) ? base : [];
+  if (a.length !== b.length) return true;
+  const n = (v) => (t(v) === '' ? null : Number(t(v)));
+  return a.some((r, i) => {
+    const o = b[i] || {};
+    if (r.id !== o.id || t(r.product) !== t(o.product) || !!r.follows !== !!o.follows) return true;
+    return !r.follows && (n(r.quantity) !== n(o.quantity) || n(r.weight) !== n(o.weight) || t(r.quantityUOM) !== t(o.quantityUOM));
+  });
+}
+
+/** The drawer's one line while it is shut. */
+export function duplicateLinesSummary(rows, counts, weightText) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return 'No item lines on the copy';
+  const name = (r) => t(r.product) || 'no description yet';
+  if (list.length === 1) {
+    const s = duplicateLineShown(list[0], list, counts, weightText);
+    const bits = [name(list[0]), s.quantity && `${s.quantity} ${s.quantityUOM}`, s.weight && `${s.weight} ${lbWord(s.weightUOM)}`].filter(Boolean);
+    return `${bits.join(' · ')}${s.follows ? ' — follows the totals' : ''}`;
+  }
+  return `${list.length} lines: ${list.slice(0, 2).map(name).join(', ')}${list.length > 2 ? `, +${list.length - 2} more` : ''}`;
+}
+
+/** Said under the lines when they and the copy's totals disagree, or '' when they agree. Never a
+ *  block: on a create NuVizz keeps the totals and the lines as sent. */
+export function duplicateLinesMismatch(rows, counts, weightText) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length || !counts || counts.error) return '';
+  if (list.length === 1 && list[0].follows) return '';
+  const parts = [];
+  const qs = list.map((r) => (t(r.quantity) === '' ? NaN : Number(t(r.quantity))));
+  if (qs.every(Number.isFinite)) {
+    const sum = round2(qs.reduce((a, b) => a + b, 0));
+    if (sum !== counts.total) parts.push(`the item lines' quantities add up to ${sum}; Pallets + Loose make ${counts.total}`);
+  }
+  const box = t(weightText);
+  if (box !== '' && Number.isFinite(Number(box)) && list.every((r) => t(r.weight) !== '' && Number.isFinite(Number(t(r.weight))) && lbWord(r.weightUOM) === 'lb')) {
+    const sum = round2(list.reduce((a, r) => a + Number(t(r.weight)), 0));
+    if (sum !== Number(box)) parts.push(`their weights add up to ${sum} lb; the Weight box says ${Number(box)}`);
+  }
+  if (!parts.length) return '';
+  const text = parts.join(', and ');
+  return `${text[0].toUpperCase()}${text.slice(1)}. NuVizz keeps both as you leave them.`;
+}
+
+/** A line's facts the drawer shows but does not edit, in the paperwork's words, or '' for none. */
+export function duplicateLineFacts(row) {
+  const unit = (u) => { const x = t(u).toLowerCase(); return x === 'inch' || x === 'inches' || x === 'in' ? 'in' : x; };
+  const sized = (v, u) => `${v}${unit(u) ? ` ${unit(u)}` : ''}`;
+  const parts = [];
+  const [L, W, H] = ['length', 'width', 'height'].map((k) => row?.[k] ?? null);
+  if (L != null && W != null && H != null && unit(row.lengthUOM) === unit(row.widthUOM) && unit(row.widthUOM) === unit(row.heightUOM)) {
+    parts.push(sized(`${L} × ${W} × ${H}`, row.lengthUOM));
+  } else {
+    for (const k of ['length', 'width', 'height']) if (row?.[k] != null) parts.push(`${k} ${sized(row[k], row[`${k}UOM`])}`);
+  }
+  if (row?.criticalDimension != null) parts.push(`critical dimension ${sized(row.criticalDimension, row.criticalDimensionUOM)}`);
+  if (t(row?.referenceText)) parts.push(`class ${t(row.referenceText)}`);
+  const cat = t(row?.productCategory);
+  if (cat.toUpperCase() === 'L') parts.push('L (long / oversize)');
+  else if (cat) parts.push(`category ${cat}`);
+  return parts.join(' · ');
 }
