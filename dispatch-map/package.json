@@ -19,6 +19,7 @@
     "verify:flag-detail": "node scripts/verify-flag-detail.mjs dist",
     "verify:route-preflight": "node scripts/verify-route-preflight.mjs dist",
     "verify:card-manifest": "node scripts/verify-card-manifest.mjs dist",
+    "verify:print-layout": "node scripts/verify-print-layout.mjs dist",
     "verify:tablet": "node scripts/verify-tablet-layout.mjs dist",
     "verify:loads-tab": "node scripts/verify-loads-tab.mjs dist",
     "verify:routing-topbar": "node scripts/verify-routing-topbar.mjs dist",

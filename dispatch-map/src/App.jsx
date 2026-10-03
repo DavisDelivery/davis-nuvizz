@@ -31,6 +31,11 @@ import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
 import { cardManifestPages, stopOrdersAgree } from './lib/card-manifest.js';
+// The printed manifest and delivery ticket have two layouts (v1.111.0): the new one is drawn by
+// lib/ticket-print-new.js, the old one is still below, and lib/print-layout.js says which prints.
+import { printLayoutNow, rememberPrintLayout, printLayoutAnswersKept, isPrintLayout, printLayoutStatus, PRINT_LAYOUT_CHOICES, PRINT_LAYOUT_REFRESH_MS, DEFAULT_PRINT_LAYOUT } from './lib/print-layout.js';
+import { newTicketBody, newTicketHtml, newManifestHtml, newLayoutLogoUrl } from './lib/ticket-print-new.js';
+import { PRINT_LAYOUT_SAMPLE_STOPS } from './lib/print-layout-sample.js';
 import { snapshotSharedWindows, snapshotStopTimeliness, snapshotOnTime } from './lib/driver-snapshot-timeliness.js';
 import { scrubStop } from './lib/debug-capture-scrub.js';
 import { routeLoadLine, podPhotoFetchOffer, podPhotoPullOutcome, podSectionVisible, isPodImageExt, foldFreshStop, stopRecordIdentity, trackStopRecord } from './lib/stop-card-sections.js';
@@ -222,7 +227,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.110.0';
+const APP_VERSION = '1.111.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -276,6 +281,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.111.0', 'THE PRINTED MANIFEST AND DELIVERY TICKET HAVE THE NEW LAYOUT \u2014 AND DIAGNOSTICS HAS A PICKER TO GO BACK TO THE OLD ONE. Chad, 10/03: \u201ci want to move to production but i want a way to roll back to old one if needed in diagnostics screen somewhere i want to be able to pick which version i\u2019m running.\u201d THE NEW LAYOUT is the one worked out on paper: the PRO number large in the header; pallets / loose / total pieces / weight in one heavy row with a little space above it; the BOL on the phone\u2019s row (city \u00b7 BOL \u00b7 phone); the comments above the freight lines, without the repeated \u201cSPL-INSTR-TEXT:\u201d label; Requested Date & Time small at the foot; a smaller stop-number box, set a little below the logo; and the top-right corner left empty for the staple. WHAT DID NOT CHANGE: the information on the page, one delivery per page, page 1 still the route summary and the first ticket, and the way it prints. It is shorter than the old layout on every ticket measured (11,817 shapes of stop), so a page holds more freight lines before it spills \u2014 29 against 23 on a stop\u2019s own page with no comments, 21 against 15 on page 1, counted in a real print. WHERE: Print Manifest on a route, Print manifest on a Compare card, and every Delivery Ticket. THE PICKER: More \u2192 Diagnostics \u2192 Manifest layout (on a phone it is the fifth chip \u2014 swipe the row left). It says which layout is in use and when it was changed, has a Preview of each built from a made-up route, and one button to switch. The choice is stored for the whole company, not per browser: switching back from a phone switches the office PCs. The device you switch on changes at once; the others follow within 5 minutes, or as soon as they are reloaded. Everyone can see it; with sign-in on, only an admin can change it. The old layout prints byte for byte what it printed before (25,543 documents compared). 0 NuVizz calls. PUT IT BACK: Diagnostics \u2192 Manifest layout \u2192 Go back to the old layout.'],
   ['1.110.0', 'DUPLICATE: NOTES FOR THE DISPATCHER OR DRIVER, AND THE ORIGINAL\u2019S PRICE IN THE BOX. Chad, 10/03: \u201cgive me a stop to add notes for dispatcher or driver also put the original price in the box but leave the copy to duplicate unchecked default and also make it an editable field the price incase it\u2019s more or know.\u201d NOTES: under Driver instructions, \u201c+ Add a note for the dispatcher or driver\u201d \u2014 up to five, each with the stop card\u2019s own Show to: Both | Dispatcher | Driver. They go on the new order as the same kind of note the card\u2019s Add note in NuVizz writes, and the read-back checks each one came back with the right people able to see it. PRICE: the Price box now opens on the original\u2019s price and you can change it if the copy costs more or less. Nothing goes on the copy until you tick \u201cPut this price on the copy\u201d \u2014 off by default. Where our board doesn\u2019t hold the original\u2019s price, ticking with the box empty copies NuVizz\u2019s own, as before. The line at the bottom says which price the copy gets. ALSO: the Pickup line now shows the original\u2019s real pickup on the Map (it was reading a field the Map feed does not carry). The ITEMS drawer is not in this one: how NuVizz recounts loose pieces from several item lines is something the code cannot see yet \u2014 asked first.'],
   ['1.109.1', 'DUPLICATE OPENS IN A LARGE FLOATING WINDOW OVER THE PAGE. Chad, 10/03: \u201cif i click duplicate order i want a large floating window to come up not a fullscreen and i don\u2019t want to leave the page but i want a large full window so i can see the full route profile when duplicating with all the fields i can change.\u201d WHERE: the stop card\u2019s \u201cDuplicate as a new order\u201d button, as before \u2014 it now opens a window centred over the map or board instead of a narrow form inside the card. The page stays where it is underneath. WHAT IS IN IT: every field you can change, side by side on a desktop \u2014 the new order\u2019s number, consignee, address and contact on the left; items, pallets/loose/weight, delivery day, driver instructions and price on the right \u2014 and below them what the copy takes from the original as it is (delivery window, pickup, PO, Cust #) and what it does not (route, driver, attachments). On a phone the same window floats with a margin all round and the fields stack in one column. THE BUTTONS: Cancel and Create the copy in NuVizz side by side on one row, as on the \uff0b New route window. Esc or a click outside closes it only while nothing has been typed, so a long edit is never lost to a stray key; Cancel and \u2715 always close. Nothing about what is sent changed: same fields, same checks, same 4 NuVizz calls.'],
   ['1.109.0', 'DUPLICATE NOW OPENS AS A FULL ORDER YOU CAN CHANGE BEFORE IT IS CREATED. Chad, 10/03: \u201cwhen I duplicate I want to have the option to edit the order. Addresses numbers piece counts items pretty much anything.\u201d WHERE: the stop card, under Items \u2014 \u201cDuplicate as a new order\u201d, as before. It now opens on the order as the card shows it: order number, consignee, address (the corrected one if you fixed it on our board), city/state/ZIP, phone, email, items, pallets/loose/weight, delivery day, driver instructions and price \u2014 every one editable. THE NUMBER: leave it blank for the original\u2019s number -1 (or the next one NuVizz does not hold, -2, -3 \u2026), or type your own \u2014 it must not already be in NuVizz, and it is never written over. ONLY WHAT YOU CHANGE IS CHANGED: the panel says which fields differ, the counts and day included (\u201cChanged from the original: street address, pallets\u201d), and everything you leave alone is copied from the original exactly as before. Always copied: the delivery window\u2019s times on the day you pick, the PO and customer references, and the pickup. ITEMS: one line, the item description, with the piece counts \u2014 the same shape every order this app creates. ESTES: a copy of an Estes order keeps the ESTES profile (the driver\u2019s 3 photos) whatever number you give it \u2014 NUVIZZ_ESTES_PROFILE=off still takes it off every create. CHECKED: the new order is read back \u2014 its number, pieces and the street you sent must match. Same cost as before: about 4 NuVizz calls.'],
@@ -8876,16 +8882,62 @@ function buildBolHtml(stop, logoUrl) {
 </body></html>`;
 }
 
+// ── WHICH LAYOUT THIS DEVICE PRINTS: keeping up with the shared setting ───────
+//
+// The manifest's layout is one choice for every device (lib/print-layout.js; Diagnostics →
+// Manifest layout changes it). The builders read this device's copy of the last answer inside
+// the click, so this is the only code that asks on their behalf: one GET, the answer kept.
+//
+// A read that fails, or an answer that does not name a layout, changes NOTHING — the device goes
+// on printing what it last knew rather than taking "could not tell" for an answer.
+const PRINT_LAYOUT_URL = '/.netlify/functions/print-layout';
+let printLayoutAskedAt = 0;
+async function pullPrintLayout({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && now - printLayoutAskedAt < 30000) return null;   // focus and visibility fire together
+  printLayoutAskedAt = now;
+  // An answer that lands while this read is out is NEWER than this read: the switch pressed on
+  // this device, or a later read that came back first. This one is then dropped, never kept over it.
+  const keptBefore = printLayoutAnswersKept();
+  try {
+    const r = await apiFetch(PRINT_LAYOUT_URL, { cache: 'no-store' });
+    const j = r.ok ? await r.json() : null;
+    if (printLayoutAnswersKept() !== keptBefore) return null;
+    return j?.ok && isPrintLayout(j.layout) ? rememberPrintLayout(j.layout) : null;
+  } catch { return null; }
+}
+// Asks when the app opens, when the tab comes back to the front, and every few minutes while it
+// is showing. PrintDocModal asks again each time a preview opens, so in a run of prints at most
+// the first one after a change still comes out in the layout before it.
+function usePrintLayoutSync(enabled = true) {
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const ask = () => { if (!document.hidden) pullPrintLayout(); };
+    pullPrintLayout({ force: true });
+    const id = setInterval(ask, PRINT_LAYOUT_REFRESH_MS);
+    document.addEventListener('visibilitychange', ask);
+    window.addEventListener('focus', ask);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', ask);
+      window.removeEventListener('focus', ask);
+    };
+  }, [enabled]);
+}
+
 // Full-screen viewer for a printable document (Delivery Ticket / Bill of Lading). Renders
 // the supplied HTML in an iframe (so Print outputs just the document) and scales the page
 // to fit the screen. `pageW` is the doc's CSS layout width (816 portrait / 1056 landscape
-// Letter @ 96dpi). No API call.
+// Letter @ 96dpi). No NuVizz call.
 function PrintDocModal({ title, html, pageW = 816, onClose, onPrint }) {
   const iframeRef = useRef(null);
   const wrapRef = useRef(null);
   const PAGE_W = pageW;
   const [scale, setScale] = useState(1);   // scale the whole page to fit the screen
   const [pageH, setPageH] = useState(Math.round(pageW * 1.294)); // ~Letter aspect until measured
+  // Ask which manifest layout is in use each time a preview opens. It cannot change the page
+  // already built, but the next one is right without waiting for the few-minute refresh.
+  useEffect(() => { pullPrintLayout(); }, []);
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -9043,7 +9095,40 @@ function ticketData(stop) {
     nextStop: exec.to?.plannedEtaDTTM ?? stop.plannedEtaDTTM ?? '',
   };
 }
-// The Delivery-Ticket CSS, shared by the single-stop ticket and the multi-stop manifest
+// Two lines both layouts print word for word: "BUFORD, GA 30518" and the requested window.
+function tktCityLine(d) {
+  return [d.shipCity, [d.shipState, d.shipZip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+}
+function tktReqLine(d) {
+  return (d.reqFrom || d.reqTo) ? `${tktReqTime(d.reqFrom)} - ${tktReqClock(d.reqTo)} +${tktDayOffset(d.reqFrom, d.reqTo)}D` : '';
+}
+// One ticket as the display strings the NEW layout prints (lib/ticket-print-new.js). Everything
+// comes off ticketData above — the same read the old layout makes — so the two layouts cannot
+// print different facts, only place them differently. `seqLabel` / `hideEta`: as on ticketBody.
+// The phone is the one value shown in a different form: (678) 860-8099, as the stop card shows it.
+function ticketView(stop, { seqLabel, hideEta = false } = {}) {
+  const d = ticketData(stop);
+  return {
+    seq: seqLabel == null ? d.seq : seqLabel,
+    type: d.type,
+    pro: d.pro,
+    bol: d.bol,
+    shipName: d.shipName,
+    addrLines: [d.shipAddr1, d.shipAddr2].filter(Boolean),
+    cityLine: tktCityLine(d),
+    phone: formatPhone(d.phone),
+    reqLine: tktReqLine(d),
+    nextStop: d.nextStop && !hideEta ? tktNextStop(d.nextStop) : '',
+    pallets: d.pallets,
+    loose: d.loose,
+    totalPieces: d.totalPieces,
+    weight: d.weight,
+    items: d.items,
+    comments: d.comments.map((c) => ({ text: c.text, fromScan: !!c.fromScan, by: c.by || '', at: tktCommentTime(c.on) })),
+  };
+}
+// THE OLD LAYOUT's CSS (Diagnostics → Manifest layout picks between the two; the new layout's
+// CSS is in lib/ticket-print-new.js). Shared by the single-stop ticket and the multi-stop manifest
 // (the manifest concatenates many ticket bodies, so the styles must live in one place).
 const TICKET_STYLE = `
   @page { size: letter portrait; margin: 0.4in; }
@@ -9088,11 +9173,15 @@ const TICKET_STYLE = `
 // `hideEta`: leave off the foot line, which is NuVizz's ETA for THIS stop worked out for NuVizz's
 // order — on a page re-ordered on a Compare card it is a time for a route that is not on the page.
 // Both are passed only by a Compare-card manifest (buildManifestHtml's asGiven path).
-function ticketBody(stop, logoUrl, brandTitle = 'Delivery Ticket', { seqLabel, hideEta = false } = {}) {
+// `layout`: 'new' or 'classic' — omitted, the one every device is set to (lib/print-layout.js).
+function ticketBody(stop, logoUrl, brandTitle = 'Delivery Ticket', { seqLabel, hideEta = false, layout } = {}) {
+  // The new layout draws the same ticket through its own markup. Everything below this line is
+  // the old layout, exactly as it printed before there were two.
+  if ((layout || printLayoutNow()) !== 'classic') return newTicketBody(ticketView(stop, { seqLabel, hideEta }), newLayoutLogoUrl(logoUrl), brandTitle);
   const d = ticketData(stop);
   const seq = seqLabel == null ? d.seq : seqLabel;
-  const cityLine = [d.shipCity, [d.shipState, d.shipZip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
-  const reqLine = (d.reqFrom || d.reqTo) ? `${tktReqTime(d.reqFrom)} - ${tktReqClock(d.reqTo)} +${tktDayOffset(d.reqFrom, d.reqTo)}D` : '';
+  const cityLine = tktCityLine(d);
+  const reqLine = tktReqLine(d);
   const MIN_ROWS = 6;
   const itemRows = d.items.map((it) => `
       <tr>
@@ -9147,11 +9236,12 @@ function ticketBody(stop, logoUrl, brandTitle = 'Delivery Ticket', { seqLabel, h
   </div>
   ${d.nextStop && !hideEta ? `<div class="next">Next Stop: ${bolEsc(tktNextStop(d.nextStop))}</div>` : ''}`;
 }
-function buildTicketHtml(stop, logoUrl) {
+function buildTicketHtml(stop, logoUrl, { layout } = {}) {
+  if ((layout || printLayoutNow()) !== 'classic') return newTicketHtml(ticketView(stop), newLayoutLogoUrl(logoUrl));
   const d = ticketData(stop);
   return `<!doctype html><html><head><meta charset="utf-8"><title>Delivery Ticket ${bolEsc(d.pro)}</title>
 <style>${TICKET_STYLE}</style></head>
-<body>${ticketBody(stop, logoUrl)}</body></html>`;
+<body>${ticketBody(stop, logoUrl, undefined, { layout: 'classic' })}</body></html>`;
 }
 
 // ── Driver Manifest (printable) ──────────────────────────────────────────────
@@ -9181,7 +9271,12 @@ function manifestOrigin(stops) {
 // old route until a Save (lib/card-manifest.js has the whole story). `labels` (parallel to `stops`)
 // are the stop numbers that order earns. Without `asGiven` the builder sorts exactly as it always
 // has, which is what the route detail panel's own list is drawn from.
-function buildManifestHtml(stops, logoUrl, routeNameOverride = null, { asGiven = false, labels = null } = {}) {
+// `layout`: 'new' or 'classic' — omitted, the one every device is set to (lib/print-layout.js).
+// Everything down to the page bodies is worked out ONCE, for both layouts: the page order, the
+// numbers, the cover's route / driver / origin / window and the totals. Only the markup differs.
+function buildManifestHtml(stops, logoUrl, routeNameOverride = null, { asGiven = false, labels = null, layout } = {}) {
+  // Read ONCE, here, so a manifest is all one layout even if the setting changes while it builds.
+  const classic = (layout || printLayoutNow()) === 'classic';
   const given = asGiven ? (Array.isArray(stops) ? stops.filter(Boolean) : []) : null;
   // NuVizz's own order for these stops. The cover is read from it on BOTH paths, so a card that
   // re-orders its pages cannot also change the route name, origin or driver the cover prints — a
@@ -9225,7 +9320,11 @@ function buildManifestHtml(stops, logoUrl, routeNameOverride = null, { asGiven =
   // The circle: NuVizz's number on a page that follows NuVizz (a stop with none — a brand-new
   // route — takes its position's number instead of printing blank); the card's numbers otherwise.
   const seqAt = (i) => (followsNuvizz && data[i].seq !== '' && data[i].seq != null ? undefined : labelAt(i));
-  const pages = ordered.map((s, i) => `<section class="tkt">${ticketBody(s, logoUrl, undefined, { seqLabel: seqAt(i), hideEta: !followsNuvizz })}</section>`).join('');
+  const bodies = ordered.map((s, i) => ticketBody(s, logoUrl, undefined, { seqLabel: seqAt(i), hideEta: !followsNuvizz, layout: classic ? 'classic' : 'new' }));
+  if (!classic) {
+    return newManifestHtml({ routeName, driver, origin, windowStr, stopCount: ordered.length, tot }, bodies, newLayoutLogoUrl(logoUrl));
+  }
+  const pages = bodies.map((body) => `<section class="tkt">${body}</section>`).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><title>Driver Manifest ${bolEsc(routeName)}</title>
 <style>${TICKET_STYLE}
   /* Page 1 = summary header + the first ticket; every ticket after starts a new page,
@@ -18913,10 +19012,159 @@ const DIAG_SECTIONS = [
   { id: 'capture', label: 'Capture health', icon: <FileCheck size={14} />, hint: 'Which of the last 21 days actually sealed a board, and the holes.' },
   { id: 'schedule', label: 'Scan schedule', icon: <Clock size={14} />, hint: 'When the scanner runs and what it may spend. Live — no deploy.' },
   { id: 'alerts', label: 'Alert recipients', icon: <Mail size={14} />, hint: 'Who gets texted and who gets emailed when a stop is going to miss.' },
+  { id: 'printlayout', label: 'Manifest layout', icon: <Printer size={14} />, hint: 'Which layout the driver manifest and delivery ticket print in, new or old — one setting for every device.' },
   { id: 'quality', label: 'Data quality', icon: <ClipboardList size={14} />, hint: 'M3 stubs — unmatched stops, stale customers, addr2 migration.' },
   { id: 'switches', label: 'This device', icon: <SlidersHorizontal size={14} />, hint: 'The settings this browser remembers, what each one does, and which are not at their default.' },
   { id: 'rollback', label: 'Roll back', icon: <RotateCcw size={14} />, hint: 'Every version this build knows, when it landed, and what going back to it would undo.' },
 ];
+
+// ── MANIFEST LAYOUT: which printed manifest and delivery ticket every device prints ──
+//
+// Chad, 2026-10-03: "i want a way to roll back to old one if needed in diagnostics screen
+// somewhere i want to be able to pick which version i'm running."
+//
+// THE SWITCH AND ITS OWN READ-BACK. The banner is drawn from what the endpoint ANSWERED, never
+// from what was pressed: a failed read says so and marks neither layout "in use", and a change
+// that does not save is followed by a fresh read, so the screen shows what is stored. The words
+// are printLayoutStatus's (lib/print-layout.js), unit-tested there.
+//
+// PREVIEW builds a made-up route (lib/print-layout-sample.js) through the real builders in the
+// layout asked for. It changes nothing — it is how to look at the old layout without going back
+// to it, and at the new one after going back.
+//
+// TWO VIEWS: the desktop sets the two layouts side by side; the phone stacks them with
+// full-width buttons. Same state, two arrangements.
+const PRINT_LAYOUT_TONE = {
+  idle: 'bg-slate-50 border-slate-200 text-slate-700',
+  good: 'bg-emerald-50 border-emerald-200 text-emerald-900',
+  warn: 'bg-amber-50 border-amber-200 text-amber-900',
+  bad: 'bg-rose-50 border-rose-200 text-rose-900',
+};
+/** The endpoint's body, or a thrown sentence saying why there is none. Never a guessed layout. */
+async function readPrintLayoutAnswer(r) {
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(j?.error || `the server answered ${r.status}`);
+  if (!j?.ok || !isPrintLayout(j.layout)) throw new Error(j?.error || 'the server did not say which layout is in use');
+  return j;
+}
+function ManifestLayoutPanel({ isPhone }) {
+  const [phase, setPhase] = useState('loading');   // loading | ready | error
+  const [answer, setAnswer] = useState(null);       // the endpoint's last body
+  const [readErr, setReadErr] = useState(null);     // why the READ failed
+  const [saveErr, setSaveErr] = useState(null);     // why a CHANGE did not save
+  const [saving, setSaving] = useState(null);       // the layout being switched to, while it is
+  const [preview, setPreview] = useState(null);     // { title, html } | null
+  const gate = useRoleGate('admin');
+
+  const load = useCallback(async () => {
+    setPhase('loading'); setReadErr(null);
+    try {
+      const j = await readPrintLayoutAnswer(await apiFetch(PRINT_LAYOUT_URL, { cache: 'no-store' }));
+      rememberPrintLayout(j.layout);
+      setAnswer(j); setPhase('ready');
+    } catch (e) { setAnswer(null); setReadErr(String(e?.message || e)); setPhase('error'); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const choose = useCallback(async (layout) => {
+    if (!gate.allowed || saving) return;
+    setSaving(layout); setSaveErr(null);
+    try {
+      const j = await readPrintLayoutAnswer(await apiFetch(PRINT_LAYOUT_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ layout }),
+      }));
+      // The body is the document READ BACK after the write. That, not the button, is what shows.
+      rememberPrintLayout(j.layout);
+      setAnswer(j); setPhase('ready');
+    } catch (e) {
+      setSaveErr(String(e?.message || e));
+      await load();   // say what is stored, not what was pressed
+    } finally { setSaving(null); }
+  }, [gate.allowed, saving, load]);
+
+  const openPreview = useCallback((c) => {
+    const logo = (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg';
+    setPreview({ title: `Sample · ${c.title}`, html: buildManifestHtml(PRINT_LAYOUT_SAMPLE_STOPS, logo, null, { layout: c.layout }) });
+  }, []);
+
+  const status = printLayoutStatus({ phase, answer, error: readErr, device: printLayoutNow() });
+  const locked = !gate.allowed ? gate.reason : null;
+
+  return (
+    <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-200">
+        <h3 className="font-bold text-slate-900">Printed manifest and delivery ticket</h3>
+        <p className="text-[13px] text-slate-600 mt-1">
+          One setting for <b>every device</b>. It changes how the driver manifest and the delivery ticket
+          are laid out on paper. The information on them is the same either way, and nothing here
+          spends a NuVizz call.
+        </p>
+      </div>
+
+      {/* The read-back. What the server answered — or that it did not. */}
+      <div className={`px-4 py-2.5 text-[13px] border-b flex items-start justify-between gap-3 ${PRINT_LAYOUT_TONE[status.tone]}`}>
+        <div className="min-w-0" role="status"><b>{status.headline}</b>{status.detail ? <> {status.detail}</> : null}</div>
+        {phase === 'error' && (
+          <button type="button" onClick={load}
+            className="tap-target shrink-0 px-3 py-1.5 rounded border border-rose-300 bg-white text-rose-800 text-[12px] font-semibold hover:bg-rose-50">
+            Try again
+          </button>
+        )}
+      </div>
+      {saveErr && (
+        <div className="px-4 py-2.5 text-[13px] border-b bg-rose-50 border-rose-200 text-rose-900" role="alert">
+          <b>The change did not save</b> — {saveErr}. The line above is what is stored now.
+        </div>
+      )}
+
+      <div className={isPhone ? 'divide-y divide-slate-100' : 'grid grid-cols-2 divide-x divide-slate-100'}>
+        {PRINT_LAYOUT_CHOICES.map((c) => {
+          const inUse = status.layout === c.layout;
+          const cannot = inUse || !!saving || !!locked || !status.canChange;
+          return (
+            <div key={c.layout} data-print-layout={c.layout} className={`px-4 py-3 flex flex-col gap-2 ${inUse ? 'bg-emerald-50/40' : ''}`}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold text-slate-800 text-[14px]">{c.title}</span>
+                {c.layout === DEFAULT_PRINT_LAYOUT && <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">default</span>}
+                {inUse && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-800 px-2 py-0.5 text-[11px] font-bold">
+                    ✓ In use
+                  </span>
+                )}
+              </div>
+              <div className="text-[13px] text-slate-600">{c.does}</div>
+              <div className={`mt-auto pt-1 flex gap-2 ${isPhone ? 'flex-col' : 'flex-wrap items-center'}`}>
+                {/* The layout in use has nothing to switch to: it wears the chip instead. The other
+                    one's button is DISABLED, never hidden, when it cannot be pressed — and says why. */}
+                {!inUse && (
+                  <button type="button" onClick={() => choose(c.layout)} disabled={cannot} title={locked || undefined}
+                    className={`tap-target px-3 py-2 rounded text-[13px] font-semibold ${cannot
+                      ? 'bg-slate-100 text-slate-400' : 'bg-slate-800 text-white hover:bg-slate-900'}`}>
+                    {saving === c.layout ? 'Switching…' : c.action}
+                  </button>
+                )}
+                <button type="button" onClick={() => openPreview(c)}
+                  className="tap-target px-3 py-2 rounded border border-slate-200 bg-white text-slate-700 text-[13px] font-semibold hover:bg-slate-50 inline-flex items-center justify-center gap-1.5">
+                  <Eye size={14} /> Preview
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="px-4 py-3 border-t border-slate-200 text-[12px] text-slate-500 space-y-1">
+        {locked && <div className="text-slate-700 font-semibold">{locked}</div>}
+        <div>
+          This device changes at once. The other devices follow within 5 minutes, or as soon as they
+          are reloaded. A manifest already open in a print preview keeps the layout it was built in.
+        </div>
+      </div>
+
+      {preview && <PrintDocModal title={preview.title} html={preview.html} pageW={816} onClose={() => setPreview(null)} />}
+    </section>
+  );
+}
 
 
 // ── THIS DEVICE: the per-device switches, and what a wrong one looks like ────
@@ -19116,6 +19364,7 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
     capture: <CaptureHealthPanel />,
     schedule: <SchedulePanel onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} onSaved={onRefresh} />,
     alerts: <AlertRecipientsPanel />,
+    printlayout: <ManifestLayoutPanel isPhone={isPhone} />,
     switches: <DeviceSwitchesPanel />,
     // SAME COMPONENT as the footer's ⟲ modal, inline. Chad: "Put the roll back app under the
     // diagnostics tab on mobile as well." A phone has no footer, so before this the only door
@@ -31730,6 +31979,9 @@ function Shell() {
   const { h: viewportHeight, w: visibleWidth, x: viewportLeft, y: viewportTop } = useViewportSize();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const updateAvailable = useBuildUpdate();
+  // Which manifest layout the company is set to (Diagnostics → Manifest layout). The wall display
+  // never prints, so it never asks.
+  usePrintLayoutSync(!tvMode);
   // A WALL TV CANNOT PRESS "RELOAD". UpdateBanner is the right answer on a dispatcher's tab —
   // it asks, because reloading mid-edit would throw away a plan somebody is building. On a
   // display with no pointer that same banner is a permanent stripe over a board that keeps
