@@ -227,7 +227,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.115.1';
+const APP_VERSION = '1.116.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -281,6 +281,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.116.0', 'THE COMPARE CARD\u2019S TWO ROAD BOXES SIT SIDE BY SIDE ON ONE ROW, WITH SHORT LABELS. Chad: \u201cI don\u2019t need a big description for them. I just need a label for them because I want them side by side on the same row in the compare panel.\u201d Under Re-sequence\u2026 the boxes now read \u201cGoogle roads ($1.13)\u201d \u2014 the same per-pick price as before, or ($) with one stop or none \u2014 and \u201cTruck roads (free)\u201d, on one row that never wraps. The old wording needed 446px of the card\u2019s 282px, so the truck box always dropped to a second line; these need about 250px. The long wording is each box\u2019s hover title. \u201c\u00b7 roads applied\u201d and \u201c\u00b7 truck roads applied\u201d keep their words, colour and conditions, on one line directly under the row. Nothing else on the card changes: same requests, messages, chip and fallbacks. The Build Panel\u2019s step 3 keeps its labels.'],
   ['1.115.1', 'A CORRECTED ADDRESS NO LONGER COMES BACK ORANGE BECAUSE OF THE BOL. Chad: \u201cstop the false alarm. i don\u2019t even need to go back and check.\u201d Every push that showed \u201cNuVizz also changed one other thing on the order (the BOL document) \u2014 check it in the portal\u201d was NuVizz replacing the BOL, not losing it: read live with 8 calls on 10/03, all eight orders had their BOL back \u2014 the same PDF named BOL, under a new file id created at the second of the push. NuVizz deletes the BOL and makes a fresh one whenever an order is updated, and our check reads the order back one second after the write, in between. Our push never sends the BOL at all. NOW: on an address push, a BOL missing from that read-back is not a warning \u2014 the push is green, and the write log still records that the BOL was being re-created. Anything ELSE that goes missing \u2014 another attachment, a freight line \u2014 is still orange. Still 3 NuVizz calls per corrected address (read, write, read back); this adds none. PUT IT BACK: ADDRESS_BOL_RECREATE_OK=off on the server \u2014 no redeploy.'],
   ['1.115.0', 'TRUCK ROAD TIMES ON THE COMPARE CARD, BESIDE GOOGLE\u2019S BOX. Chad: \u201cIn both places Google\u2019s \u2018real road distances / drive-times\u2019 checkbox appears, put \u2018Use truck road times (free)\u2019 on the same row, beside it, not stacked above.\u201d Under Re-sequence\u2026 on each Compare card the two boxes now share a row (they wrap on a narrow card): \u201cUse real road distances (costs money)\u201d with its per-pick price, exactly as before, and \u201cUse truck road times (free)\u201d with no cost line. Only one runs at a time, so ticking one unticks the other; both start unticked and the card remembers your pick, as it always has for Google\u2019s. With truck road times ticked, a re-sequence lands the straight-line order instantly as before, then asks our own routing service for truck-road distances and re-orders on them \u2014 \u201c\u00b7 truck roads applied\u201d on the card, \u201c\u00b7 truck road times\u201d on the line above. When the service is not set up, not answering or answers wrong, the server falls back and the card keeps the straight-line order and says \u201ctruck road times unavailable, straight-line order kept\u201d \u2014 the same path a Build takes. Not set up on this site, the box is greyed. Both unticked, the card is exactly what it was. This is a Route Workbench change, approved in Chad\u2019s words above; unset OSRM_TRUCK_URL and redeploy to grey the box out, or revert this one commit.'],
   ['1.114.0', 'TRUCK ROAD TIMES ON THE BUILD PANEL. Step 3 \u00b7 Plan has a second drive-time box, on the same row as Google\u2019s (Chad: \u201cput \u2018Use truck road times (free)\u2019 on the same row, beside it, not stacked above\u201d): \u201cUse truck road times (free)\u201d \u2014 real road miles and minutes on truck-legal roads from our own routing service, no traffic, no cost per build. Only one drive-time source can run, so ticking one box unticks the other; the Google box keeps its \u201c(costs money)\u201d and its price. When the panel opens it asks whether the service is set up on this site, without waking it; set up nowhere, the box is greyed and says so. Ticked, it checks the service and says what it found \u2014 Buford to Lawrenceville in miles and minutes when it answers, \u201cstarting up\u201d while Cloud Run wakes (it keeps asking for about a minute and a half), and when it cannot answer, that a build will fall back to the straight-line estimate and say so. The Build button reads \u201cBuild (truck road times)\u201d. Min time is offered on either kind of road times now, so its greyed label reads \u201cneeds road drive-times\u201d. THE RESULT SAYS WHAT THE BUILD USED: \u201cTruck road times (free)\u201d, with a count of stops off the truck map (outside Georgia, or not near a truck road) and legs with no truck route, whose times are straight-line estimates; and a build that asked for truck road times and did not get them reads \u201cFree estimate (straight-line)\u201d with a line saying the service did not answer. Both boxes unticked, the build is exactly what it was. Unset OSRM_TRUCK_URL and redeploy to grey the box out.'],
@@ -22910,28 +22911,32 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
             per pick, and the straight-line order still lands first either way. */}
         {/* TRUCK ROAD TIMES, BESIDE IT (v1.115.0). Chad: "In both places Google's 'real road
             distances / drive-times' checkbox appears, put 'Use truck road times (free)' on the same
-            row, beside it, not stacked above." Two plain boxes that wrap on a narrow card; one
-            source at a time. The truck box has no cost line. */}
+            row, beside it, not stacked above." One source at a time; the truck box has no cost line.
+            SHORT LABELS, ONE ROW (v1.116.0). Chad: "I don't need a big description for them. I just
+            need a label for them because I want them side by side on the same row in the compare
+            panel." The old wording needed 446px of a 282px row; these need 242-256px. The long
+            wording is each label's hover title, and the "applied" note sits on its own line below. */}
         {!route.collapsed && onToggleRoadMatrix && (
-          <div className="mt-1 flex flex-wrap items-start gap-x-3 gap-y-0.5 text-[10px] text-slate-600" data-card-road-boxes>
-            <label className="flex items-start gap-1.5 cursor-pointer">
-              <input type="checkbox" className="mt-0.5" checked={roadMatrixOn} onChange={(e) => onToggleRoadMatrix(e.target.checked)} />
-              <span>
-                Use real road distances <b>(costs money)</b>
-                {rows.length > 1 && <> — ≈ ${(((rows.length + 1) ** 2) / 1000 * BASIC_RATE_PER_1K_USD).toFixed(2)} per re-sequence</>}
-                {route.roadSequenced && !route.truckSequenced && <span className="ml-1 font-semibold text-green-700">· roads applied</span>}
-              </span>
-            </label>
-            {onToggleTruckMatrix && (
-              <label className={`flex items-start gap-1.5 ${truckMatrixOff ? 'opacity-50' : 'cursor-pointer'}`} title={truckMatrixOff ? 'The truck routing service is not set up on this site yet.' : undefined}>
-                <input type="checkbox" className="mt-0.5" checked={truckMatrixOn} disabled={truckMatrixOff} onChange={(e) => onToggleTruckMatrix(e.target.checked)} />
-                <span>
-                  Use truck road times <b>(free)</b>
-                  {route.roadSequenced && route.truckSequenced && <span className="ml-1 font-semibold text-green-700">· truck roads applied</span>}
-                </span>
+          <>
+            <div className="mt-1 flex flex-nowrap items-center gap-x-3 whitespace-nowrap text-[10px] text-slate-600" data-card-road-boxes>
+              <label className="flex items-center gap-1.5 cursor-pointer" title={`Re-sequence on Google driving distances. Costs about ${rows.length > 1 ? `$${(((rows.length + 1) ** 2) / 1000 * BASIC_RATE_PER_1K_USD).toFixed(2)}` : '$'} per re-sequence.`}>
+                <input type="checkbox" className="mt-0.5" checked={roadMatrixOn} onChange={(e) => onToggleRoadMatrix(e.target.checked)} />
+                <span>Google roads <b>({rows.length > 1 ? `$${(((rows.length + 1) ** 2) / 1000 * BASIC_RATE_PER_1K_USD).toFixed(2)}` : '$'})</b></span>
               </label>
+              {onToggleTruckMatrix && (
+                <label className={`flex items-center gap-1.5 ${truckMatrixOff ? 'opacity-50' : 'cursor-pointer'}`} title={truckMatrixOff ? 'The truck routing service is not set up on this site yet.' : 'Re-sequence on our own truck routing service: truck-legal roads, no traffic, no cost.'}>
+                  <input type="checkbox" className="mt-0.5" checked={truckMatrixOn} disabled={truckMatrixOff} onChange={(e) => onToggleTruckMatrix(e.target.checked)} />
+                  <span>Truck roads <b>(free)</b></span>
+                </label>
+              )}
+            </div>
+            {route.roadSequenced && (
+              <div className="text-[10px]" data-card-road-applied>
+                {!route.truckSequenced && <span className="font-semibold text-green-700">· roads applied</span>}
+                {route.truckSequenced && <span className="font-semibold text-green-700">· truck roads applied</span>}
+              </div>
             )}
-          </div>
+          </>
         )}
         {!route.collapsed && (
           <div className="mt-1 flex items-center justify-between gap-2">

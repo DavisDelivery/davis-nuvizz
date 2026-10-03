@@ -68,20 +68,41 @@ test('the road-box handler: a body without mode, or with google, answers exactly
 
 const card = between('function RoutingWorkbenchCard(', '\nfunction ');
 
-test('the card shows the truck box on the same row as Google\'s, in one wrapping row, with no cost line', () => {
-  const row = card.slice(card.indexOf('data-card-road-boxes'));
-  assert.ok(/className="mt-1 flex flex-wrap/.test(card.slice(card.indexOf('data-card-road-boxes') - 110)), 'the row does not wrap');
-  const g = row.indexOf('Use real road distances <b>(costs money)</b>');
-  const t = row.indexOf('Use truck road times <b>(free)</b>');
+// CHANGED ON PURPOSE in v1.116.0. Chad: "I don't need a big description for them. I just need a
+// label for them because I want them side by side on the same row in the compare panel." The row no
+// longer wraps, the labels are short, and the applied note moved out of the labels to its own line.
+test('the card shows Google roads ($price) and Truck roads (free) side by side, Google first, Google priced and the truck box not', () => {
+  const row = card.slice(card.indexOf('data-card-road-boxes'), card.indexOf('data-card-road-applied'));
+  const g = row.indexOf('Google roads <b>(');
+  const t = row.indexOf('<span>Truck roads <b>(free)</b></span>');
   assert.ok(g >= 0 && t > g, 'both boxes are not in the one row, Google first');
-  assert.ok(/BASIC_RATE_PER_1K_USD/.test(row.slice(g, t)), 'Google lost its per-pick price');
-  const truck = row.slice(t, row.indexOf('</label>', t));
-  assert.ok(!/BASIC_RATE|\$\{/.test(truck), 'the truck box shows a cost line');
+  assert.ok(/<span>Google roads <b>\(\{rows\.length > 1 \? `\$\$\{\(\(\(rows\.length \+ 1\) \*\* 2\) \/ 1000 \* BASIC_RATE_PER_1K_USD\)\.toFixed\(2\)\}` : '\$'\}\)<\/b><\/span>/.test(row), 'Google lost its per-pick price, or the ($) with one stop or none');
+  const truck = row.slice(row.lastIndexOf('<label', t), row.indexOf('</label>', t));
+  assert.ok(!/BASIC_RATE|\$\{\(/.test(truck.replace(/title=\{[^}]*\}/, '')), 'the truck box shows a cost line');
+  assert.ok(!/Use real road distances|Use truck road times|costs money/.test(row), 'the long labels are back on the card');
 });
 
-test('the Google box on the card keeps its checkbox exactly, and shows roads applied only for a Google order', () => {
+test('the card row never wraps, and the long wording lives in each label\'s hover title', () => {
+  const head = card.slice(card.indexOf('data-card-road-boxes') - 160, card.indexOf('data-card-road-boxes'));
+  assert.ok(/flex flex-nowrap items-center/.test(head) && /whitespace-nowrap/.test(head), 'the row can wrap');
+  assert.ok(!/flex-wrap /.test(head), 'flex-wrap is back');
+  assert.ok(/title=\{`Re-sequence on Google driving distances\. Costs about /.test(card));
+  assert.ok(/title=\{truckMatrixOff \? 'The truck routing service is not set up on this site yet\.' : 'Re-sequence on our own truck routing service: truck-legal roads, no traffic, no cost\.'\}/.test(card));
+});
+
+test('the applied note sits outside both labels, on its own line under the row, with the same words and conditions', () => {
+  const rowStart = card.indexOf('data-card-road-boxes');
+  const rowEnd = card.indexOf('</div>', rowStart);
+  const rowHtml = card.slice(rowStart, rowEnd);
+  assert.ok(!/roads applied/.test(rowHtml), 'an applied note is still inside the row');
+  const applied = card.slice(card.indexOf('{route.roadSequenced && ('), card.indexOf('data-card-road-applied') + 400);
+  assert.ok(card.indexOf('data-card-road-applied') > rowEnd, 'the note is not below the row');
+  assert.ok(/\{!route\.truckSequenced && <span className="font-semibold text-green-700">· roads applied<\/span>\}/.test(applied));
+  assert.ok(/\{route\.truckSequenced && <span className="font-semibold text-green-700">· truck roads applied<\/span>\}/.test(applied));
+});
+
+test('the Google box on the card keeps its checkbox exactly, and the truck box its disabled state', () => {
   assert.ok(/<input type="checkbox" className="mt-0\.5" checked=\{roadMatrixOn\} onChange=\{\(e\) => onToggleRoadMatrix\(e\.target\.checked\)\} \/>/.test(card));
-  assert.ok(/\{route\.roadSequenced && !route\.truckSequenced && <span className="ml-1 font-semibold text-green-700">· roads applied<\/span>\}/.test(card));
   assert.ok(/checked=\{truckMatrixOn\} disabled=\{truckMatrixOff\} onChange=\{\(e\) => onToggleTruckMatrix\(e\.target\.checked\)\}/.test(card));
 });
 
