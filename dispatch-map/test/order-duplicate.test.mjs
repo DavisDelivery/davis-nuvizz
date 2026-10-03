@@ -755,6 +755,25 @@ test('the form refuses before a call what the server would: a missing address pa
   assert.match(duplicateFormError({ ...ok, copyNbr: 'AB#1' }), /characters NuVizz does not take/);
 });
 
+test('a field left as it opened never blocks the copy: a board row with no state, or an odd ZIP, is copied from NuVizz', () => {
+  // The list carries no state column (nuvizz-list toBoardStop pins state to null); only the
+  // enrichment fills it. v1.108.0 duplicated such an order — the server copies NuVizz's state.
+  const stop = { stopNbr: '007185553', businessName: 'ACME', addr1: '1 MAIN', city: 'BUFORD', state: null, zip: '30518' };
+  const base = duplicateBaseline(stop);
+  const form = duplicateFormFrom(stop, null);
+  assert.equal(duplicateFormError(form, base), null, 'the server copies the original\'s state');
+  assert.deepEqual(duplicateEdits(form, base), {}, '… because nothing is sent for it');
+  assert.equal(duplicateFormError({ ...form, zip: '30518 1234' }, { ...base, zip: '30518 1234' }), null, 'an odd ZIP left alone');
+  // What the dispatcher changes is still checked before a call.
+  assert.match(duplicateFormError({ ...form, city: '' }, base), /needs a city/, 'a field cleared');
+  assert.match(duplicateFormError({ ...form, zip: '305' }, base), /not a ZIP/);
+  assert.match(duplicateFormError({ ...form, state: 'GA' }, base) ?? 'ok', /^ok$/, 'a state typed in is fine');
+  assert.match(duplicateFormError(form), /needs a state/, 'with no baseline every field counts as changed');
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(src, /const formError = form \? duplicateFormError\(form, baselineRef\.current\) : null;/);
+  assert.match(src, /const asOriginal = \(k\) => \(String\(baselineRef\.current\?\.\[k\] \?\? ''\)\.trim\(\) \? undefined : 'as the original'\);/, 'a blank box says the copy takes the original\'s');
+});
+
 test('the answer names the changes, and the panel sends them with the typed number under ONE key', () => {
   const o = duplicateOutcome({ ok: true, result: { ok: true, created: true, stopNbr: '007174789-1', now: { pallets: 4, total: 4 }, deliveryDate: TOMORROW, edited: ['addr1', 'phone'], warnings: [] } });
   assert.match(o.text, /, with your changes to its street address, phone\./);

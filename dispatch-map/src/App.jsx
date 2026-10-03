@@ -9724,7 +9724,7 @@ function DuplicateOrderPanel({ stop, note }) {
   const pro = stop?.stopNbr || stop?.pro || '';
   const base = copyBaseNbr(pro);
   const draft = duplicateDraft({ pallets, loose, weight, date }, today);
-  const formError = form ? duplicateFormError(form) : null;
+  const formError = form ? duplicateFormError(form, baselineRef.current) : null;
   const edits = form ? duplicateEdits(form, baselineRef.current) : {};
   const editLabels = duplicateChangeLabels(edits, duplicateCountChanges(stop, draft));
   if (!duplicateEligible(stop)) return null;
@@ -9773,9 +9773,11 @@ function DuplicateOrderPanel({ stop, note }) {
   // 32px under a mouse; index.css's touch floor makes every input 44px under a finger.
   const inputCls = 'mt-0.5 w-full min-h-[32px] border border-slate-300 rounded px-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 disabled:bg-slate-50';
   const labelCls = 'block text-[11px] font-medium text-slate-500 min-w-0';
+  // A field the board row holds nothing for is still copied — from the original's NuVizz record.
+  const asOriginal = (k) => (String(baselineRef.current?.[k] ?? '').trim() ? undefined : 'as the original');
   const field = (k, label, extra = {}) => (
     <label className={labelCls}>{label}
-      <input type="text" value={form?.[k] ?? ''} disabled={busy} onChange={setField(k)} className={inputCls} {...extra} />
+      <input type="text" value={form?.[k] ?? ''} disabled={busy} onChange={setField(k)} className={inputCls} placeholder={asOriginal(k)} {...extra} />
     </label>
   );
   const priceTyped = !!String(form?.price ?? '').trim();
@@ -9830,7 +9832,7 @@ function DuplicateOrderPanel({ stop, note }) {
               onChange={(e) => setDate(e.target.value)} className={inputCls} />
           </label>
           <label className={labelCls}>Driver instructions
-            <textarea rows={2} value={form?.dispatchNotes ?? ''} disabled={busy} onChange={setField('dispatchNotes')} maxLength={500}
+            <textarea rows={2} value={form?.dispatchNotes ?? ''} placeholder={asOriginal('dispatchNotes')} disabled={busy} onChange={setField('dispatchNotes')} maxLength={500}
               className={inputCls + ' py-1 resize-y'} />
           </label>
           <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">

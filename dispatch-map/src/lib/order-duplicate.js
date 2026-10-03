@@ -188,12 +188,19 @@ export function copyNbrDraft(v) {
   return { nbr: s };
 }
 
-/** The whole form checked before a call is spent — the address must still be a whole address. */
-export function duplicateFormError(form) {
+/**
+ * The whole form checked before a call is spent — what the dispatcher CHANGED must still make a
+ * whole address. A field left as it opened is not sent: the server copies the original's own
+ * NuVizz value and refuses an original with no complete address itself (buildDuplicateStop). So a
+ * board row with no state (the list carries none; only the enrichment fills it) or an odd ZIP does
+ * not block a copy the server would make. Without a baseline every field counts as changed.
+ */
+export function duplicateFormError(form, baseline) {
+  const changed = (k) => !baseline || !same(k, form?.[k], baseline?.[k]);
   for (const f of DUPLICATE_FIELDS) {
-    if (f.required && !t(form?.[f.key])) return `the copy needs a ${f.label}`;
+    if (f.required && changed(f.key) && !t(form?.[f.key])) return `the copy needs a ${f.label}`;
   }
-  if (!/^\d{5}(-\d{4})?$/.test(t(form?.zip))) return `'${t(form?.zip)}' is not a ZIP — 5 digits, or ZIP+4`;
+  if (changed('zip') && !/^\d{5}(-\d{4})?$/.test(t(form?.zip))) return `'${t(form?.zip)}' is not a ZIP — 5 digits, or ZIP+4`;
   const c = copyNbrDraft(form?.copyNbr);
   if (c.error) return c.error;
   if (t(form?.price).length > 20) return 'the price is longer than NuVizz takes (20 characters)';
