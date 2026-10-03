@@ -482,6 +482,30 @@ const PROBES = {
       open: async (page) => openOrderView(page),
     },
     {
+      // On a phone the shell is position:fixed, so the Text composer (z-1200, inside it) stacks
+      // UNDER the body-level order view. Picking a draft must leave the composer on top — the
+      // probe proves it by hit-testing the composer's own text box.
+      name: 'stop detail drawer — a text draft from the order view opens the composer on top',
+      open: async (page) => {
+        if (!(await openOrderView(page))) return false;
+        const text = page.locator('[data-order-view]').getByRole('button', { name: /^text( \(add #\))?$/i }).first();
+        if (!(await text.isVisible().catch(() => false))) return false;
+        await text.click();
+        await page.waitForTimeout(200);
+        const first = page.locator('[data-ov-drafts] button').first();
+        if (!(await first.isVisible().catch(() => false))) return false;
+        await first.click();
+        await page.waitForTimeout(500);
+        return page.evaluate(() => {
+          const ta = [...document.querySelectorAll('textarea')].find((t) => t.getBoundingClientRect().width > 0);
+          if (!ta) return false;
+          const r = ta.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return !!hit && (hit === ta || ta.contains(hit));
+        });
+      },
+    },
+    {
       name: 'stop detail drawer — order view scrolled to its actions',
       open: async (page) => {
         if (!(await openOrderView(page))) return false;
