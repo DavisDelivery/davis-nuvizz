@@ -226,3 +226,54 @@ export function duplicateOutcome(r) {
   if (out.created) return { kind: 'warn', created: true, nbr: out.stopNbr, text: (r?.error || out.error || `${out.stopNbr} was created but could not be verified.`) + replay };
   return { kind: 'err', created: false, nbr: null, text: r?.error || out.error || 'Could not duplicate the order.' };
 }
+
+// ── THE WINDOW'S READ-ONLY STRIP (v1.109.1) ───────────────────────────────────
+// Chad, 10/03: "if i click duplicate order i want a large floating window … so i can see the full
+// route profile when duplicating with all the fields i can change." What the form does NOT edit is
+// shown too, as the copy will carry it (nuvizz-write-ops.mts buildDuplicateStop): the delivery
+// window's times on the day picked, the pickup, the PO and Cust # references — and what is not
+// copied at all. Values are the board row's; where the row holds nothing, the server still copies
+// the original's own, so the strip says that instead of a blank.
+
+/** '2026-10-03T08:00:00' → '8:00 AM', or '' for anything without a clock time. */
+export function clockOf(v) {
+  const m = /T(\d{2}):(\d{2})/.exec(String(v ?? ''));
+  if (!m) return '';
+  const h = Number(m[1]);
+  return `${h % 12 || 12}:${m[2]} ${h < 12 ? 'AM' : 'PM'}`;
+}
+
+/**
+ * The original's facts the copy takes as they are, in the panel's words: [{ key, label, value }].
+ * The window shows only when the row holds BOTH ends (the enrichment's schedule.timeFrom/timeTo — a
+ * list-only row's scheduledFrom is its estimated arrival, with no end). The PO follows the server:
+ * buildStopPayload writes "PRO <copy number>" and buildDuplicateStop keeps the original's reference1
+ * over it unless that is New Order's own "PRO <original number>". The board row cannot say "none":
+ * the list carries no references and mergeEnrich skips an empty one, so an empty PO or Cust # on the
+ * row is "the original's, if any", never a claim that it has none.
+ */
+export function duplicateCopiedFacts(stop, copyNbr) {
+  const from = clockOf(stop?.scheduledFrom);
+  const to = stop?.scheduledTo ? clockOf(stop.scheduledTo) : '';
+  const strict = t(stop?.timeConstraint).toUpperCase() === 'STRICT';
+  const o = stop?.origin || null;
+  const place = [t(o?.city), t(o?.state)].filter(Boolean).join(' ');
+  const pickup = [t(o?.name), t(o?.addr1), place].filter(Boolean).join(', ');
+  const po = t(stop?.poRef);
+  const own = /^PRO\s+/i.test(po) && po.replace(/^PRO\s+/i, '').trim() === t(stop?.stopNbr ?? stop?.pro);
+  const proRef = `PRO ${t(copyNbr) || '+ the copy\'s number'}`;
+  return [
+    { key: 'window', label: 'Delivery window', value: from && to ? `${from} – ${to}${strict ? ', strict' : ''}, on the day picked` : 'the original\'s times, on the day picked' },
+    { key: 'pickup', label: 'Pickup', value: pickup || 'the original\'s' },
+    { key: 'po', label: 'PO', value: own ? proRef : (po || `the original's, or ${proRef} if it has none`) },
+    { key: 'cust', label: 'Cust #', value: t(stop?.custRef) || 'the original\'s, if any' },
+  ];
+}
+
+/** What the copy does not take from the original, in the panel's words. */
+export function duplicateNotCopied(stop) {
+  const route = t(stop?.routeName) || t(stop?.loadNbr);
+  const driver = t(stop?.driverName);
+  const on = [route && `route ${route}`, driver && `driver ${driver}`].filter(Boolean).join(', ');
+  return `Not copied: ${on ? `${on}, ` : 'the route, the driver, '}and attachments. The copy lands unplanned.`;
+}

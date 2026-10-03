@@ -403,10 +403,12 @@ const PROBES = {
       },
     },
     {
-      // v1.107.0: the Duplicate panel opens in flow under the piece editor — three number boxes on
-      // one row at 360px, a date box, a checkbox row and the Create button. Same CUSTOMER 1 reason
-      // as above (a delivered order would still offer it, but one fixture row keeps both probes
-      // measuring the same drawer).
+      // v1.109.1: Duplicate opens a FLOATING WINDOW over the drawer (portal on <body>, a margin all
+      // round): every field of the copy in one column on a phone — number, address, City/State/ZIP
+      // on one row, phone/email, items, three number boxes, date, instructions, price — the strip of
+      // what is copied as it is, and Cancel beside Create on one row. Same CUSTOMER 1 reason as above
+      // (a delivered order would still offer it, but one fixture row keeps both probes measuring the
+      // same drawer).
       name: 'stop detail drawer — duplicate open',
       open: async (page) => {
         await page.getByRole('button', { name: /^stops$/i }).first().click();

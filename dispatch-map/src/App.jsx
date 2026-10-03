@@ -85,7 +85,7 @@ import { pinKeyer, pinSig } from './lib/tv-pin-reuse.js';
 import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, setStopPieces, duplicateOrder, siteWriteFeatures, siteWriteFeaturesNow, addressReachedNuvizz } from './lib/nuvizzWrite.js';
-import { copyBaseNbr, duplicateEligible, etToday, defaultCopyDate, duplicateDraft, duplicateOutcome, duplicateBaseline, duplicateFormFrom, duplicateEdits, duplicateCountChanges, duplicateChangeLabels, duplicateFormError, copyNbrDraft } from './lib/order-duplicate.js';
+import { copyBaseNbr, duplicateEligible, etToday, defaultCopyDate, duplicateDraft, duplicateOutcome, duplicateBaseline, duplicateFormFrom, duplicateEdits, duplicateCountChanges, duplicateChangeLabels, duplicateFormError, copyNbrDraft, duplicateCopiedFacts, duplicateNotCopied } from './lib/order-duplicate.js';
 import { boardPiecesOf, parsePieceDraft, piecesChanged, piecesLine, piecesBoardDatesOf, piecesFoldFrom, piecesOutcome, piecesEditable } from './lib/stop-pieces.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
@@ -222,7 +222,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.109.0';
+const APP_VERSION = '1.109.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -276,6 +276,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.109.1', 'DUPLICATE OPENS IN A LARGE FLOATING WINDOW OVER THE PAGE. Chad, 10/03: \u201cif i click duplicate order i want a large floating window to come up not a fullscreen and i don\u2019t want to leave the page but i want a large full window so i can see the full route profile when duplicating with all the fields i can change.\u201d WHERE: the stop card\u2019s \u201cDuplicate as a new order\u201d button, as before \u2014 it now opens a window centred over the map or board instead of a narrow form inside the card. The page stays where it is underneath. WHAT IS IN IT: every field you can change, side by side on a desktop \u2014 the new order\u2019s number, consignee, address and contact on the left; items, pallets/loose/weight, delivery day, driver instructions and price on the right \u2014 and below them what the copy takes from the original as it is (delivery window, pickup, PO, Cust #) and what it does not (route, driver, attachments). On a phone the same window floats with a margin all round and the fields stack in one column. THE BUTTONS: Cancel and Create the copy in NuVizz side by side on one row, as on the \uff0b New route window. Esc or a click outside closes it only while nothing has been typed, so a long edit is never lost to a stray key; Cancel and \u2715 always close. Nothing about what is sent changed: same fields, same checks, same 4 NuVizz calls.'],
   ['1.109.0', 'DUPLICATE NOW OPENS AS A FULL ORDER YOU CAN CHANGE BEFORE IT IS CREATED. Chad, 10/03: \u201cwhen I duplicate I want to have the option to edit the order. Addresses numbers piece counts items pretty much anything.\u201d WHERE: the stop card, under Items \u2014 \u201cDuplicate as a new order\u201d, as before. It now opens on the order as the card shows it: order number, consignee, address (the corrected one if you fixed it on our board), city/state/ZIP, phone, email, items, pallets/loose/weight, delivery day, driver instructions and price \u2014 every one editable. THE NUMBER: leave it blank for the original\u2019s number -1 (or the next one NuVizz does not hold, -2, -3 \u2026), or type your own \u2014 it must not already be in NuVizz, and it is never written over. ONLY WHAT YOU CHANGE IS CHANGED: the panel says which fields differ, the counts and day included (\u201cChanged from the original: street address, pallets\u201d), and everything you leave alone is copied from the original exactly as before. Always copied: the delivery window\u2019s times on the day you pick, the PO and customer references, and the pickup. ITEMS: one line, the item description, with the piece counts \u2014 the same shape every order this app creates. ESTES: a copy of an Estes order keeps the ESTES profile (the driver\u2019s 3 photos) whatever number you give it \u2014 NUVIZZ_ESTES_PROFILE=off still takes it off every create. CHECKED: the new order is read back \u2014 its number, pieces and the street you sent must match. Same cost as before: about 4 NuVizz calls.'],
   ['1.108.0', 'ESTES ORDERS GO TO NUVIZZ WITH THE ESTES PROFILE \u2014 THE ONE THAT MAKES THE DRIVER TAKE 3 PHOTOS. Chad, 10/03: \u201canytime that we\u2019re using the new order creation either for bulk or single and it\u2019s an estes order which is notified by the estes at the beginning of the pro this is the format it\u2019s supposed to be in.\u201d NuVizz set up the ESTES profile in Production with 3 mandatory photos and asked for \u201cprofile\u201d: \u201cESTES\u201d on every ESTES order. WHICH ORDERS: any order whose number or PRO starts with ESTES (ESTES-0778201115, Estes-0828068215) \u2014 the same rule that paints the yellow Estes ring on the map. WHERE: New Order, Bulk Add\u2019s Create orders, the Manifest push and Duplicate. NOT YET: Bulk Add\u2019s Create as load \u2014 it builds the orders inside one route import, and nothing here shows that import accepting a profile, so it sends them as before. CHECKED: NuVizz\u2019s own example order, built through our Manifest path, matches their JSON field for field, profile included. Every other order is sent exactly as before, and the dry run says PROFILE ESTES when it goes. NUVIZZ_ESTES_PROFILE=off puts it back.'],
   ['1.107.1', 'THE STOP CARD, TIGHTER: THE PRO IS NEVER CUT, THE OTHER ACTIONS ARE ALWAYS ON SCREEN, AND THE PROS LIST IS GONE. Chad, 10/02, of the \u201cMore:\u201d fold: \u201cDon\u2019t understand why this is in a drawer seems like it should just be fixed nice and tight in 2 rows small text\u201d \u2014 and of the PROs section: \u201cdon\u2019t think this is need on the oder screen pro number is at the top pro should never be hidden and we don\u2019t need the pro text just the number we know what it is.\u201d THE ACTIONS: Street View, Find business, Edit address, Correct pin, Text driver and History now sit in two small rows under Text / Call / Navigate / Ticket / Label \u2014 nothing to open. On a phone the same two rows have thumb-height cells. Hover one for its full name (Correct pin location, the driver\u2019s name); a \u2713 after Correct pin means a custom pin is saved. THE HEADER: just the number (007185553, not \u201cPRO 00718\u2026\u201d), at its full width \u2014 the route label beside it is what shortens now. The phone header gains the copy button the PROs list used to give it. THE PROS LIST is gone from the card: a board order carries exactly one PRO, its own number, which is the header. WHERE: the desktop sidebar (Map and Routing), the phone drawer and the PRO-lookup card. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
@@ -9727,6 +9728,17 @@ function DuplicateOrderPanel({ stop, note }) {
   const formError = form ? duplicateFormError(form, baselineRef.current) : null;
   const edits = form ? duplicateEdits(form, baselineRef.current) : {};
   const editLabels = duplicateChangeLabels(edits, duplicateCountChanges(stop, draft));
+  // v1.109.1 — the form is a large floating window over the page, not a panel inside the card.
+  // Esc and a click on the backdrop close it only while nothing has been typed, so a long edit is
+  // never lost to a stray key or click; Cancel and the ✕ always close.
+  const touched = editLabels.length > 0 || !!String(form?.copyNbr ?? '').trim() || copyPrice;
+  const softCloseRef = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') softCloseRef.current?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
   if (!duplicateEligible(stop)) return null;
   if (!gate.allowed) {
     return (
@@ -9770,6 +9782,8 @@ function DuplicateOrderPanel({ stop, note }) {
     } catch (e) { setMsg({ kind: 'err', created: false, text: e?.message || 'Could not duplicate the order.' }); }
     finally { setBusy(false); }
   };
+  const close = () => { if (busy) return; setOpen(false); setMsg(null); };
+  softCloseRef.current = () => { if (!touched || msg?.created) close(); };
   // 32px under a mouse; index.css's touch floor makes every input 44px under a finger.
   const inputCls = 'mt-0.5 w-full min-h-[32px] border border-slate-300 rounded px-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 disabled:bg-slate-50';
   const labelCls = 'block text-[11px] font-medium text-slate-500 min-w-0';
@@ -9781,86 +9795,133 @@ function DuplicateOrderPanel({ stop, note }) {
     </label>
   );
   const priceTyped = !!String(form?.price ?? '').trim();
+  const sectionCls = 'text-[11px] uppercase tracking-wide font-semibold text-slate-500';
+  const copied = duplicateCopiedFacts(stop, copyNbrDraft(form?.copyNbr).nbr);
+  const route = stop?.routeName || stop?.loadNbr || '';
+  // A portal's events still bubble through React to the card's own handlers; the window keeps them.
+  const swallow = (e) => e.stopPropagation();
   return (
     <div className="pt-1.5">
-      {!open ? (
-        <button type="button" onClick={begin}
-          className="w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-blue-700 border border-blue-200 rounded-md px-3 hover:bg-blue-50 active:bg-blue-100">
-          <Plus size={13} /> Duplicate as a new order
-        </button>
-      ) : (
-        <div className="rounded-md border border-slate-200 p-2 space-y-2" data-duplicate-form>
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-xs uppercase font-semibold text-slate-500">Duplicate as a new order</div>
-            <button type="button" onClick={() => { setOpen(false); setMsg(null); }} aria-label="Close duplicate"
-              className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center text-slate-400 hover:text-slate-700"><X size={14} /></button>
+      <button type="button" onClick={begin}
+        className="w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-blue-700 border border-blue-200 rounded-md px-3 hover:bg-blue-50 active:bg-blue-100">
+        <Plus size={13} /> Duplicate as a new order
+      </button>
+      {/* Chad, 10/03: "if i click duplicate order i want a large floating window to come up not a
+          fullscreen and i don't want to leave the page but i want a large full window so i can see
+          the full route profile when duplicating with all the fields i can change." Rendered on
+          <body>: a transformed drawer or sidebar would otherwise trap a fixed window inside itself.
+          Floating on both views — margins all round and 90% of the height at most, never the whole
+          screen. data-overlay-layer: it EXISTS to cover the page (the layout guards). */}
+      {open && createPortal(
+        <div className="fixed inset-0 z-[1350] flex items-center justify-center p-3 sm:p-6" role="dialog" aria-modal="true"
+          aria-label="Duplicate as a new order" data-overlay-layer
+          onClick={swallow} onMouseDown={swallow} onPointerDown={swallow} onTouchStart={swallow}>
+          <div className="absolute inset-0 bg-black/50" onClick={() => softCloseRef.current?.()} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[90dvh] flex flex-col overflow-hidden" data-duplicate-form>
+            <div className="flex items-center justify-between gap-3 pl-4 pr-2 py-1.5 shrink-0" style={{ background: BRAND, color: 'white' }}>
+              <div className="min-w-0">
+                <div className="font-bold truncate">Duplicate as a new order</div>
+                <div className="text-[11px] text-white/80 flex items-center min-w-0">
+                  <span className="shrink-0 whitespace-nowrap">Copying <span className="font-mono font-semibold">{pro}</span></span>
+                  <span className="truncate">{[stop?.businessName, route, stop?.driverName].filter(Boolean).map((v) => `\u00a0· ${v}`).join('')}</span>
+                </div>
+              </div>
+              <button type="button" onClick={close} disabled={busy} aria-label="Close duplicate"
+                className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center opacity-80 hover:opacity-100 shrink-0 disabled:opacity-40"><X size={20} /></button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 sm:px-4 py-3">
+              <div className="grid gap-x-6 gap-y-3 md:grid-cols-2">
+                <section className="space-y-2 min-w-0">
+                  <h3 className={sectionCls}>The new order</h3>
+                  {field('copyNbr', 'New order number', { placeholder: `${base}-1 (next free)`, autoComplete: 'off' })}
+                  <div className="text-[11px] text-slate-500 leading-snug -mt-1">
+                    Leave blank for <span className="font-mono font-semibold">{base}-1</span>, or the next number NuVizz does not already hold (-2, -3 …). A number you type must not be in NuVizz yet — it is never written over.
+                    {base !== String(pro).trim() && <> Blank numbers from the original <span className="font-mono">{base}</span>, not from this copy.</>}
+                  </div>
+                  {field('name', 'Consignee')}
+                  {field('addr1', 'Address')}
+                  {field('addr2', 'Address 2')}
+                  <div className="grid grid-cols-[minmax(0,1fr)_56px_84px] gap-2">
+                    {field('city', 'City')}
+                    {field('state', 'State', { maxLength: 30, placeholder: asOriginal('state') && 'same' })}
+                    {field('zip', 'ZIP', { inputMode: 'numeric', maxLength: 10, placeholder: asOriginal('zip') && 'same' })}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {field('phone', 'Phone', { inputMode: 'tel', type: 'tel' })}
+                    {field('email', 'Email', { inputMode: 'email', type: 'email' })}
+                  </div>
+                </section>
+                <section className="space-y-2 min-w-0">
+                  <h3 className={sectionCls}>Freight and delivery</h3>
+                  {field('itemDesc', 'Items', { maxLength: 100 })}
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className={labelCls}>Pallets
+                      <input type="number" inputMode="numeric" min="0" step="1" value={pallets} disabled={busy}
+                        onChange={(e) => setPallets(e.target.value)} className={inputCls} />
+                    </label>
+                    <label className={labelCls}>Loose
+                      <input type="number" inputMode="numeric" min="0" step="1" value={loose} placeholder="0" disabled={busy}
+                        onChange={(e) => setLoose(e.target.value)} className={inputCls} />
+                    </label>
+                    <label className={labelCls}>Weight (lbs)
+                      <input type="number" inputMode="decimal" min="0" step="any" value={weight} placeholder="as original" disabled={busy}
+                        onChange={(e) => setWeight(e.target.value)} className={inputCls} />
+                    </label>
+                  </div>
+                  <label className={labelCls}>Delivery day
+                    <input type="date" min={today} value={date} disabled={busy}
+                      onChange={(e) => setDate(e.target.value)} className={inputCls} />
+                  </label>
+                  <label className={labelCls}>Driver instructions
+                    <textarea rows={3} value={form?.dispatchNotes ?? ''} placeholder={asOriginal('dispatchNotes')} disabled={busy} onChange={setField('dispatchNotes')} maxLength={500}
+                      className={inputCls + ' py-1 resize-y'} />
+                  </label>
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">
+                    {field('price', 'Price (Seal #)', { placeholder: 'none', maxLength: 20 })}
+                    <label className="flex items-center gap-1.5 min-h-[32px] text-[11px] text-slate-600 whitespace-nowrap">
+                      <input type="checkbox" checked={copyPrice && !priceTyped} disabled={busy || priceTyped} onChange={(e) => setCopyPrice(e.target.checked)} className="w-4 h-4" />
+                      Copy the original's
+                    </label>
+                  </div>
+                </section>
+              </div>
+              <section className="mt-3 pt-2 border-t border-slate-100" data-duplicate-copied>
+                <h3 className={sectionCls}>Copied from the original as it is</h3>
+                <dl className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-[12px]">
+                  {copied.map((f) => (
+                    <div key={f.key} className="flex gap-2 min-w-0">
+                      <dt className="w-28 shrink-0 text-slate-500">{f.label}</dt>
+                      <dd className="min-w-0 break-words text-slate-800">{f.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <div className="mt-1 text-[11px] text-slate-500 leading-snug">{duplicateNotCopied(stop)} It reaches the board through the scans, as a New Order does.</div>
+              </section>
+            </div>
+            <div className="shrink-0 border-t border-slate-200 px-3 sm:px-4 pt-2 space-y-1.5" style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}>
+              <div className="text-[12px] text-slate-700 leading-snug" data-duplicate-changes>
+                {error
+                  ? <span className="text-red-600">{error}</span>
+                  : <>= <span className="font-semibold">{draft.total} piece{draft.total === 1 ? '' : 's'}</span> on the copy. {editLabels.length
+                    ? <>Changed from the original: <span className="font-semibold">{editLabels.join(', ')}</span>. Everything else is copied.</>
+                    : <>A straight copy — change anything above before you create it.</>}</>}
+              </div>
+              {msg && <div className={'text-[12px] leading-snug break-words ' + (msg.kind === 'ok' ? 'text-green-700' : msg.kind === 'warn' ? 'text-amber-700' : 'text-red-600')}>{msg.text}</div>}
+              {/* The two buttons side by side on one row, as on the ＋ New route window. */}
+              <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+                <span className="mr-auto text-[10px] text-slate-400">about 4 NuVizz calls · up to 6 when {base}-1, -2 … are already taken</span>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button type="button" onClick={close} disabled={busy}
+                    className="px-3 py-1.5 text-sm whitespace-nowrap rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-60">{msg?.created ? 'Close' : 'Cancel'}</button>
+                  <button type="button" onClick={create} disabled={busy || !!error}
+                    className="px-3 py-1.5 text-sm whitespace-nowrap rounded font-semibold text-white disabled:opacity-40"
+                    style={{ background: BRAND }}>{busy ? 'Creating…' : msg?.created ? 'Create another copy' : 'Create the copy in NuVizz'}</button>
+                </div>
+              </div>
+            </div>
           </div>
-          {field('copyNbr', 'New order number', { placeholder: `${base}-1 (next free)`, autoComplete: 'off' })}
-          <div className="text-[11px] text-slate-500 leading-snug -mt-1">
-            Leave blank for <span className="font-mono font-semibold">{base}-1</span>, or the next number NuVizz does not already hold (-2, -3 …). A number you type must not be in NuVizz yet — it is never written over.
-            {base !== String(pro).trim() && <> Blank numbers from the original <span className="font-mono">{base}</span>, not from this copy.</>}
-          </div>
-          {field('name', 'Consignee')}
-          {field('addr1', 'Address')}
-          {field('addr2', 'Address 2')}
-          <div className="grid grid-cols-[minmax(0,1fr)_56px_84px] gap-2">
-            {field('city', 'City')}
-            {field('state', 'State', { maxLength: 30, placeholder: asOriginal('state') && 'same' })}
-            {field('zip', 'ZIP', { inputMode: 'numeric', maxLength: 10, placeholder: asOriginal('zip') && 'same' })}
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            {field('phone', 'Phone', { inputMode: 'tel', type: 'tel' })}
-            {field('email', 'Email', { inputMode: 'email', type: 'email' })}
-          </div>
-          {field('itemDesc', 'Items', { maxLength: 100 })}
-          <div className="grid grid-cols-3 gap-2">
-            <label className={labelCls}>Pallets
-              <input type="number" inputMode="numeric" min="0" step="1" value={pallets} disabled={busy}
-                onChange={(e) => setPallets(e.target.value)} className={inputCls} />
-            </label>
-            <label className={labelCls}>Loose
-              <input type="number" inputMode="numeric" min="0" step="1" value={loose} placeholder="0" disabled={busy}
-                onChange={(e) => setLoose(e.target.value)} className={inputCls} />
-            </label>
-            <label className={labelCls}>Weight (lbs)
-              <input type="number" inputMode="decimal" min="0" step="any" value={weight} placeholder="as original" disabled={busy}
-                onChange={(e) => setWeight(e.target.value)} className={inputCls} />
-            </label>
-          </div>
-          <label className={labelCls}>Delivery day
-            <input type="date" min={today} value={date} disabled={busy}
-              onChange={(e) => setDate(e.target.value)} className={inputCls} />
-          </label>
-          <label className={labelCls}>Driver instructions
-            <textarea rows={2} value={form?.dispatchNotes ?? ''} placeholder={asOriginal('dispatchNotes')} disabled={busy} onChange={setField('dispatchNotes')} maxLength={500}
-              className={inputCls + ' py-1 resize-y'} />
-          </label>
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">
-            {field('price', 'Price (Seal #)', { placeholder: 'none', maxLength: 20 })}
-            <label className="flex items-center gap-1.5 min-h-[32px] text-[11px] text-slate-600 whitespace-nowrap">
-              <input type="checkbox" checked={copyPrice && !priceTyped} disabled={busy || priceTyped} onChange={(e) => setCopyPrice(e.target.checked)} className="w-4 h-4" />
-              Copy the original's
-            </label>
-          </div>
-          <div className="text-[12px] text-slate-700">
-            {error
-              ? <span className="text-red-600">{error}</span>
-              : <>= <span className="font-semibold">{draft.total} piece{draft.total === 1 ? '' : 's'}</span> on the copy</>}
-          </div>
-          <div className="text-[11px] text-slate-600 leading-snug" data-duplicate-changes>
-            {editLabels.length
-              ? <>Changed from the original: <span className="font-semibold">{editLabels.join(', ')}</span>. Everything else is copied.</>
-              : <>A straight copy — change anything above before you create it.</>}
-          </div>
-          <div className="text-[11px] text-slate-500 leading-snug">
-            Always copied: the delivery window's times (on the day you pick), the PO and customer references, and the pickup. Not copied: the route, driver and attachments. It lands <span className="font-semibold">unplanned</span> and reaches the board through the scans, as a New Order does.
-          </div>
-          <button type="button" onClick={create} disabled={busy || !!error}
-            className="w-full min-h-[44px] px-3 text-xs font-semibold text-white rounded disabled:opacity-40"
-            style={{ background: BRAND }}>{busy ? 'Creating…' : msg?.created ? 'Create another copy' : 'Create the copy in NuVizz'}</button>
-          <div className="text-[10px] text-slate-400">about 4 NuVizz calls · up to 6 when {base}-1, -2 … are already taken</div>
-          {msg && <div className={'text-[11px] leading-snug break-words ' + (msg.kind === 'ok' ? 'text-green-700' : msg.kind === 'warn' ? 'text-amber-700' : 'text-red-600')}>{msg.text}</div>}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
