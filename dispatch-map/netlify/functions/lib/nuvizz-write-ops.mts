@@ -30,6 +30,8 @@
 // executor). Both keep this module clean of the no-direct-nuvizz guard and host-agnostic
 // for UAT vs prod.
 
+import { isEstesOrder } from '../../../src/lib/carrier-mark.js';
+
 // The single-record (GET) read ops plus the POST writes. `commitLoad` is an
 // orchestration handled by the executor (a Save batch), not a single request, so it
 // is not in this builder allowlist.
@@ -227,6 +229,11 @@ const numOrNull = (x: any): number | null => {
  * Build the STOP_PAYLOAD (§4). Required row fields: name, addr1, city, state, zip.
  * GOTCHAS baked in (learned live, §4): never send shipForBP or profile on an open
  * import; include a real zip (NuVizz geocodes from the address).
+ *
+ * ONE NAMED EXCEPTION to "never send profile" (§EP, v1.108.0), and it is not made here: this
+ * builder still never emits `profile` (the route import builds its stops from it, and a test
+ * pins that). An ESTES order's profile is added to the stop/sync/update CREATE only, by
+ * withOrderProfile in buildOpRequest — the exact call NuVizz's instruction names.
  */
 // Length-cap a string on CODE POINTS, not UTF-16 units. A plain .slice(n) can cut an
 // emoji/astral char in half, leaving an unpaired surrogate that JSON.stringify emits as
@@ -241,6 +248,61 @@ function safeSlice(v: string, n: number): string {
 // silently replaced with the default rather than sent: NuVizz validates this field, and a
 // typo rejecting the whole create is a worse outcome than a softer window.
 const DELIVER_CONSTRAINTS = new Set(['STRICT', 'UNRESTRICTED', 'PREFERRED']);
+
+// ── §EP  THE ESTES ORDER PROFILE (v1.108.0) ──────────────────────────────────
+// Chad, 10/03: "I created an order profile ... and has a specific parameter that makes anything
+// that's an estes order that's uploaded require three photos. So anytime that we're using the new
+// order creation either for bulk or single and it's an estes order which is notified by the estes
+// at the beginning of the pro this is the format it's supposed to be in." NuVizz, to Chad: "I have
+// configured the ESTES profile in Production with the 3 mandatory images configuration. Please use
+// the below JSON with the Profile name= ESTES to have all the orders of ESTES having the profile as
+// ESTES" — a stop/sync/update body carrying "profile": "ESTES".
+//
+// WHICH ORDERS: the Estes rule the map already paints by (src/lib/carrier-mark.js isEstesOrder —
+// ESTES at the start of the number: ESTES-0778201115, Estes-0828068215; never WESTES-1), read off
+// the order number OR the PRO reference, because the create paths put "ESTES-…" in either:
+// the Manifest push writes it as the order number, New Order takes it in Order # or PRO, and Bulk
+// Add's ref swap (bulkRowNuvizzRefs) carries the grid's Order # out as the shipment number.
+//
+// WHERE: the stop/sync/update create only (buildOpRequest 'createStop') — New Order, Bulk Add's
+// Create orders, the Manifest push, Duplicate and the UAT bench all go through it. NOT the route
+// import (Bulk Add's Create as load, commitBoard useImport): its stops come from buildStopPayload,
+// which still never emits a profile, and nothing in this repo shows that import accepting one.
+//
+// THE WAY BACK: NUVIZZ_ESTES_PROFILE=off (0/false/no) sends every create exactly as before. House
+// shape: default ON, an explicit off-word turns it off, anything malformed leaves it ON. The profile
+// exists in PRODUCTION only (NuVizz's words), so a site writing to another tenant sets it off.
+export const ESTES_PROFILE = 'ESTES';
+
+export function estesProfileEnabled(env: Record<string, any> = process.env): boolean {
+  return !/^(0|false|off|no)$/i.test(String(env.NUVIZZ_ESTES_PROFILE ?? '').trim());
+}
+
+/** The NuVizz order profile a create must carry, or null for none — ESTES for an Estes order. */
+export function orderProfileFor(stop: any, enabled: boolean = estesProfileEnabled()): string | null {
+  if (!enabled || !stop || typeof stop !== 'object') return null;
+  return isEstesOrder(stop.stopNbr) || isEstesOrder(stop.shipmentNbr) ? ESTES_PROFILE : null;
+}
+
+/**
+ * The create's stop with its profile set — or the stop object itself, untouched, when it needs
+ * none, so every other order goes out byte-for-byte as it did before.
+ */
+export function withOrderProfile(stop: any, enabled: boolean = estesProfileEnabled()): any {
+  const profile = orderProfileFor(stop, enabled);
+  return profile ? { ...stop, profile } : stop;
+}
+
+/**
+ * The profile a createStop request built from this op payload will carry ({stop} or {row,settings},
+ * exactly as buildOpRequest reads it) — for the dry run's plan and the created-order ledger, so
+ * both name what the create sends rather than describe it again by hand.
+ */
+export function createProfileFor(payload: any, enabled: boolean = estesProfileEnabled()): string | null {
+  let stop: any = payload?.stop || null;
+  if (!stop && payload?.row) { try { stop = buildStopPayload(payload.row, payload.settings); } catch { stop = null; } }
+  return orderProfileFor(stop, enabled);
+}
 
 export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   const tz = settings.timeZone || 'America/New_York';
@@ -2707,8 +2769,10 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
       return { url: `${base}/user/list/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(ROSTER_BODY), meta: { route: '/user/list', tenant: cc, source: 'live-write' } };
 
     case 'createStop': {
-      const stop = payload?.stop || (payload?.row ? buildStopPayload(payload.row, payload.settings) : null);
-      if (!stop) throw new Error('createStop: missing stop (provide {stop} or {row,settings})');
+      const built = payload?.stop || (payload?.row ? buildStopPayload(payload.row, payload.settings) : null);
+      if (!built) throw new Error('createStop: missing stop (provide {stop} or {row,settings})');
+      // §EP: an ESTES order goes out with NuVizz's ESTES profile (its 3 mandatory photos).
+      const stop = withOrderProfile(built);
       return { url: `${base}/stop/sync/update/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify({ companyCode: cc, stop }), meta: { route: '/stop/sync/update', tenant: cc, source: 'live-write' } };
     }
 

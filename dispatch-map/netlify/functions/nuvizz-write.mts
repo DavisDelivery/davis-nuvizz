@@ -34,7 +34,7 @@
 //     (`identity`). NUVIZZ_PERSONAL_LOGINS=off puts every write back on the shared login;
 //     =required refuses a write with no personal login behind it. See lib/nuvizz-identity.mts.
 
-import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, parsePieceInput, piecesBoardDates, parseCopyWeight, copyBaseNbr, opLedgerStatus, type WriteOp } from './lib/nuvizz-write-ops.mts';
+import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, parsePieceInput, piecesBoardDates, parseCopyWeight, copyBaseNbr, opLedgerStatus, type WriteOp, createProfileFor, orderProfileFor } from './lib/nuvizz-write-ops.mts';
 import { piecesWriteEnabled } from './lib/pieces-hold.mts';
 import { requireUser } from './lib/require-user.mts';
 import { bearerFromHeaders } from './lib/auth-core.mts';
@@ -212,6 +212,15 @@ function planFor(op: WriteOp, payload: any): string[] {
       'VERIFY by reading the order back — the change must be there AND every other field byte-identical',
     ];
   }
+  if (op === 'createStop') {
+    const profile = createProfileFor(payload);
+    const nbr = payload?.stop?.stopNbr ?? payload?.row?.stopNbr ?? '(no order number)';
+    return [
+      `CREATE order ${nbr} (stop/sync/update) → 1 NuVizz call`,
+      // §EP (v1.108.0): said in the plan because it is in the body — the dry run shows what goes.
+      ...(profile ? [`PROFILE ${profile} — NuVizz's ESTES order profile (3 mandatory photos), sent because this is an Estes order`] : []),
+    ];
+  }
   return [`${op} → 1 NuVizz call`];
 }
 
@@ -275,13 +284,13 @@ async function journal(op: WriteOp, payload: any, result: any, tenant: string, c
     // A duplicate is a created order too, and it is journaled the moment NuVizz confirms the create
     // — even when the read-back could not verify it, because the order exists either way.
     if (op === 'duplicateOrder' && result?.created === true && result?.stopNbr) {
-      await recordCreatedOrder({ tenant, stopNbr: result.stopNbr, stopId: result.stopId ?? null, loadNbr: null, status: 'succeeded', createdBy: createdBy || 'dispatcher-duplicate', by, createdAt: new Date().toISOString(), clientOpId, copyOf: result.copyOf ?? null, verified: result.ok === true, nuvizzResponse: result });
+      await recordCreatedOrder({ tenant, stopNbr: result.stopNbr, stopId: result.stopId ?? null, loadNbr: null, status: 'succeeded', createdBy: createdBy || 'dispatcher-duplicate', by, createdAt: new Date().toISOString(), clientOpId, copyOf: result.copyOf ?? null, verified: result.ok === true, profile: orderProfileFor({ stopNbr: result.stopNbr }), nuvizzResponse: result });
     }
     if (op === 'createStop' && result?.ok) {
       // `createdBy` is the SOURCE the client names ('dispatcher', 'dispatcher-bulk',
       // 'dispatcher-manifest') and is kept exactly as sent; `by` is the PERSON — the signed-in
       // account, or null for the pre-login caller. Two facts, two fields.
-      await recordCreatedOrder({ tenant, stopNbr: result.entityNbr, stopId: result.entityId, loadNbr: payload?.loadNbr ?? null, status: 'succeeded', createdBy, by, createdAt: new Date().toISOString(), clientOpId, nuvizzResponse: result });
+      await recordCreatedOrder({ tenant, stopNbr: result.entityNbr, stopId: result.entityId, loadNbr: payload?.loadNbr ?? null, status: 'succeeded', createdBy, by, createdAt: new Date().toISOString(), clientOpId, profile: createProfileFor(payload), nuvizzResponse: result });
     }
     if ((op === 'assignDriver' || op === 'commitLoad') && payload?.driverId != null && payload?.driverId !== '') {
       await recordAssignment({ tenant, date, loadNbr: String(payload?.loadNbr ?? ''), loadId: payload?.loadId ?? result?.loadId ?? null, driverId: payload?.driverId, driverName: payload?.driverName ?? null, status: result?.ok ? 'assigned' : 'failed', assignedAt: new Date().toISOString() });
