@@ -266,6 +266,26 @@ jobs:
         env:
           MOBILE: '1'
           SMOKE_PORT: '8818'
+      # THE MANIFEST LAYOUT PICKER REACHES THE PAPER (v1.111.0). Chad: "i want a way to roll back
+      # to old one if needed in diagnostics screen somewhere i want to be able to pick which
+      # version i'm running." The rules are unit-tested; this is the wiring. It opens Diagnostics →
+      # Manifest layout in the real bundle, switches to the old layout and back, and reads a
+      # Compare card's tickets out of the print bridge after each: the layout on the paper must
+      # follow the picker. A save that fails, a read that fails and a Preview must change nothing.
+      # The desktop run also proves a device nobody touched follows within the refresh interval,
+      # and measures the paper at the page's own width: one delivery a sheet in both layouts, every
+      # new ticket shorter than its old one — and, on a load built to be awkward (a phone field
+      # full of words, a BOL longer than its row, a stop with no street address, names with
+      # nowhere to break), nothing printed over anything else, nothing off the page, no caption
+      # cut in two and nothing inside the 2in staple corner. The endpoint is stood in by the
+      # script; no request leaves the page.
+      - run: npm run verify:print-layout
+        env:
+          SMOKE_PORT: '8821'
+      - run: npm run verify:print-layout
+        env:
+          MOBILE: '1'
+          SMOKE_PORT: '8822'
       # WHAT THE LOADS TAB SHOWS. Chad found the rail listing his built routes twice and the
       # empty trailers nowhere; splitDayLoads is unit-tested, but the defect was WIRING — the
       # panel was handed the wrong list — and no unit test can see that. This drives the real
