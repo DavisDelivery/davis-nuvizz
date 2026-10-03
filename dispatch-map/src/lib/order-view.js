@@ -492,6 +492,18 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
       alert({ key: 'window-closing', tier: 'warn', title: `Delivery window closes in ${left} min`, detail: `At ${minText(window.closeMin)}.`, action: reachDriver || reachCustomer('Call the customer') });
     }
   }
+  // OUR ESTIMATE LANDS AFTER THE WINDOW. Only our anchored model (NuVizz's plan is a median 79 min
+  // off), only when even the early edge of its band is past the close, and labelled an estimate.
+  if (!finished && isToday && etaView?.basis === 'model' && window && window.closeMin != null && eta && num(eta.etaMin) != null) {
+    const band = num(eta.errorMin) ?? 0;
+    const early = num(eta.etaMin) - band;
+    if (early > window.closeMin) {
+      alert({ key: 'eta-after-window', tier: 'warn', estimate: true, title: `Our estimate lands after the window closes`,
+        detail: `About ${minText(num(eta.etaMin))}${band ? ` ±${Math.round(band)} min` : ''} against a ${minText(window.closeMin)} close.`,
+        basis: `${eta.anchored ? 'Measured from the truck’s last recorded stop today.' : 'Projected from the route’s usual departure — no truck time recorded yet today.'} Even the early edge of the estimate, ${minText(early)}, is after the close.`,
+        action: reachCustomer('Call the customer') });
+    }
+  }
   if (etaView?.stale) {
     alert({ key: 'eta-stale', tier: 'warn', title: `Planned ETA ${etaView.text} has passed`, detail: 'Our board shows no arrival yet. The plan is not updated live — ask the driver where the truck is.', action: reachDriver });
   }

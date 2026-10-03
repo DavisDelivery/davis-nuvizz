@@ -282,6 +282,21 @@ test('our anchored ETA outranks NuVizz’s frozen plan, as on the route card; a 
   assert.equal(V({ ...stop, normalizedStatus: 'ARRIVED', arrivalDTTM: `${DAY}T09:50:00` }, { nowMin: 10 * 60 }).when.eta, null, 'arrived: no ETA, the arrival time shows instead');
 });
 
+test('our estimate after the window closes is raised as an estimate — only when even its early edge is late', () => {
+  const stop = FULL({ normalizedStatus: 'OUT_FOR_DEL', scheduledFrom: `${DAY}T07:40:00`, scheduledTo: `${DAY}T10:10:00` });
+  const late = V(stop, { nowMin: 9 * 60 + 40, eta: { etaMin: 13 * 60 + 58, errorMin: 25, anchored: true } });
+  const a = late.alerts.find((x) => x.key === 'eta-after-window');
+  assert.equal(a.tier, 'warn');
+  assert.equal(a.estimate, true);
+  assert.equal(a.detail, 'About 1:58 PM ±25 min against a 10:10 AM close.');
+  assert.equal(a.action.key, 'call-customer');
+  // Inside the band of the close: not raised — the estimate cannot say it is late.
+  assert.equal(V(stop, { nowMin: 9 * 60 + 40, eta: { etaMin: 10 * 60 + 25, errorMin: 25, anchored: true } }).alerts.some((x) => x.key === 'eta-after-window'), false);
+  // NuVizz's plan alone never raises it.
+  const nv = FULL({ normalizedStatus: 'OUT_FOR_DEL', scheduledFrom: `${DAY}T07:40:00`, scheduledTo: `${DAY}T10:10:00`, raw: { stopExecutionInfo: { to: { plannedEtaDTTM: `${DAY}T13:58:00` } } } });
+  assert.equal(V(nv, { nowMin: 9 * 60 + 40 }).alerts.some((x) => x.key === 'eta-after-window'), false);
+});
+
 test('a customer message never carries an estimate, an unplanned "schedule" or an arrival it has not seen', () => {
   const stale = V(FULL({ normalizedStatus: 'OUT_FOR_DEL', raw: { stopExecutionInfo: { to: { plannedEtaDTTM: `${DAY}T09:00:00` } } } }), { nowMin: 11 * 60 });
   assert.equal(stale.when.eta.stale, true);
