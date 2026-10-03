@@ -50,6 +50,13 @@ export interface PublicUser {
   lockedUntil: string | null;
   createdAt: string | null;
   lastLoginAt: string | null;
+  /**
+   * When the password now in force was put there — typed by an admin, generated, or chosen by
+   * the person. Every path that CHANGES the password stamps it. Two that do not change it leave
+   * it alone: an emailed reset link (nothing changes until the link is used) and the sign-in
+   * cost upgrade (the same password, re-hashed). Null on a record that never carried one.
+   */
+  passwordChangedAt: string | null;
 }
 
 export function publicUser(d: any, nowMs = Date.now()): PublicUser {
@@ -65,6 +72,7 @@ export function publicUser(d: any, nowMs = Date.now()): PublicUser {
     lockedUntil: Number.isFinite(until) && until > nowMs ? new Date(until).toISOString() : null,
     createdAt: d?.createdAt || null,
     lastLoginAt: d?.lastLoginAt || null,
+    passwordChangedAt: d?.passwordChangedAt ? String(d.passwordChangedAt) : null,
   };
 }
 

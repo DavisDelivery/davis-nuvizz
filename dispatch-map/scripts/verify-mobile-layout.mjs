@@ -950,6 +950,85 @@ const PROBES = {
       },
     },
     {
+      // An admin TYPING a person's password: the field, Hide, the keep-it / choose-their-own
+      // choice, the warning and Save — with a too-short password in the field, so the amber
+      // rule line is on screen and the form is at its tallest.
+      name: 'a person opened, typing their password',
+      open: async (page) => {
+        // Works from a fresh screen AND from one where an earlier probe left this person's panel
+        // open (the tablet guard runs its probes one after another on the same page): pressing
+        // Manage a second time would open the NEXT person instead of the worst row.
+        const set = page.getByRole('button', { name: /set a password/i }).first();
+        if (!(await set.isVisible().catch(() => false))) {
+          const b = page.getByRole('button', { name: /^manage$/i }).first();
+          if (!(await b.isVisible().catch(() => false))) return false;
+          await b.click();
+          await page.waitForTimeout(400);
+        }
+        if (!(await set.isVisible().catch(() => false))) return false;
+        await set.click();
+        await page.waitForTimeout(300);
+        const field = page.getByLabel(/^new password$/i).first();
+        if (!(await field.isVisible().catch(() => false))) return false;
+        await field.fill('short');
+        await page.waitForTimeout(200);
+        const said = await page.getByText(/password must be at least/i).first().isVisible().catch(() => false);
+        return said && page.getByRole('button', { name: /^save password$/i }).first().isVisible().catch(() => false);
+      },
+      // THE FORM, PRESSED. The unit suite renders these components but cannot press them, and a
+      // Save button whose onClick did nothing passed every test (the adversarial review tried
+      // it). So after the layout is measured the probe drives the form the way an admin does and
+      // reads what the browser SENT — the stub answers any auth-users call with the fixture list.
+      check: async (page) => {
+        const out = [];
+        const sent = [];
+        const onReq = (r) => {
+          if (r.method() !== 'POST' || !r.url().includes('/auth-users')) return;
+          try { sent.push(JSON.parse(r.postData() || '{}')); } catch { sent.push(null); }
+        };
+        page.on('request', onReq);
+        try {
+          const GOOD = 'Dock-door-9-at-5am';
+          const field = page.getByLabel(/^new password$/i).first();
+          const save = page.getByRole('button', { name: /^save password$/i }).first();
+          const setBtn = page.getByRole('button', { name: /set a password/i }).first();
+          if (!(await save.isDisabled())) out.push('Save password can be pressed with a password the server would refuse');
+          if ((await field.getAttribute('type')) !== 'text') out.push('the typed password is not shown as typed');
+          await page.getByRole('button', { name: /^hide$/i }).first().click();
+          if ((await field.getAttribute('type')) !== 'password') out.push('Hide did not mask the field');
+          await page.getByRole('button', { name: /^show$/i }).first().click();
+          if ((await field.getAttribute('type')) !== 'text') out.push('Show did not bring the field back');
+          await field.fill(`${GOOD} `);
+          if (!(await page.getByText(/cannot start or end with a space/i).first().isVisible().catch(() => false))) out.push('a trailing space is not named while it is typed');
+          if (!(await save.isDisabled())) out.push('Save password can be pressed with a trailing space in the field');
+          // Cancel closes, sends nothing, and forgets what was typed.
+          await field.fill(GOOD);
+          await page.getByRole('button', { name: /^cancel$/i }).first().click();
+          await page.waitForTimeout(250);
+          if (sent.length) out.push(`Cancel sent ${JSON.stringify(sent[0])}`);
+          // Nothing below can be pressed with the form still open, so say this and stop.
+          if (await field.isVisible().catch(() => false)) { out.push('Cancel left the form open'); return out; }
+          await setBtn.click();
+          await page.waitForTimeout(250);
+          if ((await field.inputValue().catch(() => '?')) !== '') out.push('a cancelled password was still in the field when the form reopened');
+          // The choice is carried, and Save sends exactly what was typed.
+          await field.fill(GOOD);
+          await page.getByRole('button', { name: /^they choose their own$/i }).first().click();
+          if ((await page.getByRole('button', { name: /^they choose their own$/i }).first().getAttribute('aria-pressed')) !== 'true') out.push('"They choose their own" did not light when pressed');
+          await save.click();
+          await page.waitForTimeout(700);
+          const body = sent[sent.length - 1];
+          if (sent.length !== 1 || !body || body.action !== 'set-password' || body.password !== GOOD || body.mustChange !== true || !body.username) {
+            out.push(`Save sent ${JSON.stringify(sent)} — expected ONE set-password carrying the typed password and mustChange: true`);
+          }
+          if (!(await page.getByText(/^Password set for /).first().isVisible().catch(() => false))) out.push('no "Password set for …" after the server said yes');
+          if (await field.isVisible().catch(() => false)) out.push('the form stayed open after a save the server accepted');
+          if ((await page.locator('body').innerText()).includes(GOOD)) out.push('the typed password is still on screen after the save');
+        } finally { page.off('request', onReq); }
+        return out;
+      },
+    },
+    {
       name: 'add a person open',
       open: async (page) => {
         const b = page.getByRole('button', { name: /add a person/i }).first();
@@ -957,6 +1036,63 @@ const PROBES = {
         await b.click();
         await page.waitForTimeout(300);
         return page.getByRole('button', { name: /add this person/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'add a person, typing their password',
+      open: async (page) => {
+        // "Add a person" is a toggle: pressed on a screen where an earlier probe already opened
+        // the form (the tablet guard), it would CLOSE it. Open it only if it is not open.
+        const typed = page.getByRole('button', { name: /i type their password/i }).first();
+        if (!(await typed.isVisible().catch(() => false))) {
+          const b = page.getByRole('button', { name: /add a person/i }).first();
+          if (!(await b.isVisible().catch(() => false))) return false;
+          await b.click();
+          await page.waitForTimeout(300);
+        }
+        if (!(await typed.isVisible().catch(() => false))) return false;
+        await typed.click();
+        await page.waitForTimeout(300);
+        return page.getByLabel(/^their password$/i).first().isVisible().catch(() => false);
+      },
+      // Pressed, for the same reason as the Manage probe above.
+      check: async (page) => {
+        const out = [];
+        const sent = [];
+        const onReq = (r) => {
+          if (r.method() !== 'POST' || !r.url().includes('/auth-users')) return;
+          try { sent.push(JSON.parse(r.postData() || '{}')); } catch { sent.push(null); }
+        };
+        page.on('request', onReq);
+        try {
+          const GOOD = 'Dock-door-9-at-5am';
+          const add = page.getByRole('button', { name: /add this person/i }).first();
+          await page.getByLabel(/^username/i).first().fill('ops7');
+          await add.click();
+          await page.waitForTimeout(250);
+          // Once it has been sent the form is gone and nothing below can be pressed: say so and stop.
+          if (sent.length) { out.push(`an empty typed password was sent: ${JSON.stringify(sent[0])}`); return out; }
+          if (!(await page.getByText(/type their password, or pick another way/i).first().isVisible().catch(() => false))) out.push('an empty typed password is not refused on screen');
+          // Hidden, then another way, then back: the password must be gone, not back in clear.
+          const field = page.getByLabel(/^their password$/i).first();
+          await field.fill(GOOD);
+          await page.getByRole('button', { name: /^hide$/i }).first().click();
+          await page.getByRole('button', { name: /i give them a temporary one/i }).first().click();
+          await page.waitForTimeout(150);
+          await page.getByRole('button', { name: /i type their password/i }).first().click();
+          await page.waitForTimeout(150);
+          if ((await page.getByLabel(/^their password$/i).first().inputValue().catch(() => '?')) !== '') out.push('a hidden password came back when "I type their password" was chosen again');
+          await page.getByLabel(/^their password$/i).first().fill(GOOD);
+          await add.click();
+          await page.waitForTimeout(700);
+          const body = sent[sent.length - 1];
+          if (sent.length !== 1 || !body || body.action !== 'create' || body.username !== 'ops7' || body.password !== GOOD || body.mustChange !== false || body.sendInvite !== false) {
+            out.push(`Add sent ${JSON.stringify(sent)} — expected ONE create carrying the typed password, mustChange: false and no invite`);
+          }
+          if (!(await page.getByText(/signs in as ops7 with the password you typed/i).first().isVisible().catch(() => false))) out.push('the result does not say how the new person signs in');
+          if ((await page.locator('body').innerText()).includes(GOOD)) out.push('the typed password is shown back after the person was added');
+        } finally { page.off('request', onReq); }
+        return out;
       },
     },
     {

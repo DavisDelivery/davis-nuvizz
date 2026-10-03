@@ -3,13 +3,18 @@
 // caller may do (the legacy principal is refused by `strict`).
 //
 //   GET                                   → { users: [...] }        (never hashes or reset tokens)
-//   POST { action: 'create', username, displayName, email?, role, password?, sendInvite? }
-//        → creates the account. With `password`: stored, mustChangePassword=true. Without:
-//          a temporary password is generated and RETURNED ONCE (read it to the person),
-//          and if the account has an email and Resend is configured, `sendInvite` also
-//          emails a set-password link.
+//   POST { action: 'create', username, displayName, email?, role, password?, mustChange?, sendInvite? }
+//        → creates the account. With `password`: stored, and the person replaces it at sign-in
+//          unless `mustChange: false` says they keep it. Without: a temporary password is
+//          generated and RETURNED ONCE (read it to the person), and if the account has an
+//          email and Resend is configured, `sendInvite` also emails a set-password link.
 //   POST { action: 'update', username, displayName?, email?, role?, active? }
 //        → a role or active change bumps tokenVersion so it takes effect immediately.
+//   POST { action: 'set-password', username, password, mustChange? }
+//        → the admin TYPES the person's password. Never echoed back, never logged. It is theirs
+//          to keep unless `mustChange: true` makes it a one-time password. Signs them out
+//          everywhere, clears a lockout, and kills any reset link still outstanding. Refused
+//          on the admin's own account (auth-change-password asks for the current password).
 //   POST { action: 'reset', username }    → emails a reset link when possible, otherwise
 //                                           returns a temporary password once. Either
 //                                           way every existing session is signed out.
@@ -22,8 +27,8 @@
 
 import { requireUser, readJsonBody, jsonResponse } from './lib/require-user.mts';
 import {
-  ROLES, normalizeRole, normalizeUsername, normalizeEmail, passwordProblem, hashPassword,
-  generateTempPassword, newResetToken, RESET_TTL_MINUTES,
+  ROLES, normalizeRole, normalizeUsername, normalizeEmail, hashPassword,
+  generateTempPassword, newResetToken, RESET_TTL_MINUTES, adminSetPasswordPlan, newAccountPasswordPlan,
 } from './lib/auth-core.mts';
 import {
   getUser, listUsers, createUser, patchUser, bumpTokenVersion, countActiveAdmins, publicUser, newUserDoc,
@@ -70,17 +75,14 @@ export default async (req: Request): Promise<Response> => {
     const role = normalizeRole(body.role);
     if (email && await findUserByEmail(email)) return bad('that email already belongs to another account', 409);
 
-    let password = typeof body.password === 'string' && body.password ? body.password : null;
-    let tempPassword: string | null = null;
-    if (password) {
-      const problem = passwordProblem(password, username);
-      if (problem) return bad(problem);
-    } else {
-      tempPassword = generateTempPassword();
-      password = tempPassword;
-    }
+    // The password: typed by the admin, or generated. Which, and whether the person keeps it, is
+    // auth-core's rule (newAccountPasswordPlan) — decided before anything is created.
+    const plan = newAccountPasswordPlan({ username, password: body.password, mustChange: body.mustChange });
+    if (!plan.ok) return bad(plan.error, plan.status);
+    const tempPassword: string | null = plan.typed ? null : generateTempPassword();
+    const password: string = plan.typed ? body.password : tempPassword;
     const doc = newUserDoc({
-      username, displayName, email, role, passwordHash: await hashPassword(password), mustChangePassword: true, createdBy: admin,
+      username, displayName, email, role, passwordHash: await hashPassword(password), mustChangePassword: plan.mustChange, createdBy: admin,
     });
     const created = await createUser(doc);
     if (!created) return bad('username already exists', 409);
@@ -95,7 +97,7 @@ export default async (req: Request): Promise<Response> => {
       });
       invited = await sendResetEmail(email, { displayName, username, token, invite: true });
     }
-    console.log(`[auth-users] ${admin} created user=${username} role=${role} invited=${invited}`);
+    console.log(`[auth-users] ${admin} created user=${username} role=${role} invited=${invited} typed=${plan.typed} mustChange=${plan.mustChange}`);
     return jsonResponse({ ok: true, user: publicUser(doc), tempPassword, invited });
   }
 
@@ -136,6 +138,41 @@ export default async (req: Request): Promise<Response> => {
     console.log(`[auth-users] ${admin} updated user=${username} fields=${Object.keys(fields).join(',')} revoke=${revoke}`);
     const fresh = await getUser(username);
     return jsonResponse({ ok: true, user: listed(fresh || { ...doc, ...fields }) });
+  }
+
+  // ── set-password ──────────────────────────────────────────────────────────
+  //
+  // ONE WRITE. The new hash, the lockout cleared, the outstanding reset link killed and the
+  // tokenVersion bump all land in a single commit (bumpTokenVersion), so THIS handler leaves no
+  // half-applied state behind if the function dies in the middle. (What it cannot do is stop
+  // another request that had already read the record — a wrong-password counter, a reset link
+  // being confirmed at that instant — from writing after it; `reset` and `unlock` share that.)
+  // "Signed out" means what it means everywhere here: the next read of the record refuses the
+  // old sessions, which a warm instance does within its 30-second cache (require-user.mts).
+  // The password is hashed here and goes nowhere else: not into the response, not into the log.
+  if (action === 'set-password') {
+    const plan = adminSetPasswordPlan({ actor: admin, target: username, password: body.password, mustChange: body.mustChange });
+    if (!plan.ok) return bad(plan.error, plan.status);
+    const fields: Record<string, any> = {
+      passwordHash: await hashPassword(body.password),
+      passwordChangedAt: new Date().toISOString(),
+      mustChangePassword: plan.mustChange,
+      resetTokenHash: null,
+      resetExpiresAt: null,
+      failedAttempts: 0,
+      lockedUntil: null,
+    };
+    await bumpTokenVersion(doc, fields);
+    console.log(`[auth-users] ${admin} set password user=${username} mustChange=${plan.mustChange}`);
+    // THE WRITE HAS LANDED. From here nothing may turn it into an error: the person is already
+    // signed out and the new password is already the one in force, so "the server had a problem"
+    // would be false about the only thing that matters — and would leave an admin believing the
+    // old password still works. A read-back that fails is answered from what was just written.
+    let fresh: any = null;
+    try { fresh = await getUser(username); } catch (e: any) {
+      console.warn(`[auth-users] set password user=${username}: read-back failed (${e?.message || e}); answering from the write`);
+    }
+    return jsonResponse({ ok: true, mustChange: plan.mustChange, user: listed(fresh || { ...doc, ...fields }) });
   }
 
   // ── reset ─────────────────────────────────────────────────────────────────

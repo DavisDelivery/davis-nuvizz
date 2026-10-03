@@ -92,6 +92,33 @@ const PROBES = {
       },
     },
     {
+      // An admin TYPING a person's password: the field, Hide, the keep-it / choose-their-own
+      // choice, the warning and Save — with a too-short password in the field, so the amber
+      // rule line is on screen and the form is at its tallest.
+      name: 'a person opened, typing their password',
+      open: async (page) => {
+        // Works from a fresh screen AND from one where an earlier probe left this person's panel
+        // open (the tablet guard runs its probes one after another on the same page): pressing
+        // Manage a second time would open the NEXT person instead of the worst row.
+        const set = page.getByRole('button', { name: /set a password/i }).first();
+        if (!(await set.isVisible().catch(() => false))) {
+          const b = page.getByRole('button', { name: /^manage$/i }).first();
+          if (!(await b.isVisible().catch(() => false))) return false;
+          await b.click();
+          await page.waitForTimeout(400);
+        }
+        if (!(await set.isVisible().catch(() => false))) return false;
+        await set.click();
+        await page.waitForTimeout(300);
+        const field = page.getByLabel(/^new password$/i).first();
+        if (!(await field.isVisible().catch(() => false))) return false;
+        await field.fill('short');
+        await page.waitForTimeout(200);
+        const said = await page.getByText(/password must be at least/i).first().isVisible().catch(() => false);
+        return said && page.getByRole('button', { name: /^save password$/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
       name: 'add a person open',
       open: async (page) => {
         const b = page.getByRole('button', { name: /add a person/i }).first();
@@ -99,6 +126,24 @@ const PROBES = {
         await b.click();
         await page.waitForTimeout(300);
         return page.getByRole('button', { name: /add this person/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'add a person, typing their password',
+      open: async (page) => {
+        // "Add a person" is a toggle: pressed on a screen where an earlier probe already opened
+        // the form (the tablet guard), it would CLOSE it. Open it only if it is not open.
+        const typed = page.getByRole('button', { name: /i type their password/i }).first();
+        if (!(await typed.isVisible().catch(() => false))) {
+          const b = page.getByRole('button', { name: /add a person/i }).first();
+          if (!(await b.isVisible().catch(() => false))) return false;
+          await b.click();
+          await page.waitForTimeout(300);
+        }
+        if (!(await typed.isVisible().catch(() => false))) return false;
+        await typed.click();
+        await page.waitForTimeout(300);
+        return page.getByLabel(/^their password$/i).first().isVisible().catch(() => false);
       },
     },
   ],

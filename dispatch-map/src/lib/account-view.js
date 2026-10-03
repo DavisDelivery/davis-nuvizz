@@ -199,6 +199,110 @@ export function resetAnswer(r, { email, asked } = {}) {
   return { error: `The reset email to ${email || 'them'} did not go out, so no link was sent. They are already signed out everywhere — use New temporary password to give them one instead.` };
 }
 
+// ── a password the admin types for someone ───────────────────────────────────
+//
+// Chad, 2026-10-03: "I want to be able to set their password, reset it …". The admin types the
+// password (auth-users.mts 'set-password', or `password` on 'create') and says whether the person
+// keeps it. Every sentence about what that does is decided here.
+//
+// `gated` — in all four functions — is whether THIS BUILD puts the sign-in screen in front of the
+// board (App.jsx LOGIN_MODE === 'server'). The screen that makes a person replace a one-time
+// password lives on that gate (lib/auth-gate.js 'must-change'), so before sign-in is switched on
+// NOTHING makes them replace it. A sentence promising it will would be a guess.
+
+/**
+ * A password the admin types and then TELLS someone cannot start or end with a space — the
+ * server's rule (netlify/functions/lib/auth-core.mts typedPasswordEdgeProblem), mirrored so the
+ * form can say it while it is being typed. A box that shows the password does not show a trailing
+ * space. test/admin-set-password-screen.test.mjs pins the two against each other.
+ */
+export function typedPasswordEdgeProblem(pw) {
+  return typeof pw === 'string' && pw.length > 0 && /^\s|\s$/.test(pw) ? 'password cannot start or end with a space' : null;
+}
+
+/** The two things a typed password can be, in the words on the buttons. */
+export const TYPED_PASSWORD_CHOICES = [
+  { mustChange: false, label: 'They keep it' },
+  { mustChange: true, label: 'They choose their own' },
+];
+
+/** Said under the choice, before the admin commits to it. */
+export function typedPasswordHint({ mustChange, gated = true } = {}) {
+  if (!mustChange) return 'It is their password until someone changes it.';
+  return gated
+    ? 'It gets them in once: the board does not open until they have chosen their own.'
+    : 'Sign-in is not switched on yet, so nothing asks them to choose their own until it is. This password keeps working until then.';
+}
+
+const chooseTheirOwn = (must, gated) => (!must ? ''
+  : gated ? ' They will be asked to choose their own before the board opens.'
+    : ' They will be asked to choose their own once sign-in is switched on; it keeps working until then.');
+
+/**
+ * What the admin is told once the SERVER has stored a typed password — or null for a refused
+ * call, which the screen has already put on its error line. Whether the person must replace it is
+ * read from what the server sent back (the row it re-read after the write), never from which
+ * button was lit when Save was pressed.
+ */
+export function setPasswordAnswer(r, { name, username, gated = true } = {}) {
+  if (!r?.ok) return null;
+  const must = (r.user ? r.user.mustChangePassword : r.mustChange) === true;
+  // An account that is turned off is refused at sign-in whatever its password (auth-login.mts),
+  // so "they sign in with it" would be false. The password is set; the account still has to go on.
+  if (r.user?.active === false) {
+    return `Password set for ${name || username}. Their account is off, so they cannot sign in with it until the account is turned back on.${chooseTheirOwn(must, gated)}`;
+  }
+  return `Password set for ${name || username}. They were signed out everywhere, and sign in as ${username} with the password you typed.${chooseTheirOwn(must, gated)}`;
+}
+
+/** Said above the Save button: what pressing it does to this particular account. */
+export function setPasswordWarning(user) {
+  const name = user?.displayName || user?.username || 'this person';
+  if (user?.active === false) return `This account is off. Saving sets the password, but ${name} cannot sign in until the account is turned back on.`;
+  return `Saving this signs ${name} out everywhere${user?.locked ? ' and unlocks the account' : ''}.`;
+}
+
+/**
+ * How a GENERATED temporary password is handed over. Until this was written the box said the
+ * person would "pick their own password straight away" on every build — true only where the
+ * sign-in screen is in front of the board.
+ */
+export function tempPasswordHandover({ gated = true } = {}) {
+  return gated
+    ? 'and pick their own password straight away.'
+    : 'with it. Sign-in is not switched on yet, so nothing asks them to pick their own until it is.';
+}
+
+/** The same, for a person just added with a typed password. */
+export function typedPasswordAdded({ name, username, mustChange, gated = true } = {}) {
+  return `${name || username} signs in as ${username} with the password you typed.${chooseTheirOwn(mustChange === true, gated)}`;
+}
+
+/**
+ * { tone, text } for the password an account holds, from what the server sent — or null when it
+ * sent nothing worth a line (no stamp, on a password nobody has to replace).
+ *
+ * "Temporary" is the server's mustChangePassword and nothing else. The date is the last time the
+ * password itself changed (auth-store PublicUser.passwordChangedAt): an emailed reset link that
+ * has not been used yet does not move it.
+ */
+export function passwordStatus(user, { gated = true } = {}) {
+  if (!user) return null;
+  const name = user.displayName || user.username || 'This person';
+  // A stamp that is not a date is treated as no stamp: "last changed —" tells nobody anything.
+  const stamped = user.passwordChangedAt && Number.isFinite(Date.parse(String(user.passwordChangedAt)));
+  const changed = stamped ? ` Password last changed ${fmtWhen(user.passwordChangedAt)}.` : '';
+  if (user.mustChangePassword === true) {
+    return {
+      tone: 'warn',
+      text: `${gated
+        ? `Temporary password: ${name} has to choose their own before the board opens.`
+        : `Temporary password. Sign-in is not switched on yet, so nothing asks ${name} to choose their own until it is.`}${changed}`,
+    };
+  }
+  return changed ? { tone: 'none', text: changed.trim() } : null;
+}
+
 // ── creating a person ────────────────────────────────────────────────────────
 
 // The server's own rule (netlify/functions/lib/auth-core.mts USERNAME_RE), mirrored so the form

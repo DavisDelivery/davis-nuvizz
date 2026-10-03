@@ -328,6 +328,84 @@ export function generateTempPassword(len = 14): string {
   return out;
 }
 
+// ── A password an admin types for someone else ───────────────────────────────
+//
+// Chad, 2026-10-03: "I want to be able to set their password, reset it …". Until that day the
+// only password an admin could hand anyone was a GENERATED one the person then had to replace.
+// These two functions are the whole rule for a password an admin TYPES — when the account is
+// made, or on it afterwards. auth-users.mts hashes what they pass and decides nothing itself.
+
+export type PasswordPlanRefusal = { ok: false; status: 400 | 409; error: string };
+export type SetPasswordPlan = { ok: true; mustChange: boolean } | PasswordPlanRefusal;
+export type NewAccountPasswordPlan = { ok: true; typed: boolean; mustChange: boolean } | PasswordPlanRefusal;
+
+const MUST_CHANGE_SHAPE: PasswordPlanRefusal = { ok: false, status: 400, error: 'mustChange must be true or false' };
+
+/**
+ * PURE. A password somebody ELSE types and then tells the person must not start or end with a
+ * space: said aloud or written on a note, that space is the part that goes missing, and neither
+ * the sign-in screen nor auth-login trims — so the person is refused with exactly what they were
+ * told. A box that shows the password as typed does not show a trailing space either.
+ *
+ * Deliberately NOT part of passwordProblem: a person choosing their OWN password knows what they
+ * typed. This is only for a password that has to survive being passed on. Mirrored on the screen
+ * by src/lib/account-view.js typedPasswordEdgeProblem.
+ */
+export function typedPasswordEdgeProblem(pw: any): string | null {
+  return typeof pw === 'string' && pw.length > 0 && /^\s|\s$/.test(pw) ? 'password cannot start or end with a space' : null;
+}
+
+/**
+ * PURE. `actor` (an admin) puts `password` on `target`'s EXISTING account.
+ *
+ *  • Never on the admin's own account. Your own password has one door, auth-change-password:
+ *    it asks for the CURRENT password and hands back a fresh session. This action does neither —
+ *    it would sign the admin out of the very screen they pressed it on. (It is not a security
+ *    boundary on its own: `reset` has always been able to hand an admin a temporary password for
+ *    their own account, and that is left exactly as it was.)
+ *  • The same policy as every other password on the site (passwordProblem) — an admin typing it
+ *    does not make a short password a good one.
+ *  • `mustChange` — absent means NO: this is the password the admin chose, and it stays the
+ *    person's. `true` makes it a one-time password the person replaces before the board opens.
+ *    Anything that is not a boolean is refused, never read as one of the two.
+ */
+export function adminSetPasswordPlan(args: { actor: any; target: any; password: any; mustChange?: any }): SetPasswordPlan {
+  const actor = String(args?.actor ?? '');
+  const target = String(args?.target ?? '');
+  if (!target) return { ok: false, status: 400, error: 'username required' };
+  if (actor && actor === target) {
+    return { ok: false, status: 409, error: 'you cannot set your own password here — use Change password, which asks for your current one' };
+  }
+  if (typeof args?.password !== 'string' || !args.password) return { ok: false, status: 400, error: 'password required' };
+  const problem = typedPasswordEdgeProblem(args.password) || passwordProblem(args.password, target);
+  if (problem) return { ok: false, status: 400, error: problem };
+  const mc = args?.mustChange;
+  if (mc !== undefined && mc !== null && typeof mc !== 'boolean') return MUST_CHANGE_SHAPE;
+  return { ok: true, mustChange: mc === true };
+}
+
+/**
+ * PURE. The password half of CREATING an account.
+ *
+ *  • Nothing typed → `typed: false`: the endpoint generates one, and a generated password is
+ *    ALWAYS temporary. Asking for a generated password the person keeps is refused — nobody chose
+ *    it, and its only copy is the one shown once on the admin's screen.
+ *  • A typed password → `mustChange` absent keeps what this endpoint has always done (the person
+ *    replaces it at sign-in); `false` lets them keep it.
+ */
+export function newAccountPasswordPlan(args: { username: any; password: any; mustChange?: any }): NewAccountPasswordPlan {
+  const mc = args?.mustChange;
+  if (mc !== undefined && mc !== null && typeof mc !== 'boolean') return MUST_CHANGE_SHAPE;
+  const typed = typeof args?.password === 'string' && args.password.length > 0;
+  if (!typed) {
+    if (mc === false) return { ok: false, status: 400, error: 'a password you do not type is temporary — type one for them to keep it' };
+    return { ok: true, typed: false, mustChange: true };
+  }
+  const problem = typedPasswordEdgeProblem(args.password) || passwordProblem(args.password, args?.username == null ? null : String(args.username));
+  if (problem) return { ok: false, status: 400, error: problem };
+  return { ok: true, typed: true, mustChange: mc !== false };
+}
+
 // ── Secret comparison ────────────────────────────────────────────────────────
 
 /** Constant-time string equality via digests (lengths never leak either). */

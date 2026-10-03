@@ -5,6 +5,7 @@
 // username, a long name and a long email, a NuVizz username that runs past a phone's width,
 // every NuVizz badge the screen can show (working, refused with NuVizz's own long sentence,
 // saved-but-untested, none), a locked account, a temporary password and an account turned off.
+// Every row carries passwordChangedAt, so the Manage panel's password line is on screen too.
 //
 // No real person's name and no company address: see test/no-lifelike-addresses.test.mjs and
 // test/no-env-value-literals.test.mjs.
@@ -28,7 +29,7 @@ export const ACCOUNT_MINE = {
   login: { saved: true, username: 'owner.nuvizz.login', savedAt: AT, savedBy: 'owner', check: OK, rejected: null },
 };
 
-const base = { active: true, mustChangePassword: false, locked: false, lockedUntil: null, createdAt: AT };
+const base = { active: true, mustChangePassword: false, locked: false, lockedUntil: null, createdAt: AT, passwordChangedAt: AT };
 
 /** GET auth-users. */
 export const ACCOUNT_USERS = {

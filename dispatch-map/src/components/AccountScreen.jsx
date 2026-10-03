@@ -26,10 +26,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   KeyRound, UserPlus, Users, ShieldCheck, LogOut, RefreshCw, Loader2, Check, AlertTriangle,
-  Copy, Lock, Unlock, Mail, Info, CircleDashed, UserCog,
+  Copy, Lock, Unlock, Mail, Info, CircleDashed, UserCog, Eye, EyeOff,
 } from 'lucide-react';
 import { getSession, subscribeSession } from '../lib/session.js';
-import { signIn, signOut, changePassword, fetchMe, passwordProblem } from '../lib/auth-client.js';
+import { signIn, signOut, changePassword, fetchMe, passwordProblem, PASSWORD_MIN } from '../lib/auth-client.js';
 import {
   fetchNuvizzLogin, saveNuvizzLogin, testNuvizzLogin, removeNuvizzLogin, siteMode,
   fetchUsers, userAction, bootstrapFirstAdmin,
@@ -37,6 +37,8 @@ import {
 import {
   fmtWhen, modeSentence, nuvizzBadge, checkLine, readiness, rolloutSteps,
   newPersonProblem, nuvizzUsernameProblem, ROLE_CHOICES, resetAnswer,
+  TYPED_PASSWORD_CHOICES, typedPasswordHint, setPasswordAnswer, typedPasswordAdded, passwordStatus,
+  typedPasswordEdgeProblem, setPasswordWarning, tempPasswordHandover,
 } from '../lib/account-view.js';
 import { useSortable, SortableTh } from '../lib/useSortable.jsx';
 
@@ -57,7 +59,9 @@ const inputCls = (m) => (m
 // the most a page can do. The sign-in, first-admin and change-password forms stay real forms:
 // those ARE this site's login, and a password manager saving them is exactly right.
 const NO_SAVE = { autoComplete: 'off', 'data-1p-ignore': 'true', 'data-lpignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other' };
-const onEnter = (fn) => (e) => { if (e.key === 'Enter' && !e.nativeEvent?.isComposing) { e.preventDefault(); fn(); } };
+// Enter in a FIELD saves; Enter on a BUTTON presses that button. These groups hold buttons too
+// (Cancel, Hide, the two-way choices), and without the tagName check Enter on Cancel saved.
+const onEnter = (fn) => (e) => { if (e.key === 'Enter' && !e.nativeEvent?.isComposing && e.target?.tagName !== 'BUTTON') { e.preventDefault(); fn(); } };
 
 const BTN = {
   primary: 'bg-sky-600 text-white hover:bg-sky-700 active:bg-sky-700 border border-sky-600',
@@ -147,7 +151,7 @@ const TONE_DOT = { ok: 'bg-emerald-500', warn: 'bg-amber-500', bad: 'bg-rose-500
 const TONE_RANK = { bad: 0, warn: 1, none: 2, ok: 3 };
 
 // The one place a temporary password is shown — once, with who it is for and what happens next.
-function TempPasswordBox({ m, displayName, username, password, emailed }) {
+export function TempPasswordBox({ m, displayName, username, password, emailed, gated = true }) {
   const [copied, setCopied] = useState('');
   const copy = async () => {
     try { await navigator.clipboard.writeText(password); setCopied('Copied.'); }
@@ -158,13 +162,64 @@ function TempPasswordBox({ m, displayName, username, password, emailed }) {
       <div className="text-[13px] text-amber-900 leading-snug">
         {emailed
           ? <>A link to set a password was emailed to {displayName}. If it does not arrive, give them this temporary password instead:</>
-          : <>Give this to {displayName} — in person or by phone. It is shown <b>once</b>. They sign in as <b className="break-all">{username}</b> and pick their own password straight away.</>}
+          : <>Give this to {displayName} — in person or by phone. It is shown <b>once</b>. They sign in as <b className="break-all">{username}</b> {tempPasswordHandover({ gated })}</>}
       </div>
       <div className="flex items-center gap-2 flex-wrap">
         <code className={`${m ? 'text-lg' : 'text-base'} font-mono font-bold tracking-wider text-slate-900 bg-white border border-amber-200 rounded px-2 py-1 break-all`}>{password}</code>
         <Btn m={m} onClick={copy}><Copy size={14} /> Copy</Btn>
       </div>
       {copied && <div className="text-[12px] text-amber-900">{copied}</div>}
+    </div>
+  );
+}
+
+// A PASSWORD THE ADMIN TYPES FOR SOMEONE ELSE (Chad, 2026-10-03: "I want to be able to set their
+// password, reset it"). Used where a person is added and where one is managed. Two things about it
+// are deliberate.
+//
+// IT IS NOT THIS SITE'S LOGIN FOR THE PERSON AT THE KEYBOARD. In a <form>, or as an ordinary
+// new-password field, the browser offers to save it — over the admin's OWN saved password for this
+// site. So, exactly like the NuVizz fields, it sits outside any form and carries NO_SAVE.
+//
+// IT IS SHOWN AS TYPED. The admin has to read it to the person anyway, there is no second "again"
+// field to catch a slip, and a password mistyped blind is one nobody can sign in with — eight tries
+// later the account is locked. Hide is one tap away in a crowded office.
+const sentenceOf = (p) => (p ? `${p.charAt(0).toUpperCase()}${p.slice(1)}.` : '');
+// Everything the server will refuse about a password an admin types (auth-core adminSetPasswordPlan):
+// the edge-space rule that applies only to a password somebody else is told, then the site's policy.
+const typedProblem = (pw, username) => typedPasswordEdgeProblem(pw) || passwordProblem(pw, username);
+const groupLabel = (m) => (m ? 'text-[12px] font-semibold uppercase tracking-wide text-slate-500' : 'text-xs font-semibold text-slate-600');
+
+export function TypedPasswordFields({ m, label, username, value, onChange, mustChange, onMustChange, disabled, gated }) {
+  const [hidden, setHidden] = useState(false);
+  const problem = value ? typedProblem(value, username) : null;
+  return (
+    <div className="flex flex-col gap-3 min-w-0">
+      <div className="flex flex-col gap-1 min-w-0">
+        <div className={m ? 'flex flex-col gap-2' : 'flex flex-wrap items-end gap-2'}>
+          <div className={m ? 'min-w-0' : 'min-w-0 flex-1 max-w-[340px]'}>
+            <Field m={m} label={label}>
+              <input type={hidden ? 'password' : 'text'} name="person-typed-secret" {...NO_SAVE} autoCapitalize="none" autoCorrect="off" spellCheck="false"
+                value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} className={`${inputCls(m)} font-mono`} />
+            </Field>
+          </div>
+          <Btn m={m} onClick={() => setHidden((v) => !v)} aria-pressed={hidden} disabled={disabled}>
+            {hidden ? <><Eye size={15} /> Show</> : <><EyeOff size={15} /> Hide</>}
+          </Btn>
+        </div>
+        <span className="text-[12px] text-slate-500 leading-snug">At least {PASSWORD_MIN} characters. Not their username, not one repeated character.</span>
+        {problem && <span role="status" className="text-[12px] font-semibold text-amber-800 leading-snug">{sentenceOf(problem)}</span>}
+      </div>
+      <div className="flex flex-col gap-1.5 min-w-0">
+        <span className={groupLabel(m)}>After they sign in with it</span>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="After they sign in with it">
+          {TYPED_PASSWORD_CHOICES.map((c) => (
+            <Btn key={String(c.mustChange)} m={m} kind={mustChange === c.mustChange ? 'primary' : 'secondary'} aria-pressed={mustChange === c.mustChange}
+              disabled={disabled} onClick={() => onMustChange(c.mustChange)}>{c.label}</Btn>
+          ))}
+        </div>
+        <span className="text-[12px] text-slate-500 leading-snug break-words">{typedPasswordHint({ mustChange, gated })}</span>
+      </div>
     </div>
   );
 }
@@ -504,40 +559,59 @@ function MyNuvizzCard({ m, mine, mode, onUpdated }) {
 
 // ── everyone (admins) ────────────────────────────────────────────────────────
 
-function AddPersonForm({ m, mailConfigured, mode, site, onCreated, onClose }) {
+export function AddPersonForm({ m, mailConfigured, mode, site, gated, onCreated, onClose }) {
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('dispatcher');
-  const [invite, setInvite] = useState(false);
+  const [how, setHow] = useState('temp');           // 'temp' | 'typed' | 'invite' — how they get a password
+  const [pw, setPw] = useState('');
+  const [pwMust, setPwMust] = useState(false);
   const [nvUser, setNvUser] = useState('');
   const [nvPass, setNvPass] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [result, setResult] = useState(null);
 
-  const reset = () => { setUsername(''); setDisplayName(''); setEmail(''); setRole('dispatcher'); setInvite(false); setNvUser(''); setNvPass(''); setErr(''); setResult(null); };
+  const reset = () => { setUsername(''); setDisplayName(''); setEmail(''); setRole('dispatcher'); setHow('temp'); setPw(''); setPwMust(false); setNvUser(''); setNvPass(''); setErr(''); setResult(null); };
   const canInvite = !!email.trim() && mailConfigured;
+  // An emailed link needs an address to go to: with the email box emptied again, the choice falls
+  // back to the temporary password rather than sending a request the server cannot honour.
+  const way = how === 'invite' && !canInvite ? 'temp' : how;
+  // A typed password lives only while "I type their password" is the chosen way. Picking another
+  // drops it — otherwise coming back would show, in clear, a password that had been hidden.
+  useEffect(() => { if (way !== 'typed') { setPw(''); setPwMust(false); } }, [way]);
   const cost = Number(site?.checkCalls) || null;
 
   const submit = async (e) => {
     e?.preventDefault?.();
     if (busy) return;
+    const u = username.trim().toLowerCase();
+    const typed = way === 'typed';
     const p = newPersonProblem({ username, email, role })
+      || (typed ? (pw ? sentenceOf(typedProblem(pw, u)) : 'Type their password, or pick another way for them to get one.') : null)
       || (nvUser.trim() || nvPass ? (nuvizzUsernameProblem(nvUser) || (!nvPass ? 'Enter their NuVizz password too, or leave both NuVizz fields empty.' : null)) : null);
     if (p) { setErr(p); return; }
     setErr(''); setBusy(true);
-    const u = username.trim().toLowerCase();
     const name = displayName.trim() || u;
-    const r = await userAction({ action: 'create', username: u, displayName: name, email: email.trim() || undefined, role, sendInvite: invite && canInvite });
+    const r = await userAction({
+      action: 'create', username: u, displayName: name, email: email.trim() || undefined, role, sendInvite: way === 'invite',
+      ...(typed ? { password: pw, mustChange: pwMust } : {}),
+    });
     if (!r.ok) { setBusy(false); setErr(r.error); return; }
-    const out = { username: u, displayName: name, tempPassword: r.tempPassword || null, invited: !!r.invited, nuvizz: null };
+    // Whether they must replace it is what the SERVER stored (the row it sent back), not which
+    // button was lit when this was pressed.
+    const out = {
+      username: u, displayName: name, tempPassword: r.tempPassword || null, invited: !!r.invited, nuvizz: null,
+      typed, mustChange: r.user?.mustChangePassword === true,
+    };
     if (nvUser.trim() && nvPass) {
       const n = await saveNuvizzLogin({ username: u, nuvizzUsername: nvUser.trim(), nuvizzPassword: nvPass });
       out.nuvizz = n.ok ? { ok: true, line: checkLine(n.check) } : { ok: false, error: n.error };
     }
     setBusy(false);
     setNvPass('');
+    setPw('');
     setResult(out);
     onCreated?.();
   };
@@ -545,7 +619,8 @@ function AddPersonForm({ m, mailConfigured, mode, site, onCreated, onClose }) {
   if (result) {
     return (
       <Card m={m} title={`${result.displayName} added`} icon={<Check size={16} className="text-emerald-600" />}>
-        {result.tempPassword && <TempPasswordBox m={m} displayName={result.displayName} username={result.username} password={result.tempPassword} emailed={result.invited} />}
+        {result.tempPassword && <TempPasswordBox m={m} displayName={result.displayName} username={result.username} password={result.tempPassword} emailed={result.invited} gated={gated} />}
+        {result.typed && !result.tempPassword && <Notice tone="info">{typedPasswordAdded({ name: result.displayName, username: result.username, mustChange: result.mustChange, gated })}</Notice>}
         {result.nuvizz?.ok && <Notice tone="info">NuVizz login saved and tested: {result.nuvizz.line}</Notice>}
         {result.nuvizz && !result.nuvizz.ok && <Notice tone="bad">The account was created, but their NuVizz login was not saved: {result.nuvizz.error} Set it from their row below.</Notice>}
         {!result.nuvizz && <Notice tone="none">No NuVizz login saved yet — they can add their own under Account &amp; logins, or you can from their row below.</Notice>}
@@ -577,15 +652,20 @@ function AddPersonForm({ m, mailConfigured, mode, site, onCreated, onClose }) {
             </select>
           </Field>
         </div>
-        {canInvite && (
+        <div className="flex flex-col gap-3 min-w-0">
           <div className="flex flex-col gap-1.5">
-            <span className={m ? 'text-[12px] font-semibold uppercase tracking-wide text-slate-500' : 'text-xs font-semibold text-slate-600'}>How they get a password</span>
+            <span className={groupLabel(m)}>How they get a password</span>
             <div className="flex flex-wrap gap-2" role="group" aria-label="How they get a password">
-              <Btn m={m} kind={!invite ? 'primary' : 'secondary'} aria-pressed={!invite} onClick={() => setInvite(false)}>I give them a temporary one</Btn>
-              <Btn m={m} kind={invite ? 'primary' : 'secondary'} aria-pressed={invite} onClick={() => setInvite(true)}><Mail size={15} /> Email them a link</Btn>
+              <Btn m={m} kind={way === 'temp' ? 'primary' : 'secondary'} aria-pressed={way === 'temp'} disabled={busy} onClick={() => setHow('temp')}>I give them a temporary one</Btn>
+              <Btn m={m} kind={way === 'typed' ? 'primary' : 'secondary'} aria-pressed={way === 'typed'} disabled={busy} onClick={() => setHow('typed')}><KeyRound size={15} /> I type their password</Btn>
+              {canInvite && <Btn m={m} kind={way === 'invite' ? 'primary' : 'secondary'} aria-pressed={way === 'invite'} disabled={busy} onClick={() => setHow('invite')}><Mail size={15} /> Email them a link</Btn>}
             </div>
           </div>
-        )}
+          {way === 'typed' && (
+            <TypedPasswordFields m={m} label="Their password" username={username.trim().toLowerCase()}
+              value={pw} onChange={setPw} mustChange={pwMust} onMustChange={setPwMust} disabled={busy} gated={gated} />
+          )}
+        </div>
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 flex flex-col gap-3">
           <div className="text-[13px] text-slate-700 leading-snug">
             <b>Their NuVizz login</b> (optional — they can add it themselves). Saved only if NuVizz accepts it{cost ? `; ${cost} NuVizz calls` : ''}.
@@ -610,21 +690,26 @@ function AddPersonForm({ m, mailConfigured, mode, site, onCreated, onClose }) {
   );
 }
 
-function PersonManage({ m, me, user, mailConfigured, mode, site, onChanged, onReload }) {
+export function PersonManage({ m, me, user, mailConfigured, mode, site, gated, onChanged, onReload }) {
   const isSelf = user.username === me.username;
   const [role, setRole] = useState(user.role);
   const [displayName, setDisplayName] = useState(user.displayName || '');
   const [email, setEmail] = useState(user.email || '');
   const [busy, setBusy] = useState(null);
-  const [confirm, setConfirm] = useState(null);     // 'reset' | 'reset-email' | 'logout' | 'deactivate'
+  const [confirm, setConfirm] = useState(null);     // 'set' | 'reset' | 'reset-email' | 'logout' | 'deactivate'
   const [err, setErr] = useState('');
   const [note, setNote] = useState('');
   const [temp, setTemp] = useState(null);
+  const [pw, setPw] = useState('');                 // the password being typed for them — never kept past a save
+  const [pwMust, setPwMust] = useState(false);
   // The list reloads after every action; the fields follow what the SERVER now holds rather than
   // keeping the values this panel opened with (a role saved from another tab would otherwise
   // show as unsaved here, and "Save role" would quietly put the old one back).
   useEffect(() => { setRole(user.role); }, [user.role]);
   useEffect(() => { setDisplayName(user.displayName || ''); setEmail(user.email || ''); }, [user.displayName, user.email]);
+  // A typed password lives only while its form is open: saved, cancelled, or closed by another
+  // action in this panel, it is dropped. (A REFUSED save leaves the form — and what was typed — open.)
+  useEffect(() => { if (confirm !== 'set') { setPw(''); setPwMust(false); } }, [confirm]);
 
   const act = async (key, body, success) => {
     if (busy) return;
@@ -640,6 +725,24 @@ function PersonManage({ m, me, user, mailConfigured, mode, site, onChanged, onRe
   const name = user.displayName || user.username;
   const section = 'flex flex-col gap-2 min-w-0';
   const heading = 'text-[12px] font-semibold uppercase tracking-wide text-slate-500';
+  const pwStatus = passwordStatus(user, { gated });
+
+  // Not through act(): that closes the open panel before the answer is in, and a password the
+  // server refuses (too short, contains their username) has to leave the form open with what was
+  // typed still in it. On success the form closes — which drops the typed password (the effect
+  // above) — and so does a temporary one still on show from an earlier reset: it no longer works.
+  const savePassword = async () => {
+    if (busy) return;
+    const p = typedProblem(pw, user.username);
+    if (p) { setErr(sentenceOf(p)); return; }
+    setBusy('set'); setErr(''); setNote('');
+    const r = await userAction({ username: user.username, action: 'set-password', password: pw, mustChange: pwMust });
+    setBusy(null);
+    if (!r.ok) { setErr(r.error); return; }
+    setConfirm(null); setTemp(null);
+    setNote(setPasswordAnswer(r, { name, username: user.username, gated }));
+    onReload?.();
+  };
 
   return (
     <div className={m ? 'flex flex-col gap-4 pt-3 border-t border-slate-100' : 'grid grid-cols-2 gap-5 p-4 bg-slate-50 rounded-lg border border-slate-200'}>
@@ -682,9 +785,22 @@ function PersonManage({ m, me, user, mailConfigured, mode, site, onChanged, onRe
 
         <div className={section}>
           <div className={heading}>Password &amp; access</div>
-          {temp && <TempPasswordBox m={m} displayName={name} username={user.username} password={temp} emailed={false} />}
+          {pwStatus && <p className={`text-[12px] leading-snug break-words ${pwStatus.tone === 'warn' ? 'text-amber-800' : 'text-slate-500'}`}>{pwStatus.text}</p>}
+          {temp && <TempPasswordBox m={m} displayName={name} username={user.username} password={temp} emailed={false} gated={gated} />}
           {user.locked && <Notice tone="warn">Locked until {fmtWhen(user.lockedUntil)} after too many wrong passwords. Unlock lets them try again now.</Notice>}
-          {confirm === 'reset' || confirm === 'reset-email' ? (
+          {confirm === 'set' ? (
+            <div onKeyDown={onEnter(savePassword)} className="flex flex-col gap-3 min-w-0">
+              <TypedPasswordFields m={m} label="New password" username={user.username} value={pw} onChange={setPw}
+                mustChange={pwMust} onMustChange={setPwMust} disabled={!!busy} gated={gated} />
+              <Notice tone="warn">{setPasswordWarning(user)}</Notice>
+              <div className="flex flex-wrap gap-2">
+                {/* Off while ANY action in this panel is in flight, not only its own: savePassword
+                    returns on `busy`, and a Save that is pressable and does nothing is the worst kind. */}
+                <Btn m={m} kind="primary" busy={busy === 'set'} disabled={!!busy || !pw || !!typedProblem(pw, user.username)} onClick={savePassword}>Save password</Btn>
+                <Btn m={m} kind="ghost" disabled={busy === 'set'} onClick={() => { setConfirm(null); setErr(''); }}>Cancel</Btn>
+              </div>
+            </div>
+          ) : confirm === 'reset' || confirm === 'reset-email' ? (
             <div className="flex flex-col gap-2">
               <Notice tone="warn">This signs {name} out everywhere{confirm === 'reset-email' ? ' and emails them a link to set a new password.' : ' and gives them a new temporary password.'}</Notice>
               <div className="flex flex-wrap gap-2">
@@ -716,6 +832,7 @@ function PersonManage({ m, me, user, mailConfigured, mode, site, onChanged, onRe
             </div>
           ) : (
             <div className="flex flex-wrap gap-2">
+              {!isSelf && <Btn m={m} onClick={() => { setErr(''); setNote(''); setConfirm('set'); }}><KeyRound size={15} /> Set a password</Btn>}
               <Btn m={m} onClick={() => setConfirm('reset')}>New temporary password</Btn>
               {user.email && mailConfigured && <Btn m={m} onClick={() => setConfirm('reset-email')}><Mail size={15} /> Email a reset link</Btn>}
               {user.locked && <Btn m={m} busy={busy === 'unlock'} onClick={() => act('unlock', { action: 'unlock' }, `${name} is unlocked.`)}><Unlock size={15} /> Unlock</Btn>}
@@ -725,6 +842,7 @@ function PersonManage({ m, me, user, mailConfigured, mode, site, onChanged, onRe
                 : <Btn m={m} kind="ghost" className="text-rose-700" onClick={() => setConfirm('deactivate')}>Turn account off</Btn>)}
             </div>
           )}
+          {isSelf && <p className="text-[12px] text-slate-500 leading-snug">Your own password: use Change password under You — it asks for your current one.</p>}
         </div>
         {err && <Notice tone="bad">{err}</Notice>}
         {note && !err && <Notice tone="info">{note}</Notice>}
@@ -759,8 +877,11 @@ function PeopleSection({ m, me, people, mode, site, loginMode, facts, onReload }
 
   const summary = `${r.total} ${r.total === 1 ? 'person' : 'people'} · ${r.nuvizzOk} of ${r.writers} NuVizz logins working${r.neverSignedIn ? ` · ${r.neverSignedIn} never signed in` : ''}${r.locked ? ` · ${r.locked} locked` : ''}`;
 
+  // Whether this build puts the sign-in screen in front of the board: the forced password change
+  // lives on that gate, so every sentence about a temporary password depends on it.
+  const gated = loginMode === 'server';
   const manage = (u) => (
-    <PersonManage m={m} me={me} user={u} mailConfigured={!!people?.mailConfigured} mode={mode} site={site}
+    <PersonManage m={m} me={me} user={u} mailConfigured={!!people?.mailConfigured} mode={mode} site={site} gated={gated}
       onChanged={replace} onReload={onReload} />
   );
 
@@ -769,8 +890,14 @@ function PeopleSection({ m, me, people, mode, site, loginMode, facts, onReload }
       <Card m={m} title="Everyone" icon={<Users size={16} className="text-slate-500" />}
         right={<Btn m={m} kind="primary" onClick={() => setAdding((v) => !v)} aria-expanded={adding}><UserPlus size={15} /> Add a person</Btn>}>
         <p className="text-[13px] text-slate-600 break-words">{summary}</p>
-        {people?.error && <Notice tone="bad">{people.error}</Notice>}
-        {adding && <AddPersonForm m={m} mailConfigured={!!people?.mailConfigured} mode={mode} site={site} onCreated={onReload} onClose={() => setAdding(false)} />}
+        {people?.error && (
+          <Notice tone="bad">
+            {people.error}
+            {/* Its own line: the server's sentence may or may not end in a full stop. */}
+            {people.stale && <span className="block mt-1">The list below is as it last loaded. Press Refresh to read it again.</span>}
+          </Notice>
+        )}
+        {adding && <AddPersonForm m={m} mailConfigured={!!people?.mailConfigured} mode={mode} site={site} gated={gated} onCreated={onReload} onClose={() => setAdding(false)} />}
 
         {m ? (
           <div className="flex flex-col gap-3">
@@ -946,7 +1073,13 @@ export default function AccountScreen({ isMobile, loginMode = 'off' }) {
   const loadPeople = useCallback(async () => {
     if (!isAdmin) { setPeople(null); return; }
     const r = await fetchUsers();
-    setPeople(r.ok ? { users: Array.isArray(r.users) ? r.users : [], mailConfigured: !!r.mailConfigured } : { users: [], error: r.error });
+    // A FAILED RE-READ KEEPS THE ROWS ALREADY ON SCREEN and says the read failed. Emptying the list
+    // here unmounts every open Manage panel — and with it the answer to whichever action asked for
+    // the re-read: a temporary password that is shown once, or "Password set for …". The admin would
+    // be left with "no connection" straight after a change that had in fact landed.
+    setPeople((prev) => (r.ok
+      ? { users: Array.isArray(r.users) ? r.users : [], mailConfigured: !!r.mailConfigured }
+      : { users: prev?.users || [], mailConfigured: !!prev?.mailConfigured, error: r.error, stale: (prev?.users?.length || 0) > 0 }));
   }, [isAdmin]);
 
   useEffect(() => { loadFacts(); }, [loadFacts, meName]);
