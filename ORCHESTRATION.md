@@ -371,6 +371,12 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   one-person side project (reliability risk) — not for anything load-bearing.
 - TRIGGER TO REVISIT: if we ever want Google fully out, or want free optimization + matrices
   together (pairs naturally with Lever 1 — VROOM has out-of-the-box OSRM integration).
+- STATUS (Oct 2026): BUILT, OFF UNTIL CONFIGURED. OSRM v26.9.0 runs on Cloud Run (osrm-truck,
+  us-east1, davismarginiq; Georgia map, tractor-trailer profile, private). A Build can ask for
+  matrixMode 'osrm' (lib/osrm-matrix.mts via resolveMatrix); it does nothing until OSRM_TRUCK_URL
+  is set, and any failure falls back to the straight-line estimate and says so in the result
+  (meta.matrixSource). /.netlify/functions/osrm-status checks the service. No traffic; only the
+  truck restrictions on the map. The default drive-time source is unchanged.
 
 ## Revision log
 
@@ -669,3 +675,7 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   `nuvizz_load_roster` (load number, id, driver, status, stop count per day), and a board row's
   `loadNbr` field holds the route NAME on list-sourced rows — the day's real load number is the
   roster's.
+- Oct 2026 — Claude — Appendix C Lever 2 built as a third drive-time source for a Build: truck
+  road times from our own OSRM service (Cloud Run osrm-truck). Server side only in this step
+  (lib/osrm-matrix.mts, lib/google-id-token.mts, osrm-status); off until OSRM_TRUCK_URL is set;
+  unset it and redeploy to put it back. The Build Panel checkbox follows in its own PR.

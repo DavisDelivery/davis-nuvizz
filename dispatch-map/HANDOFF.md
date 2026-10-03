@@ -2068,6 +2068,7 @@ each one should do:
 | `NUVIZZ_BASE_URL` | `https://portal.nuvizz.com/deliverit/openapi/v7` |
 | `MOTIVE_API_KEY` | `__REDACTED__` (per brief) |
 | `MOTIVE_BASE_URL` | optional, `https://api.gomotive.com/v1` |
+| `OSRM_TRUCK_URL` | optional. The truck routing service's address (Cloud Run `osrm-truck`, e.g. `https://osrm-truck-….run.app`): https, no path, no trailing slash needed. Unset ⇒ the Build Panel's "Use truck road times" box is greyed out and no build can use it. Called with an ID token signed by `FIREBASE_SA`, whose account needs Cloud Run Invoker on the service. `/.netlify/functions/osrm-status` says whether it answers. |
 
 `.env.example` in the repo lists all of these with the right shape.
 
