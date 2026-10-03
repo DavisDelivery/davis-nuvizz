@@ -29,6 +29,7 @@ import {
   copyBaseNbr as clientCopyBaseNbr, duplicateEligible, defaultCopyDate, duplicateDraft, duplicateOutcome,
   parseCopyWeight as clientParseCopyWeight, DUPLICATE_FIELDS, duplicateBaseline, duplicateFormFrom, duplicateEdits,
   duplicateEditLabels, duplicateFormError, copyNbrDraft, duplicateCountChanges, duplicateChangeLabels,
+  clockOf, duplicateCopiedFacts, duplicateNotCopied,
 } from '../src/lib/order-duplicate.js';
 import { installFirestoreFake } from './_firestore-fake.mjs';
 
@@ -798,4 +799,66 @@ test('the dry run names the typed number and the changes; the ledger records the
   assert.ok(plan.some((l) => l === 'CHANGED on the copy (the rest is copied from the original): addr1'));
   const EP = readFileSync(new URL('../netlify/functions/nuvizz-write.mts', import.meta.url), 'utf8');
   assert.match(EP, /edited: Array\.isArray\(result\.edited\) \? result\.edited : \[\], numberTyped: result\.numberTyped === true/);
+});
+
+// ── THE FLOATING WINDOW (v1.109.1) ──────────────────────────────────────────
+// Chad, 10/03: "if i click duplicate order i want a large floating window to come up not a fullscreen
+// and i don't want to leave the page but i want a large full window so i can see the full route
+// profile when duplicating with all the fields i can change."
+
+test('the window shows what the copy takes as it is, in the server\'s own terms', () => {
+  assert.equal(clockOf('2026-10-03T08:00:00'), '8:00 AM');
+  assert.equal(clockOf('2026-10-03T14:05:00'), '2:05 PM');
+  assert.equal(clockOf('2026-10-03T00:30:00'), '12:30 AM');
+  assert.equal(clockOf('2026-10-03T12:00:00'), '12:00 PM');
+  assert.equal(clockOf(null), '');
+  assert.equal(clockOf('2026-10-03'), '', 'a day with no clock time is not a time');
+  const full = {
+    stopNbr: '007174789', scheduledFrom: '2026-10-03T08:00:00', scheduledTo: '2026-10-03T14:00:00', timeConstraint: 'STRICT',
+    origin: { name: 'DAVIS DELIVERY SERVICE', addr1: '943 GAINESVILLE HWY', city: 'BUFORD', state: 'GA' }, poRef: 'PO 99812', custRef: 'CUST 7',
+  };
+  const by = (facts) => Object.fromEntries(facts.map((f) => [f.key, f.value]));
+  assert.deepEqual(by(duplicateCopiedFacts(full, '')), {
+    window: '8:00 AM – 2:00 PM, strict, on the day picked',
+    pickup: 'DAVIS DELIVERY SERVICE, 943 GAINESVILLE HWY, BUFORD GA',
+    po: 'PO 99812', cust: 'CUST 7',
+  });
+  // A list-only row's scheduledFrom is its estimated ARRIVAL with no end — never shown as a window.
+  assert.equal(by(duplicateCopiedFacts({ stopNbr: 'X', scheduledFrom: '2026-10-03T13:05:00', scheduledTo: null }, '')).window, 'the original\'s times, on the day picked');
+  // New Order's own "PRO <number>" follows the copy's number, as buildDuplicateStop writes it.
+  assert.equal(by(duplicateCopiedFacts({ ...full, poRef: 'PRO 007174789' }, '')).po, 'PRO + the copy\'s number');
+  assert.equal(by(duplicateCopiedFacts({ ...full, poRef: 'PRO 007174789' }, '007174789-SPLIT')).po, 'PRO 007174789-SPLIT');
+  // An empty reference on the board row is not "none": the list carries none and mergeEnrich skips an empty one.
+  const bare = by(duplicateCopiedFacts({ stopNbr: '1' }, ''));
+  assert.equal(bare.po, 'the original\'s, or PRO + the copy\'s number if it has none');
+  assert.equal(bare.cust, 'the original\'s, if any');
+  assert.equal(bare.pickup, 'the original\'s');
+  assert.equal(duplicateNotCopied({ routeName: 'GEORGE L', driverName: 'GEORGE LEONARD' }), 'Not copied: route GEORGE L, driver GEORGE LEONARD, and attachments. The copy lands unplanned.');
+  assert.equal(duplicateNotCopied({}), 'Not copied: the route, the driver, and attachments. The copy lands unplanned.');
+});
+
+test('Duplicate opens a large FLOATING window over the page — never full screen, never a page change', () => {
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const panel = src.slice(src.indexOf('function DuplicateOrderPanel('), src.indexOf('function StopLiveDetail('));
+  // The card keeps its button; the window is rendered on <body> so no drawer or sidebar can trap it.
+  assert.match(panel, /<button type="button" onClick=\{begin\}[\s\S]*?Duplicate as a new order\s*<\/button>\s*\{\/\*/);
+  assert.match(panel, /\{open && createPortal\([\s\S]*?document\.body,\s*\)\}/);
+  // Floating: a margin all round and 90% of the height at most; large: up to 5xl wide.
+  assert.match(panel, /className="fixed inset-0 z-\[1350\] flex items-center justify-center p-3 sm:p-6" role="dialog" aria-modal="true"/);
+  assert.match(panel, /className="relative bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-\[90dvh\] flex flex-col overflow-hidden" data-duplicate-form/);
+  // Two columns from a tablet up; one on a phone.
+  assert.match(panel, /<div className="grid gap-x-6 gap-y-3 md:grid-cols-2">/);
+  // Cancel and Create side by side on one row.
+  assert.match(panel, /<div className="flex flex-wrap items-center justify-end gap-2">\s*<button type="button" onClick=\{close\} disabled=\{busy\}[\s\S]*?\{msg\?\.created \? 'Close' : 'Cancel'\}<\/button>\s*<button type="button" onClick=\{create\} disabled=\{busy \|\| !!error\}/);
+  // A long edit is never lost to Esc or a stray click; Cancel and ✕ always close.
+  assert.match(panel, /softCloseRef\.current = \(\) => \{ if \(!touched \|\| msg\?\.created\) close\(\); \};/);
+  assert.match(panel, /const onKey = \(e\) => \{ if \(e\.key === 'Escape'\) softCloseRef\.current\?\.\(\); \};/);
+  assert.match(panel, /<div className="absolute inset-0 bg-black\/50" onClick=\{\(\) => softCloseRef\.current\?\.\(\)\} \/>/);
+  // A portal's events bubble through React to the card's handlers — the window keeps them.
+  assert.match(panel, /onClick=\{swallow\} onMouseDown=\{swallow\} onPointerDown=\{swallow\} onTouchStart=\{swallow\}/);
+  // The Esc effect runs before the early returns (hooks in a fixed order).
+  assert.ok(panel.indexOf("const softCloseRef = useRef(null);") < panel.indexOf('if (!duplicateEligible(stop)) return null;'));
+  // What the copy takes as it is, shown in the window.
+  assert.match(panel, /const copied = duplicateCopiedFacts\(stop, copyNbrDraft\(form\?\.copyNbr\)\.nbr\);/);
+  assert.match(panel, /\{duplicateNotCopied\(stop\)\}/);
 });
