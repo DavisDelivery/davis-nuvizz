@@ -987,3 +987,26 @@ test('the pickup line reads the original\'s own pickup off the Map feed', () => 
   const facts = duplicateCopiedFacts({ stopNbr: '1', raw: { stop: { from: { address: { name: 'DAVIS DELIVERY SERVICE', addr1: '943 GAINESVILLE HWY', city: 'BUFORD', state: 'GA' } } } } }, '');
   assert.equal(facts.find((f) => f.key === 'pickup').value, 'DAVIS DELIVERY SERVICE, 943 GAINESVILLE HWY, BUFORD GA');
 });
+
+test('a price left as our board showed it, where NuVizz now holds another: the copy gets what was sent, and the answer says so', async () => {
+  // The original in NuVizz holds 185.00 (the fixture's sealNbr); the board had read 150.00 before it changed.
+  const stale = await runDuplicateOrder(fakeNuvizz({ held: { '007174789': original() } }).requester, P({ edits: { price: '150.00' }, priceWas: '150.00' }), CREDS);
+  assert.equal(stale.ok, true, JSON.stringify(stale));
+  assert.equal(stale.price, '150.00', 'what the dispatcher saw and sent');
+  assert.ok(stale.warnings.includes('the copy got 150.00, the price our board showed — NuVizz holds 185.00 for the original now'), JSON.stringify(stale.warnings));
+  // The board's price matches NuVizz's: no word. A price typed different on purpose: no word either.
+  const same = await runDuplicateOrder(fakeNuvizz({ held: { '007174789': original() } }).requester, P({ edits: { price: '185.00' }, priceWas: '185.00' }), CREDS);
+  assert.ok(!same.warnings.some((w) => /our board showed/.test(w)));
+  const typed = await runDuplicateOrder(fakeNuvizz({ held: { '007174789': original() } }).requester, P({ edits: { price: '210.00' }, priceWas: '185.00' }), CREDS);
+  assert.ok(!typed.warnings.some((w) => /our board showed/.test(w)));
+  assert.equal(typed.price, '210.00');
+  const none = await runDuplicateOrder(fakeNuvizz({ held: { '007174789': original() } }).requester, P(), CREDS);
+  assert.equal(none.price, null, 'no tick: no price');
+  // The answer names the notes and the price the copy got.
+  const o = duplicateOutcome({ ok: true, result: { ok: true, created: true, stopNbr: '007174789-1', now: { pallets: 4, total: 4 }, deliveryDate: TOMORROW, edited: [], notesAdded: 2, price: '210.00', warnings: [] } });
+  assert.match(o.text, /unplanned, 2 new notes, price 210\.00\. It reaches the board/);
+  assert.match(duplicateOutcome({ ok: true, result: { ok: true, created: true, stopNbr: 'X-1', now: { pallets: 1, total: 1 }, edited: [], price: null, warnings: [] } }).text, /unplanned, no price\./);
+  // The panel sends the price the box opened on only when a price is being sent.
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(src, /priceWas: edits\.price !== undefined \? baselineRef\.current\?\.price \|\| '' : ''/);
+});

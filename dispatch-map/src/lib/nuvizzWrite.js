@@ -195,7 +195,8 @@ export const setStopPieces = (stopNbr, { pallets, loose } = {}, opts = {}) =>
 // v1.109.0: `copyNbr` — a number the dispatcher typed for the copy (blank → the next free -N);
 // `edits` — only the fields they CHANGED (lib/order-duplicate.js duplicateEdits); the rest is copied.
 // v1.110.0: `notes` — new notes for the copy, [{ text, audience: 'both' | 'dispatcher' | 'driver' }].
-export const duplicateOrder = (stopNbr, { pallets, loose, weight, date, copyPrice, copyNbr, edits, notes } = {}, opts = {}) =>
+// `priceWas` — the price the box opened on (our board's), so the server can say when NuVizz now holds another.
+export const duplicateOrder = (stopNbr, { pallets, loose, weight, date, copyPrice, copyNbr, edits, notes, priceWas } = {}, opts = {}) =>
   callWrite('duplicateOrder', {
     stopNbr,
     pallets,
@@ -206,6 +207,7 @@ export const duplicateOrder = (stopNbr, { pallets, loose, weight, date, copyPric
     ...(copyNbr ? { copyNbr: String(copyNbr) } : {}),
     ...(edits && typeof edits === 'object' && Object.keys(edits).length ? { edits } : {}),
     ...(Array.isArray(notes) && notes.length ? { notes } : {}),
+    ...(priceWas ? { priceWas: String(priceWas) } : {}),
     ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
   }, { createdBy: 'dispatcher-duplicate', ...opts, dryRun: false });
 

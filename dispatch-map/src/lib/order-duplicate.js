@@ -235,7 +235,7 @@ export function duplicateOutcome(r) {
     const notes = Array.isArray(out.warnings) && out.warnings.length ? ` Note: ${out.warnings.join('; ')}.` : '';
     return {
       kind: 'ok', created: true, nbr: out.stopNbr,
-      text: `Created ${out.stopNbr} in NuVizz${replay} — ${piecesLine(out.now)}${day}, unplanned${Array.isArray(out.edited) && out.edited.length ? `, with your changes to its ${duplicateEditLabels(Object.fromEntries(out.edited.map((k) => [k, true]))).join(', ')}` : ''}. It reaches the board through the scans, as a New Order does; plan it in Routing.${notes}`,
+      text: `Created ${out.stopNbr} in NuVizz${replay} — ${piecesLine(out.now)}${day}, unplanned${Array.isArray(out.edited) && out.edited.length ? `, with your changes to its ${duplicateEditLabels(Object.fromEntries(out.edited.map((k) => [k, true]))).join(', ')}` : ''}${out.notesAdded ? `, ${out.notesAdded} new note${out.notesAdded === 1 ? '' : 's'}` : ''}${out.price ? `, price ${out.price}` : (out.price === null ? ', no price' : '')}. It reaches the board through the scans, as a New Order does; plan it in Routing.${notes}`,
     };
   }
   if (out.created) return { kind: 'warn', created: true, nbr: out.stopNbr, text: (r?.error || out.error || `${out.stopNbr} was created but could not be verified.`) + replay };

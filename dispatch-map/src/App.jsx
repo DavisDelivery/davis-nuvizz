@@ -9775,7 +9775,7 @@ function DuplicateOrderPanel({ stop, note }) {
       const notes = duplicateNotesDraft(form?.notes).notes || [];
       const request = { pro, stopId: stop?.stopId || null, pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits, notes };
       opRef.current = singleOrderOpId(opRef.current, request, newClientOpId);
-      const r = await duplicateOrder(pro, { pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits, notes }, {
+      const r = await duplicateOrder(pro, { pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits, notes, priceWas: edits.price !== undefined ? baselineRef.current?.price || '' : '' }, {
         stopId: stop?.stopId || undefined, clientOpId: opRef.current.id,
       });
       const outcome = duplicateOutcome(r);

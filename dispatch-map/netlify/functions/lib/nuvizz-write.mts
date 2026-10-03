@@ -3385,6 +3385,13 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   if ('error' in built) return { ok: false, calls, skipped, error: `duplicateOrder: ${built.error} — nothing was created.` };
   // What the create carries for NuVizz's order profile, for the ledger (buildDuplicateStop set it).
   const profile = built.stop?.profile || null;
+  // The price box opens on the price as our BOARD last read it (v1.110.0). Left as shown while NuVizz
+  // now holds another, the copy still gets what the dispatcher saw and sent — and the answer says so.
+  const priceWas = typeof payload?.priceWas === 'string' ? payload.priceWas.trim() : '';
+  const heldPrice = String(raw?.sealNbr ?? '').trim();
+  if (ed.edits.price !== undefined && priceWas && ed.edits.price === priceWas && heldPrice && heldPrice !== priceWas) {
+    built.warnings.push(`the copy got ${priceWas}, the price our board showed — NuVizz holds ${heldPrice} for the original now`);
+  }
   const wrote = await fireSingle(requester, 'createStop', { stop: built.stop }, creds);
   calls.writes += 1;
   if (!wrote?.ok) {
@@ -3425,7 +3432,7 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
     ok: true, created: true, stopNbr: chosen, stopId: backId, entityNbr: chosen, entityId: backId,
     copyOf, profile, base, skipped, now, deliveryDate: date,
     priceCopied: ed.edits.price === undefined && opts.copyPrice && !!String(raw.sealNbr ?? '').trim(),
-    edited, numberTyped: !!typedNbr.nbr, notesAdded: nt.notes.length,
+    edited, numberTyped: !!typedNbr.nbr, notesAdded: nt.notes.length, price: built.stop?.sealNbr ?? null,
     warnings: built.warnings, calls,
   };
 }
