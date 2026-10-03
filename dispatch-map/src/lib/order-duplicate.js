@@ -10,7 +10,7 @@
 // restated from nuvizz-write-ops.mts copyBaseNbr, and test/order-duplicate.test.mjs runs both over
 // one table so they cannot drift.
 
-import { parsePieceDraft, piecesLine } from './stop-pieces.js';
+import { parsePieceDraft, piecesLine, boardPiecesOf } from './stop-pieces.js';
 import { resolveStopPhone } from './stop-contact.js';
 
 /** The ORIGINAL order number a duplicate is numbered from — see copyBaseNbr on the server.
@@ -39,9 +39,14 @@ export function etToday(now = new Date()) {
  * a copy of last week's order is for delivering now, and the server refuses a day already past.
  */
 export function defaultCopyDate(stop, today) {
-  const own = [stop?.scheduledFrom, stop?.scheduledDate, stop?.boardDate]
-    .map((v) => String(v ?? '').slice(0, 10)).find((d) => DAY.test(d)) || '';
+  const own = ownDay(stop);
   return own && own >= today ? own : today;
+}
+
+/** The original's own day as the board row holds it, or '' when it holds none. */
+function ownDay(stop) {
+  return [stop?.scheduledFrom, stop?.scheduledDate, stop?.boardDate]
+    .map((v) => String(v ?? '').slice(0, 10)).find((d) => DAY.test(d)) || '';
 }
 
 /** The weight box: blank keeps the original's; otherwise a number of pounds from 0 up. */
@@ -139,6 +144,40 @@ export function duplicateEdits(form, baseline) {
 /** The changed fields in the panel's own words, for the line that says what the copy changes. */
 export const duplicateEditLabels = (edits) =>
   DUPLICATE_FIELDS.filter((f) => Object.prototype.hasOwnProperty.call(edits || {}, f.key)).map((f) => f.label);
+
+/** The copy's own boxes, in the panel's words: its counts, weight and day. */
+const COUNT_LABELS = { pallets: 'pallets', loose: 'loose pieces', weight: 'weight', date: 'delivery day' };
+
+/**
+ * Which of the copy's counts, weight and day differ from the original's (the board row), so the
+ * line that says what the copy changes does not leave out the pallets just typed. The pieces
+ * rule is the editor's own (piecesChanged): a null and a 0 are both none. A blank weight keeps
+ * the original's, so it never differs. With no day on the original, the day is not claimed.
+ */
+export function duplicateCountChanges(stop, draft) {
+  if (!draft || draft.error) return [];
+  const cur = boardPiecesOf(stop);
+  const out = [];
+  if ((cur.pallets ?? 0) !== draft.pallets) out.push('pallets');
+  if ((cur.loose ?? 0) !== draft.loose) out.push('loose');
+  if (draft.weight != null) {
+    const w = String(stop?.weight ?? '').trim();
+    if (w === '' || Number(w) !== draft.weight) out.push('weight');
+  }
+  const own = ownDay(stop);
+  if (own && draft.date !== own) out.push('date');
+  return out;
+}
+
+/** Everything the copy changes, in the panel's words and in the form's order. */
+export function duplicateChangeLabels(edits, countKeys = []) {
+  const out = [];
+  for (const f of DUPLICATE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(edits || {}, f.key)) out.push(f.label);
+    if (f.key === 'itemDesc') for (const k of Object.keys(COUNT_LABELS)) if (countKeys.includes(k)) out.push(COUNT_LABELS[k]);
+  }
+  return out;
+}
 
 /** A typed number for the copy, checked as the server checks it; blank keeps the next free -N. */
 export function copyNbrDraft(v) {

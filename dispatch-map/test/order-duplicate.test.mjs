@@ -28,7 +28,7 @@ import { etDayString } from '../netlify/functions/lib/firestore.mts';
 import {
   copyBaseNbr as clientCopyBaseNbr, duplicateEligible, defaultCopyDate, duplicateDraft, duplicateOutcome,
   parseCopyWeight as clientParseCopyWeight, DUPLICATE_FIELDS, duplicateBaseline, duplicateFormFrom, duplicateEdits,
-  duplicateEditLabels, duplicateFormError, copyNbrDraft,
+  duplicateEditLabels, duplicateFormError, copyNbrDraft, duplicateCountChanges, duplicateChangeLabels,
 } from '../src/lib/order-duplicate.js';
 import { installFirestoreFake } from './_firestore-fake.mjs';
 
@@ -698,6 +698,32 @@ test('the form opens on what the CARD shows, and only what differs from the orig
   // A price is sent only when typed.
   assert.deepEqual(duplicateEdits({ ...plain, price: '$40' }, base), { price: '$40' });
   assert.deepEqual(duplicateEditLabels({ addr1: 'x', phone: 'y' }), ['street address', 'phone']);
+});
+
+test('the line that says what the copy changes names the pallets, weight and day typed too, in form order', () => {
+  // Measured in the built app before this: pallets 8 → 4 and the line read "Changed from the
+  // original: street address, city, ZIP, items. Everything else is copied." — the 4 left out.
+  const stop = { stopNbr: '007185553', cartons: 8, volume: 0, pallets: 8, weight: 4200, scheduledDate: TOMORROW };
+  const as = (pallets, loose, weight, date) => duplicateDraft({ pallets, loose, weight, date }, TODAY);
+  assert.deepEqual(duplicateCountChanges(stop, as('8', '', '4200', TOMORROW)), [], 'opened and left alone');
+  assert.deepEqual(duplicateCountChanges(stop, as('4', '', '4200', TOMORROW)), ['pallets']);
+  assert.deepEqual(duplicateCountChanges(stop, as('8', '0', '', TOMORROW)), [], 'loose 0 and none are the same; a blank weight keeps the original\'s');
+  assert.deepEqual(duplicateCountChanges(stop, as('8', '3', '4200.0', TOMORROW)), ['loose'], '4200.0 lb is the 4200 already on it');
+  assert.deepEqual(duplicateCountChanges(stop, as('8', '', '2100', TOMORROW)), ['weight']);
+  const later = addDays(TODAY, 5);
+  assert.deepEqual(duplicateCountChanges(stop, as('8', '', '', later)), ['date']);
+  // An original with no day on file: the day is not claimed either way.
+  assert.deepEqual(duplicateCountChanges({ ...stop, scheduledDate: undefined }, as('8', '', '', later)), []);
+  // A count the board does not hold is "none", as the editor reads it — 0 typed is not a change.
+  assert.deepEqual(duplicateCountChanges({ ...stop, volume: null }, as('8', '0', '', TOMORROW)), []);
+  // A draft that cannot be sent claims nothing: the error is what the panel shows.
+  assert.deepEqual(duplicateCountChanges(stop, as('x', '', '', TOMORROW)), []);
+  assert.deepEqual(duplicateChangeLabels({ addr1: 'x', city: 'y', zip: 'z', itemDesc: 'i', dispatchNotes: 'n' }, ['date', 'pallets']),
+    ['street address', 'city', 'ZIP', 'items', 'pallets', 'delivery day', 'driver instructions']);
+  assert.deepEqual(duplicateChangeLabels({}, ['weight']), ['weight']);
+  assert.deepEqual(duplicateChangeLabels({}, []), []);
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(src, /const editLabels = duplicateChangeLabels\(edits, duplicateCountChanges\(stop, draft\)\);/, 'the panel\'s line is built from both');
 });
 
 test('the form refuses before a call what the server would: a missing address part, a bad ZIP or number', () => {
