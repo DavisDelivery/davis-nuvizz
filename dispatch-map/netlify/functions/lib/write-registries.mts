@@ -147,6 +147,8 @@ export interface CreatedOrder {
   copyOf?: string | null;
   /** A duplicate whose read-back confirmed it (v1.107.0); false = NuVizz said created, unverified. */
   verified?: boolean;
+  /** The NuVizz order profile the create SENT (v1.108.0) — 'ESTES' for an Estes order, else null. */
+  profile?: string | null;
 }
 
 export async function recordCreatedOrder(o: CreatedOrder): Promise<void> {
