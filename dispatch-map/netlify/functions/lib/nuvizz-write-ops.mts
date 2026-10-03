@@ -1517,6 +1517,39 @@ export function boardPiecesFields(rawAfter: any, at: string, by: string | null =
 }
 
 /**
+ * PURE: the board-row fields a LANDED address push writes onto the order's stored copy (v1.112.1).
+ * From NuVizz's READ-BACK, never from what was typed — the board may only claim what NuVizz was
+ * observed to hold.
+ *
+ * WHY THE BOARD NEEDS THIS AT ALL. Chad, 2026-10-03, after correcting eight orders on Problem
+ * addresses: "Looks like all the ones i corrected are still left in my history needing
+ * correcting." They were: the list (and the board) read the order's address from our stored copy,
+ * which only a SCAN refreshes — and the next scan to re-read Monday's orders was Sunday 8 PM. Read
+ * live, all eight already held the corrected address in NuVizz. So a push now puts NuVizz's
+ * read-back on the stored copy itself, as the piece edit does with its counts (boardPiecesFields),
+ * and a corrected order leaves the list at once instead of inviting the same push again.
+ *
+ * The same five fields the scan keeps live from the list (LIVE_IF_PRESENT_FIELDS minus the name,
+ * which an address push never changes) plus the state enrichment fills, and a stamp.
+ */
+export function boardAddressFields(readAddr: any, at: string): Record<string, any> {
+  const t = (v: any) => String(v ?? '').trim();
+  return {
+    addr1: t(readAddr?.addr1), addr2: t(readAddr?.addr2), city: t(readAddr?.city), state: t(readAddr?.state), zip: t(readAddr?.zip),
+    address_set_at: at,
+  };
+}
+
+/**
+ * THE WAY BACK for the board half of an address push: ADDRESS_PUSH_BOARD_WRITE=off leaves our
+ * stored copy alone until the next scan re-reads the order, exactly as before v1.112.1. House
+ * shape — default ON, an explicit off-word turns it off, anything malformed leaves it ON.
+ */
+export function boardAddressWriteEnabled(env: Record<string, any> = process.env): boolean {
+  return !/^(0|false|off|no)$/i.test(String(env.ADDRESS_PUSH_BOARD_WRITE ?? '').trim());
+}
+
+/**
  * PURE: the board days a piece write may patch — the ones the caller named, as real
  * YYYY-MM-DD dates, de-duplicated, at most three. The card names the day its row is shown on
  * AND the day it is stored under: a carried-over row is served on today's board but lives in

@@ -24,6 +24,7 @@ import { plainWriteError } from '../src/lib/write-error.js';
 import { shownAddress } from '../src/lib/address-log.js';
 import { houseSwitchOn } from '../src/lib/routing-select.js';
 import { Timestamp } from 'firebase/firestore';
+import { piecesBoardDatesOf } from '../src/lib/stop-pieces.js';
 
 const APP = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 
@@ -110,7 +111,7 @@ function runSave({ fields, note = NOTE, keepSwitch = true, toNuvizz = false }) {
     canPush: true, toNuvizz, pro: '007185593',
     setStopAddress: async () => ({ ok: true, result: { ok: true, now: 'x' } }),
     addressReachedNuvizz, plainWriteError,
-    SAVE_KEEPS_PIN: keepSwitch, keepsPin, notePinState,
+    SAVE_KEEPS_PIN: keepSwitch, keepsPin, notePinState, piecesBoardDatesOf,
   };
   const names = Object.keys(env);
   // eslint-disable-next-line no-new-func

@@ -1010,6 +1010,18 @@ export async function patchEnrichedProPieces(tenant: string, stopNbr: string, st
 }
 
 /**
+ * The same guarded patch for an ADDRESS push (v1.112.1): NuVizz's read-back lines onto the board's
+ * copy of the order and its registry record — never creating a row, never onto a twin's.
+ */
+export async function patchStopRowAddress(tenant: string, dateStr: string, stopNbr: string, stopId: string | null, fields: Record<string, any>): Promise<PiecePatchOutcome> {
+  return patchSameRecord(`${COLLECTION}/${parentId(tenant, dateStr)}/stops/${encodeURIComponent(String(stopNbr))}`, stopId, fields);
+}
+
+export async function patchEnrichedProAddress(tenant: string, stopNbr: string, stopId: string | null, fields: Record<string, any>): Promise<PiecePatchOutcome> {
+  return patchSameRecord(enrichRegPath(tenant, String(stopNbr)), stopId, fields);
+}
+
+/**
  * Does our enrichment registry already hold a record for this order number? (v1.107.0)
  *
  * A FREE first look for the duplicate's number hunt (lib/nuvizz-write.mts runDuplicateOrder): an
