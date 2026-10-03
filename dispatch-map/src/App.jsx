@@ -85,7 +85,7 @@ import { pinKeyer, pinSig } from './lib/tv-pin-reuse.js';
 import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, setStopPieces, duplicateOrder, siteWriteFeatures, siteWriteFeaturesNow, addressReachedNuvizz } from './lib/nuvizzWrite.js';
-import { copyBaseNbr, duplicateEligible, etToday, defaultCopyDate, duplicateDraft, duplicateOutcome, duplicateBaseline, duplicateFormFrom, duplicateEdits, duplicateCountChanges, duplicateChangeLabels, duplicateFormError, copyNbrDraft, duplicateCopiedFacts, duplicateNotCopied } from './lib/order-duplicate.js';
+import { copyBaseNbr, duplicateEligible, etToday, defaultCopyDate, duplicateDraft, duplicateOutcome, duplicateBaseline, duplicateFormFrom, duplicateEdits, duplicateCountChanges, duplicateChangeLabels, duplicateFormError, copyNbrDraft, duplicateCopiedFacts, duplicateNotCopied, duplicateCopyPrice, duplicatePriceLine, duplicateNotesDraft, duplicateNotesLine, NOTE_SHOW_TO, DUPLICATE_NOTES_MAX } from './lib/order-duplicate.js';
 import { boardPiecesOf, parsePieceDraft, piecesChanged, piecesLine, piecesBoardDatesOf, piecesFoldFrom, piecesOutcome, piecesEditable } from './lib/stop-pieces.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
@@ -222,7 +222,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.109.1';
+const APP_VERSION = '1.110.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -276,6 +276,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.110.0', 'DUPLICATE: NOTES FOR THE DISPATCHER OR DRIVER, AND THE ORIGINAL\u2019S PRICE IN THE BOX. Chad, 10/03: \u201cgive me a stop to add notes for dispatcher or driver also put the original price in the box but leave the copy to duplicate unchecked default and also make it an editable field the price incase it\u2019s more or know.\u201d NOTES: under Driver instructions, \u201c+ Add a note for the dispatcher or driver\u201d \u2014 up to five, each with the stop card\u2019s own Show to: Both | Dispatcher | Driver. They go on the new order as the same kind of note the card\u2019s Add note in NuVizz writes, and the read-back checks each one came back with the right people able to see it. PRICE: the Price box now opens on the original\u2019s price and you can change it if the copy costs more or less. Nothing goes on the copy until you tick \u201cPut this price on the copy\u201d \u2014 off by default. Where our board doesn\u2019t hold the original\u2019s price, ticking with the box empty copies NuVizz\u2019s own, as before. The line at the bottom says which price the copy gets. ALSO: the Pickup line now shows the original\u2019s real pickup on the Map (it was reading a field the Map feed does not carry). The ITEMS drawer is not in this one: how NuVizz recounts loose pieces from several item lines is something the code cannot see yet \u2014 asked first.'],
   ['1.109.1', 'DUPLICATE OPENS IN A LARGE FLOATING WINDOW OVER THE PAGE. Chad, 10/03: \u201cif i click duplicate order i want a large floating window to come up not a fullscreen and i don\u2019t want to leave the page but i want a large full window so i can see the full route profile when duplicating with all the fields i can change.\u201d WHERE: the stop card\u2019s \u201cDuplicate as a new order\u201d button, as before \u2014 it now opens a window centred over the map or board instead of a narrow form inside the card. The page stays where it is underneath. WHAT IS IN IT: every field you can change, side by side on a desktop \u2014 the new order\u2019s number, consignee, address and contact on the left; items, pallets/loose/weight, delivery day, driver instructions and price on the right \u2014 and below them what the copy takes from the original as it is (delivery window, pickup, PO, Cust #) and what it does not (route, driver, attachments). On a phone the same window floats with a margin all round and the fields stack in one column. THE BUTTONS: Cancel and Create the copy in NuVizz side by side on one row, as on the \uff0b New route window. Esc or a click outside closes it only while nothing has been typed, so a long edit is never lost to a stray key; Cancel and \u2715 always close. Nothing about what is sent changed: same fields, same checks, same 4 NuVizz calls.'],
   ['1.109.0', 'DUPLICATE NOW OPENS AS A FULL ORDER YOU CAN CHANGE BEFORE IT IS CREATED. Chad, 10/03: \u201cwhen I duplicate I want to have the option to edit the order. Addresses numbers piece counts items pretty much anything.\u201d WHERE: the stop card, under Items \u2014 \u201cDuplicate as a new order\u201d, as before. It now opens on the order as the card shows it: order number, consignee, address (the corrected one if you fixed it on our board), city/state/ZIP, phone, email, items, pallets/loose/weight, delivery day, driver instructions and price \u2014 every one editable. THE NUMBER: leave it blank for the original\u2019s number -1 (or the next one NuVizz does not hold, -2, -3 \u2026), or type your own \u2014 it must not already be in NuVizz, and it is never written over. ONLY WHAT YOU CHANGE IS CHANGED: the panel says which fields differ, the counts and day included (\u201cChanged from the original: street address, pallets\u201d), and everything you leave alone is copied from the original exactly as before. Always copied: the delivery window\u2019s times on the day you pick, the PO and customer references, and the pickup. ITEMS: one line, the item description, with the piece counts \u2014 the same shape every order this app creates. ESTES: a copy of an Estes order keeps the ESTES profile (the driver\u2019s 3 photos) whatever number you give it \u2014 NUVIZZ_ESTES_PROFILE=off still takes it off every create. CHECKED: the new order is read back \u2014 its number, pieces and the street you sent must match. Same cost as before: about 4 NuVizz calls.'],
   ['1.108.0', 'ESTES ORDERS GO TO NUVIZZ WITH THE ESTES PROFILE \u2014 THE ONE THAT MAKES THE DRIVER TAKE 3 PHOTOS. Chad, 10/03: \u201canytime that we\u2019re using the new order creation either for bulk or single and it\u2019s an estes order which is notified by the estes at the beginning of the pro this is the format it\u2019s supposed to be in.\u201d NuVizz set up the ESTES profile in Production with 3 mandatory photos and asked for \u201cprofile\u201d: \u201cESTES\u201d on every ESTES order. WHICH ORDERS: any order whose number or PRO starts with ESTES (ESTES-0778201115, Estes-0828068215) \u2014 the same rule that paints the yellow Estes ring on the map. WHERE: New Order, Bulk Add\u2019s Create orders, the Manifest push and Duplicate. NOT YET: Bulk Add\u2019s Create as load \u2014 it builds the orders inside one route import, and nothing here shows that import accepting a profile, so it sends them as before. CHECKED: NuVizz\u2019s own example order, built through our Manifest path, matches their JSON field for field, profile included. Every other order is sent exactly as before, and the dry run says PROFILE ESTES when it goes. NUVIZZ_ESTES_PROFILE=off puts it back.'],
@@ -9715,7 +9716,6 @@ function DuplicateOrderPanel({ stop, note }) {
   const [loose, setLoose] = useState('');
   const [weight, setWeight] = useState('');
   const [date, setDate] = useState('');
-  const [copyPrice, setCopyPrice] = useState(false);
   // v1.109.0 — the rest of the copy, editable (lib/order-duplicate.js duplicateFormFrom).
   const [form, setForm] = useState(null);
   const baselineRef = useRef(null);
@@ -9727,11 +9727,14 @@ function DuplicateOrderPanel({ stop, note }) {
   const draft = duplicateDraft({ pallets, loose, weight, date }, today);
   const formError = form ? duplicateFormError(form, baselineRef.current) : null;
   const edits = form ? duplicateEdits(form, baselineRef.current) : {};
-  const editLabels = duplicateChangeLabels(edits, duplicateCountChanges(stop, draft));
+  const editLabels = duplicateChangeLabels(edits, duplicateCountChanges(stop, draft), baselineRef.current);
+  // v1.110.0 — the tick puts the price box on the copy; set with an empty box it copies NuVizz's own.
+  const copyPrice = duplicateCopyPrice(form);
   // v1.109.1 — the form is a large floating window over the page, not a panel inside the card.
   // Esc and a click on the backdrop close it only while nothing has been typed, so a long edit is
   // never lost to a stray key or click; Cancel and the ✕ always close.
-  const touched = editLabels.length > 0 || !!String(form?.copyNbr ?? '').trim() || copyPrice;
+  const touched = editLabels.length > 0 || !!String(form?.copyNbr ?? '').trim() || !!form?.priceOn
+    || (form?.notes || []).some((n) => !!String(n?.text ?? '').trim());
   const softCloseRef = useRef(null);
   useEffect(() => {
     if (!open) return undefined;
@@ -9759,7 +9762,6 @@ function DuplicateOrderPanel({ stop, note }) {
     setLoose(cur.loose ? String(cur.loose) : '');
     setWeight(stop?.weight != null && String(stop.weight).trim() !== '' ? String(stop.weight) : '');
     setDate(defaultCopyDate(stop, today));
-    setCopyPrice(false);
     baselineRef.current = duplicateBaseline(stop);
     setForm(duplicateFormFrom(stop, note));
   };
@@ -9770,9 +9772,10 @@ function DuplicateOrderPanel({ stop, note }) {
     setBusy(true); setMsg(null);
     try {
       const copyNbr = copyNbrDraft(form?.copyNbr).nbr;
-      const request = { pro, stopId: stop?.stopId || null, pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits };
+      const notes = duplicateNotesDraft(form?.notes).notes || [];
+      const request = { pro, stopId: stop?.stopId || null, pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits, notes };
       opRef.current = singleOrderOpId(opRef.current, request, newClientOpId);
-      const r = await duplicateOrder(pro, { pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits }, {
+      const r = await duplicateOrder(pro, { pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits, notes }, {
         stopId: stop?.stopId || undefined, clientOpId: opRef.current.id,
       });
       const outcome = duplicateOutcome(r);
@@ -9794,7 +9797,11 @@ function DuplicateOrderPanel({ stop, note }) {
       <input type="text" value={form?.[k] ?? ''} disabled={busy} onChange={setField(k)} className={inputCls} placeholder={asOriginal(k)} {...extra} />
     </label>
   );
-  const priceTyped = !!String(form?.price ?? '').trim();
+  const notesRows = form?.notes || [];
+  const setNote = (i, patch) => setForm((f) => ({ ...(f || {}), notes: (f?.notes || []).map((n, j) => (j === i ? { ...n, ...patch } : n)) }));
+  const addNote = () => setForm((f) => ({ ...(f || {}), notes: [...(f?.notes || []), { text: '', audience: 'both' }] }));
+  const removeNote = (i) => setForm((f) => ({ ...(f || {}), notes: (f?.notes || []).filter((_, j) => j !== i) }));
+  const heldPrice = String(baselineRef.current?.price ?? '').trim();
   const sectionCls = 'text-[11px] uppercase tracking-wide font-semibold text-slate-500';
   const copied = duplicateCopiedFacts(stop, copyNbrDraft(form?.copyNbr).nbr);
   const route = stop?.routeName || stop?.loadNbr || '';
@@ -9876,12 +9883,46 @@ function DuplicateOrderPanel({ stop, note }) {
                     <textarea rows={3} value={form?.dispatchNotes ?? ''} placeholder={asOriginal('dispatchNotes')} disabled={busy} onChange={setField('dispatchNotes')} maxLength={500}
                       className={inputCls + ' py-1 resize-y'} />
                   </label>
+                  {/* NOTES FOR THE DISPATCHER OR DRIVER (v1.110.0) — the stop card's own "Show to" words. */}
+                  <div className="space-y-1.5" data-duplicate-notes>
+                    <div className={labelCls}>Notes for the dispatcher or driver</div>
+                    {notesRows.map((n, i) => (
+                      <div key={i} className="rounded border border-slate-200 p-1.5 space-y-1">
+                        <textarea rows={2} value={n.text} disabled={busy} maxLength={500} aria-label={`Note ${i + 1}`}
+                          placeholder="e.g. call Bob on arrival, dock 4 after 2pm"
+                          onChange={(e) => setNote(i, { text: e.target.value.slice(0, 500) })} className={inputCls + ' py-1 resize-y'} />
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                          <span className="text-slate-500">Show to:</span>
+                          {NOTE_SHOW_TO.map(([k, label]) => (
+                            <button type="button" key={k} onClick={() => setNote(i, { audience: k })} disabled={busy} aria-pressed={n.audience === k}
+                              className={'px-2 py-0.5 rounded border ' + (n.audience === k ? 'border-blue-400 bg-blue-50 text-blue-700 font-semibold' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}>{label}</button>
+                          ))}
+                          <button type="button" onClick={() => removeNote(i)} disabled={busy} aria-label={`Remove note ${i + 1}`}
+                            className="ml-auto px-2 py-0.5 text-slate-500 hover:text-red-600">Remove</button>
+                        </div>
+                      </div>
+                    ))}
+                    {notesRows.length < DUPLICATE_NOTES_MAX && (
+                      <button type="button" onClick={addNote} disabled={busy}
+                        className="inline-flex items-center gap-1 text-[12px] font-semibold text-blue-700 hover:underline">
+                        <Plus size={12} /> Add a note for the dispatcher or driver
+                      </button>
+                    )}
+                  </div>
+                  {/* PRICE (v1.110.0) — Chad: "put the original price in the box but leave the copy to duplicate
+                      unchecked default and also make it an editable field the price incase it's more or [less]". */}
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">
-                    {field('price', 'Price (Seal #)', { placeholder: 'none', maxLength: 20 })}
+                    {field('price', 'Price (Seal #)', { placeholder: heldPrice ? 'none' : 'not on our board', maxLength: 20 })}
                     <label className="flex items-center gap-1.5 min-h-[32px] text-[11px] text-slate-600 whitespace-nowrap">
-                      <input type="checkbox" checked={copyPrice && !priceTyped} disabled={busy || priceTyped} onChange={(e) => setCopyPrice(e.target.checked)} className="w-4 h-4" />
-                      Copy the original's
+                      <input type="checkbox" checked={!!form?.priceOn} disabled={busy}
+                        onChange={(e) => { const on = e.target.checked; setForm((f) => ({ ...(f || {}), priceOn: on })); }} className="w-4 h-4" />
+                      Put this price on the copy
                     </label>
+                  </div>
+                  <div className="text-[11px] text-slate-500 leading-snug -mt-1">
+                    {heldPrice
+                      ? <>The original's price is <span className="font-semibold">{heldPrice}</span> — change it if the copy costs more or less, then tick to put it on the copy.</>
+                      : <>Our board doesn't hold the original's price. Tick with the box empty to copy it from NuVizz as it is, or type the copy's price.</>}
                   </div>
                 </section>
               </div>
@@ -9904,7 +9945,7 @@ function DuplicateOrderPanel({ stop, note }) {
                   ? <span className="text-red-600">{error}</span>
                   : <>= <span className="font-semibold">{draft.total} piece{draft.total === 1 ? '' : 's'}</span> on the copy. {editLabels.length
                     ? <>Changed from the original: <span className="font-semibold">{editLabels.join(', ')}</span>. Everything else is copied.</>
-                    : <>A straight copy — change anything above before you create it.</>}</>}
+                    : <>A straight copy — change anything above before you create it.</>} {duplicatePriceLine(form, baselineRef.current)} {duplicateNotesLine(notesRows)}</>}
               </div>
               {msg && <div className={'text-[12px] leading-snug break-words ' + (msg.kind === 'ok' ? 'text-green-700' : msg.kind === 'warn' ? 'text-amber-700' : 'text-red-600')}>{msg.text}</div>}
               {/* The two buttons side by side on one row, as on the ＋ New route window. */}

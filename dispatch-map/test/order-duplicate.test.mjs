@@ -20,7 +20,9 @@ import { readFileSync } from 'node:fs';
 import {
   copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, opLedgerStatus, STOP_NBR_MAX,
   WRITE_OPS, MUTATING_OPS, parseDuplicateEdits, parseCopyNumber, DUPLICATE_EDIT_FIELDS,
+  parseDuplicateNotes, duplicateNoteComment, duplicateNotesMissing, DUPLICATE_NOTES_MAX,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
+import { LEAN_STOP_FIELDS, CUSTOMER_STOP_FIELDS } from '../netlify/functions/lib/board-fields.mts';
 import { runDuplicateOrder, runOp, DUP_PROBE_MAX, siteWriteFeatures as serverWriteFeatures } from '../netlify/functions/lib/nuvizz-write.mts';
 import writeHandler from '../netlify/functions/nuvizz-write.mts';
 import { siteWriteFeatures as clientWriteFeatures, siteWriteFeaturesNow } from '../src/lib/nuvizzWrite.js';
@@ -30,6 +32,8 @@ import {
   parseCopyWeight as clientParseCopyWeight, DUPLICATE_FIELDS, duplicateBaseline, duplicateFormFrom, duplicateEdits,
   duplicateEditLabels, duplicateFormError, copyNbrDraft, duplicateCountChanges, duplicateChangeLabels,
   clockOf, duplicateCopiedFacts, duplicateNotCopied,
+  originalPrice, duplicateCopyPrice, duplicatePriceLine, duplicateNotesDraft, duplicateNotesLine, NOTE_SHOW_TO,
+  DUPLICATE_NOTES_MAX as CLIENT_NOTES_MAX,
 } from '../src/lib/order-duplicate.js';
 import { installFirestoreFake } from './_firestore-fake.mjs';
 
@@ -717,8 +721,9 @@ test('the form opens on what the CARD shows, and only what differs from the orig
   assert.deepEqual(duplicateEdits(shown, base), { addr1: '2 DOCK RD', addr2: '', phone: '678-555-0100' });
   // Formatting is not a change: state case, phone punctuation, email case.
   assert.deepEqual(duplicateEdits({ ...plain, state: 'ga', phone: '(770) 555-1212', email: 'dock@acme.example' }, base), {});
-  // A price is sent only when typed.
-  assert.deepEqual(duplicateEdits({ ...plain, price: '$40' }, base), { price: '$40' });
+  // A price goes on the copy only when the tick is set (v1.110.0) — typed or not.
+  assert.deepEqual(duplicateEdits({ ...plain, price: '$40' }, base), {}, 'a price in the box with the tick off sends nothing');
+  assert.deepEqual(duplicateEdits({ ...plain, price: '$40', priceOn: true }, base), { price: '$40' });
   assert.deepEqual(duplicateEditLabels({ addr1: 'x', phone: 'y' }), ['street address', 'phone']);
 });
 
@@ -745,7 +750,7 @@ test('the line that says what the copy changes names the pallets, weight and day
   assert.deepEqual(duplicateChangeLabels({}, ['weight']), ['weight']);
   assert.deepEqual(duplicateChangeLabels({}, []), []);
   const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-  assert.match(src, /const editLabels = duplicateChangeLabels\(edits, duplicateCountChanges\(stop, draft\)\);/, 'the panel\'s line is built from both');
+  assert.match(src, /const editLabels = duplicateChangeLabels\(edits, duplicateCountChanges\(stop, draft\), baselineRef\.current\);/, 'the panel\'s line is built from both');
 });
 
 test('the form refuses before a call what the server would: a missing address part, a bad ZIP or number', () => {
@@ -785,7 +790,7 @@ test('the answer names the changes, and the panel sends them with the typed numb
     assert.match(panel, new RegExp(`field\\('${k}', `), `${k} is on the form`);
   }
   assert.match(panel, /value=\{form\?\.dispatchNotes \?\? ''\}/);
-  assert.match(panel, /const request = \{ pro, stopId: stop\?\.stopId \|\| null, pallets: draft\.pallets, loose: draft\.loose, weight: draft\.weight, date: draft\.date, copyPrice, copyNbr, edits \};/);
+  assert.match(panel, /const request = \{ pro, stopId: stop\?\.stopId \|\| null, pallets: draft\.pallets, loose: draft\.loose, weight: draft\.weight, date: draft\.date, copyPrice, copyNbr, edits, notes \};/);
   assert.match(panel, /setForm\(duplicateFormFrom\(stop, note\)\);/);
   assert.match(panel, /baselineRef\.current = duplicateBaseline\(stop\);/);
 });
@@ -861,4 +866,124 @@ test('Duplicate opens a large FLOATING window over the page — never full scree
   // What the copy takes as it is, shown in the window.
   assert.match(panel, /const copied = duplicateCopiedFacts\(stop, copyNbrDraft\(form\?\.copyNbr\)\.nbr\);/);
   assert.match(panel, /\{duplicateNotCopied\(stop\)\}/);
+});
+
+// ── PRICE AND NOTES ON THE COPY (v1.110.0) ──────────────────────────────────
+// Chad, 10/03: "give me a stop to add notes for dispatcher or driver also put the original price in the
+// box but leave the copy to duplicate unchecked default and also make it an editable field the price
+// incase it's more or know."
+
+test('the price box opens on the original\'s price, editable, and nothing goes on the copy until the tick is set', () => {
+  // The original's price is NuVizz's Seal #, kept inside `raw` by every enrichment and served to the Map feed.
+  assert.ok(LEAN_STOP_FIELDS.includes('raw.stop.sealNbr'), 'the Map feed serves the original\'s price');
+  assert.ok(!CUSTOMER_STOP_FIELDS.includes('raw.stop.sealNbr'), 'the customer feed does not');
+  const stop = { stopNbr: '007174789', businessName: 'A', addr1: '1 MAIN', city: 'B', state: 'GA', zip: '30518', raw: { stop: { sealNbr: ' 185.00 ' } } };
+  assert.equal(originalPrice(stop), '185.00');
+  assert.equal(originalPrice({}), '');
+  const base = duplicateBaseline(stop);
+  const form = duplicateFormFrom(stop, null);
+  assert.equal(form.price, '185.00', 'the box opens on the original\'s price');
+  assert.equal(form.priceOn, false, 'the tick is off by default');
+  assert.deepEqual(form.notes, []);
+  assert.deepEqual(duplicateEdits(form, base), {}, 'tick off: no price on the copy');
+  assert.equal(duplicateCopyPrice(form), false);
+  assert.equal(duplicatePriceLine(form, base), 'No price on the copy.');
+  const on = { ...form, priceOn: true };
+  assert.deepEqual(duplicateEdits(on, base), { price: '185.00' }, 'ticked: the box goes on the copy');
+  assert.deepEqual(duplicateChangeLabels(duplicateEdits(on, base), [], base), [], 'the original\'s own price is a copy, not a change');
+  assert.equal(duplicatePriceLine(on, base), 'Price on the copy: 185.00.');
+  const more = { ...on, price: '210.00' };
+  assert.deepEqual(duplicateEdits(more, base), { price: '210.00' }, 'more or less: the box as typed');
+  assert.deepEqual(duplicateChangeLabels(duplicateEdits(more, base), [], base), ['price']);
+  assert.equal(duplicatePriceLine(more, base), 'Price on the copy: 210.00 (the original\'s is 185.00).');
+  // A row our board holds no price for: the tick with an empty box copies NuVizz's own, as before.
+  const bare = duplicateFormFrom({ ...stop, raw: undefined }, null);
+  assert.equal(bare.price, '');
+  assert.equal(duplicateCopyPrice({ ...bare, priceOn: true }), true);
+  assert.deepEqual(duplicateEdits({ ...bare, priceOn: true }, duplicateBaseline({ ...stop, raw: undefined })), {});
+  assert.equal(duplicatePriceLine({ ...bare, priceOn: true }, {}), 'Price on the copy: the original\'s, as NuVizz holds it.');
+  // A price too long for NuVizz blocks only when it would be sent.
+  assert.equal(duplicateFormError({ ...form, price: 'X'.repeat(21) }, base), null);
+  assert.match(duplicateFormError({ ...form, price: 'X'.repeat(21), priceOn: true }, base), /longer than NuVizz takes/);
+  // The server side is unchanged: a typed price wins, copyPrice copies the original's own.
+  assert.equal(buildDuplicateStop(original(), 'X-1', OPTS({ edits: { price: '210.00' } })).stop.sealNbr, '210.00');
+  assert.equal(buildDuplicateStop(original(), 'X-1', OPTS()).stop.sealNbr, undefined, 'no tick, no price');
+});
+
+test('notes for the dispatcher or driver: checked the same on both sides, before any call', () => {
+  assert.deepEqual(NOTE_SHOW_TO, [['both', 'Both'], ['dispatcher', 'Dispatcher'], ['driver', 'Driver']], 'the stop card\'s own Show to words');
+  assert.equal(CLIENT_NOTES_MAX, DUPLICATE_NOTES_MAX);
+  const rows = [{ text: ' call Bob on arrival ', audience: 'driver' }, { text: '   ', audience: 'both' }, { text: 'bill the extra pallet', audience: 'dispatcher' }];
+  const want = [{ text: 'call Bob on arrival', audience: 'driver' }, { text: 'bill the extra pallet', audience: 'dispatcher' }];
+  assert.deepEqual(parseDuplicateNotes(rows), { notes: want }, 'an empty row is not a note');
+  assert.deepEqual(duplicateNotesDraft(rows), { notes: want }, 'the screen agrees');
+  assert.equal(duplicateNotesLine(rows), 'Adds 2 notes: driver only, dispatcher only.');
+  assert.equal(duplicateNotesLine([]), '');
+  assert.deepEqual(parseDuplicateNotes(null), { notes: [] });
+  assert.match(parseDuplicateNotes([{ text: 'x', audience: 'customer' }]).error, /Both, Dispatcher or Driver/);
+  assert.match(parseDuplicateNotes([{ text: 'x'.repeat(501), audience: 'both' }]).error, /500 characters/);
+  assert.match(duplicateNotesDraft([{ text: 'x'.repeat(501), audience: 'both' }]).error, /500 characters/);
+  const six = Array.from({ length: 6 }, (_, i) => ({ text: `n${i}`, audience: 'both' }));
+  assert.match(parseDuplicateNotes(six).error, /up to 5/);
+  assert.match(duplicateNotesDraft(six).error, /up to 5/);
+  assert.match(parseDuplicateNotes('call bob').error, /did not arrive as a list/);
+  // The comment each note becomes: the card's Add note shape (PVST_IN + who sees it), no portal `key`.
+  assert.deepEqual(duplicateNoteComment({ text: 'bill the extra pallet', audience: 'dispatcher' }), { cmtType: 'PVST_IN', accessLevels: ['DISPATCHER'], commentDescription: 'bill the extra pallet' });
+  assert.deepEqual(duplicateNoteComment({ text: 'x', audience: 'both' }).accessLevels, ['DRIVER', 'DISPATCHER']);
+});
+
+test('the copy carries the notes after its driver instructions, and the read-back proves each one landed', async () => {
+  const notes = [{ text: 'call Bob on arrival', audience: 'driver' }, { text: 'bill the extra pallet', audience: 'dispatcher' }];
+  const s = buildDuplicateStop(original(), '007174789-1', OPTS({ notes })).stop;
+  assert.deepEqual(s.comments.map((c) => [c.cmtType, c.commentDescription, c.accessLevels.join('+')]), [
+    ['ORD_IN', 'CALL 30 MIN AHEAD', 'DISPATCHER+DRIVER'],
+    ['PVST_IN', 'call Bob on arrival', 'DRIVER'],
+    ['PVST_IN', 'bill the extra pallet', 'DISPATCHER'],
+  ]);
+  assert.ok(s.comments.every((c) => !('key' in c)), 'the create\'s Comment schema has no key');
+  assert.equal(buildDuplicateStop(original(), '007174789-1', OPTS()).stop.comments.length, 1, 'no notes: the comments are as before');
+  // The read-back: text AND audience must match; NuVizz's own metadata and case are ignored.
+  const back = { comments: [{ commentDescription: 'call Bob on arrival', accessLevels: ['driver'], addedByName: 'API' }] };
+  assert.deepEqual(duplicateNotesMissing(back, notes), [notes[1]]);
+  assert.deepEqual(duplicateNotesMissing({ comments: [{ commentDescription: 'bill the extra pallet', accessLevels: ['DRIVER', 'DISPATCHER'] }] }, [notes[1]]), [notes[1]], 'a dispatcher-only note shown to the driver is NOT the note that was sent');
+  // End to end: the create carries them, the read-back finds them, the answer counts them.
+  const nv = fakeNuvizz({ held: { '007174789': original() } });
+  const r = await runDuplicateOrder(nv.requester, P({ notes }), CREDS);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.notesAdded, 2);
+  assert.deepEqual(JSON.parse(created(nv.calls)[0].body).stop.comments.filter((c) => c.cmtType === 'PVST_IN').map((c) => c.commentDescription), ['call Bob on arrival', 'bill the extra pallet']);
+  // A NuVizz that drops a note: the copy exists, and the answer says what did not come back.
+  const lossy = fakeNuvizz({ held: { '007174789': original() }, onCreate: (stop) => ({ ...stop, comments: stop.comments.filter((c) => c.cmtType !== 'PVST_IN') }) });
+  const bad = await runDuplicateOrder(lossy.requester, P({ notes }), CREDS);
+  assert.equal(bad.created, true);
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /2 new notes did not come back as sent \(“call Bob on arrival”, “bill the extra pallet”\)/);
+  // A bad note is refused before ANY NuVizz call.
+  const none = fakeNuvizz({ held: { '007174789': original() } });
+  const refused = await runDuplicateOrder(none.requester, P({ notes: [{ text: 'x', audience: 'everyone' }] }), CREDS);
+  assert.equal(refused.ok, false);
+  assert.equal(none.calls.length, 0);
+});
+
+test('the dry run names the notes; the window shows the price, the tick and the notes', async () => {
+  const res = await writeHandler(new Request('http://localhost/.netlify/functions/nuvizz-write', {
+    method: 'POST', body: JSON.stringify({ op: 'duplicateOrder', dryRun: true, payload: { stopNbr: '007174789', pallets: 4, notes: [{ text: 'call Bob', audience: 'driver' }, { text: 'bill it', audience: 'dispatcher' }] } }),
+  }));
+  const plan = (await res.json()).plan;
+  assert.ok(plan.includes('ADD 2 notes on the copy (PVST_IN): driver only, dispatcher only'), JSON.stringify(plan));
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const panel = src.slice(src.indexOf('function DuplicateOrderPanel('), src.indexOf('function StopLiveDetail('));
+  assert.match(panel, /<input type="checkbox" checked=\{!!form\?\.priceOn\} disabled=\{busy\}[\s\S]*?Put this price on the copy/);
+  assert.match(panel, /const copyPrice = duplicateCopyPrice\(form\);/);
+  assert.match(panel, /\{NOTE_SHOW_TO\.map\(\(\[k, label\]\) => \(/);
+  assert.match(panel, /Add a note for the dispatcher or driver/);
+  assert.match(panel, /\{duplicatePriceLine\(form, baselineRef\.current\)\} \{duplicateNotesLine\(notesRows\)\}/);
+  assert.match(panel, /const notes = duplicateNotesDraft\(form\?\.notes\)\.notes \|\| \[\];/);
+});
+
+test('the pickup line reads the original\'s own pickup off the Map feed', () => {
+  // The Map feed serves raw.stop.from (board-fields.mts) and never `origin`.
+  assert.ok(LEAN_STOP_FIELDS.includes('raw.stop.from') && !LEAN_STOP_FIELDS.includes('origin'));
+  const facts = duplicateCopiedFacts({ stopNbr: '1', raw: { stop: { from: { address: { name: 'DAVIS DELIVERY SERVICE', addr1: '943 GAINESVILLE HWY', city: 'BUFORD', state: 'GA' } } } } }, '');
+  assert.equal(facts.find((f) => f.key === 'pickup').value, 'DAVIS DELIVERY SERVICE, 943 GAINESVILLE HWY, BUFORD GA');
 });

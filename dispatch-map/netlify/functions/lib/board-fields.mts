@@ -43,6 +43,10 @@ export const LEAN_STOP_FIELDS = [
   'state', 'status', 'stopDetails', 'stopDistance', 'stopId', 'stopNbr',
   'stopType', 'terms', 'timeConstraint', 'volume', 'warehouse', 'weight',
   'zip', 'raw.stopExecutionInfo', 'raw.load', 'raw.stop.from',
+  // The original's PRICE (v1.110.0): Davis carries it in NuVizz's Seal # (sealNbr — buildStopPayload),
+  // which every enriched order already stores inside `raw`. The Duplicate window opens its price box
+  // on it. One short string per stop; the customer feed below does NOT carry it.
+  'raw.stop.sealNbr',
 ];
 
 /**
