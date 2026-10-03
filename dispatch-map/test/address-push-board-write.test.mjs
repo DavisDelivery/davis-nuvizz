@@ -47,8 +47,11 @@ const rawOrder = (over = {}) => ({
 /** An honest NuVizz: stores what it is sent (state spelled its own way), unless `ignore`.
  *  `bolGap`: the order carries a BOL, and the read-back right after the write finds none — what
  *  all eight of Chad's pushes on 2026-10-03 met (NuVizz re-creates the BOL under a new id). */
-function vendor({ ignore = false, order = rawOrder(), bolGap = false } = {}) {
+function vendor({ ignore = false, order = rawOrder(), bolGap = false, packingLost = false } = {}) {
   if (bolGap) order = { ...order, to: { ...order.to, documents: [{ documentName: 'BOL', documentType: '03', documentExtType: 'pdf', dispositionType: '01', reference: '639398d6-c24b-4d1a-b601-7ea9ca9c445d', documentGuid: '639398d6-c24b-4d1a-b601-7ea9ca9c445d' }] } };
+  // `packingLost`: an attachment that is NOT the BOL goes missing — still a real loss (v1.112.2),
+  // so the push reads orange, with the address on the order all the same.
+  if (packingLost) order = { ...order, to: { ...order.to, documents: [{ documentName: 'PACKING LIST', documentType: '05', documentExtType: 'pdf', dispositionType: '01', reference: 'aaa', documentGuid: 'aaa' }] } };
   const state = { stop: order };
   const calls = [];
   const respond = async (url, init = {}) => {
@@ -59,7 +62,7 @@ function vendor({ ignore = false, order = rawOrder(), bolGap = false } = {}) {
       const sent = JSON.parse(String(init.body)).stops[0];
       const side = state.stop.stopType === 'PU' ? 'from' : 'to';
       if (!ignore) state.stop = { ...state.stop, [side]: { ...state.stop[side], address: { ...sent[side].address, state: 'GEORGIA' } } };
-      if (bolGap) state.stop = { ...state.stop, to: { ...state.stop.to, documents: [] } };
+      if (bolGap || packingLost) state.stop = { ...state.stop, to: { ...state.stop.to, documents: [] } };
       return J({ status: 'SUCESS', apiResult: { updated: 1, failed: 0, errors: [] } });
     }
     return J({}, 404);
@@ -169,19 +172,31 @@ const pushBody = (clientOpId) => ({ op: 'setStopAddress', clientOpId, payload: {
 const post = (body) => writeHandler(new Request('http://localhost/.netlify/functions/nuvizz-write', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }));
 
 test('THE REPORT, END TO END: corrected and pushed, the order is off Problem addresses at once — not on Sunday', async () => {
-  // With the BOL gap every one of the eight met: the push reads as "check it in the portal", and
-  // the address is on the order all the same — so our copy follows it.
+  // With the BOL gap every one of the eight met — a clean push since v1.112.2 (the BOL is
+  // NuVizz re-creating it), and our copy follows the address either way.
   const v = vendor({ bolGap: true });
   const fake = installFirestoreFake({ [ROW_PATH]: boardRow(), [`customer_notes/${OLD_KEY}`]: NOTE }, v.respond, { commitSemantics: true });
   try {
     const before = await queueRows();
     assert.deepEqual(before.map((r) => r.signal), ['not_in_nuvizz'], 'listed before the push, as on Chad’s screen');
     const j = await (await post(pushBody('op_board_1'))).json();
-    assert.equal(j.result.addressLanded, true, JSON.stringify(j.result).slice(0, 300));
-    assert.equal(j.result.ok, false, 'the BOL gap — the warning Chad saw');
-    assert.equal(j.result.board.days[DAY], 'patched', 'and the board copy is written anyway');
+    assert.equal(j.result.ok, true, JSON.stringify(j.result).slice(0, 300));
+    assert.deepEqual(j.result.bolRecreating, ['to|BOL|03||pdf||01'], 'green, and the log still says the BOL was being re-created');
+    assert.equal(j.result.board.days[DAY], 'patched');
     assert.deepEqual(await queueRows(), [], 'and gone the moment the push lands');
     assert.ok(fake.store.has(`customer_notes/${normalizeMatchKey(NAME, FIX.addr1, FIX.city, FIX.zip)}`), 'its note went with it (v1.106.2), so the pin follows');
+  } finally { fake.restore(); }
+});
+
+test('a push that lands with a REAL loss (an attachment that is not the BOL) still puts the address on our copy', async () => {
+  const v = vendor({ packingLost: true });
+  const fake = installFirestoreFake({ [ROW_PATH]: boardRow(), [`customer_notes/${OLD_KEY}`]: NOTE }, v.respond, { commitSemantics: true });
+  try {
+    const j = await (await post(pushBody('op_board_3'))).json();
+    assert.equal(j.result.addressLanded, true);
+    assert.equal(j.result.ok, false, 'orange — the packing list is a real loss');
+    assert.equal(j.result.board.days[DAY], 'patched', 'and the board copy is written anyway: the address IS on the order');
+    assert.deepEqual(await queueRows(), []);
   } finally { fake.restore(); }
 });
 
