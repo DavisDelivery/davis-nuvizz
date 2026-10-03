@@ -41,18 +41,21 @@ test('the empty, the absent and the malformed: no NaN ever reaches the panel', (
 });
 
 // ── strategy vs matrix ──
-test('MIN TIME IS OFFERED ONLY WITH GOOGLE DRIVE-TIMES — on the free estimate it is Min distance', () => {
+// CHANGED ON PURPOSE in v1.113.0: Google is no longer the only road drive-times. Truck road times
+// (our own routing service) give Min time something to disagree with too, so the argument is now
+// "are this build's drive times from roads?" and the greyed label says road, not Google.
+test('MIN TIME IS OFFERED ONLY WITH ROAD DRIVE-TIMES (Google or truck roads) — on the free estimate it is Min distance', () => {
   const free = strategyChoices(false);
   const mt = free.find((c) => c.value === 'MIN_TIME');
   assert.equal(mt.disabled, true);
-  assert.match(mt.label, /needs Google/);
+  assert.equal(mt.label, 'Min time (needs road drive-times)');
   assert.ok(free.filter((c) => c.value !== 'MIN_TIME').every((c) => !c.disabled), 'only Min time is gated');
-  const paid = strategyChoices(true);
-  assert.ok(paid.every((c) => !c.disabled), 'every strategy is live with Google on');
-  assert.equal(paid.find((c) => c.value === 'MIN_TIME').label, 'Min time');
+  const roads = strategyChoices(true);
+  assert.ok(roads.every((c) => !c.disabled), 'every strategy is live on road drive-times');
+  assert.equal(roads.find((c) => c.value === 'MIN_TIME').label, 'Min time');
 });
 
-test('the pick is remembered: Min time falls back to Min distance while Google is off and comes back when it is on', () => {
+test('the pick is remembered: Min time falls back to Min distance on the straight line and comes back on road drive-times', () => {
   assert.equal(effectiveStrategy('MIN_TIME', false), 'MIN_DISTANCE');
   assert.equal(effectiveStrategy('MIN_TIME', true), 'MIN_TIME');
   assert.equal(effectiveStrategy('CLOSEST_FIRST', false), 'CLOSEST_FIRST');

@@ -25,15 +25,17 @@ test('step 1 reads its freight numbers from selectionTally and labels loose and 
 
 test('the build request carries the remembered strategy (gated), the AI opt-in and the window mode', () => {
   const req = between('    const request = {', '    setLastRequest(request);');
-  assert.ok(/strategy: effectiveStrategy\(strategy, useGoogle\)/.test(req), 'strategy is no longer gated on Google');
+  // v1.113.0, on purpose: gated on road drive-times from either box, not Google alone.
+  assert.ok(/strategy: effectiveStrategy\(strategy, useGoogle \|\| useTruckRoads\)/.test(req), 'strategy is no longer gated on road drive-times');
+  assert.ok(/matrixMode: buildMatrixMode\(\{ useGoogle, useTruckRoads \}\)/.test(req), 'the matrix mode does not come from buildMatrixMode');
   assert.ok(/aiAssist: aiAssist === true/.test(req), 'aiAssist is not sent — the note box would be inert again');
   assert.ok(/windowMode: windowStrict \? 'strict' : 'advisory'/.test(req), 'windowMode is not sent');
   assert.ok(/intent: aiAssist \? intent\.trim\(\) : ''/.test(req), 'the note is sent without AI assist on');
 });
 
-test('the strategy select offers Min time only with Google on, and shows the effective pick', () => {
-  assert.ok(/<select value=\{effectiveStrategy\(strategy, useGoogle\)\}/.test(code), 'the select does not show the effective strategy');
-  assert.ok(/strategyChoices\(useGoogle\)\.map\(\(c\) => <option key=\{c\.value\} value=\{c\.value\} disabled=\{c\.disabled\}>/.test(code), 'the options are not gated');
+test('the strategy select offers Min time only on road drive-times (either box), and shows the effective pick', () => {
+  assert.ok(/<select value=\{effectiveStrategy\(strategy, useGoogle \|\| useTruckRoads\)\}/.test(code), 'the select does not show the effective strategy');
+  assert.ok(/strategyChoices\(useGoogle \|\| useTruckRoads\)\.map\(\(c\) => <option key=\{c\.value\} value=\{c\.value\} disabled=\{c\.disabled\}>/.test(code), 'the options are not gated');
 });
 
 test('AI assist: a checkbox, the note box behind it, and the result panel says which of three states it was', () => {

@@ -58,7 +58,7 @@ import { addressLooksOff, suggestAddressFix, keepsPin, notePinState } from './li
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn, selectionAfterBuildStage, planStopsOnCards, planRouteInfo, planRoutesToPaint } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn, selectionAfterBuildStage, planStopsOnCards, planRouteInfo, planRoutesToPaint, buildMatrixMode, matrixReadout, editedSequenceNote, truckRoadStatusLine } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -227,7 +227,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.113.1';
+const APP_VERSION = '1.114.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -281,7 +281,8 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.113.1', 'A CORRECTED ADDRESS NO LONGER COMES BACK ORANGE BECAUSE OF THE BOL. Chad: \u201cstop the false alarm. i don\u2019t even need to go back and check.\u201d Every push that showed \u201cNuVizz also changed one other thing on the order (the BOL document) \u2014 check it in the portal\u201d was NuVizz replacing the BOL, not losing it: read live with 8 calls on 10/03, all eight orders had their BOL back \u2014 the same PDF named BOL, under a new file id created at the second of the push. NuVizz deletes the BOL and makes a fresh one whenever an order is updated, and our check reads the order back one second after the write, in between. Our push never sends the BOL at all. NOW: on an address push, a BOL missing from that read-back is not a warning \u2014 the push is green, and the write log still records that the BOL was being re-created. Anything ELSE that goes missing \u2014 another attachment, a freight line \u2014 is still orange. Still 3 NuVizz calls per corrected address (read, write, read back); this adds none. PUT IT BACK: ADDRESS_BOL_RECREATE_OK=off on the server \u2014 no redeploy.'],
+  ['1.114.1', 'A CORRECTED ADDRESS NO LONGER COMES BACK ORANGE BECAUSE OF THE BOL. Chad: \u201cstop the false alarm. i don\u2019t even need to go back and check.\u201d Every push that showed \u201cNuVizz also changed one other thing on the order (the BOL document) \u2014 check it in the portal\u201d was NuVizz replacing the BOL, not losing it: read live with 8 calls on 10/03, all eight orders had their BOL back \u2014 the same PDF named BOL, under a new file id created at the second of the push. NuVizz deletes the BOL and makes a fresh one whenever an order is updated, and our check reads the order back one second after the write, in between. Our push never sends the BOL at all. NOW: on an address push, a BOL missing from that read-back is not a warning \u2014 the push is green, and the write log still records that the BOL was being re-created. Anything ELSE that goes missing \u2014 another attachment, a freight line \u2014 is still orange. Still 3 NuVizz calls per corrected address (read, write, read back); this adds none. PUT IT BACK: ADDRESS_BOL_RECREATE_OK=off on the server \u2014 no redeploy.'],
+  ['1.114.0', 'TRUCK ROAD TIMES ON THE BUILD PANEL. Step 3 \u00b7 Plan has a second drive-time box, on the same row as Google\u2019s (Chad: \u201cput \u2018Use truck road times (free)\u2019 on the same row, beside it, not stacked above\u201d): \u201cUse truck road times (free)\u201d \u2014 real road miles and minutes on truck-legal roads from our own routing service, no traffic, no cost per build. Only one drive-time source can run, so ticking one box unticks the other; the Google box keeps its \u201c(costs money)\u201d and its price. When the panel opens it asks whether the service is set up on this site, without waking it; set up nowhere, the box is greyed and says so. Ticked, it checks the service and says what it found \u2014 Buford to Lawrenceville in miles and minutes when it answers, \u201cstarting up\u201d while Cloud Run wakes (it keeps asking for about a minute and a half), and when it cannot answer, that a build will fall back to the straight-line estimate and say so. The Build button reads \u201cBuild (truck road times)\u201d. Min time is offered on either kind of road times now, so its greyed label reads \u201cneeds road drive-times\u201d. THE RESULT SAYS WHAT THE BUILD USED: \u201cTruck road times (free)\u201d, with a count of stops off the truck map (outside Georgia, or not near a truck road) and legs with no truck route, whose times are straight-line estimates; and a build that asked for truck road times and did not get them reads \u201cFree estimate (straight-line)\u201d with a line saying the service did not answer. Both boxes unticked, the build is exactly what it was. Unset OSRM_TRUCK_URL and redeploy to grey the box out.'],
   ['1.113.0', 'TRUCK ROAD TIMES FOR A BUILD \u2014 THE SERVER SIDE, OFF UNTIL ITS ADDRESS IS SET. A Build sequences on a straight-line estimate (1.3 \u00d7 crow-flies at about 30 mph) unless it pays for Google, and a straight line cannot see a lake, a river or a limited-access highway \u2014 so the stop order and the ETAs behind the time-window flags are off wherever roads do not run straight. Our own routing service (OSRM on Cloud Run, Georgia map, tractor-trailer profile) gives real road miles and minutes on truck-legal roads at no cost per build. No traffic, and only the truck restrictions someone has put on the map. THIS RELEASE ADDS THE PLUMBING ONLY: a build can now ask for truck road times, and nothing on screen asks yet (the Build Panel checkbox is the next release). A stop the service had to move more than 1 km to reach a road (outside Georgia, or nowhere near a truck road) and a leg it has no truck route for take the straight-line estimate, never a free leg, and the build counts them. A service that is not set up, refuses the token, is still waking or answers wrong falls back to the straight-line estimate and the build says so. A new check, osrm-status, says whether the service answers and which account calls it. NOTHING CHANGES until OSRM_TRUCK_URL is set on the site; unset it and redeploy to put it back.'],
   ['1.112.1', 'A CORRECTED ORDER LEAVES PROBLEM ADDRESSES THE MOMENT THE PUSH LANDS. Chad, after correcting eight orders: \u201cLooks like all the ones i corrected are still left in my history needing correcting.\u201d They were \u2014 and every one of them was already right in NuVizz: read live with 8 calls on 10/03, all eight held the corrected address, nothing else on them had changed, the dispatcher note was on, and the BOL was back under a new file id. The list reads an order\u2019s address from OUR STORED COPY of it, which only a scan refreshes, and on a Saturday the next scan to re-read Monday\u2019s orders is Sunday at 8 PM \u2014 so each corrected order came straight back as \u201cNot in NuVizz\u201d, offering the same push again (24 calls to re-send what NuVizz already had). The orange banner also said those six were \u201coff this list\u201d while they sat on it: they had been pushed as Mis-split rows and came back under the Not in NuVizz name. NOW: when a push lands, NuVizz\u2019s read-back address is written onto our stored copy of the order (the same as the piece-count edit does with its counts) \u2014 field-masked, never creating a row, never onto another record that shares the number, and only for a delivery address. The order leaves the list as soon as it reloads, and the board shows NuVizz\u2019s lines straight away. It applies to pushes from now on: the eight already pushed today drop off at the next scan (Sunday 8 PM ET), or wave them off \u2014 they need nothing else. No NuVizz calls added. PUT IT BACK: ADDRESS_PUSH_BOARD_WRITE=off on the server \u2014 no redeploy.'],
   ['1.112.0', 'DUPLICATE: AN ITEMS DRAWER \u2014 CHANGE THE COPY\u2019S ACTUAL ITEM LINES. Chad, 10/03: \u201cgive me a drawer to edit the actual items.\u201d Where the Items box was, the window now has an Items drawer. Shut, it says what the lines hold; open, each of the original\u2019s lines is there to change \u2014 what it is, how many, the weight \u2014 with Remove on each and \u201c+ Add an item line\u201d under them. The copy carries exactly the lines shown; before this, a copy kept only the original\u2019s first line. Pallets, Loose and Weight stay the order\u2019s TOTALS: measured with Chad\u2019s go-ahead, NuVizz keeps the totals and the lines exactly as sent, so when they disagree the drawer says so in amber and never blocks. ONE LINE FOLLOWS THE TOTALS: an order with a single line keeps it reading Pallets + Loose and Weight, as every order this app makes does \u2014 put 2 of 3 pallets on the copy and its line says 2, not 3. Type its quantity or weight and it is yours. CARRIED AS NUVIZZ HOLDS IT: each line\u2019s dimensions, freight class and L (long / oversize) flag ride across and show under the line \u2014 the route build reads them for oversize freight and deck length, and the old one-line copy dropped them. Never copied: the original\u2019s carton barcode; each line is numbered by the copy. The read-back checks every line landed.'],
@@ -25762,6 +25763,46 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   const [windowStrict, setWindowStrict] = useState(false);
   const [strategy, setStrategy] = useState('MIN_DISTANCE');
   const [useGoogle, setUseGoogle] = useState(false);
+  // TRUCK ROAD TIMES (v1.113.0): drive times from our own routing service, free per build. Per
+  // build and not persisted, the same as useGoogle; only one of the two can be on. The status is
+  // what osrm-status last said ('unknown' until asked): the panel asks ?check=config once when it
+  // opens (that wakes nothing), and the full check only when the box is ticked.
+  const [useTruckRoads, setUseTruckRoads] = useState(false);
+  const [truckRoadStatus, setTruckRoadStatus] = useState({ state: 'unknown' });
+  const truckCheckGen = useRef(0);
+  useEffect(() => {
+    let live = true;
+    apiFetch('/.netlify/functions/osrm-status?check=config').then((r) => r.json()).then((j) => {
+      if (!live) return;
+      if (j?.state === 'off') { setTruckRoadStatus({ state: 'off' }); setUseTruckRoads(false); }
+      else if (j?.state === 'set') setTruckRoadStatus((st) => (st.state === 'unknown' ? { state: 'set' } : st));
+    }).catch(() => {});
+    return () => { live = false; truckCheckGen.current++; };
+  }, []);
+  // On tick: ask the service, and while Cloud Run is starting ('waking') ask again every 10 s for
+  // up to 90 s. 'error' leaves the box ticked; the line says a build will fall back and say so.
+  // A newer tick, an untick or leaving the screen ends the loop (truckCheckGen).
+  const checkTruckRoads = useCallback(async () => {
+    const gen = ++truckCheckGen.current;
+    const started = Date.now();
+    setTruckRoadStatus({ state: 'checking' });
+    for (;;) {
+      let st;
+      try { const r = await apiFetch('/.netlify/functions/osrm-status'); st = await r.json(); }
+      catch (e) { st = { state: 'error', error: String(e?.message || e) }; }
+      if (gen !== truckCheckGen.current) return;
+      if (st?.state === 'off') { setTruckRoadStatus({ state: 'off' }); setUseTruckRoads(false); return; }
+      if (st?.state === 'waking') {
+        if (Date.now() - started + 10_000 > 90_000) { setTruckRoadStatus({ state: 'error', error: 'still starting after 90 seconds' }); return; }
+        setTruckRoadStatus(st);
+        await new Promise((res) => setTimeout(res, 10_000));
+        if (gen !== truckCheckGen.current) return;
+        continue;
+      }
+      setTruckRoadStatus(st?.state ? st : { state: 'error', error: st?.error || 'the status check answered nothing usable' });
+      return;
+    }
+  }, []);
   // When on, the auto-router puts ONLY green (tractor-friendly) stops on a 53'
   // trailer; every other stop is held to a box truck. Per-build (not persisted).
   const [trailerGreenOnly, setTrailerGreenOnly] = useState(false);
@@ -26716,6 +26757,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         strategy,
         intent,
         use_google: useGoogle,
+        use_truck_roads: useTruckRoads,
         select_mode: selectMode,
         selected_stop_count: selectedIds.size,
         selected_truck_count: selectedTruckIds.size,
@@ -26751,7 +26793,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     }
     return bundle;
   }, [
-    mapRef, notes, selectedIds, stopById, job, strategy, intent, useGoogle, selectMode,
+    mapRef, notes, selectedIds, stopById, job, strategy, intent, useGoogle, useTruckRoads, selectMode,
     selectedTruckIds, lastRequest, stops, positioned, loading, stopsError, selectedDate,
     google, viewportWidth, isMobile,
   ]);
@@ -28011,10 +28053,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       truckSnapshots: loadsBound ? solverTrucks : selectedTrucks,
       ...(loadsBound ? { trucks: solverTrucks, plannedLoads } : {}),
       intent: aiAssist ? intent.trim() : '',
-      // The REMEMBERED pick, gated on the matrix: Min time only means something on Google
-      // drive-times (lib/routing-select.js effectiveStrategy — the select shows the same).
-      strategy: effectiveStrategy(strategy, useGoogle),
-      matrixMode: useGoogle ? 'google' : 'haversine',
+      // The REMEMBERED pick, gated on the matrix: Min time only means something on road
+      // drive-times, Google or truck roads (lib/routing-select.js effectiveStrategy — the select
+      // shows the same). Neither box ticked sends 'haversine', exactly as before.
+      strategy: effectiveStrategy(strategy, useGoogle || useTruckRoads),
+      matrixMode: buildMatrixMode({ useGoogle, useTruckRoads }),
       tractorOnlyGreen: trailerGreenOnly,
       // THE BUILD'S CAPACITY AND GREEN RULES (netlify/functions/lib/routing-build-rules.mts, each
       // its own switch on the server): the stops the Selected panel paints green, and what each
@@ -28046,7 +28089,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     } catch (e) {
       setJob({ status: 'error', error: e.message }); setBuilding(false);
     }
-  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle, trailerGreenOnly, planMode, planTargets, aiAssist, windowStrict, selectedStops, panelGreenIds, loadExistingIds, loadExistingRows]);
+  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle, useTruckRoads, trailerGreenOnly, planMode, planTargets, aiAssist, windowStrict, selectedStops, panelGreenIds, loadExistingIds, loadExistingRows]);
 
   // Save panel — a name (prefilled with a sensible auto-name per build) + optional
   // free-text initials. No native prompt(); no auth.
@@ -29015,20 +29058,33 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
       {/* Controls */}
       <div className="border rounded p-2 space-y-2">
         <div className="font-semibold text-slate-700">3 · Plan</div>
-        {/* STRATEGY. "Min time" is offered only with Google drive-times on: on the free
-            estimate the two are the same route (haversine makes every duration a constant
-            multiple of its distance — measured 50/50 identical), and a dropdown with two
-            identical answers teaches that the dropdown does nothing. The pick is KEPT:
-            effectiveStrategy reads it, so ticking Google brings Min time straight back. */}
+        {/* STRATEGY. "Min time" is offered only with road drive-times on (Google or truck
+            roads): on the free estimate the two are the same route (haversine makes every
+            duration a constant multiple of its distance — measured 50/50 identical), and a
+            dropdown with two identical answers teaches that the dropdown does nothing. The pick
+            is KEPT: effectiveStrategy reads it, so ticking either box brings Min time back. */}
         <label className="flex items-center justify-between text-[12px]">Strategy
-          <select value={effectiveStrategy(strategy, useGoogle)} onChange={(e) => setStrategy(e.target.value)} className="border rounded px-1 py-1">
-            {strategyChoices(useGoogle).map((c) => <option key={c.value} value={c.value} disabled={c.disabled}>{c.label}</option>)}
+          <select value={effectiveStrategy(strategy, useGoogle || useTruckRoads)} onChange={(e) => setStrategy(e.target.value)} className="border rounded px-1 py-1">
+            {strategyChoices(useGoogle || useTruckRoads).map((c) => <option key={c.value} value={c.value} disabled={c.disabled}>{c.label}</option>)}
           </select>
         </label>
-        <label className={`flex items-start gap-2 text-[12px] rounded p-1.5 ${useGoogle ? 'bg-amber-50 border border-amber-300' : 'bg-slate-50'}`}>
-          <input type="checkbox" checked={useGoogle} onChange={(e) => setUseGoogle(e.target.checked)} className="mt-0.5" />
-          <span>Use live Google drive-times <b>(costs money)</b><br /><span className="text-[11px] text-slate-500">Default is a free straight-line estimate. {selectedIds.size > 0 && <>This build ≈ {wouldBeElements} elements ≈ <b>${wouldBeCost.toFixed(2)}</b>.</>}</span></span>
-        </label>
+        {/* DRIVE TIMES: two plain boxes on one row, wrapping on a narrow screen (Chad: "put 'Use
+            truck road times (free)' on the same row, beside it, not stacked above"). Only one
+            matrix source can run, so ticking one unticks the other. Neither ticked is the free
+            straight-line estimate, exactly as before. */}
+        <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5 text-[12px]" data-drive-times-row>
+          <label className="flex items-start gap-1.5 flex-1 basis-32 min-w-0">
+            <input type="checkbox" checked={useGoogle} onChange={(e) => { setUseGoogle(e.target.checked); if (e.target.checked) { setUseTruckRoads(false); truckCheckGen.current++; } }} className="mt-0.5" />
+            <span>Use live Google drive-times <b>(costs money)</b><br /><span className="text-[11px] text-slate-500">Default is a free straight-line estimate. {selectedIds.size > 0 && <>This build ≈ {wouldBeElements} elements ≈ <b>${wouldBeCost.toFixed(2)}</b>.</>}</span></span>
+          </label>
+          <label className={`flex items-start gap-1.5 flex-1 basis-32 min-w-0 ${truckRoadStatus.state === 'off' ? 'opacity-50' : ''}`}>
+            <input type="checkbox" checked={useTruckRoads} disabled={truckRoadStatus.state === 'off'} onChange={(e) => { const on = e.target.checked; setUseTruckRoads(on); if (on) { setUseGoogle(false); checkTruckRoads(); } else { truckCheckGen.current++; } }} className="mt-0.5" />
+            <span>Use truck road times <b>(free)</b><br /><span className="text-[11px] text-slate-500">Real road miles and minutes on truck-legal roads, from our own routing service. No traffic. The straight-line estimate stays the default.</span></span>
+          </label>
+        </div>
+        {(useTruckRoads || truckRoadStatus.state === 'off') && (
+          <div className={`text-[11px] ${truckRoadStatus.state === 'error' ? 'text-amber-700' : 'text-slate-500'}`} data-truck-road-status={truckRoadStatus.state}>{truckRoadStatusLine(truckRoadStatus)}</div>
+        )}
         {/* TIME RESTRICTIONS. Chad: "we need them to be able to pay attention to time
             restrictions, whether or not it's a tractor friendly stop." Every build now reads
             each stop's appointment window AND its customer's receiving hours for the board
@@ -29061,8 +29117,8 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
         )}
         <button onClick={runBuild} disabled={!canBuild} className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
           {building ? 'Building…'
-            : planMode === 'loads' && planTargets.length > 0 ? `Build onto ${planTargets.length} load${planTargets.length === 1 ? '' : 's'}${useGoogle ? ' · Google drive-times' : ''}`
-            : useGoogle ? 'Build with Google drive-times' : 'Build (free estimate)'}
+            : planMode === 'loads' && planTargets.length > 0 ? `Build onto ${planTargets.length} load${planTargets.length === 1 ? '' : 's'}${useGoogle ? ' · Google drive-times' : useTruckRoads ? ' · truck road times' : ''}`
+            : useGoogle ? 'Build with Google drive-times' : useTruckRoads ? 'Build (truck road times)' : 'Build (free estimate)'}
         </button>
         {!canBuild && !building && <div className="text-[11px] text-slate-400">{planMode === 'loads' ? 'Select ≥1 stop and pick ≥1 load to build.' : 'Select ≥1 stop and ≥1 truck to build.'}</div>}
       </div>
@@ -29750,6 +29806,7 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
   }
 
   const cost = meta.estimatedCostUsd || 0;
+  const readout = matrixReadout(meta);
   const ai = result.aiAssist || {};
   // Only the Compare card's Save writes NuVizz. With a loads-bound build now staging itself,
   // this panel's own Save (a plan COPY in our store) sits on screen beside it — so it may not
@@ -29775,9 +29832,11 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
         </div>
       )}
 
-      {/* Cost / quality readout */}
-      <div className={`rounded border p-2 text-[12px] ${usedGoogle ? 'border-amber-300 bg-amber-50' : 'border-green-300 bg-green-50'}`}>
-        <div className="font-semibold">{usedGoogle ? 'Google live drive-times' : 'Free estimate (straight-line)'}</div>
+      {/* Cost / quality readout — what the build USED (matrixReadout, lib/routing-select.js),
+          including a truck-road build that fell back to the straight line, which says so. */}
+      <div className={`rounded border p-2 text-[12px] ${readout.tone === 'amber' ? 'border-amber-300 bg-amber-50' : 'border-green-300 bg-green-50'}`}>
+        <div className="font-semibold">{readout.title}</div>
+        {readout.note && <div className="text-[11px] text-slate-600" data-matrix-note>{readout.note}</div>}
         <div className="flex justify-between"><span>Matrix elements</span><b>{meta.googleElementCount ?? '—'}</b></div>
         <div className="flex justify-between"><span>Estimated cost</span><b>${Number(cost).toFixed(2)}</b></div>
         {/* Three states, not two: "off" used to cover both "never asked" and "asked, and the
@@ -29801,7 +29860,7 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
 
       {/* Routes (numbered; reorderable unless viewing a saved load) */}
       {(routesView || []).map((rv) => (
-        <RoutingRouteCard key={rv.truckId} rv={rv} stopById={stopById} usedGoogle={usedGoogle} readOnly={readOnly} timeRestrictions={result.timeRestrictions || {}}
+        <RoutingRouteCard key={rv.truckId} rv={rv} stopById={stopById} usedGoogle={usedGoogle} editedNote={editedSequenceNote(meta)} readOnly={readOnly} timeRestrictions={result.timeRestrictions || {}}
           onReorder={onReorder} onMove={onMove} onResequence={onResequence} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={onOpenStop} />
       ))}
 
@@ -30249,7 +30308,7 @@ function fmtRouteDur(sec) {
 // One truck's route — NUMBERED stops in the CURRENT sequence (matching the map
 // markers). On a live build: drag-and-drop or ▲▼ to reorder. When viewing a
 // saved load (readOnly), the reorder affordances are hidden (view-only this PR).
-function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMove, onResequence, hoverId, setHoverId, onOpenStop, timeRestrictions = {} }) {
+function RoutingRouteCard({ rv, stopById, usedGoogle, editedNote = '', readOnly, onReorder, onMove, onResequence, hoverId, setHoverId, onOpenStop, timeRestrictions = {} }) {
   const route = rv.route;
   const rows = rv.order.map((id, idx) => {
     const s = stopById.get(String(id));
@@ -30307,7 +30366,7 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
       </div>
       {rv.reordered && (
         <div className="px-2 pb-1 text-[10px] text-amber-700">
-          Sequence edited — drive times are straight-line estimates{usedGoogle ? ' (original Google road times no longer apply to this order)' : ''}.
+          Sequence edited — drive times are straight-line estimates{editedNote}.
         </div>
       )}
       <ul className="divide-y">
