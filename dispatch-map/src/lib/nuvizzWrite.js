@@ -192,7 +192,9 @@ export const setStopPieces = (stopNbr, { pallets, loose } = {}, opts = {}) =>
 // kept for a retry of the same request (lib/single-order-op.js singleOrderOpId): a retry under a
 // fresh key after a lost answer would make a SECOND copy, and the server's ledger replays the first
 // answer only to the same key.
-export const duplicateOrder = (stopNbr, { pallets, loose, weight, date, copyPrice } = {}, opts = {}) =>
+// v1.109.0: `copyNbr` — a number the dispatcher typed for the copy (blank → the next free -N);
+// `edits` — only the fields they CHANGED (lib/order-duplicate.js duplicateEdits); the rest is copied.
+export const duplicateOrder = (stopNbr, { pallets, loose, weight, date, copyPrice, copyNbr, edits } = {}, opts = {}) =>
   callWrite('duplicateOrder', {
     stopNbr,
     pallets,
@@ -200,6 +202,8 @@ export const duplicateOrder = (stopNbr, { pallets, loose, weight, date, copyPric
     ...(weight != null && weight !== '' ? { weight } : {}),
     ...(date ? { date: String(date) } : {}),
     copyPrice: copyPrice === true,
+    ...(copyNbr ? { copyNbr: String(copyNbr) } : {}),
+    ...(edits && typeof edits === 'object' && Object.keys(edits).length ? { edits } : {}),
     ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
   }, { createdBy: 'dispatcher-duplicate', ...opts, dryRun: false });
 

@@ -149,6 +149,10 @@ export interface CreatedOrder {
   verified?: boolean;
   /** The NuVizz order profile the create SENT (v1.108.0) — 'ESTES' for an Estes order, else null. */
   profile?: string | null;
+  /** A duplicate's fields the dispatcher CHANGED before creating it (v1.109.0); [] = a straight copy. */
+  edited?: string[];
+  /** A duplicate created under a number the dispatcher TYPED, not the next free {original}-N (v1.109.0). */
+  numberTyped?: boolean;
 }
 
 export async function recordCreatedOrder(o: CreatedOrder): Promise<void> {

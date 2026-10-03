@@ -1632,6 +1632,78 @@ export interface DuplicateOptions {
   date: string;
   /** Copy the original's price (Seal #) too. Off unless the dispatcher asks. */
   copyPrice?: boolean;
+  /** What the dispatcher CHANGED on the copy (v1.109.0) — parseDuplicateEdits. Absent = all copied. */
+  edits?: DuplicateEdits;
+}
+
+// ── §DUP-E  EDIT THE COPY BEFORE IT IS CREATED (v1.109.0) ─────────────────────
+// Chad, 10/03: "when I duplicate I want to have the option to edit the order. Addresses numbers
+// piece counts items pretty much anything." The copy is still built from the original's own NuVizz
+// record; a field the dispatcher changed replaces the copied one, and a field left alone is copied
+// exactly as before (the panel sends only what differs from the original — order-duplicate.js
+// duplicateEdits). '' clears an optional field on the copy; a required one can never be blanked.
+// The freight stays ONE line (the item description + the header totals), as on every order this
+// app creates: NuVizz recomputes `volume` — the LOOSE count on this tenant — from the detail lines
+// (PARTIAL_UPDATE_DERIVED_KEYS), so sending the original's lines one by one would let NuVizz move
+// the copy's loose count by a rule this code cannot see.
+export interface DuplicateEdits {
+  name?: string; addr1?: string; addr2?: string; city?: string; state?: string; zip?: string;
+  phone?: string; email?: string; itemDesc?: string; dispatchNotes?: string; price?: string;
+}
+
+export const DUPLICATE_EDIT_FIELDS: ReadonlyArray<{ key: keyof DuplicateEdits; label: string; max: number; required?: boolean }> = [
+  { key: 'name', label: 'consignee', max: 100, required: true },
+  { key: 'addr1', label: 'street address', max: 100, required: true },
+  { key: 'addr2', label: 'address line 2', max: 100 },
+  { key: 'city', label: 'city', max: 60, required: true },
+  { key: 'state', label: 'state', max: 30, required: true },
+  { key: 'zip', label: 'ZIP', max: 10, required: true },
+  { key: 'phone', label: 'phone', max: 30 },
+  { key: 'email', label: 'email', max: 200 },
+  { key: 'itemDesc', label: 'items', max: 100 },
+  { key: 'dispatchNotes', label: 'driver instructions', max: 500 },
+  { key: 'price', label: 'price', max: 20 },
+];
+
+/** PURE: the dispatcher's changes, checked before any NuVizz call. Unknown keys are ignored. */
+export function parseDuplicateEdits(input: any): { edits: DuplicateEdits } | { error: string } {
+  const edits: DuplicateEdits = {};
+  if (input == null) return { edits };
+  if (typeof input !== 'object' || Array.isArray(input)) return { error: 'the changes to the copy did not arrive as a list of fields' };
+  for (const f of DUPLICATE_EDIT_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(input, f.key) || input[f.key] === undefined) continue;
+    const raw = input[f.key];
+    if (raw !== null && typeof raw !== 'string' && typeof raw !== 'number') return { error: `the copy's ${f.label} must be text` };
+    let v = raw == null ? '' : String(raw).trim();
+    if (f.required && !v) return { error: `the copy needs a ${f.label} — it cannot be left blank` };
+    if (v.length > f.max) return { error: `the copy's ${f.label} is longer than NuVizz takes (${f.max} characters)` };
+    if (f.key === 'state' && v) {
+      v = stateCode(v);
+      if (!/^[A-Z]{2}$/.test(v)) return { error: `'${raw}' is not a US state — use the 2-letter code (GA)` };
+    }
+    if (f.key === 'zip' && v && !/^\d{5}(-\d{4})?$/.test(v)) return { error: `'${v}' is not a ZIP — 5 digits, or ZIP+4` };
+    if (f.key === 'phone' && v) {
+      const digits = v.replace(/\D/g, '');
+      if (digits.length < 7 || digits.length > 15) return { error: `'${v}' is not a phone number` };
+    }
+    if (f.key === 'email' && v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return { error: `'${v}' is not an email address` };
+    edits[f.key] = v;
+  }
+  return { edits };
+}
+
+/**
+ * PURE: an order number the dispatcher TYPED for the copy (v1.109.0), or null when left blank —
+ * blank keeps Chad's rule, the first free {original}-N. A typed number gets the same proof as the
+ * hunt's: it must read NOT FOUND in NuVizz before it is used, because the create REPLACES an order
+ * that already has the number.
+ */
+export function parseCopyNumber(input: any): { nbr: string | null } | { error: string } {
+  const v = input == null ? '' : String(input).trim();
+  if (!v) return { nbr: null };
+  if (v.length > STOP_NBR_MAX) return { error: `order number ${v} is longer than NuVizz's ${STOP_NBR_MAX} characters` };
+  if (!/^[A-Za-z0-9][A-Za-z0-9 ._\/-]*$/.test(v)) return { error: `order number '${v}' has characters NuVizz does not take — letters, digits, dashes` };
+  return { nbr: v };
 }
 
 const IANA_ZONE = /^[A-Za-z]+\/[A-Za-z_]+(?:\/[A-Za-z_]+)?$/;
@@ -1652,9 +1724,15 @@ export function buildDuplicateStop(raw: any, newNbr: string, opts: DuplicateOpti
   if (!isDayString(opts?.date)) return { error: `'${opts?.date ?? ''}' is not a YYYY-MM-DD delivery day` };
   const str = (v: any) => (v == null ? '' : String(v).trim());
   const a = raw.to?.address || {};
-  const name = str(a.name); const addr1 = str(a.addr1); const city = str(a.city); const zip = str(a.zip);
+  const e: DuplicateEdits = opts?.edits || {};
+  // A changed field replaces the copied one (§DUP-E); everything else is the original's own.
+  const pick = (k: keyof DuplicateEdits, copied: string) => (e[k] !== undefined ? str(e[k]) : copied);
+  const name = pick('name', str(a.name)); const addr1 = pick('addr1', str(a.addr1));
+  const city = pick('city', str(a.city)); const zip = pick('zip', str(a.zip));
   if (!name || !addr1 || !city || !zip) {
-    return { error: 'the original has no complete delivery address in NuVizz (consignee, street, city and ZIP) — NuVizz would geocode half an address to somewhere nobody chose' };
+    return { error: e.name !== undefined || e.addr1 !== undefined || e.city !== undefined || e.zip !== undefined
+      ? 'the copy has no complete delivery address (consignee, street, city and ZIP) — NuVizz would geocode half an address to somewhere nobody chose'
+      : 'the original has no complete delivery address in NuVizz (consignee, street, city and ZIP) — NuVizz would geocode half an address to somewhere nobody chose' };
   }
   const f = raw.from?.address || {};
   const origin = { name: str(f.name), addr1: str(f.addr1), city: str(f.city), state: stateCode(f.state), zip: str(f.zip) };
@@ -1685,19 +1763,20 @@ export function buildDuplicateStop(raw: any, newNbr: string, opts: DuplicateOpti
     // pro → shipmentNbr / reference1 carry the copy's own number. Never the original's shipment
     // number: an "ATT" there marks the ORIGINAL's failed delivery (nuvizz-scan isAttemptShipment).
     pro: nbr,
-    name, addr1, addr2: str(a.addr2) || null, city, state: stateCode(a.state), zip,
+    name, addr1, addr2: pick('addr2', str(a.addr2)) || null, city, state: stateCode(pick('state', str(a.state))), zip,
     // The commodity LINE comes from the original's own first line item. Not from reference2: on a
     // carrier's order reference1/reference2 are its PO and customer refs (normalizeStop: poRef /
     // custRef); only New Order's orders use reference2 for the commodity. Both references are
     // echoed verbatim below instead.
-    itemDesc: firstLine ? str(firstLine.product) : null,
+    itemDesc: pick('itemDesc', firstLine ? str(firstLine.product) : '') || null,
     pallets: opts.pallets,
     loose: opts.loose,
     weight: opts.weight != null ? opts.weight : numOrNull(raw.weight),
-    price: opts.copyPrice ? (str(raw.sealNbr) || null) : null,
-    phone: str(contact.phone) || null,
-    email: str(contact.email) || null,
-    dispatchNotes: ordIn.length ? ordIn.join('\n') : null,
+    // A typed price wins; otherwise the original's only when asked for.
+    price: e.price !== undefined ? (str(e.price) || null) : (opts.copyPrice ? (str(raw.sealNbr) || null) : null),
+    phone: pick('phone', str(contact.phone)) || null,
+    email: pick('email', str(contact.email)) || null,
+    dispatchNotes: pick('dispatchNotes', ordIn.length ? ordIn.join('\n') : '') || null,
     deliverFrom, deliverTo,
     deliverConstraint: str(sch.timeConstraint) || null,
   };
@@ -1719,7 +1798,7 @@ export function buildDuplicateStop(raw: any, newNbr: string, opts: DuplicateOpti
   if (ref1 && !ownPro) stop.reference1 = safeSlice(ref1, 50);
   const ref2 = str(raw.reference2);
   if (ref2) stop.reference2 = safeSlice(ref2, 50);
-  if (opts.copyPrice && !str(raw.sealNbr)) warnings.push('the original has no price (Seal #) to copy');
+  if (opts.copyPrice && e.price === undefined && !str(raw.sealNbr)) warnings.push('the original has no price (Seal #) to copy');
   return { stop, deliveryDate: opts.date, warnings };
 }
 

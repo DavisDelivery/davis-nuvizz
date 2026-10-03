@@ -11,6 +11,7 @@
 // one table so they cannot drift.
 
 import { parsePieceDraft, piecesLine } from './stop-pieces.js';
+import { resolveStopPhone } from './stop-contact.js';
 
 /** The ORIGINAL order number a duplicate is numbered from — see copyBaseNbr on the server.
  *  007174789-1 → 007174789; ESTES-0538243875 stays whole (a carrier id is one identifier). */
@@ -63,6 +64,103 @@ export function duplicateDraft({ pallets, loose, weight, date }, today) {
   return { pallets: p.pallets, loose: p.loose, total: p.total, weight: w.weight, date };
 }
 
+// ── EDIT THE COPY BEFORE IT IS CREATED (§DUP-E, v1.109.0) ─────────────────────
+// Chad, 10/03: "when I duplicate I want to have the option to edit the order. Addresses numbers
+// piece counts items pretty much anything." The form opens on what the CARD shows (a corrected
+// address from customer notes, the number the card would dial); only what differs from the
+// original's own NuVizz values (the board row) is sent, so a field left alone is copied by the server
+// exactly as before. The server's rules are nuvizz-write-ops.mts parseDuplicateEdits/parseCopyNumber.
+
+/** The fields the copy can change, in form order, with the words the panel uses for them. */
+export const DUPLICATE_FIELDS = [
+  { key: 'name', label: 'consignee', required: true },
+  { key: 'addr1', label: 'street address', required: true },
+  { key: 'addr2', label: 'address line 2' },
+  { key: 'city', label: 'city', required: true },
+  { key: 'state', label: 'state', required: true },
+  { key: 'zip', label: 'ZIP', required: true },
+  { key: 'phone', label: 'phone' },
+  { key: 'email', label: 'email' },
+  { key: 'itemDesc', label: 'items' },
+  { key: 'dispatchNotes', label: 'driver instructions' },
+  { key: 'price', label: 'price' },
+];
+
+const t = (v) => (v == null ? '' : String(v).trim());
+const firstProduct = (stop) => {
+  const line = (Array.isArray(stop?.stopDetails) ? stop.stopDetails : []).find((d) => d && t(d.product));
+  return line ? t(line.product) : '';
+};
+
+/** What the original holds in NuVizz, as the board row knows it — the server copies these. */
+export function duplicateBaseline(stop) {
+  return {
+    name: t(stop?.businessName), addr1: t(stop?.addr1), addr2: t(stop?.addr2), city: t(stop?.city),
+    state: t(stop?.state), zip: t(stop?.zip), phone: t(stop?.contact?.phone), email: t(stop?.contact?.email),
+    itemDesc: firstProduct(stop), dispatchNotes: t(stop?.signalSources?.orderInstructions), price: '',
+  };
+}
+
+/** The form as it opens: what the CARD shows — its corrected address and the number it would dial. */
+export function duplicateFormFrom(stop, note) {
+  const base = duplicateBaseline(stop);
+  const ov = note?.address_override || null;
+  return {
+    ...base,
+    // The same expressions the card's Address block uses (App.jsx StopDataSections).
+    addr1: t(ov?.addr1 || stop?.addr1),
+    addr2: t(ov?.addr2 ?? stop?.addr2),
+    city: t(ov?.city ?? stop?.city),
+    state: t(ov?.state ?? stop?.state),
+    zip: t(ov?.zip ?? stop?.zip),
+    phone: t(resolveStopPhone(stop, note)) || base.phone,
+    copyNbr: '',
+  };
+}
+
+const same = (key, a, b) => {
+  const x = t(a); const y = t(b);
+  if (key === 'state') return x.toUpperCase() === y.toUpperCase();
+  if (key === 'phone') return x.replace(/\D/g, '') === y.replace(/\D/g, '');
+  if (key === 'email') return x.toLowerCase() === y.toLowerCase();
+  return x === y;
+};
+
+/** Only what the copy changes: { field: value } for each field that differs from the original's. */
+export function duplicateEdits(form, baseline) {
+  const out = {};
+  for (const f of DUPLICATE_FIELDS) {
+    if (f.key === 'price') { if (t(form?.price)) out.price = t(form.price); continue; }
+    if (!same(f.key, form?.[f.key], baseline?.[f.key])) out[f.key] = t(form?.[f.key]);
+  }
+  return out;
+}
+
+/** The changed fields in the panel's own words, for the line that says what the copy changes. */
+export const duplicateEditLabels = (edits) =>
+  DUPLICATE_FIELDS.filter((f) => Object.prototype.hasOwnProperty.call(edits || {}, f.key)).map((f) => f.label);
+
+/** A typed number for the copy, checked as the server checks it; blank keeps the next free -N. */
+export function copyNbrDraft(v) {
+  const s = t(v);
+  if (!s) return { nbr: null };
+  if (s.length > 20) return { error: `order number ${s} is longer than NuVizz's 20 characters` };
+  if (!/^[A-Za-z0-9][A-Za-z0-9 ._/-]*$/.test(s)) return { error: `order number '${s}' has characters NuVizz does not take — letters, digits, dashes` };
+  return { nbr: s };
+}
+
+/** The whole form checked before a call is spent — the address must still be a whole address. */
+export function duplicateFormError(form) {
+  for (const f of DUPLICATE_FIELDS) {
+    if (f.required && !t(form?.[f.key])) return `the copy needs a ${f.label}`;
+  }
+  if (!/^\d{5}(-\d{4})?$/.test(t(form?.zip))) return `'${t(form?.zip)}' is not a ZIP — 5 digits, or ZIP+4`;
+  const c = copyNbrDraft(form?.copyNbr);
+  if (c.error) return c.error;
+  if (t(form?.price).length > 20) return 'the price is longer than NuVizz takes (20 characters)';
+  return null;
+}
+
 /**
  * The line the panel shows for a server answer: { kind: 'ok' | 'warn' | 'err', text, created, nbr }.
  * `created` is true whenever NuVizz confirmed the create — including the unverified case, where the
@@ -76,7 +174,7 @@ export function duplicateOutcome(r) {
     const notes = Array.isArray(out.warnings) && out.warnings.length ? ` Note: ${out.warnings.join('; ')}.` : '';
     return {
       kind: 'ok', created: true, nbr: out.stopNbr,
-      text: `Created ${out.stopNbr} in NuVizz${replay} — ${piecesLine(out.now)}${day}, unplanned. It reaches the board through the scans, as a New Order does; plan it in Routing.${notes}`,
+      text: `Created ${out.stopNbr} in NuVizz${replay} — ${piecesLine(out.now)}${day}, unplanned${Array.isArray(out.edited) && out.edited.length ? `, with your changes to its ${duplicateEditLabels(Object.fromEntries(out.edited.map((k) => [k, true]))).join(', ')}` : ''}. It reaches the board through the scans, as a New Order does; plan it in Routing.${notes}`,
     };
   }
   if (out.created) return { kind: 'warn', created: true, nbr: out.stopNbr, text: (r?.error || out.error || `${out.stopNbr} was created but could not be verified.`) + replay };

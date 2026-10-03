@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, opLedgerStatus, STOP_NBR_MAX,
-  WRITE_OPS, MUTATING_OPS,
+  WRITE_OPS, MUTATING_OPS, parseDuplicateEdits, parseCopyNumber, DUPLICATE_EDIT_FIELDS,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 import { runDuplicateOrder, runOp, DUP_PROBE_MAX, siteWriteFeatures as serverWriteFeatures } from '../netlify/functions/lib/nuvizz-write.mts';
 import writeHandler from '../netlify/functions/nuvizz-write.mts';
@@ -27,7 +27,8 @@ import { siteWriteFeatures as clientWriteFeatures, siteWriteFeaturesNow } from '
 import { etDayString } from '../netlify/functions/lib/firestore.mts';
 import {
   copyBaseNbr as clientCopyBaseNbr, duplicateEligible, defaultCopyDate, duplicateDraft, duplicateOutcome,
-  parseCopyWeight as clientParseCopyWeight,
+  parseCopyWeight as clientParseCopyWeight, DUPLICATE_FIELDS, duplicateBaseline, duplicateFormFrom, duplicateEdits,
+  duplicateEditLabels, duplicateFormError, copyNbrDraft,
 } from '../src/lib/order-duplicate.js';
 import { installFirestoreFake } from './_firestore-fake.mjs';
 
@@ -464,7 +465,7 @@ test('duplicateOutcome: names the number it made, and never invites a second cop
 
 test('the stop card mounts the Duplicate panel, and it sends ONE key per request', () => {
   const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-  assert.match(src, /<StopPiecesEditor key=\{stopKey\} stop=\{live\} onRefreshed=\{onRefreshed\} \/>\s*\n\s*<DuplicateOrderPanel key=\{`dup-\$\{stopKey\}`\} stop=\{live\} \/>/);
+  assert.match(src, /<StopPiecesEditor key=\{stopKey\} stop=\{live\} onRefreshed=\{onRefreshed\} \/>\s*\n\s*<DuplicateOrderPanel key=\{`dup-\$\{stopKey\}`\} stop=\{live\} note=\{note\} \/>/);
   const panel = src.slice(src.indexOf('function DuplicateOrderPanel('), src.indexOf('function StopLiveDetail('));
   assert.match(panel, /opRef\.current = singleOrderOpId\(opRef\.current, request, newClientOpId\);/);
   assert.match(panel, /clientOpId: opRef\.current\.id/);
@@ -542,4 +543,192 @@ test('the stop card asks once per page load, shows Duplicate only on a clear yes
       assert.equal(a.body.dryRun, true, 'the ask is a dry run — zero NuVizz calls');
     }
   } finally { globalThis.fetch = realFetch; }
+});
+
+
+// ── §DUP-E — EDIT THE COPY BEFORE IT IS CREATED (v1.109.0) ──────────────────────
+// Chad, 10/03: "when I duplicate I want to have the option to edit the order. Addresses numbers piece
+// counts items pretty much anything."
+
+test('the copy\'s edits are checked before any call: a whole address, a real ZIP, state, phone and email', () => {
+  assert.deepEqual(parseDuplicateEdits(undefined), { edits: {} });
+  assert.deepEqual(parseDuplicateEdits({ addr1: ' 2 DOCK RD ', state: 'georgia', zip: '30519', bogus: 'x' }).edits, { addr1: '2 DOCK RD', state: 'GA', zip: '30519' });
+  assert.deepEqual(parseDuplicateEdits({ addr2: '', phone: '', email: '', itemDesc: '', dispatchNotes: '' }).edits, { addr2: '', phone: '', email: '', itemDesc: '', dispatchNotes: '' }, "'' clears an optional field");
+  for (const k of ['name', 'addr1', 'city', 'state', 'zip']) assert.match(parseDuplicateEdits({ [k]: '  ' }).error, /cannot be left blank/, k);
+  assert.match(parseDuplicateEdits({ zip: '3051' }).error, /not a ZIP/);
+  assert.match(parseDuplicateEdits({ state: 'Georgiaa' }).error, /not a US state/);
+  assert.match(parseDuplicateEdits({ phone: '12' }).error, /not a phone number/);
+  assert.match(parseDuplicateEdits({ email: 'dock at acme' }).error, /not an email/);
+  assert.match(parseDuplicateEdits({ price: '$1234567890123456789012' }).error, /longer than NuVizz takes/);
+  assert.match(parseDuplicateEdits([1]).error, /list of fields/);
+  // The screen and the server name the same fields.
+  assert.deepEqual(DUPLICATE_FIELDS.map((f) => f.key), DUPLICATE_EDIT_FIELDS.map((f) => f.key));
+  assert.deepEqual(DUPLICATE_FIELDS.filter((f) => f.required).map((f) => f.key), DUPLICATE_EDIT_FIELDS.filter((f) => f.required).map((f) => f.key));
+});
+
+test('a typed order number is checked the same on the screen and the server; blank keeps the next free -N', () => {
+  for (const [v, want] of [['', null], ['  ', null], [null, null], ['007174789-7', '007174789-7'], ['ESTES-0538243875-B', 'ESTES-0538243875-B']]) {
+    assert.equal(parseCopyNumber(v).nbr, want, String(v));
+    assert.equal(copyNbrDraft(v).nbr, want, String(v));
+  }
+  for (const v of ['X'.repeat(21), '-007', 'AB#12', 'PRO\n1']) {
+    assert.ok('error' in parseCopyNumber(v), v);
+    assert.ok('error' in copyNbrDraft(v), v);
+  }
+});
+
+test('the copy carries what was changed and copies the rest; cleared fields go out empty, never the original\'s', () => {
+  const r = buildDuplicateStop(original(), '007174789-1', OPTS({ edits: {
+    name: 'ACME WEST', addr1: '2 DOCK RD', addr2: '', city: 'DULUTH', state: 'GA', zip: '30096',
+    phone: '6785550100', email: '', itemDesc: 'FILTERS', dispatchNotes: 'LIFTGATE', price: '$95.00',
+  } }));
+  const st = r.stop;
+  assert.deepEqual([st.to.address.name, st.to.address.addr1, st.to.address.addr2, st.to.address.city, st.to.address.state, st.to.address.zip],
+    ['ACME WEST', '2 DOCK RD', undefined, 'DULUTH', 'GA', '30096']);
+  assert.equal(st.to.contact.phone, '6785550100');
+  assert.equal('email' in st.to.contact, false, 'email cleared, not copied');
+  assert.equal(st.stopDetails[0].product, 'FILTERS');
+  assert.equal(st.comments[0].commentDescription, 'LIFTGATE');
+  assert.equal(st.sealNbr, '$95.00', 'a typed price is sent');
+  // Untouched: copied from the original exactly as before.
+  assert.equal(st.reference2, 'ACME CUST 55');
+  assert.equal(st.from.address.addr1, '943 GAINESVILLE HWY');
+  assert.match(st.to.schedule.timeFrom, /T08:00:00$/);
+  // No edits at all → byte-identical to the copy this feature always made.
+  assert.deepEqual(buildDuplicateStop(original(), '007174789-1', OPTS({ edits: {} })), buildDuplicateStop(original(), '007174789-1', OPTS()));
+});
+
+test('a typed price wins over "copy the original\'s"; clearing the items sends no freight line', () => {
+  assert.equal(buildDuplicateStop(original(), 'X-1', OPTS({ copyPrice: true, edits: { price: '$10' } })).stop.sealNbr, '$10');
+  assert.equal(buildDuplicateStop(original(), 'X-1', OPTS({ copyPrice: true })).stop.sealNbr, '185.00');
+  assert.equal(buildDuplicateStop(original(), 'X-1', OPTS({ edits: { itemDesc: '' } })).stop.stopDetails, undefined);
+});
+
+test('an original with half an address can still be copied once the dispatcher types the whole one — and never with half', () => {
+  const half = original({ to: { ...original().to, address: { addressType: 'ANY', name: 'ACME', addr1: '', city: 'X', state: 'GA', zip: '' } } });
+  assert.match(buildDuplicateStop(half, 'X-1', OPTS()).error, /the original has no complete delivery address/);
+  const fixed = buildDuplicateStop(half, 'X-1', OPTS({ edits: { addr1: '9 OAK ST', zip: '30518' } }));
+  assert.equal(fixed.stop.to.address.addr1, '9 OAK ST');
+});
+
+test('runDuplicateOrder with changes: the create carries them, the read-back checks the street that was sent', async () => {
+  const nv = fakeNuvizz({ held: { '007174789': original() } });
+  const r = await runDuplicateOrder(nv.requester, P({ edits: { addr1: '2 DOCK RD', city: 'DULUTH', zip: '30096', phone: '6785550100' } }), CREDS);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.deepEqual(r.edited, ['addr1', 'city', 'zip', 'phone']);
+  assert.equal(r.numberTyped, false);
+  const sent = JSON.parse(created(nv.calls)[0].body).stop;
+  assert.equal(sent.to.address.addr1, '2 DOCK RD');
+  assert.equal(sent.to.address.name, 'ACME DIST', 'the untouched consignee is copied');
+  // NuVizz storing a different street than the one sent is caught, not reported as done.
+  const nv2 = fakeNuvizz({ held: { '007174789': original() }, onCreate: (stop) => ({ ...stop, to: { ...stop.to, address: { ...stop.to.address, addr1: '500 MAIN ST' } } }) });
+  const r2 = await runDuplicateOrder(nv2.requester, P({ edits: { addr1: '2 DOCK RD' } }), CREDS);
+  assert.equal(r2.ok, false);
+  assert.equal(r2.created, true);
+  assert.match(r2.error, /its street reads 500 MAIN ST/);
+});
+
+test('a bad change is refused before ANY NuVizz call', async () => {
+  const nv = fakeNuvizz({ held: { '007174789': original() } });
+  const r = await runDuplicateOrder(nv.requester, P({ edits: { zip: 'ABCDE' } }), CREDS);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /not a ZIP — 5 digits, or ZIP\+4 — nothing was sent to NuVizz/);
+  assert.equal(nv.calls.length, 0);
+  const r2 = await runDuplicateOrder(nv.requester, P({ copyNbr: 'AB#1' }), CREDS);
+  assert.match(r2.error, /characters NuVizz does not take/);
+  assert.equal(nv.calls.length, 0);
+});
+
+test('a TYPED number free in NuVizz is used exactly: read, prove it absent, create, read back — 4 calls', async () => {
+  const nv = fakeNuvizz({ held: { '007174789': original() } });
+  const r = await runDuplicateOrder(nv.requester, P({ copyNbr: '007174789-SPLIT' }), CREDS);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.stopNbr, '007174789-SPLIT');
+  assert.equal(r.numberTyped, true);
+  assert.deepEqual(nv.calls.map((c) => `${c.method} ${c.url.split('/v7')[1].split('/DAVIS')[0]}`), [
+    'GET /stop/info/007174789', 'GET /stop/info/007174789-SPLIT', 'POST /stop/sync/update', 'GET /stop/info/007174789-SPLIT',
+  ]);
+});
+
+test('a TYPED number NuVizz already holds is refused — never written over, never swapped for another number', async () => {
+  const nv = fakeNuvizz({ held: { '007174789': original(), '007185553': original({ stopNbr: '007185553', stopId: '6a63c5844524f7f7b8ab9999' }) } });
+  const r = await runDuplicateOrder(nv.requester, P({ copyNbr: '007185553' }), CREDS);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /order 007185553 is already in NuVizz — a create there would REPLACE that order, so nothing was created/);
+  assert.equal(created(nv.calls).length, 0);
+  // A read that proves nothing refuses too.
+  const nv2 = fakeNuvizz({ held: { '007174789': original() }, probeAnswer: (nbr, J) => J({}, 503) });
+  const r2 = await runDuplicateOrder(nv2.requester, P({ copyNbr: '007174789-SPLIT' }), CREDS);
+  assert.match(r2.error, /could not prove 007174789-SPLIT is free — NuVizz answered 503/);
+  assert.equal(created(nv2.calls).length, 0);
+});
+
+test('a TYPED number our records know, or another duplicate is claiming, is refused for free', async () => {
+  await withFirestoreFake({ 'nuvizz_enriched/davis/pros/007174789-SPLIT': { stopNbr: '007174789-SPLIT', enriched: true } }, async () => {
+    const nv = fakeNuvizz({ held: { '007174789': original() } });
+    const r = await runDuplicateOrder(nv.requester, P({ copyNbr: '007174789-SPLIT' }), CREDS);
+    assert.match(r.error, /already in our records — nothing was created/);
+    assert.equal(nv.calls.some((c) => c.url.includes('/stop/info/007174789-SPLIT/')), false, 'no NuVizz read spent');
+  });
+  await withFirestoreFake({ 'nuvizz_copy_claims/davis__007174789-SPLIT': { stopNbr: '007174789-SPLIT', copyOf: '007174789' } }, async () => {
+    const nv = fakeNuvizz({ held: { '007174789': original() } });
+    const r = await runDuplicateOrder(nv.requester, P({ copyNbr: '007174789-SPLIT' }), CREDS);
+    assert.match(r.error, /being created by another duplicate right now/);
+    assert.equal(created(nv.calls).length, 0);
+  });
+});
+
+test('the form opens on what the CARD shows, and only what differs from the original is sent', () => {
+  const stop = {
+    stopNbr: '007174789', businessName: 'ACME DIST', addr1: '500 MAIN ST', addr2: 'DOCK 4', city: 'LAWRENCEVILLE', state: 'GA', zip: '30046',
+    contact: { phone: '770-555-1212', email: 'Dock@Acme.example' }, stopDetails: [{ product: 'APPLIANCES' }],
+    signalSources: { orderInstructions: 'CALL 30 MIN AHEAD' },
+  };
+  const base = duplicateBaseline(stop);
+  const plain = duplicateFormFrom(stop, null);
+  assert.deepEqual(duplicateEdits(plain, base), {}, 'opened and left alone → a straight copy');
+  // A corrected address on our board and a saved number are what the card shows — so the copy gets them.
+  const note = { address_override: { addr1: '2 DOCK RD', addr2: '', city: 'LAWRENCEVILLE', state: 'GA', zip: '30046' }, contacts: [{ name: 'SAM', phone: '678-555-0100' }] };
+  const shown = duplicateFormFrom(stop, note);
+  assert.equal(shown.addr1, '2 DOCK RD');
+  assert.equal(shown.phone, '678-555-0100');
+  assert.deepEqual(duplicateEdits(shown, base), { addr1: '2 DOCK RD', addr2: '', phone: '678-555-0100' });
+  // Formatting is not a change: state case, phone punctuation, email case.
+  assert.deepEqual(duplicateEdits({ ...plain, state: 'ga', phone: '(770) 555-1212', email: 'dock@acme.example' }, base), {});
+  // A price is sent only when typed.
+  assert.deepEqual(duplicateEdits({ ...plain, price: '$40' }, base), { price: '$40' });
+  assert.deepEqual(duplicateEditLabels({ addr1: 'x', phone: 'y' }), ['street address', 'phone']);
+});
+
+test('the form refuses before a call what the server would: a missing address part, a bad ZIP or number', () => {
+  const ok = { name: 'A', addr1: '1 MAIN', city: 'B', state: 'GA', zip: '30518', copyNbr: '', price: '' };
+  assert.equal(duplicateFormError(ok), null);
+  assert.match(duplicateFormError({ ...ok, city: ' ' }), /needs a city/);
+  assert.match(duplicateFormError({ ...ok, zip: '305' }), /not a ZIP/);
+  assert.match(duplicateFormError({ ...ok, copyNbr: 'AB#1' }), /characters NuVizz does not take/);
+});
+
+test('the answer names the changes, and the panel sends them with the typed number under ONE key', () => {
+  const o = duplicateOutcome({ ok: true, result: { ok: true, created: true, stopNbr: '007174789-1', now: { pallets: 4, total: 4 }, deliveryDate: TOMORROW, edited: ['addr1', 'phone'], warnings: [] } });
+  assert.match(o.text, /, with your changes to its street address, phone\./);
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const panel = src.slice(src.indexOf('function DuplicateOrderPanel('), src.indexOf('\nfunction ', src.indexOf('function DuplicateOrderPanel(') + 10));
+  for (const k of ['copyNbr', 'name', 'addr1', 'addr2', 'city', 'state', 'zip', 'phone', 'email', 'itemDesc', 'price']) {
+    assert.match(panel, new RegExp(`field\\('${k}', `), `${k} is on the form`);
+  }
+  assert.match(panel, /value=\{form\?\.dispatchNotes \?\? ''\}/);
+  assert.match(panel, /const request = \{ pro, stopId: stop\?\.stopId \|\| null, pallets: draft\.pallets, loose: draft\.loose, weight: draft\.weight, date: draft\.date, copyPrice, copyNbr, edits \};/);
+  assert.match(panel, /setForm\(duplicateFormFrom\(stop, note\)\);/);
+  assert.match(panel, /baselineRef\.current = duplicateBaseline\(stop\);/);
+});
+
+test('the dry run names the typed number and the changes; the ledger records them', async () => {
+  const res = await writeHandler(new Request('http://localhost/.netlify/functions/nuvizz-write', {
+    method: 'POST', body: JSON.stringify({ op: 'duplicateOrder', dryRun: true, payload: { stopNbr: '007174789', pallets: 4, copyNbr: '007174789-SPLIT', edits: { addr1: '2 DOCK RD' } } }),
+  }));
+  const plan = (await res.json()).plan;
+  assert.ok(plan.some((l) => /^USE the number typed for the copy, 007174789-SPLIT: /.test(l)), JSON.stringify(plan));
+  assert.ok(plan.some((l) => l === 'CHANGED on the copy (the rest is copied from the original): addr1'));
+  const EP = readFileSync(new URL('../netlify/functions/nuvizz-write.mts', import.meta.url), 'utf8');
+  assert.match(EP, /edited: Array\.isArray\(result\.edited\) \? result\.edited : \[\], numberTyped: result\.numberTyped === true/);
 });
