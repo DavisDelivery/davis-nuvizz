@@ -58,7 +58,7 @@ export interface PipelineRequest {
   date?: string;            // YYYY-MM-DD (for window epochs)
   departHHMM?: string;
   serviceMin?: number;
-  matrixMode?: MatrixMode;  // 'haversine' (default, free) | 'google' (paid opt-in)
+  matrixMode?: MatrixMode;  // 'haversine' (default, free) | 'google' (paid opt-in) | 'osrm' (truck roads, free opt-in)
   windowMode?: WindowMode;  // 'advisory' (default, flag) | 'strict' (spill on unmet window)
   leaveOffEnds?: boolean;   // full trucks give up the end of their run, not the middle (routing-assign-ends)
   fillTrucks?: boolean;     // with leaveOffEnds: a truck with room takes a whole group of left-off orders (routing-assign-ends step 6)
@@ -68,7 +68,8 @@ export interface PipelineRequest {
 export interface PipelineDeps {
   // May return a bare matrix (legacy) or { matrix, source } so the pipeline can
   // report the ACTUAL source used (Google can fall back to haversine on failure).
-  buildMatrix: (depot: { lat: number; lng: number }, stops: { lat: number; lng: number }[]) => Promise<SolverMatrix | { matrix: SolverMatrix; source: string }>;
+  // `detail` (truck road times only) counts the pairs the source had to estimate.
+  buildMatrix: (depot: { lat: number; lng: number }, stops: { lat: number; lng: number }[]) => Promise<SolverMatrix | { matrix: SolverMatrix; source: string; detail?: unknown }>;
   parseIntent?: (text: string, strategy: Strategy) => Promise<unknown>;
   geometryAssist?: (stop: any) => Promise<GeometryAssist | null>;
   explain?: (plan: any) => Promise<{ rationale?: string; riskFlags?: string[] } | null>;
@@ -263,10 +264,13 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
   const solverStops = toSolverStops(req.stops, geo, req.date, serviceMin);
 
   // ── P2 buildMatrix (depot first, then stops in solverStops order) ──
-  const matrixMode: MatrixMode = req.matrixMode === 'google' ? 'google' : DEFAULT_MATRIX_MODE;
+  const matrixMode: MatrixMode = req.matrixMode === 'google' ? 'google' : req.matrixMode === 'osrm' ? 'osrm' : DEFAULT_MATRIX_MODE;
   const mres: any = await deps.buildMatrix(depot, solverStops.map((s) => ({ lat: s.lat, lng: s.lng })));
   const matrix: SolverMatrix = mres && mres.matrix ? mres.matrix : mres;
   const matrixSource: string = (mres && mres.source) ? mres.source : matrixMode;
+  // What the source reports about its own matrix (truck road times: estimated legs, stops off the
+  // map). null when it reports nothing — never a guess.
+  const matrixDetail = (mres && mres.matrix && mres.detail) ? mres.detail : null;
   const googleElementCount = matrixElementCount(solverStops.length);
   const estimatedCostUsd = estimateMatrixCostUsd(googleElementCount, matrixSource);
 
@@ -351,7 +355,7 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
     timeRestrictions: Object.fromEntries(req.stops.filter((s) => s.timeRestriction).map((s) => [String(s.stopNbr ?? s.id), s.timeRestriction!])),
     meta: {
       ...repaired.meta, depot, departEpochSec, serviceMin,
-      matrixMode, matrixSource, googleElementCount, estimatedCostUsd,
+      matrixMode, matrixSource, matrixDetail, googleElementCount, estimatedCostUsd,
     },
     generatedAt: new Date().toISOString(),
   };

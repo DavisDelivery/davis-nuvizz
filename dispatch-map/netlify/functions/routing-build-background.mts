@@ -167,8 +167,9 @@ export default async function handler(req: Request): Promise<Response> {
 
     await updateJob(jobId, { stage: 'build' });
     // Cheap by default (Appendix B): haversine unless the build explicitly opts
-    // into 'google'. resolveMatrix honors the mode; absent → haversine.
-    const matrixMode = r.matrixMode === 'google' ? 'google' : 'haversine';
+    // into 'google' or 'osrm' (truck road times). resolveMatrix honors the mode; anything
+    // else → haversine.
+    const matrixMode = r.matrixMode === 'google' ? 'google' : r.matrixMode === 'osrm' ? 'osrm' : 'haversine';
     // Appointment windows are ADVISORY by default (flag, don't spill). Kill switch
     // back to strict via the request or an env (ROUTING_WINDOWS=strict).
     const windowMode = (r.windowMode === 'strict' || process.env.ROUTING_WINDOWS === 'strict') ? 'strict' : 'advisory';
