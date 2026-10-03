@@ -3380,6 +3380,8 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   // 3. CREATE.
   const built = buildDuplicateStop(raw, chosen, opts);
   if ('error' in built) return { ok: false, calls, skipped, error: `duplicateOrder: ${built.error} — nothing was created.` };
+  // What the create carries for NuVizz's order profile, for the ledger (buildDuplicateStop set it).
+  const profile = built.stop?.profile || null;
   const wrote = await fireSingle(requester, 'createStop', { stop: built.stop }, creds);
   calls.writes += 1;
   if (!wrote?.ok) {
@@ -3389,7 +3391,7 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   }
   if (wrote.updated) {
     return {
-      ok: false, created: true, alarm: true, stopNbr: chosen, copyOf, calls, skipped,
+      ok: false, created: true, alarm: true, stopNbr: chosen, copyOf, profile, calls, skipped,
       error: `duplicateOrder: NuVizz says it UPDATED an existing order ${chosen} instead of creating one — although ${chosen} read as not found a moment earlier. Check ${chosen} in the portal now: its details may have been replaced.`,
     };
   }
@@ -3402,21 +3404,21 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   const createdId = String(wrote?.entityId ?? '').trim();
   const dontRetry = `Do not press Duplicate again first — it would make another copy.`;
   if (!back?.ok || !backId) {
-    return { ok: false, created: true, unverified: true, stopNbr: chosen, stopId: createdId || null, copyOf, calls, skipped, error: `duplicateOrder: NuVizz answered that ${chosen} was created, but reading it back failed (${back?.error || 'no order in the answer'}) — check ${chosen} in the portal. ${dontRetry}` };
+    return { ok: false, created: true, unverified: true, stopNbr: chosen, stopId: createdId || null, copyOf, profile, calls, skipped, error: `duplicateOrder: NuVizz answered that ${chosen} was created, but reading it back failed (${back?.error || 'no order in the answer'}) — check ${chosen} in the portal. ${dontRetry}` };
   }
   if (isIdShaped(createdId) && isIdShaped(backId) && createdId !== backId) {
-    return { ok: false, created: true, unverified: true, stopNbr: chosen, stopId: createdId, copyOf, calls, skipped, error: `duplicateOrder: ${chosen} was created as id …${createdId.slice(-6)}, but reading it back answered a different record (id …${backId.slice(-6)}) — two orders may carry ${chosen}. Check it in the portal. ${dontRetry}` };
+    return { ok: false, created: true, unverified: true, stopNbr: chosen, stopId: createdId, copyOf, profile, calls, skipped, error: `duplicateOrder: ${chosen} was created as id …${createdId.slice(-6)}, but reading it back answered a different record (id …${backId.slice(-6)}) — two orders may carry ${chosen}. Check it in the portal. ${dontRetry}` };
   }
   const now = stopPiecesFrom(rawBack);
   const misses = [...piecesVerdict(now, want).misses];
   if (normStopNbr(rawBack.stopNbr) !== normStopNbr(chosen)) misses.unshift(`its number reads ${rawBack.stopNbr ?? 'nothing'}`);
   if (!addressMatchesTyped(rawBack?.to?.address, built.stop?.to?.address || {})) misses.push(`its street reads ${String(rawBack?.to?.address?.addr1 ?? 'nothing')}`);
   if (misses.length) {
-    return { ok: false, created: true, stopNbr: chosen, stopId: backId, copyOf, now, calls, skipped, error: `duplicateOrder: ${chosen} was created, but it reads back differently — ${misses.join('; ')}. Check it in the portal. ${dontRetry}` };
+    return { ok: false, created: true, stopNbr: chosen, stopId: backId, copyOf, profile, now, calls, skipped, error: `duplicateOrder: ${chosen} was created, but it reads back differently — ${misses.join('; ')}. Check it in the portal. ${dontRetry}` };
   }
   return {
     ok: true, created: true, stopNbr: chosen, stopId: backId, entityNbr: chosen, entityId: backId,
-    copyOf, base, skipped, now, deliveryDate: date,
+    copyOf, profile, base, skipped, now, deliveryDate: date,
     priceCopied: ed.edits.price === undefined && opts.copyPrice && !!String(raw.sealNbr ?? '').trim(),
     edited, numberTyped: !!typedNbr.nbr,
     warnings: built.warnings, calls,

@@ -14,6 +14,7 @@
 //   • every other order goes out byte-for-byte as before;
 //   • the route import never carries it (its stops come from buildStopPayload, which still never
 //     emits a profile — the live-learned rule this repo already had);
+//   • a copy of an Estes order keeps it under any number, a typed one too (Duplicate, v1.109.0);
 //   • one env switch puts it all back.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,7 +22,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   buildOpRequest, buildStopPayload, withOrderProfile, orderProfileFor, createProfileFor,
-  estesProfileEnabled, ESTES_PROFILE,
+  estesProfileEnabled, ESTES_PROFILE, duplicateProfileFor,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 import { manifestRowsToIntake, bulkRowNuvizzRefs } from '../src/lib/bulk-orders.js';
 import { isEstesOrder } from '../src/lib/carrier-mark.js';
@@ -98,6 +99,20 @@ test('an Estes order is found by the order number OR the PRO reference — every
   assert.equal(sent({ stop: { ...buildStopPayload(ROW({ stopNbr: 'ESTES-0538243875-1', pro: 'ESTES-0538243875-1' }), SETTINGS) } }).stop.profile, 'ESTES');
 });
 
+test('a copy of an Estes order keeps the ESTES profile under ANY number — a typed one too (§DUP-E)', () => {
+  const ORIG = (over = {}) => ({ stopNbr: 'ESTES-0538243875', shipmentNbr: '0538243875', ...over });
+  // A number typed for the copy without the prefix: the original is still Estes freight.
+  assert.equal(duplicateProfileFor(ORIG(), { stopNbr: '0538249999', shipmentNbr: '0538249999' }, true), 'ESTES');
+  // Bulk Add's ref swap put "ESTES-" on the original's PRO reference, not its order number.
+  assert.equal(duplicateProfileFor(ORIG({ stopNbr: 'SO-55', shipmentNbr: 'ESTES-0538243875' }), { stopNbr: 'SO-55-1' }, true), 'ESTES');
+  // Typed WITH the prefix: Chad's rule on the copy's own number, whatever the original was.
+  assert.equal(duplicateProfileFor({ stopNbr: '007185553' }, { stopNbr: 'ESTES-0538249999' }, true), 'ESTES');
+  // A Davis order's copy: none — and an ATT marker on the original is not Estes.
+  assert.equal(duplicateProfileFor({ stopNbr: '007185553', shipmentNbr: 'ATT007185553' }, { stopNbr: '007185553-1', shipmentNbr: '007185553-1' }, true), null);
+  assert.equal(duplicateProfileFor(ORIG(), { stopNbr: '0538249999' }, false), null, 'NUVIZZ_ESTES_PROFILE=off takes it off the copy too');
+  assert.equal(duplicateProfileFor(null, null, true), null);
+});
+
 test('the same Estes rule the map paints by — WESTES, a bare PRO and a UAT copy are not Estes orders', () => {
   for (const nbr of ['WESTES-1', '0778201115', 'UT-ESTES-0538243875', 'AVRT-0028093763', '']) {
     assert.equal(isEstesOrder(nbr), false, nbr);
@@ -162,5 +177,5 @@ test('the dry run says the profile goes, and the ledger records what the create 
   assert.deepEqual(other, ['CREATE order 007185553 (stop/sync/update) → 1 NuVizz call']);
   const EP = readFileSync(new URL('../netlify/functions/nuvizz-write.mts', import.meta.url), 'utf8');
   assert.match(EP, /op === 'createStop' && result\?\.ok[\s\S]*?profile: createProfileFor\(payload\)/);
-  assert.match(EP, /op === 'duplicateOrder' && result\?\.created === true[\s\S]*?profile: orderProfileFor\(\{ stopNbr: result\.stopNbr \}\)/);
+  assert.match(EP, /op === 'duplicateOrder' && result\?\.created === true[\s\S]*?profile: result\.profile !== undefined \? result\.profile : orderProfileFor\(\{ stopNbr: result\.stopNbr \}\)/);
 });

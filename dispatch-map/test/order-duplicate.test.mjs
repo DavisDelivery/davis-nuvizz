@@ -650,6 +650,27 @@ test('a TYPED number free in NuVizz is used exactly: read, prove it absent, crea
   ]);
 });
 
+test('a copy of an Estes order keeps the ESTES profile under a TYPED number, and the ledger is told what went', async () => {
+  const estes = original({ stopNbr: 'ESTES-0538243875', shipmentNbr: '0538243875', proNumber: '0538243875', reference1: 'PO 99812' });
+  assert.equal(buildDuplicateStop(estes, '0538249999', OPTS()).stop.profile, 'ESTES');
+  assert.equal('profile' in buildDuplicateStop(original(), '007174789-1', OPTS()).stop, false, 'a Davis order\'s copy carries no profile key at all');
+  const nv = fakeNuvizz({ held: { 'ESTES-0538243875': estes } });
+  const r = await runDuplicateOrder(nv.requester, P({ stopNbr: 'ESTES-0538243875', copyNbr: '0538249999' }), CREDS);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.stopNbr, '0538249999');
+  assert.equal(JSON.parse(created(nv.calls)[0].body).stop.profile, 'ESTES', 'the create NuVizz receives carries it');
+  assert.equal(r.profile, 'ESTES', 'the result names it for the created-order ledger');
+  const davis = await runDuplicateOrder(fakeNuvizz({ held: { '007174789': original() } }).requester, P(), CREDS);
+  assert.equal(davis.profile, null);
+  const saved = process.env.NUVIZZ_ESTES_PROFILE;
+  try {
+    process.env.NUVIZZ_ESTES_PROFILE = 'off';
+    assert.equal('profile' in buildDuplicateStop(estes, '0538249999', OPTS()).stop, false, 'the switch takes it off the copy too');
+  } finally {
+    if (saved === undefined) delete process.env.NUVIZZ_ESTES_PROFILE; else process.env.NUVIZZ_ESTES_PROFILE = saved;
+  }
+});
+
 test('a TYPED number NuVizz already holds is refused — never written over, never swapped for another number', async () => {
   const nv = fakeNuvizz({ held: { '007174789': original(), '007185553': original({ stopNbr: '007185553', stopId: '6a63c5844524f7f7b8ab9999' }) } });
   const r = await runDuplicateOrder(nv.requester, P({ copyNbr: '007185553' }), CREDS);

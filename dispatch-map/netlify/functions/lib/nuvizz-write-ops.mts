@@ -268,6 +268,8 @@ const DELIVER_CONSTRAINTS = new Set(['STRICT', 'UNRESTRICTED', 'PREFERRED']);
 // Create orders, the Manifest push, Duplicate and the UAT bench all go through it. NOT the route
 // import (Bulk Add's Create as load, commitBoard useImport): its stops come from buildStopPayload,
 // which still never emits a profile, and nothing in this repo shows that import accepting one.
+// Duplicate also sets it on the copy it builds when the ORIGINAL is an Estes order
+// (duplicateProfileFor), so a copy given a typed number without "ESTES-" keeps the photos.
 //
 // THE WAY BACK: NUVIZZ_ESTES_PROFILE=off (0/false/no) sends every create exactly as before. House
 // shape: default ON, an explicit off-word turns it off, anything malformed leaves it ON. The profile
@@ -291,6 +293,18 @@ export function orderProfileFor(stop: any, enabled: boolean = estesProfileEnable
 export function withOrderProfile(stop: any, enabled: boolean = estesProfileEnabled()): any {
   const profile = orderProfileFor(stop, enabled);
   return profile ? { ...stop, profile } : stop;
+}
+
+/**
+ * The profile a DUPLICATE's create carries: the copy's own, or the ORIGINAL's. A copy of an Estes
+ * order is the same Estes freight, so it keeps the ESTES profile (the driver's 3 photos) under any
+ * number — the -1 keeps "ESTES-" anyway, but a number typed for the copy (§DUP-E) may not, and
+ * withOrderProfile reads only the copy's own numbers. Same switch, same rule, on the original's
+ * order number and PRO reference.
+ */
+export function duplicateProfileFor(original: any, copy: any, enabled: boolean = estesProfileEnabled()): string | null {
+  return orderProfileFor(copy, enabled)
+    || orderProfileFor({ stopNbr: original?.stopNbr, shipmentNbr: original?.shipmentNbr }, enabled);
 }
 
 /**
@@ -1799,6 +1813,9 @@ export function buildDuplicateStop(raw: any, newNbr: string, opts: DuplicateOpti
   const ref2 = str(raw.reference2);
   if (ref2) stop.reference2 = safeSlice(ref2, 50);
   if (opts.copyPrice && e.price === undefined && !str(raw.sealNbr)) warnings.push('the original has no price (Seal #) to copy');
+  // §EP: the copy of an Estes order keeps NuVizz's ESTES profile whatever number it was given.
+  const profile = duplicateProfileFor(raw, stop);
+  if (profile) stop.profile = profile;
   return { stop, deliveryDate: opts.date, warnings };
 }
 

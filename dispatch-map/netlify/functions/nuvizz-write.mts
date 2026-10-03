@@ -292,7 +292,7 @@ async function journal(op: WriteOp, payload: any, result: any, tenant: string, c
     // A duplicate is a created order too, and it is journaled the moment NuVizz confirms the create
     // — even when the read-back could not verify it, because the order exists either way.
     if (op === 'duplicateOrder' && result?.created === true && result?.stopNbr) {
-      await recordCreatedOrder({ tenant, stopNbr: result.stopNbr, stopId: result.stopId ?? null, loadNbr: null, status: 'succeeded', createdBy: createdBy || 'dispatcher-duplicate', by, createdAt: new Date().toISOString(), clientOpId, copyOf: result.copyOf ?? null, verified: result.ok === true, profile: orderProfileFor({ stopNbr: result.stopNbr }), edited: Array.isArray(result.edited) ? result.edited : [], numberTyped: result.numberTyped === true, nuvizzResponse: result });
+      await recordCreatedOrder({ tenant, stopNbr: result.stopNbr, stopId: result.stopId ?? null, loadNbr: null, status: 'succeeded', createdBy: createdBy || 'dispatcher-duplicate', by, createdAt: new Date().toISOString(), clientOpId, copyOf: result.copyOf ?? null, verified: result.ok === true, profile: result.profile !== undefined ? result.profile : orderProfileFor({ stopNbr: result.stopNbr }), edited: Array.isArray(result.edited) ? result.edited : [], numberTyped: result.numberTyped === true, nuvizzResponse: result });
     }
     if (op === 'createStop' && result?.ok) {
       // `createdBy` is the SOURCE the client names ('dispatcher', 'dispatcher-bulk',
