@@ -386,7 +386,7 @@ test('the browser names the note it joined — both places that push send the ke
   assert.equal('matchKey' in seen[1].payload, false, 'nothing invented when the caller has none');
   const fs = await import('node:fs');
   const APP = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-  assert.match(APP, /setStopAddress\(pro, fields, \{ stopId: stop\?\.stopId \|\| undefined, matchKey: stop\?\.matchKey, businessName: stop\?\.businessName \}\)/, 'Edit address');
+  assert.match(APP, /setStopAddress\(pro, fields, \{ stopId: stop\?\.stopId \|\| undefined, matchKey: stop\?\.matchKey, businessName: stop\?\.businessName[,}]/, 'Edit address');
   assert.match(APP, /setStopAddress\(row\.stopNbr, fields, \{[\s\S]{0,400}?matchKey: row\.matchKey,\s*businessName: row\.businessName,/, 'Problem addresses');
   assert.equal(normalizeMatchKey(NAME, WAS.addr1, WAS.city, WAS.zip), OLD_KEY, 'the board keys the order this way (App.jsx, lib/customer-key.mts)');
 });

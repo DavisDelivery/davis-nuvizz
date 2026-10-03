@@ -31,14 +31,14 @@ import {
   CANCEL_REASON_DEFAULT,
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   stopPiecesFrom, parsePieceInput, buildStopPiecesOverride, piecesVerdict, piecesLine, boardPiecesFields,
-  piecesBoardDates, boardPiecesWarning, PIECE_WRITE_SENDS,
+  piecesBoardDates, boardPiecesWarning, PIECE_WRITE_SENDS, boardAddressFields, boardAddressWriteEnabled,
   copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, STOP_NBR_MAX, COPY_N_MAX, parseDuplicateEdits, parseCopyNumber,
   parseDuplicateNotes, duplicateNotesMissing, stopNumberAbsent, parseDuplicateLines, duplicateLinesMissing,
   isTransportRetryable,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId, statusFromCode, isTerminalStatus } from './nuvizz-list.mts';
-import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay, readStopDoc, patchStopFields, patchStopRowPieces, patchEnrichedProPieces, enrichedProKnown, claimCopyNumber, releaseCopyNumber } from './firestore.mts';
+import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay, readStopDoc, patchStopFields, patchStopRowPieces, patchEnrichedProPieces, patchStopRowAddress, patchEnrichedProAddress, enrichedProKnown, claimCopyNumber, releaseCopyNumber } from './firestore.mts';
 import { piecesWriteEnabled } from './pieces-hold.mts';
 import { completionPatch } from './scan-completions.mts';
 import { finishedGuardEnabled } from './finished-guard.mts';
@@ -2804,6 +2804,11 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
     ...echoDrift(sent, afterEcho),
   ])].filter((p) => !p.startsWith(`${side}.address`)));
   const losses = unsentLosses(rawBefore, rawAfter);
+  // THE BOARD'S COPY OF THE ORDER, FROM THE READ-BACK (v1.112.1, boardAddressFields). Whenever the
+  // address LANDED — on the drift path too: a BOL NuVizz re-created between our write and our
+  // read is no reason to leave our copy of the order on the old lines, and to keep it listed as
+  // needing the push it just had. Zero NuVizz calls; it never fails the push.
+  const board = landed && side === 'to' ? await applyBoardAddress(creds, stopNbr, String(stopId), piecesBoardDates(payload?.boardDates), readAddr) : null;
 
   // Collateral damage FIRST, exactly as runAddStopNote and runSetStopDate order it. The first
   // draft returned on !landed before this, throwing `losses` and `driftDetails` away — so the
@@ -2811,7 +2816,7 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   // the half that was easier to see.
   const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
   if (drift.length || losses.length) {
-    return { ok: false, calls, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, drift, driftDetails: details, addressLanded: landed, noteLanded, noteDuplicate,
+    return { ok: false, calls, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, drift, driftDetails: details, addressLanded: landed, noteLanded, noteDuplicate, ...(board ? { board } : {}),
       // BOTH SIDES OF THE ATTACHMENT DIFF, ON THE LEDGER ROW, WHEN AND ONLY WHEN IT FIRED.
       //
       // Twenty address pushes on 2026-09-14 produced ten `documents: LOST to|BOL|03||pdf||01`
@@ -2843,7 +2848,7 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   // A note that did NOT land is not a failed correction — the address is on the order and the
   // freight will go to the right door. It IS a half-done job, so it is reported rather than
   // swallowed, and the caller renders it amber.
-  return { ok: true, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, calls, noteLanded, noteDuplicate,
+  return { ok: true, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, calls, noteLanded, noteDuplicate, ...(board ? { board } : {}),
     message: `Order ${stopNbr} now reads ${now}.`
       + (noteLanded === false ? ' The dispatcher note did NOT land — add it in the portal.' : '')
       + (noteDuplicate ? ' (That note was already on the order.)' : '') };
@@ -3208,6 +3213,31 @@ async function applyBoardPieces(creds: WriteCreds, stopNbr: string, stopId: stri
     catch (e: any) { out.days[day] = 'error'; out.dayErrors[day] = e?.message || 'board row write failed'; }
   }
   try { out.registry = await patchEnrichedProPieces(tenant, stopNbr, stopId, fields); }
+  catch (e: any) { out.registry = 'error'; out.registryError = e?.message || 'registry write failed'; }
+  return out;
+}
+
+/**
+ * The Firestore half of a LANDED address push — zero NuVizz calls, best-effort by design, the
+ * same shape as applyBoardPieces: every board day the caller named that holds THIS record is
+ * patched with NuVizz's read-back lines (field-masked; never a new row, never a twin's), then the
+ * registry record, so a later merge that falls back on it cannot bring the old lines back. Only a
+ * DELIVERY address: a pickup's board row carries the ship-to, not the address a push changes.
+ * Returns what happened to each, which rides into the write ledger with the op's result.
+ */
+async function applyBoardAddress(creds: WriteCreds, stopNbr: string, stopId: string, boardDates: string[], readAddr: any): Promise<any> {
+  if (!boardAddressWriteEnabled()) return { skipped: 'switched off (ADDRESS_PUSH_BOARD_WRITE=off)' };
+  const at = new Date().toISOString();
+  const fields = boardAddressFields(readAddr, at);
+  const out: any = { at, fields, days: {} as Record<string, string>, dayErrors: {} as Record<string, string> };
+  if (!isFirestoreEnabled()) return { ...out, skipped: 'firestore-disabled' };
+  // parentId case-normalizes, so the uppercase companyCode lands on the scanner's 'davis__' tree.
+  const tenant = String((creds as any)?.companyCode || 'DAVIS');
+  for (const day of boardDates) {
+    try { out.days[day] = await patchStopRowAddress(tenant, day, stopNbr, stopId, fields); }
+    catch (e: any) { out.days[day] = 'error'; out.dayErrors[day] = e?.message || 'board row write failed'; }
+  }
+  try { out.registry = await patchEnrichedProAddress(tenant, stopNbr, stopId, fields); }
   catch (e: any) { out.registry = 'error'; out.registryError = e?.message || 'registry write failed'; }
   return out;
 }
