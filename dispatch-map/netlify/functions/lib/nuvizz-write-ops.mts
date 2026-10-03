@@ -2146,6 +2146,50 @@ export function unsentLosses(before: any, after: any): UnsentLoss[] {
   return out;
 }
 
+/**
+ * NUVIZZ'S BOL IS RE-CREATED, NOT LOST (v1.112.2) — an ADDRESS push only.
+ *
+ * Chad, 2026-10-03, after every one of eight corrections came back orange: "stop the false
+ * alarm. i don't even need to go back and check." The orange was the BOL. Read live with 8 calls
+ * the same afternoon, every order had it back: the same PDF named BOL, type 03, under a NEW file
+ * id created at the very second of the push. NuVizz deletes the BOL and makes a fresh one whenever
+ * the order is updated; our read-back, a second after the write, catches the moment between the
+ * two and saw the BOL "lost". 8 of 8 on 10/03, 5 of 9 on 9/28, 10 of 20 on 9/14 — and every one
+ * read again had its BOL.
+ *
+ * Our write cannot be what removed it: it never sends attachments (PARTIAL_UPDATE_DERIVED_KEYS
+ * strips to.documents and from.documents). So on an address push a missing BOL is taken out of
+ * the losses and kept beside them as `bolRecreating`, which the write log records. Anything
+ * ELSE missing — another attachment, a freight line — is still a loss, still orange.
+ */
+export function isRecreatedBolIdentity(identity: string): boolean {
+  const [, name, type] = String(identity ?? '').split('|');
+  return String(name ?? '').trim().toUpperCase() === 'BOL' && String(type ?? '').trim() === '03';
+}
+
+/** PURE: the losses an address push reports — with NuVizz's BOL re-creation set aside. */
+export function addressPushLosses(losses: UnsentLoss[], recreateOk = true): { losses: UnsentLoss[]; bolRecreating: string[] } {
+  if (!recreateOk) return { losses, bolRecreating: [] };
+  const out: UnsentLoss[] = [];
+  const bol: string[] = [];
+  for (const l of losses || []) {
+    if (l.path !== 'documents') { out.push(l); continue; }
+    const rest = l.lost.filter((id) => !isRecreatedBolIdentity(id));
+    bol.push(...l.lost.filter(isRecreatedBolIdentity));
+    if (rest.length) out.push({ ...l, lost: rest });
+  }
+  return { losses: out, bolRecreating: bol };
+}
+
+/**
+ * THE WAY BACK: ADDRESS_BOL_RECREATE_OK=off counts a missing BOL as a loss again — orange, "check
+ * it in the portal", exactly as before v1.112.2. House shape: default ON, an explicit off-word
+ * turns it off, anything malformed leaves it ON.
+ */
+export function bolRecreateOk(env: Record<string, any> = process.env): boolean {
+  return !/^(0|false|off|no)$/i.test(String(env.ADDRESS_BOL_RECREATE_OK ?? '').trim());
+}
+
 /** PURE: the attachments are all still there, but NuVizz moved their storage handles.
  *  Benign — kept on the result (and so in the write log) so a systemic restamp stays
  *  visible without turning every clean note into a red banner. */

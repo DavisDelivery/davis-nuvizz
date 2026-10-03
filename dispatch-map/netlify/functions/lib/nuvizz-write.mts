@@ -32,6 +32,7 @@ import {
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   stopPiecesFrom, parsePieceInput, buildStopPiecesOverride, piecesVerdict, piecesLine, boardPiecesFields,
   piecesBoardDates, boardPiecesWarning, PIECE_WRITE_SENDS, boardAddressFields, boardAddressWriteEnabled,
+  addressPushLosses, bolRecreateOk,
   copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, STOP_NBR_MAX, COPY_N_MAX, parseDuplicateEdits, parseCopyNumber,
   parseDuplicateNotes, duplicateNotesMissing, stopNumberAbsent, parseDuplicateLines, duplicateLinesMissing,
   isTransportRetryable,
@@ -2803,7 +2804,10 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
     ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)).filter((p) => !p.startsWith(`${side}.address`)),
     ...echoDrift(sent, afterEcho),
   ])].filter((p) => !p.startsWith(`${side}.address`)));
-  const losses = unsentLosses(rawBefore, rawAfter);
+  // NuVizz's BOL re-creation is set aside (v1.112.2, addressPushLosses): it deletes the BOL and
+  // makes a fresh one on every update, and our read-back lands between the two. Kept on the
+  // result as `bolRecreating` — the write log still shows it happened.
+  const { losses, bolRecreating } = addressPushLosses(unsentLosses(rawBefore, rawAfter), bolRecreateOk());
   // THE BOARD'S COPY OF THE ORDER, FROM THE READ-BACK (v1.112.1, boardAddressFields). Whenever the
   // address LANDED — on the drift path too: a BOL NuVizz re-created between our write and our
   // read is no reason to leave our copy of the order on the old lines, and to keep it listed as
@@ -2816,7 +2820,7 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   // the half that was easier to see.
   const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
   if (drift.length || losses.length) {
-    return { ok: false, calls, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, drift, driftDetails: details, addressLanded: landed, noteLanded, noteDuplicate, ...(board ? { board } : {}),
+    return { ok: false, calls, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, drift, driftDetails: details, addressLanded: landed, noteLanded, noteDuplicate, ...(board ? { board } : {}), ...(bolRecreating.length ? { bolRecreating } : {}),
       // BOTH SIDES OF THE ATTACHMENT DIFF, ON THE LEDGER ROW, WHEN AND ONLY WHEN IT FIRED.
       //
       // Twenty address pushes on 2026-09-14 produced ten `documents: LOST to|BOL|03||pdf||01`
@@ -2826,11 +2830,12 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
       // evidence: `lost` names what went missing and nothing records what the read-back
       // actually held. So the same investigation has to start from scratch every time.
       //
-      // This is the free diagnostic, not a fix and not a relaxation: `unsentLosses` is
-      // untouched and still fails the write. The next occurrence is answerable from one
-      // nuvizz-write-log read — did the after-side come back EMPTY (a read that caught the
-      // vendor mid-restamp) or carrying a different identity (a real change)? Only written on
-      // the flagged path, so a clean write stores nothing extra.
+      // This diagnostic answered it: the after-side came back EMPTY, and a read minutes later
+      // found the BOL back under a new id (8 of 8 on 2026-10-03). So since v1.112.2 a missing
+      // BOL on an address push is set aside (addressPushLosses) and recorded as `bolRecreating`;
+      // every OTHER loss still fails the write and still lands here with both sides, so the next
+      // real one is answerable from one nuvizz-write-log read. Only written on the flagged path,
+      // so a clean write stores nothing extra.
       docsBefore: documentIdentities(rawBefore), docsAfter: documentIdentities(rawAfter),
       handlesBefore: documentHandles(rawBefore), handlesAfter: documentHandles(rawAfter),
       error: `setStopAddress: ${landed ? `the address changed to ${now}` : `the address did NOT change (${stopNbr} still reads ${now || '(no address)'})`} AND partialUpdate changed ${drift.length + losses.length} other field(s) on the order. ${details.slice(0, 5).join(' | ')}${details.length > 5 ? ` (+${details.length - 5} more)` : ''}. Check ${stopNbr} in the portal.` };
@@ -2848,7 +2853,7 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   // A note that did NOT land is not a failed correction — the address is on the order and the
   // freight will go to the right door. It IS a half-done job, so it is reported rather than
   // swallowed, and the caller renders it amber.
-  return { ok: true, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, calls, noteLanded, noteDuplicate, ...(board ? { board } : {}),
+  return { ok: true, stopNbr, stopId, side, from, to, now, wasAddress, nowAddress, calls, noteLanded, noteDuplicate, ...(board ? { board } : {}), ...(bolRecreating.length ? { bolRecreating } : {}),
     message: `Order ${stopNbr} now reads ${now}.`
       + (noteLanded === false ? ' The dispatcher note did NOT land — add it in the portal.' : '')
       + (noteDuplicate ? ' (That note was already on the order.)' : '') };
