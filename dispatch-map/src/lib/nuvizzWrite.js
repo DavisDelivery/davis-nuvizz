@@ -166,6 +166,10 @@ export const setStopAddress = (stopNbr, address = {}, opts = {}) =>
     // trusted, and an old caller that sends neither simply carries nothing.
     ...(opts.matchKey ? { matchKey: String(opts.matchKey) } : {}),
     ...(opts.businessName ? { businessName: String(opts.businessName) } : {}),
+    // THE BOARD DAYS THIS ORDER IS STORED UNDER (v1.112.1). A push that lands writes NuVizz's
+    // read-back address onto our stored copy of the order on those days, so a corrected order
+    // leaves Problem addresses at once instead of waiting for a scan to re-read it.
+    ...(Array.isArray(opts.boardDates) && opts.boardDates.length ? { boardDates: opts.boardDates.map(String) } : {}),
   }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
 // Change an order's PIECE COUNTS in NuVizz (§P, v1.105.0) — pallets (skids) and loose; the total

@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import { addressReachedNuvizz } from '../src/lib/nuvizzWrite.js';
 import { plainWriteError } from '../src/lib/write-error.js';
 import { keepsPin, notePinState } from '../src/lib/address-fix.js';
+import { piecesBoardDatesOf } from '../src/lib/stop-pieces.js';
 
 const APP = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 
@@ -68,6 +69,8 @@ function runSave({ vendor, geocode, toNuvizz = true }) {
     SAVE_KEEPS_PIN: true,
     keepsPin,
     notePinState,
+    // v1.112.1 — the push names the order's board days, so a landed push updates our copy.
+    piecesBoardDatesOf,
   };
   const names = Object.keys(env);
   // eslint-disable-next-line no-new-func
