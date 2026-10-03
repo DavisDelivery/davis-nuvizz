@@ -21,6 +21,7 @@ import {
   copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, opLedgerStatus, STOP_NBR_MAX,
   WRITE_OPS, MUTATING_OPS, parseDuplicateEdits, parseCopyNumber, DUPLICATE_EDIT_FIELDS,
   parseDuplicateNotes, duplicateNoteComment, duplicateNotesMissing, DUPLICATE_NOTES_MAX,
+  stopNumberAbsent, STOP_NOT_FOUND_REASON,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 import { LEAN_STOP_FIELDS, CUSTOMER_STOP_FIELDS } from '../netlify/functions/lib/board-fields.mts';
 import { runDuplicateOrder, runOp, DUP_PROBE_MAX, siteWriteFeatures as serverWriteFeatures } from '../netlify/functions/lib/nuvizz-write.mts';
@@ -418,7 +419,7 @@ test('the dry run describes the duplicate — number hunt first — without a Nu
   const j = await res.json();
   assert.equal(j.ok, true);
   assert.equal(j.dryRun, true);
-  assert.ok(j.plan.some((s) => /FIND the first free number from 007174789-1: .*explicit 404.*never written/.test(s)), JSON.stringify(j.plan));
+  assert.ok(j.plan.some((s) => /FIND the first free number from 007174789-1: .*a 404, or the 400 "No Stop found" this tenant answers.*never written/.test(s)), JSON.stringify(j.plan));
   assert.ok(j.plan.some((s) => /price NOT copied; lands UNPLANNED/.test(s)));
 });
 
@@ -1009,4 +1010,53 @@ test('a price left as our board showed it, where NuVizz now holds another: the c
   // The panel sends the price the box opened on only when a price is being sent.
   const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   assert.match(src, /priceWas: edits\.price !== undefined \? baselineRef\.current\?\.price \|\| '' : ''/);
+});
+
+// ── "NO ORDER THERE", AS THE LIVE TENANT SAYS IT (v1.110.1) ─────────────────
+// Measured 2026-10-03 (Chad: "You can use 10 calls"): /stop/info for a number DAVIS does not hold
+// answers HTTP 400 with NuVizz's reasonCode 923 — not the documented 404. Verbatim:
+const LIVE_NOT_FOUND = (nbr) => ({
+  timestamp: '2026-10-03T18:16:22.735+00:00', status: 400, error: 'Bad Request',
+  message: JSON.stringify({ reasons: [{ description: `No Stop found with stopNbr ${nbr} for the companycode DAVIS`, reasonCode: '923' }] }),
+  path: `/deliverit/openapi/v7/stop/info/${nbr}/DAVIS`,
+});
+
+test('NuVizz\'s own "No Stop found" (400, reasonCode 923) proves a number free; any other 400 still does not', () => {
+  assert.equal(STOP_NOT_FOUND_REASON, '923');
+  const body = JSON.stringify(LIVE_NOT_FOUND('007185553-98'));
+  assert.equal(stopNumberAbsent({ httpStatus: 400, rawBody: body }), true, 'the live answer, verbatim');
+  assert.equal(stopNumberAbsent({ httpStatus: 400, rawBody: body.replace('No Stop found with stopNbr', 'Nothing at') }), true, 'the reason code alone');
+  assert.equal(stopNumberAbsent({ httpStatus: 404 }), true, 'the documented answer');
+  for (const [label, gs] of [
+    ['a 400 that is a real error', { httpStatus: 400, rawBody: JSON.stringify({ errors: [{ message: 'bad request' }] }) }],
+    ['a 400 with no body at all', { httpStatus: 400 }],
+    ['another reason code', { httpStatus: 400, rawBody: body.replace(/No Stop found with stopNbr/, 'x').replace('923', '9230') }],
+    ['a 500 that happens to quote it', { httpStatus: 500, rawBody: body }],
+    ['a 200', { httpStatus: 200 }],
+    ['nothing', null],
+  ]) assert.equal(stopNumberAbsent(gs), false, label);
+});
+
+test('on the live tenant\'s answer the duplicate finds its free number and creates it — the -N hunt and a typed number', async () => {
+  const live = (nbr, J) => J(LIVE_NOT_FOUND(nbr), 400);
+  const nv = fakeNuvizz({ held: { '007174789': original() }, probeAnswer: live });
+  const r = await runDuplicateOrder(nv.requester, P(), CREDS);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.stopNbr, '007174789-1');
+  assert.deepEqual(r.calls, { reads: 3, writes: 1 }, 'read the original, the 400 proof, create, read back');
+  const typed = fakeNuvizz({ held: { '007174789': original() }, probeAnswer: live });
+  const t = await runDuplicateOrder(typed.requester, P({ copyNbr: '007174789-SPLIT' }), CREDS);
+  assert.equal(t.ok, true, JSON.stringify(t));
+  assert.equal(t.stopNbr, '007174789-SPLIT');
+  // A number NuVizz HOLDS is still skipped on the 200 that carries it, never written.
+  const two = fakeNuvizz({ held: { '007174789': original(), '007174789-1': original({ stopNbr: '007174789-1', stopId: '6a63c5844524f7f7b8ab7777' }) }, probeAnswer: live });
+  const r2 = await runDuplicateOrder(two.requester, P(), CREDS);
+  assert.equal(r2.stopNbr, '007174789-2');
+  assert.deepEqual(r2.skipped, [{ nbr: '007174789-1', why: 'already in NuVizz' }]);
+  // The dry run says it in the tenant's own terms.
+  const res = await writeHandler(new Request('http://localhost/.netlify/functions/nuvizz-write', {
+    method: 'POST', body: JSON.stringify({ op: 'duplicateOrder', dryRun: true, payload: { stopNbr: '007174789', pallets: 4 } }),
+  }));
+  const plan = (await res.json()).plan;
+  assert.ok(plan.some((l) => l.includes('NOT FOUND in NuVizz (a 404, or the 400 "No Stop found" this tenant answers)')), JSON.stringify(plan));
 });

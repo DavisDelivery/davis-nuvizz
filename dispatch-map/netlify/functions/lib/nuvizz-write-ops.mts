@@ -1749,6 +1749,30 @@ export function duplicateNotesMissing(rawStop: any, notes: DuplicateNote[]): Dup
     && levels(c?.accessLevels) === levels(NOTE_AUDIENCES[n.audience])));
 }
 
+// ── "NO ORDER THERE", AS THE LIVE DAVIS TENANT SAYS IT (v1.110.1) ──────────────
+// Measured 2026-10-03 with Chad's go-ahead ("You can use 10 calls"): /stop/info for a number the
+// tenant does not hold answers HTTP 400 — NOT the documented 404 — with
+//   {"status":400,"error":"Bad Request","message":"{\"reasons\":[{\"description\":
+//    \"No Stop found with stopNbr 007185553-98 for the companycode DAVIS\",\"reasonCode\":\"923\"}]}"}
+// Three absent numbers answered 400 (DAVISTEST-1003-L1, 007185553-97, 007185553-98), and the order
+// then created at DAVISTEST-1003-L1 came back NEW (updated:false). load/info does the same thing
+// (LOAD_ABSENT_STATUSES, Jul 31). Until this, the duplicate's proof demanded a 404, so on the live
+// tenant it could never find a free number. Only THIS answer counts: a 404, or a 400 carrying
+// NuVizz's own "No Stop found" (reasonCode 923). Any other 400, a 5xx, an empty 200 — still
+// "could not tell", never "free": a create at a number NuVizz holds REPLACES that order.
+export const STOP_NOT_FOUND_REASON = '923';
+// The reason rides inside `message` as escaped JSON (\"reasonCode\":\"923\"), so the quotes may or
+// may not carry a backslash in front of them.
+const STOP_NOT_FOUND_CODE = /reasonCode\\?"\s*:\s*\\?"923\\?"/;
+
+/** PURE: does this /stop/info answer (fireSingle's result) say NuVizz holds NO order at that number? */
+export function stopNumberAbsent(gs: any): boolean {
+  if (gs?.httpStatus === 404) return true;
+  if (gs?.httpStatus !== 400) return false;
+  const body = String(gs?.rawBody ?? '');
+  return /No Stop found with stopNbr/i.test(body) || STOP_NOT_FOUND_CODE.test(body);
+}
+
 /**
  * PURE: an order number the dispatcher TYPED for the copy (v1.109.0), or null when left blank —
  * blank keeps Chad's rule, the first free {original}-N. A typed number gets the same proof as the

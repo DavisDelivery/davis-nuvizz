@@ -33,7 +33,7 @@ import {
   stopPiecesFrom, parsePieceInput, buildStopPiecesOverride, piecesVerdict, piecesLine, boardPiecesFields,
   piecesBoardDates, boardPiecesWarning, PIECE_WRITE_SENDS,
   copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, STOP_NBR_MAX, COPY_N_MAX, parseDuplicateEdits, parseCopyNumber,
-  parseDuplicateNotes, duplicateNotesMissing,
+  parseDuplicateNotes, duplicateNotesMissing, stopNumberAbsent,
   isTransportRetryable,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
@@ -3327,7 +3327,7 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
     if (gs?.ok && (String(held?.stopId ?? '').trim() || String(held?.stopNbr ?? '').trim())) {
       return { ok: false, calls, error: `duplicateOrder: order ${cand} is already in NuVizz — a create there would REPLACE that order, so nothing was created. ${elsewhere}` };
     }
-    if (gs?.httpStatus !== 404) {
+    if (!stopNumberAbsent(gs)) {
       return { ok: false, calls, error: `duplicateOrder: could not prove ${cand} is free — NuVizz answered ${gs?.httpStatus ?? 'nothing'}${gs?.ok ? ' with no order in it' : ''}. Nothing was created: a create at a number NuVizz already holds REPLACES that order, so only a clear not-found counts.` };
     }
     let claimed = true;
@@ -3358,7 +3358,9 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
       calls.reads += 1; probes += 1;
       const held = rawStopFrom(gs?.raw ?? gs);
       if (gs?.ok && (String(held?.stopId ?? '').trim() || String(held?.stopNbr ?? '').trim())) { skipped.push({ nbr: cand, why: 'already in NuVizz' }); continue; }
-      if (gs?.httpStatus === 404) {
+      // NOT FOUND — a 404, or the 400 "No Stop found" (reasonCode 923) the live tenant answers
+      // instead (nuvizz-write-ops.mts stopNumberAbsent, measured 2026-10-03).
+      if (stopNumberAbsent(gs)) {
         // CLAIM it before creating: two duplicates racing for the same number would both read it as
         // not found, and the second create — an upsert — would overwrite the first copy. The claim
         // is atomic, so exactly one of them holds the number; the other moves on. Firestore off
