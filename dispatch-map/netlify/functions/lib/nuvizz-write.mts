@@ -32,7 +32,7 @@ import {
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   stopPiecesFrom, parsePieceInput, buildStopPiecesOverride, piecesVerdict, piecesLine, boardPiecesFields,
   piecesBoardDates, boardPiecesWarning, PIECE_WRITE_SENDS,
-  copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, STOP_NBR_MAX, COPY_N_MAX,
+  copyBaseNbr, copyNbr, parseCopyWeight, buildDuplicateStop, STOP_NBR_MAX, COPY_N_MAX, parseDuplicateEdits, parseCopyNumber,
   isTransportRetryable,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
@@ -3279,6 +3279,13 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   const date = String(payload?.date ?? '').trim() || today;
   if (!isDayString(date)) return { ok: false, calls, error: `duplicateOrder: '${date}' is not a YYYY-MM-DD delivery day — nothing was sent to NuVizz.` };
   if (date < today) return { ok: false, calls, error: `duplicateOrder: ${date} has already gone — a new order goes on today (${today}) or a later day. Nothing was sent to NuVizz.` };
+  // What the dispatcher changed on the copy, and the number they typed for it (§DUP-E, v1.109.0) —
+  // both checked before any NuVizz call.
+  const ed = parseDuplicateEdits(payload?.edits);
+  if ('error' in ed) return { ok: false, calls, error: `duplicateOrder: ${ed.error} — nothing was sent to NuVizz.` };
+  const typedNbr = parseCopyNumber(payload?.copyNbr);
+  if ('error' in typedNbr) return { ok: false, calls, error: `duplicateOrder: ${typedNbr.error} — nothing was sent to NuVizz.` };
+  const edited = Object.keys(ed.edits);
 
   // 1. READ the original.
   const src = await fireSingle(requester, 'getStop', { stopNbr }, creds);
@@ -3292,57 +3299,89 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   }
   const copyOf = String(raw.stopNbr ?? stopNbr).trim();
   const base = copyBaseNbr(copyOf);
-  const opts = { pallets: want.pallets, loose: want.loose, weight: (w as any).weight, date, copyPrice: payload?.copyPrice === true };
-  const first = copyNbr(base, 1);
-  if (!first) return { ok: false, calls, error: `duplicateOrder: ${base}-1 would be longer than NuVizz's ${STOP_NBR_MAX}-character order number — nothing was created.` };
-  const draft = buildDuplicateStop(raw, first, opts);
-  if ('error' in draft) return { ok: false, calls, error: `duplicateOrder: ${draft.error} — nothing was created.` };
-
-  // 2. FIND the first free number.
+  const opts = { pallets: want.pallets, loose: want.loose, weight: (w as any).weight, date, copyPrice: payload?.copyPrice === true, edits: ed.edits };
   const tenant = String((creds as any)?.companyCode || 'DAVIS');
   const skipped: Array<{ nbr: string; why: string }> = [];
   const taken = () => skipped.map((s) => s.nbr).join(', ');
   let chosen: string | null = null;
   let probes = 0;
-  for (let n = 1; n <= COPY_N_MAX && !chosen; n++) {
-    const cand = copyNbr(base, n);
-    if (!cand) return { ok: false, calls, skipped, error: `duplicateOrder: ${taken()} ${skipped.length === 1 ? 'is' : 'are'} taken and ${base}-${n} would be longer than NuVizz's ${STOP_NBR_MAX} characters — nothing was created.` };
+
+  if (typedNbr.nbr) {
+    // 2a. THE NUMBER THE DISPATCHER TYPED — the same proof as the hunt's, with nothing to skip to:
+    //     our records first (free), then NuVizz must answer NOT FOUND, then the atomic claim.
+    const cand = typedNbr.nbr;
+    const draft = buildDuplicateStop(raw, cand, opts);
+    if ('error' in draft) return { ok: false, calls, error: `duplicateOrder: ${draft.error} — nothing was created.` };
+    const elsewhere = `Choose another number, or leave it blank for ${base}-1 or the next free one.`;
     if (isFirestoreEnabled()) {
       let known = false;
       try { known = await enrichedProKnown(tenant, cand); } catch { known = false; /* a miss proves nothing; NuVizz decides below */ }
-      if (known) { skipped.push({ nbr: cand, why: 'already in our records' }); continue; }
-    }
-    if (probes >= DUP_PROBE_MAX) {
-      return { ok: false, calls, skipped, error: `duplicateOrder: ${taken()} are already taken, and the number hunt stops after ${DUP_PROBE_MAX} NuVizz reads — nothing was created. Create ${base}-${n} in the portal if it is free.` };
+      if (known) return { ok: false, calls, error: `duplicateOrder: order ${cand} is already in our records — nothing was created. ${elsewhere}` };
     }
     const gs = await fireSingle(requester, 'getStop', { stopNbr: cand }, creds);
     calls.reads += 1; probes += 1;
     const held = rawStopFrom(gs?.raw ?? gs);
-    if (gs?.ok && (String(held?.stopId ?? '').trim() || String(held?.stopNbr ?? '').trim())) { skipped.push({ nbr: cand, why: 'already in NuVizz' }); continue; }
-    if (gs?.httpStatus === 404) {
-      // CLAIM it before creating: two duplicates racing for the same number would both read it as
-      // not found, and the second create — an upsert — would overwrite the first copy. The claim
-      // is atomic, so exactly one of them holds the number; the other moves on. Firestore off
-      // (a local build) has no claim to make; Firestore failing to answer proceeds on the NuVizz
-      // proof alone rather than block every duplicate on a cache hiccup.
-      let claimed = true;
-      if (isFirestoreEnabled()) {
-        try { claimed = await claimCopyNumber(tenant, cand, { copyOf }); } catch { claimed = true; }
-      }
-      if (!claimed) { skipped.push({ nbr: cand, why: 'being created by another duplicate right now' }); continue; }
-      chosen = cand;
-      break;
+    if (gs?.ok && (String(held?.stopId ?? '').trim() || String(held?.stopNbr ?? '').trim())) {
+      return { ok: false, calls, error: `duplicateOrder: order ${cand} is already in NuVizz — a create there would REPLACE that order, so nothing was created. ${elsewhere}` };
     }
-    return {
-      ok: false, calls, skipped,
-      error: `duplicateOrder: could not prove ${cand} is free — NuVizz answered ${gs?.httpStatus ?? 'nothing'}${gs?.ok ? ' with no order in it' : ''}. Nothing was created: a create at a number NuVizz already holds REPLACES that order, so only a clear not-found counts.`,
-    };
+    if (gs?.httpStatus !== 404) {
+      return { ok: false, calls, error: `duplicateOrder: could not prove ${cand} is free — NuVizz answered ${gs?.httpStatus ?? 'nothing'}${gs?.ok ? ' with no order in it' : ''}. Nothing was created: a create at a number NuVizz already holds REPLACES that order, so only a clear not-found counts.` };
+    }
+    let claimed = true;
+    if (isFirestoreEnabled()) {
+      try { claimed = await claimCopyNumber(tenant, cand, { copyOf }); } catch { claimed = true; }
+    }
+    if (!claimed) return { ok: false, calls, error: `duplicateOrder: ${cand} is being created by another duplicate right now — nothing was created. ${elsewhere}` };
+    chosen = cand;
+  } else {
+    // 2b. FIND the first free {original}-N (Chad's rule) — the dispatcher typed no number.
+    const first = copyNbr(base, 1);
+    if (!first) return { ok: false, calls, error: `duplicateOrder: ${base}-1 would be longer than NuVizz's ${STOP_NBR_MAX}-character order number — nothing was created.` };
+    const draft = buildDuplicateStop(raw, first, opts);
+    if ('error' in draft) return { ok: false, calls, error: `duplicateOrder: ${draft.error} — nothing was created.` };
+
+    for (let n = 1; n <= COPY_N_MAX && !chosen; n++) {
+      const cand = copyNbr(base, n);
+      if (!cand) return { ok: false, calls, skipped, error: `duplicateOrder: ${taken()} ${skipped.length === 1 ? 'is' : 'are'} taken and ${base}-${n} would be longer than NuVizz's ${STOP_NBR_MAX} characters — nothing was created.` };
+      if (isFirestoreEnabled()) {
+        let known = false;
+        try { known = await enrichedProKnown(tenant, cand); } catch { known = false; /* a miss proves nothing; NuVizz decides below */ }
+        if (known) { skipped.push({ nbr: cand, why: 'already in our records' }); continue; }
+      }
+      if (probes >= DUP_PROBE_MAX) {
+        return { ok: false, calls, skipped, error: `duplicateOrder: ${taken()} are already taken, and the number hunt stops after ${DUP_PROBE_MAX} NuVizz reads — nothing was created. Create ${base}-${n} in the portal if it is free.` };
+      }
+      const gs = await fireSingle(requester, 'getStop', { stopNbr: cand }, creds);
+      calls.reads += 1; probes += 1;
+      const held = rawStopFrom(gs?.raw ?? gs);
+      if (gs?.ok && (String(held?.stopId ?? '').trim() || String(held?.stopNbr ?? '').trim())) { skipped.push({ nbr: cand, why: 'already in NuVizz' }); continue; }
+      if (gs?.httpStatus === 404) {
+        // CLAIM it before creating: two duplicates racing for the same number would both read it as
+        // not found, and the second create — an upsert — would overwrite the first copy. The claim
+        // is atomic, so exactly one of them holds the number; the other moves on. Firestore off
+        // (a local build) has no claim to make; Firestore failing to answer proceeds on the NuVizz
+        // proof alone rather than block every duplicate on a cache hiccup.
+        let claimed = true;
+        if (isFirestoreEnabled()) {
+          try { claimed = await claimCopyNumber(tenant, cand, { copyOf }); } catch { claimed = true; }
+        }
+        if (!claimed) { skipped.push({ nbr: cand, why: 'being created by another duplicate right now' }); continue; }
+        chosen = cand;
+        break;
+      }
+      return {
+        ok: false, calls, skipped,
+        error: `duplicateOrder: could not prove ${cand} is free — NuVizz answered ${gs?.httpStatus ?? 'nothing'}${gs?.ok ? ' with no order in it' : ''}. Nothing was created: a create at a number NuVizz already holds REPLACES that order, so only a clear not-found counts.`,
+      };
+    }
+    if (!chosen) return { ok: false, calls, skipped, error: `duplicateOrder: no free number from ${base}-1 to ${base}-${COPY_N_MAX} — nothing was created.` };
   }
-  if (!chosen) return { ok: false, calls, skipped, error: `duplicateOrder: no free number from ${base}-1 to ${base}-${COPY_N_MAX} — nothing was created.` };
 
   // 3. CREATE.
   const built = buildDuplicateStop(raw, chosen, opts);
   if ('error' in built) return { ok: false, calls, skipped, error: `duplicateOrder: ${built.error} — nothing was created.` };
+  // What the create carries for NuVizz's order profile, for the ledger (buildDuplicateStop set it).
+  const profile = built.stop?.profile || null;
   const wrote = await fireSingle(requester, 'createStop', { stop: built.stop }, creds);
   calls.writes += 1;
   if (!wrote?.ok) {
@@ -3352,7 +3391,7 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   }
   if (wrote.updated) {
     return {
-      ok: false, created: true, alarm: true, stopNbr: chosen, copyOf, calls, skipped,
+      ok: false, created: true, alarm: true, stopNbr: chosen, copyOf, profile, calls, skipped,
       error: `duplicateOrder: NuVizz says it UPDATED an existing order ${chosen} instead of creating one — although ${chosen} read as not found a moment earlier. Check ${chosen} in the portal now: its details may have been replaced.`,
     };
   }
@@ -3365,21 +3404,23 @@ export async function runDuplicateOrder(requester: RequesterLike, payload: any, 
   const createdId = String(wrote?.entityId ?? '').trim();
   const dontRetry = `Do not press Duplicate again first — it would make another copy.`;
   if (!back?.ok || !backId) {
-    return { ok: false, created: true, unverified: true, stopNbr: chosen, stopId: createdId || null, copyOf, calls, skipped, error: `duplicateOrder: NuVizz answered that ${chosen} was created, but reading it back failed (${back?.error || 'no order in the answer'}) — check ${chosen} in the portal. ${dontRetry}` };
+    return { ok: false, created: true, unverified: true, stopNbr: chosen, stopId: createdId || null, copyOf, profile, calls, skipped, error: `duplicateOrder: NuVizz answered that ${chosen} was created, but reading it back failed (${back?.error || 'no order in the answer'}) — check ${chosen} in the portal. ${dontRetry}` };
   }
   if (isIdShaped(createdId) && isIdShaped(backId) && createdId !== backId) {
-    return { ok: false, created: true, unverified: true, stopNbr: chosen, stopId: createdId, copyOf, calls, skipped, error: `duplicateOrder: ${chosen} was created as id …${createdId.slice(-6)}, but reading it back answered a different record (id …${backId.slice(-6)}) — two orders may carry ${chosen}. Check it in the portal. ${dontRetry}` };
+    return { ok: false, created: true, unverified: true, stopNbr: chosen, stopId: createdId, copyOf, profile, calls, skipped, error: `duplicateOrder: ${chosen} was created as id …${createdId.slice(-6)}, but reading it back answered a different record (id …${backId.slice(-6)}) — two orders may carry ${chosen}. Check it in the portal. ${dontRetry}` };
   }
   const now = stopPiecesFrom(rawBack);
   const misses = [...piecesVerdict(now, want).misses];
   if (normStopNbr(rawBack.stopNbr) !== normStopNbr(chosen)) misses.unshift(`its number reads ${rawBack.stopNbr ?? 'nothing'}`);
   if (!addressMatchesTyped(rawBack?.to?.address, built.stop?.to?.address || {})) misses.push(`its street reads ${String(rawBack?.to?.address?.addr1 ?? 'nothing')}`);
   if (misses.length) {
-    return { ok: false, created: true, stopNbr: chosen, stopId: backId, copyOf, now, calls, skipped, error: `duplicateOrder: ${chosen} was created, but it reads back differently — ${misses.join('; ')}. Check it in the portal. ${dontRetry}` };
+    return { ok: false, created: true, stopNbr: chosen, stopId: backId, copyOf, profile, now, calls, skipped, error: `duplicateOrder: ${chosen} was created, but it reads back differently — ${misses.join('; ')}. Check it in the portal. ${dontRetry}` };
   }
   return {
     ok: true, created: true, stopNbr: chosen, stopId: backId, entityNbr: chosen, entityId: backId,
-    copyOf, base, skipped, now, deliveryDate: date, priceCopied: opts.copyPrice && !!String(raw.sealNbr ?? '').trim(),
+    copyOf, profile, base, skipped, now, deliveryDate: date,
+    priceCopied: ed.edits.price === undefined && opts.copyPrice && !!String(raw.sealNbr ?? '').trim(),
+    edited, numberTyped: !!typedNbr.nbr,
     warnings: built.warnings, calls,
   };
 }

@@ -34,7 +34,7 @@
 //     (`identity`). NUVIZZ_PERSONAL_LOGINS=off puts every write back on the shared login;
 //     =required refuses a write with no personal login behind it. See lib/nuvizz-identity.mts.
 
-import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, parsePieceInput, piecesBoardDates, parseCopyWeight, copyBaseNbr, opLedgerStatus, type WriteOp, createProfileFor, orderProfileFor } from './lib/nuvizz-write-ops.mts';
+import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, parsePieceInput, piecesBoardDates, parseCopyWeight, copyBaseNbr, opLedgerStatus, type WriteOp, createProfileFor, orderProfileFor, parseDuplicateEdits, parseCopyNumber } from './lib/nuvizz-write-ops.mts';
 import { piecesWriteEnabled } from './lib/pieces-hold.mts';
 import { requireUser } from './lib/require-user.mts';
 import { bearerFromHeaders } from './lib/auth-core.mts';
@@ -184,11 +184,19 @@ function planFor(op: WriteOp, payload: any): string[] {
     if ('error' in want) return [`REFUSE before any call: ${want.error}`];
     const w = parseCopyWeight(payload?.weight);
     if ('error' in w) return [`REFUSE before any call: ${w.error}`];
+    const ed = parseDuplicateEdits(payload?.edits);
+    if ('error' in ed) return [`REFUSE before any call: ${ed.error}`];
+    const typed = parseCopyNumber(payload?.copyNbr);
+    if ('error' in typed) return [`REFUSE before any call: ${typed.error}`];
     const base = copyBaseNbr(payload?.stopNbr);
+    const changed = Object.keys(ed.edits);
     return [
       ...(duplicateOrderBlocked() ? ['REFUSE before any call: duplicating orders is switched off on this site (NUVIZZ_DUPLICATE_ORDER)'] : []),
       `READ order ${payload?.stopNbr ?? '?'} — the original to copy; refuse a second order sharing the number`,
-      `FIND the first free number from ${base}-1: a number our own records know is skipped for free; any other must read NOT FOUND in NuVizz (an explicit 404) before it is used — a number NuVizz holds is skipped, never written (stop/sync/update would REPLACE that order); at most ${DUP_PROBE_MAX} reads`,
+      typed.nbr
+        ? `USE the number typed for the copy, ${typed.nbr}: our own records must not know it, and it must read NOT FOUND in NuVizz (an explicit 404) — a number NuVizz holds is refused, never written (stop/sync/update would REPLACE that order)`
+        : `FIND the first free number from ${base}-1: a number our own records know is skipped for free; any other must read NOT FOUND in NuVizz (an explicit 404) before it is used — a number NuVizz holds is skipped, never written (stop/sync/update would REPLACE that order); at most ${DUP_PROBE_MAX} reads`,
+      ...(changed.length ? [`CHANGED on the copy (the rest is copied from the original): ${changed.join(', ')}`] : []),
       `CREATE it (stop/sync/update, as New Order does) for ${String(payload?.date ?? '').trim() || 'today'}: consignee, address, contact, delivery window, commodity, instructions and pickup origin copied from the original; ${want.pallets} pallet(s) + ${want.loose} loose = ${want.total} piece(s), ${(w as any).weight != null ? `${(w as any).weight} lbs` : "the original's weight"}; price ${payload?.copyPrice === true ? 'copied' : 'NOT copied'}; lands UNPLANNED`,
       'VERIFY by reading the new order back — its number, pieces and street must read as created',
     ];
@@ -284,7 +292,7 @@ async function journal(op: WriteOp, payload: any, result: any, tenant: string, c
     // A duplicate is a created order too, and it is journaled the moment NuVizz confirms the create
     // — even when the read-back could not verify it, because the order exists either way.
     if (op === 'duplicateOrder' && result?.created === true && result?.stopNbr) {
-      await recordCreatedOrder({ tenant, stopNbr: result.stopNbr, stopId: result.stopId ?? null, loadNbr: null, status: 'succeeded', createdBy: createdBy || 'dispatcher-duplicate', by, createdAt: new Date().toISOString(), clientOpId, copyOf: result.copyOf ?? null, verified: result.ok === true, profile: orderProfileFor({ stopNbr: result.stopNbr }), nuvizzResponse: result });
+      await recordCreatedOrder({ tenant, stopNbr: result.stopNbr, stopId: result.stopId ?? null, loadNbr: null, status: 'succeeded', createdBy: createdBy || 'dispatcher-duplicate', by, createdAt: new Date().toISOString(), clientOpId, copyOf: result.copyOf ?? null, verified: result.ok === true, profile: result.profile !== undefined ? result.profile : orderProfileFor({ stopNbr: result.stopNbr }), edited: Array.isArray(result.edited) ? result.edited : [], numberTyped: result.numberTyped === true, nuvizzResponse: result });
     }
     if (op === 'createStop' && result?.ok) {
       // `createdBy` is the SOURCE the client names ('dispatcher', 'dispatcher-bulk',

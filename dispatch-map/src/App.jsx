@@ -85,7 +85,7 @@ import { pinKeyer, pinSig } from './lib/tv-pin-reuse.js';
 import { driverLabelLines, driverFixStale, driverLabelsToggle } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, setStopPieces, duplicateOrder, siteWriteFeatures, siteWriteFeaturesNow, addressReachedNuvizz } from './lib/nuvizzWrite.js';
-import { copyBaseNbr, duplicateEligible, etToday, defaultCopyDate, duplicateDraft, duplicateOutcome } from './lib/order-duplicate.js';
+import { copyBaseNbr, duplicateEligible, etToday, defaultCopyDate, duplicateDraft, duplicateOutcome, duplicateBaseline, duplicateFormFrom, duplicateEdits, duplicateCountChanges, duplicateChangeLabels, duplicateFormError, copyNbrDraft } from './lib/order-duplicate.js';
 import { boardPiecesOf, parsePieceDraft, piecesChanged, piecesLine, piecesBoardDatesOf, piecesFoldFrom, piecesOutcome, piecesEditable } from './lib/stop-pieces.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { labelOrderFromCreate, labelOrderFromPushLog, labelOrderFromStop, labelPageCount, ticketStopFromLabel, MAX_LABEL_PAGES } from './lib/order-labels.js';
@@ -222,7 +222,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.108.0';
+const APP_VERSION = '1.109.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -276,6 +276,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.109.0', 'DUPLICATE NOW OPENS AS A FULL ORDER YOU CAN CHANGE BEFORE IT IS CREATED. Chad, 10/03: \u201cwhen I duplicate I want to have the option to edit the order. Addresses numbers piece counts items pretty much anything.\u201d WHERE: the stop card, under Items \u2014 \u201cDuplicate as a new order\u201d, as before. It now opens on the order as the card shows it: order number, consignee, address (the corrected one if you fixed it on our board), city/state/ZIP, phone, email, items, pallets/loose/weight, delivery day, driver instructions and price \u2014 every one editable. THE NUMBER: leave it blank for the original\u2019s number -1 (or the next one NuVizz does not hold, -2, -3 \u2026), or type your own \u2014 it must not already be in NuVizz, and it is never written over. ONLY WHAT YOU CHANGE IS CHANGED: the panel says which fields differ, the counts and day included (\u201cChanged from the original: street address, pallets\u201d), and everything you leave alone is copied from the original exactly as before. Always copied: the delivery window\u2019s times on the day you pick, the PO and customer references, and the pickup. ITEMS: one line, the item description, with the piece counts \u2014 the same shape every order this app creates. ESTES: a copy of an Estes order keeps the ESTES profile (the driver\u2019s 3 photos) whatever number you give it \u2014 NUVIZZ_ESTES_PROFILE=off still takes it off every create. CHECKED: the new order is read back \u2014 its number, pieces and the street you sent must match. Same cost as before: about 4 NuVizz calls.'],
   ['1.108.0', 'ESTES ORDERS GO TO NUVIZZ WITH THE ESTES PROFILE \u2014 THE ONE THAT MAKES THE DRIVER TAKE 3 PHOTOS. Chad, 10/03: \u201canytime that we\u2019re using the new order creation either for bulk or single and it\u2019s an estes order which is notified by the estes at the beginning of the pro this is the format it\u2019s supposed to be in.\u201d NuVizz set up the ESTES profile in Production with 3 mandatory photos and asked for \u201cprofile\u201d: \u201cESTES\u201d on every ESTES order. WHICH ORDERS: any order whose number or PRO starts with ESTES (ESTES-0778201115, Estes-0828068215) \u2014 the same rule that paints the yellow Estes ring on the map. WHERE: New Order, Bulk Add\u2019s Create orders, the Manifest push and Duplicate. NOT YET: Bulk Add\u2019s Create as load \u2014 it builds the orders inside one route import, and nothing here shows that import accepting a profile, so it sends them as before. CHECKED: NuVizz\u2019s own example order, built through our Manifest path, matches their JSON field for field, profile included. Every other order is sent exactly as before, and the dry run says PROFILE ESTES when it goes. NUVIZZ_ESTES_PROFILE=off puts it back.'],
   ['1.107.1', 'THE STOP CARD, TIGHTER: THE PRO IS NEVER CUT, THE OTHER ACTIONS ARE ALWAYS ON SCREEN, AND THE PROS LIST IS GONE. Chad, 10/02, of the \u201cMore:\u201d fold: \u201cDon\u2019t understand why this is in a drawer seems like it should just be fixed nice and tight in 2 rows small text\u201d \u2014 and of the PROs section: \u201cdon\u2019t think this is need on the oder screen pro number is at the top pro should never be hidden and we don\u2019t need the pro text just the number we know what it is.\u201d THE ACTIONS: Street View, Find business, Edit address, Correct pin, Text driver and History now sit in two small rows under Text / Call / Navigate / Ticket / Label \u2014 nothing to open. On a phone the same two rows have thumb-height cells. Hover one for its full name (Correct pin location, the driver\u2019s name); a \u2713 after Correct pin means a custom pin is saved. THE HEADER: just the number (007185553, not \u201cPRO 00718\u2026\u201d), at its full width \u2014 the route label beside it is what shortens now. The phone header gains the copy button the PROs list used to give it. THE PROS LIST is gone from the card: a board order carries exactly one PRO, its own number, which is the header. WHERE: the desktop sidebar (Map and Routing), the phone drawer and the PRO-lookup card. 0 NuVizz calls. PUT IT BACK: revert this commit.'],
   ['1.107.0', 'DUPLICATE AN ORDER AS A NEW ONE \u2014 ITS NUMBER -1, THEN -2, AND SO ON. Chad, 10/02: \u201cmake it where i can duplicate an order essentially we can do it as creating a new order and way we make the pro number is its original pro-1 then if we duplicate the same order twice it would be original pro-2 so on an so forth.\u201d WHERE: the stop card, under Items \u2014 \u201cDuplicate as a new order\u201d, in the same four places as Edit piece counts. Set the copy\u2019s pallets, loose, weight and delivery day (they open on the original\u2019s, and on today when the original\u2019s day has gone), tick \u201cCopy the price\u201d if you want it, and Create. THE NUMBER: the first ORIGINAL-N that NuVizz does not already hold \u2014 duplicating the same order twice gives -1 then -2, and duplicating a copy still numbers from the original (007174789-1 gives 007174789-2, never -1-1). A carrier id stays whole (ESTES-0538243875 gives ESTES-0538243875-1). IT NEVER OVERWRITES: NuVizz\u2019s order create REPLACES an order that already has the number, so each candidate must read NOT FOUND in NuVizz before it is used \u2014 one that exists is skipped, and any other answer (an error, an empty reply) stops the duplicate with nothing created. Numbers our own records already know are skipped without a NuVizz call, and a number is claimed before it is created, so two dispatchers duplicating the same order at once cannot both take it. THE COPY carries the original\u2019s consignee and address, contact, delivery window (the same times on the chosen day), commodity, driver instructions, PO and customer references, and pickup origin \u2014 built by the same builder New Order uses. NOT COPIED: the route, driver and attachments (it lands unplanned and reaches the board through the scans, as a New Order does), the price unless ticked, and an \u201cATT\u201d failed-delivery marker on the shipment number. VERIFIED: the new order is read back \u2014 its number, pieces and street must match \u2014 and a press after a lost answer goes out under the same request key, so it replays the first answer and can never make a second copy. About 4 NuVizz calls, never more than 6. NUVIZZ_DUPLICATE_ORDER=off turns it off on both sides at once \u2014 the server refuses it and the stop card stops offering the button (the card asks the server once per page load, a dry run that spends no NuVizz call).'],
@@ -9684,8 +9685,11 @@ function StopPiecesEditor({ stop, onRefreshed }) {
 // new order and way we make the pro number is its original pro-1 then if we duplicate the same
 // order twice it would be original pro-2 so on an so forth."
 //
-// The copy's pieces, weight and day are set here (a split puts part of the freight on each order);
-// everything else comes from the original's own NuVizz record on the server. The number is not
+// The copy's pieces, weight and day are set here (a split puts part of the freight on each order),
+// and since v1.109.0 everything else too — Chad, 10/03: "when I duplicate I want to have the option
+// to edit the order. Addresses numbers piece counts items pretty much anything." The form opens on
+// what the card shows; only what the dispatcher CHANGES is sent, and the server copies the rest from
+// the original's own NuVizz record. A typed order number gets the same must-be-free proof. The number is not
 // promised up front: the server takes the first {original}-N that NuVizz answers NOT FOUND, so the
 // panel names the pattern and the answer names the number. ONE KEY PER REQUEST
 // (lib/single-order-op.js): a retry after a lost answer goes out under the same key and the server
@@ -9695,7 +9699,7 @@ function StopPiecesEditor({ stop, onRefreshed }) {
 // the login is NOT asked — nuvizz-write answers them 'requires dispatcher', which would raise the role
 // bar over a card they only opened — and sees the button greyed out with the reason instead
 // (useRoleGate: disabled, never hidden).
-function DuplicateOrderPanel({ stop }) {
+function DuplicateOrderPanel({ stop, note }) {
   const today = etToday();
   const gate = useRoleGate('dispatcher');
   const [enabled, setEnabled] = useState(() => siteWriteFeaturesNow()?.duplicateOrder === true);
@@ -9711,12 +9715,18 @@ function DuplicateOrderPanel({ stop }) {
   const [weight, setWeight] = useState('');
   const [date, setDate] = useState('');
   const [copyPrice, setCopyPrice] = useState(false);
+  // v1.109.0 — the rest of the copy, editable (lib/order-duplicate.js duplicateFormFrom).
+  const [form, setForm] = useState(null);
+  const baselineRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);       // { kind, text, created, nbr }
   const opRef = useRef({ id: newClientOpId(), sent: null });
   const pro = stop?.stopNbr || stop?.pro || '';
   const base = copyBaseNbr(pro);
   const draft = duplicateDraft({ pallets, loose, weight, date }, today);
+  const formError = form ? duplicateFormError(form, baselineRef.current) : null;
+  const edits = form ? duplicateEdits(form, baselineRef.current) : {};
+  const editLabels = duplicateChangeLabels(edits, duplicateCountChanges(stop, draft));
   if (!duplicateEligible(stop)) return null;
   if (!gate.allowed) {
     return (
@@ -9738,14 +9748,19 @@ function DuplicateOrderPanel({ stop }) {
     setWeight(stop?.weight != null && String(stop.weight).trim() !== '' ? String(stop.weight) : '');
     setDate(defaultCopyDate(stop, today));
     setCopyPrice(false);
+    baselineRef.current = duplicateBaseline(stop);
+    setForm(duplicateFormFrom(stop, note));
   };
+  const setField = (k) => (e) => { const v = e.target.value; setForm((f) => ({ ...(f || {}), [k]: v })); };
+  const error = draft.error || formError;
   const create = async () => {
-    if (busy || draft.error) return;
+    if (busy || error) return;
     setBusy(true); setMsg(null);
     try {
-      const request = { pro, stopId: stop?.stopId || null, pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice };
+      const copyNbr = copyNbrDraft(form?.copyNbr).nbr;
+      const request = { pro, stopId: stop?.stopId || null, pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits };
       opRef.current = singleOrderOpId(opRef.current, request, newClientOpId);
-      const r = await duplicateOrder(pro, { pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice }, {
+      const r = await duplicateOrder(pro, { pallets: draft.pallets, loose: draft.loose, weight: draft.weight, date: draft.date, copyPrice, copyNbr, edits }, {
         stopId: stop?.stopId || undefined, clientOpId: opRef.current.id,
       });
       const outcome = duplicateOutcome(r);
@@ -9755,7 +9770,17 @@ function DuplicateOrderPanel({ stop }) {
     } catch (e) { setMsg({ kind: 'err', created: false, text: e?.message || 'Could not duplicate the order.' }); }
     finally { setBusy(false); }
   };
-  const inputCls = 'mt-0.5 w-full min-h-[44px] border border-slate-300 rounded px-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 disabled:bg-slate-50';
+  // 32px under a mouse; index.css's touch floor makes every input 44px under a finger.
+  const inputCls = 'mt-0.5 w-full min-h-[32px] border border-slate-300 rounded px-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 disabled:bg-slate-50';
+  const labelCls = 'block text-[11px] font-medium text-slate-500 min-w-0';
+  // A field the board row holds nothing for is still copied — from the original's NuVizz record.
+  const asOriginal = (k) => (String(baselineRef.current?.[k] ?? '').trim() ? undefined : 'as the original');
+  const field = (k, label, extra = {}) => (
+    <label className={labelCls}>{label}
+      <input type="text" value={form?.[k] ?? ''} disabled={busy} onChange={setField(k)} className={inputCls} placeholder={asOriginal(k)} {...extra} />
+    </label>
+  );
+  const priceTyped = !!String(form?.price ?? '').trim();
   return (
     <div className="pt-1.5">
       {!open ? (
@@ -9764,47 +9789,73 @@ function DuplicateOrderPanel({ stop }) {
           <Plus size={13} /> Duplicate as a new order
         </button>
       ) : (
-        <div className="rounded-md border border-slate-200 p-2 space-y-2">
+        <div className="rounded-md border border-slate-200 p-2 space-y-2" data-duplicate-form>
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs uppercase font-semibold text-slate-500">Duplicate as a new order</div>
             <button type="button" onClick={() => { setOpen(false); setMsg(null); }} aria-label="Close duplicate"
               className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center text-slate-400 hover:text-slate-700"><X size={14} /></button>
           </div>
-          <div className="text-[12px] text-slate-700 leading-snug">
-            New order <span className="font-mono font-semibold">{base}-1</span>, or the next number NuVizz does not already hold (-2, -3 …).
-            {base !== String(pro).trim() && <> Numbered from the original <span className="font-mono">{base}</span>, not from this copy.</>}
+          {field('copyNbr', 'New order number', { placeholder: `${base}-1 (next free)`, autoComplete: 'off' })}
+          <div className="text-[11px] text-slate-500 leading-snug -mt-1">
+            Leave blank for <span className="font-mono font-semibold">{base}-1</span>, or the next number NuVizz does not already hold (-2, -3 …). A number you type must not be in NuVizz yet — it is never written over.
+            {base !== String(pro).trim() && <> Blank numbers from the original <span className="font-mono">{base}</span>, not from this copy.</>}
           </div>
+          {field('name', 'Consignee')}
+          {field('addr1', 'Address')}
+          {field('addr2', 'Address 2')}
+          <div className="grid grid-cols-[minmax(0,1fr)_56px_84px] gap-2">
+            {field('city', 'City')}
+            {field('state', 'State', { maxLength: 30, placeholder: asOriginal('state') && 'same' })}
+            {field('zip', 'ZIP', { inputMode: 'numeric', maxLength: 10, placeholder: asOriginal('zip') && 'same' })}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {field('phone', 'Phone', { inputMode: 'tel', type: 'tel' })}
+            {field('email', 'Email', { inputMode: 'email', type: 'email' })}
+          </div>
+          {field('itemDesc', 'Items', { maxLength: 100 })}
           <div className="grid grid-cols-3 gap-2">
-            <label className="block text-[11px] font-medium text-slate-500">Pallets
+            <label className={labelCls}>Pallets
               <input type="number" inputMode="numeric" min="0" step="1" value={pallets} disabled={busy}
                 onChange={(e) => setPallets(e.target.value)} className={inputCls} />
             </label>
-            <label className="block text-[11px] font-medium text-slate-500">Loose
+            <label className={labelCls}>Loose
               <input type="number" inputMode="numeric" min="0" step="1" value={loose} placeholder="0" disabled={busy}
                 onChange={(e) => setLoose(e.target.value)} className={inputCls} />
             </label>
-            <label className="block text-[11px] font-medium text-slate-500">Weight (lbs)
+            <label className={labelCls}>Weight (lbs)
               <input type="number" inputMode="decimal" min="0" step="any" value={weight} placeholder="as original" disabled={busy}
                 onChange={(e) => setWeight(e.target.value)} className={inputCls} />
             </label>
           </div>
-          <label className="block text-[11px] font-medium text-slate-500">Delivery day
+          <label className={labelCls}>Delivery day
             <input type="date" min={today} value={date} disabled={busy}
               onChange={(e) => setDate(e.target.value)} className={inputCls} />
           </label>
-          <label className="flex items-center gap-2 min-h-[44px] text-[12px] text-slate-700">
-            <input type="checkbox" checked={copyPrice} disabled={busy} onChange={(e) => setCopyPrice(e.target.checked)} className="w-4 h-4" />
-            Copy the price (Seal #) too
+          <label className={labelCls}>Driver instructions
+            <textarea rows={2} value={form?.dispatchNotes ?? ''} placeholder={asOriginal('dispatchNotes')} disabled={busy} onChange={setField('dispatchNotes')} maxLength={500}
+              className={inputCls + ' py-1 resize-y'} />
           </label>
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">
+            {field('price', 'Price (Seal #)', { placeholder: 'none', maxLength: 20 })}
+            <label className="flex items-center gap-1.5 min-h-[32px] text-[11px] text-slate-600 whitespace-nowrap">
+              <input type="checkbox" checked={copyPrice && !priceTyped} disabled={busy || priceTyped} onChange={(e) => setCopyPrice(e.target.checked)} className="w-4 h-4" />
+              Copy the original's
+            </label>
+          </div>
           <div className="text-[12px] text-slate-700">
-            {draft.error
-              ? <span className="text-red-600">{draft.error}</span>
+            {error
+              ? <span className="text-red-600">{error}</span>
               : <>= <span className="font-semibold">{draft.total} piece{draft.total === 1 ? '' : 's'}</span> on the copy</>}
           </div>
-          <div className="text-[11px] text-slate-500 leading-snug">
-            Copies the consignee and address, contact, delivery window, commodity, driver instructions and pickup. Not copied: the route, driver and attachments, and the price unless ticked. It lands <span className="font-semibold">unplanned</span> and reaches the board through the scans, as a New Order does.
+          <div className="text-[11px] text-slate-600 leading-snug" data-duplicate-changes>
+            {editLabels.length
+              ? <>Changed from the original: <span className="font-semibold">{editLabels.join(', ')}</span>. Everything else is copied.</>
+              : <>A straight copy — change anything above before you create it.</>}
           </div>
-          <button type="button" onClick={create} disabled={busy || !!draft.error}
+          <div className="text-[11px] text-slate-500 leading-snug">
+            Always copied: the delivery window's times (on the day you pick), the PO and customer references, and the pickup. Not copied: the route, driver and attachments. It lands <span className="font-semibold">unplanned</span> and reaches the board through the scans, as a New Order does.
+          </div>
+          <button type="button" onClick={create} disabled={busy || !!error}
             className="w-full min-h-[44px] px-3 text-xs font-semibold text-white rounded disabled:opacity-40"
             style={{ background: BRAND }}>{busy ? 'Creating…' : msg?.created ? 'Create another copy' : 'Create the copy in NuVizz'}</button>
           <div className="text-[10px] text-slate-400">about 4 NuVizz calls · up to 6 when {base}-1, -2 … are already taken</div>
@@ -10364,7 +10415,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
       <div className="pt-2">
         <OrderItemsSection stop={live} />
         <StopPiecesEditor key={stopKey} stop={live} onRefreshed={onRefreshed} />
-        <DuplicateOrderPanel key={`dup-${stopKey}`} stop={live} />
+        <DuplicateOrderPanel key={`dup-${stopKey}`} stop={live} note={note} />
       </div>
       {showTicket && (
         <PrintDocModal
