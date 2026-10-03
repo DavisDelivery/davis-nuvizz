@@ -12,6 +12,7 @@
 
 import { fetchWithTimeout } from './lib/async-util.mts';
 import { requireUser } from './lib/require-user.mts';
+import { buildMatrixViaOsrm, type OsrmDetail } from './lib/osrm-matrix.mts';
 
 const ROUTES_URL = 'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix';
 const MAX_ELEMENTS = 600;         // under Google's 625 element cap, with margin
@@ -138,8 +139,20 @@ export async function buildMatrixViaGoogle(depot: LatLng, stops: LatLng[], apiKe
 // Resolve the best available matrix for the requested mode (Appendix B: cheap by
 // default). Google is used ONLY when mode === 'google' AND the key is present;
 // otherwise (default) the free haversine estimate — even when the key exists.
-export async function resolveMatrix(depot: LatLng, stops: LatLng[], mode: 'haversine' | 'google' = 'haversine', opts: MatrixOpts = {}): Promise<{ matrix: Matrix; source: 'google' | 'haversine' }> {
+//
+// TRUCK ROAD TIMES (mode 'osrm'): our own routing service, free per build, off until
+// OSRM_TRUCK_URL is set (lib/osrm-matrix.mts). `detail` counts the pairs it had to estimate and
+// the stops off the truck map. Not configured, a token failure, a timeout, a non-200 or a
+// malformed answer each log once and fall to the haversine return below, as Google does — and
+// `source` then says 'haversine', so the build reports what it actually used.
+export async function resolveMatrix(depot: LatLng, stops: LatLng[], mode: 'haversine' | 'google' | 'osrm' = 'haversine', opts: MatrixOpts = {}): Promise<{ matrix: Matrix; source: 'google' | 'haversine' | 'osrm'; detail?: OsrmDetail }> {
   if (stops.length > MAX_STOPS) throw new Error(`selection too large: ${stops.length} stops (max ${MAX_STOPS})`);
+  if (mode === 'osrm') {
+    try {
+      const { matrix, detail } = await buildMatrixViaOsrm(depot, stops, haversineMatrix(depot, stops));
+      return { matrix, source: 'osrm', detail };
+    } catch (e: any) { console.error('google-route-matrix: mode=osrm — falling back to haversine —', e?.message); }
+  }
   if (mode === 'google') {
     const key = process.env.GOOGLE_ROUTES_API_KEY;
     if (key) {

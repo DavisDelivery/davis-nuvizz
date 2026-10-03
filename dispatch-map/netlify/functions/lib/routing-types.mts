@@ -12,8 +12,10 @@ export const DEFAULT_STRATEGY: Strategy = 'MIN_DISTANCE';
 
 // Matrix source is a PER-BUILD choice (Appendix B — cheap by default). The free
 // haversine estimate is the DEFAULT even when the Google key is present; Google
-// drive-times are an explicit per-build opt-in with the cost shown.
-export type MatrixMode = 'haversine' | 'google';
+// drive-times are an explicit per-build opt-in with the cost shown. 'osrm' is truck road times
+// from our own routing service (lib/osrm-matrix.mts): free per build, opt-in like Google, and
+// off until OSRM_TRUCK_URL is set — the default stays the straight-line estimate.
+export type MatrixMode = 'haversine' | 'google' | 'osrm';
 export const DEFAULT_MATRIX_MODE: MatrixMode = 'haversine';
 
 // Appointment-window enforcement. ADVISORY (default): never spill a stop for a
