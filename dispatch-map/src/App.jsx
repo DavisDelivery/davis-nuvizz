@@ -12011,13 +12011,16 @@ function OrderViewWindow({ stop, note, kind, flags = [], eta = null, boardDate =
   }, []);
   const trapTab = (e) => {
     if (e.key !== 'Tab' || !panelRef.current) return;
+    // Only a Tab pressed in this window's own DOM: a window it opened onto <body> (Duplicate)
+    // still bubbles here through React's tree, and keeps its own Tab order.
+    if (!panelRef.current.contains(e.target)) return;
     const items = [...panelRef.current.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])')]
       .filter((el) => el.getClientRects().length > 0);
     if (!items.length) return;
     const first = items[0]; const last = items[items.length - 1];
     const a = document.activeElement;
-    if (e.shiftKey && (a === first || a === panelRef.current || !panelRef.current.contains(a))) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && (a === last || !panelRef.current.contains(a))) { e.preventDefault(); first.focus(); }
+    if (e.shiftKey && (a === first || a === panelRef.current)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
   };
 
   if (!stop) return null;
@@ -13472,8 +13475,10 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
                 // read-only LookupStopModal. Ensure a matchKey so its customer_notes load.
                 const mk = api.stop.matchKey
                   || normalizeMatchKey(api.stop.businessName || '', api.stop.addr1 || '', api.stop.city || '', api.stop.zip || '');
-                if (onPickCustomer) onPickCustomer({ ...api.stop, matchKey: mk });
-                else setDetail({ ...api.stop, matchKey: mk });   // fallback if no parent handler wired
+                // __historical: a looked-up PRO is not a row on the screen's board, so the order
+                // view keeps its own day (lib/order-view.js) — never the day being looked at.
+                if (onPickCustomer) onPickCustomer({ ...api.stop, matchKey: mk, __historical: true });
+                else setDetail({ ...api.stop, matchKey: mk, __historical: true });   // fallback if no parent handler wired
               }}
               className="w-full text-left border border-blue-200 bg-blue-50/40 rounded-lg p-3 text-sm hover:bg-blue-50 active:bg-blue-100"
             >

@@ -241,7 +241,7 @@ test('the window is read the way the rest of the app reads it: NuVizz placeholde
   for (const [from, to] of [['05:00', '05:00'], ['08:00', '20:00']]) {
     const v = V(FULL({ scheduledFrom: `${DAY}T${from}:00`, scheduledTo: `${DAY}T${to}:00` }), { nowMin: 19 * 60 + 10 });
     assert.equal(v.when.window, null, `${from}-${to} is a placeholder`);
-    assert.match(v.when.windowNote, /default schedule/);
+    assert.match(v.when.windowNote, /not a delivery window/);
     assert.equal(v.alerts.some((a) => a.key.startsWith('window')), false);
     assert.equal(v.requirements.some((r) => r.key === 'window'), false);
     assert.equal(orderMessageDrafts(v).some((d) => / between /.test(d.text)), false, 'no placeholder in a customer message');
@@ -253,6 +253,16 @@ test('the window is read the way the rest of the app reads it: NuVizz placeholde
   assert.equal(real.when.window.appointment, true, 'a half-hour nobody else holds is a booked slot');
   assert.equal(real.requirements.find((r) => r.key === 'window').label, 'Appointment slot');
   // A carried-over order keeps day one's schedule: shown with its date, never judged against today.
+  // A refused schedule is described by WHY, with NuVizz's own times — never called a default it is not.
+  const workday = V(FULL({ scheduledFrom: `${DAY}T07:00:00`, scheduledTo: `${DAY}T15:00:00` }));
+  assert.equal(workday.when.window, null);
+  assert.equal(workday.when.windowNote, 'NuVizz’s schedule 7:00 AM – 3:00 PM spans a working day — not read as a delivery window.');
+  assert.match(V(FULL({ scheduledFrom: `${DAY}T08:00:00`, scheduledTo: `${DAY}T20:00:00` })).when.windowNote, /all-day default, 8:00 AM – 8:00 PM/);
+  assert.match(V(FULL({ scheduledFrom: `${DAY}T05:00:00`, scheduledTo: `${DAY}T05:00:00` })).when.windowNote, /a placeholder/);
+  assert.match(V(slot, { defaultSlots: new Set(['540-570']) }).when.windowNote, /9:00 AM – 9:30 AM is the half hour NuVizz stamps/);
+  // A carried-over LIST row's load-wide estimate keeps its date too.
+  const carriedList = V(LIST({ scheduledFrom: '2026-10-02T08:00:00', carryover: true }));
+  assert.equal(carriedList.when.window.otherDay, 'Fri, Oct 2');
   const carried = V(FULL({ scheduledFrom: '2026-10-02T08:00:00', scheduledTo: '2026-10-02T14:00:00' }), { nowMin: 14 * 60 + 30 });
   assert.equal(carried.when.window.otherDay, 'Fri, Oct 2');
   assert.equal(carried.when.window.closeMin, null);
@@ -282,6 +292,11 @@ test('a customer message never carries an estimate, an unplanned "schedule" or a
   assert.equal(orderMessageDrafts(unplanned).some((d) => d.key === 'scheduled'), false);
   const arrived = V(FULL({ normalizedStatus: 'ARRIVED', arrivalDTTM: `${DAY}T10:05:00` }));
   assert.deepEqual(orderMessageDrafts(arrived).map((d) => d.key), ['arrived', 'delay', 'call-me']);
+  // Parked on ULINE APPT on the day the customer is closed: no "scheduled for" that day.
+  const held = V(FULL({ loadNbr: 'ULINE APPT', routeName: 'ULINE APPT', signalSources: { orderInstructions: 'CLOSED ON MONDAYS' }, orderInstructions: 'CLOSED ON MONDAYS' }));
+  assert.equal(held.route.held, true);
+  assert.equal(orderMessageDrafts(held).some((d) => d.key === 'scheduled'), false);
+  assert.ok(orderMessageDrafts(V(FULL({ loadNbr: 'CHAD', routeName: 'CHAD' }))).some((d) => d.key === 'scheduled'), 'the owner’s truck does deliver');
 });
 
 test('the flag engine’s gates hold here too: set-aside routes and unrouted unplanned orders are not blocked', () => {
@@ -297,6 +312,10 @@ test('the flag engine’s gates hold here too: set-aside routes and unrouted unp
 });
 
 test('every action offered can run: no route view without a route, no call without a number, load before guessing', () => {
+  // Out for delivery with no route and no driver on our board: reach the customer, never a route view.
+  const loose = V(FULL({ normalizedStatus: 'OUT_FOR_DEL', status: '40', loadNbr: null, routeName: null, driverName: null }));
+  assert.equal(loose.next.key, 'call-customer');
+  assert.match(loose.next.reason, /no route or driver on our board/);
   // Unplanned, no driver, window closing: reach the customer, not a route that does not exist.
   const unrouted = V(FULL({ normalizedStatus: 'UNPLANNED', status: '10', loadNbr: '', routeName: '', driverName: '', scheduledFrom: `${DAY}T13:00:00`, scheduledTo: `${DAY}T17:00:00` }), { nowMin: 16 * 60 + 20 });
   const w = unrouted.alerts.find((a) => a.key === 'window-closing');
@@ -335,6 +354,11 @@ test('a flag recovered from a collapsed batch is titled by its rule, and "DO NOT
   assert.deepEqual(instructionCues('DO NOT CALL BEFORE ARRIVAL').map((c) => c.key), []);
   assert.deepEqual(instructionCues("DON'T CALL AHEAD. USE DOCK 2.").map((c) => c.key), ['dock']);
   assert.deepEqual(instructionCues('CALL AHEAD, DO NOT LEAVE AT DOOR').map((c) => c.key), ['call_ahead'], 'a negation after the call is about something else');
+  // A negation that governs something else in the same sentence leaves the call-ahead standing.
+  for (const txt of ['DO NOT STACK - CALL AHEAD', 'NO DELIVERIES BEFORE 9, CALL AHEAD', 'DO NOT LEAVE AT DOOR, CALL AHEAD', 'PO NO 4471 CALL AHEAD', 'NEVER LEAVE UNATTENDED - CALL 30 MIN PRIOR']) {
+    assert.ok(instructionCues(txt).some((c) => c.key === 'call_ahead'), txt);
+  }
+  assert.deepEqual(instructionCues('NO NEED TO CALL AHEAD').map((c) => c.key), []);
 });
 
 test('a Past PRO search result keeps its own day — never the day the screen is showing', () => {

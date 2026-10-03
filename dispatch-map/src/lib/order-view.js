@@ -23,8 +23,8 @@ import { resolveStopContact, orderContactAside, isDialable } from './stop-contac
 import { hoursProvenance } from './hours-provenance.js';
 import { addressLooksOff } from './address-fix.js';
 import { stopHandlingFlags, HANDLING_FLAGS } from './handling-flags.js';
-import { closedDayTier, dayReceivingWindow, stopPosition, isFinishedStop, isSetAsideRoute } from './board-flags.js';
-import { orderWindow } from './time-restrictions.js';
+import { closedDayTier, dayReceivingWindow, stopPosition, isFinishedStop, isSetAsideRoute, isAppointmentRoute } from './board-flags.js';
+import { orderWindow, clockMinFromStamp, ALL_DAY_MIN } from './time-restrictions.js';
 
 const t = (v) => (v == null ? '' : String(v).trim());
 const num = (v) => {
@@ -139,9 +139,9 @@ const CUE_RULES = [
 // each cue quotes only its own sentence, falling back to the line when a match spans two.
 const sentencesOf = (line) => line.split(/(?<=[.;!?])\s+(?=\S)/).map((x) => x.trim()).filter(Boolean);
 
-// "DO NOT CALL BEFORE ARRIVAL" is the opposite of a call-ahead: a sentence that negates the
-// call before it is never read as one.
-const NEGATED_CALL = /\b(?:do\s*not|don'?t|never|no)\b[^.\n]*\b(?:call|phone)\b/i;
+// "DO NOT CALL BEFORE ARRIVAL" is the opposite of a call-ahead — but only when the negation
+// governs the call itself: "DO NOT STACK - CALL AHEAD" and "PO NO 4471 CALL AHEAD" still ask.
+const NEGATED_CALL = /\b(?:do\s*not|don'?t|dont|never|no(?:\s+need\s+to)?)\s+(?:call|phone)\b/i;
 const cueIn = (r, x) => r.re.test(x) && !(r.key === 'call_ahead' && NEGATED_CALL.test(x));
 
 /** Cues read out of the order's own text: [{ key, label, snippet }], each once, in rule order. */
@@ -241,6 +241,9 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
   const routeKey = t(s.loadNbr || s.routeName);
   const routed = !!routeKey;
   const setAside = routed && isSetAsideRoute(routeKey);
+  // ULINE APPT is a holding pen, not a truck: "anything on a Uline appt route for a given day is
+  // not actually going to deliver today" (board-flags.js). The owner's truck does deliver.
+  const held = routed && isAppointmentRoute(routeKey);
   const unscheduled = !routed && (t(s.status) === '10' || k === 'UNPLANNED');
 
   // ── identity ──
@@ -297,12 +300,21 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
         appointment: ow.kind === 'appointment', estimateOnly: false, otherDay: od ? dayText(od, today) : '',
       };
     } else {
-      windowNote = 'NuVizz has only its default schedule on this order — not a delivery window.';
+      // Said by what orderWindow actually decided, with NuVizz's own times — never a claim that
+      // NuVizz defaulted a schedule the code only knows is a working day long.
+      const o = clockMinFromStamp(fromTs); const c = clockMinFromStamp(toTs);
+      const raw = `${clockText(fromTs)} – ${clockText(toTs)}`;
+      windowNote = o == null || c == null ? 'NuVizz’s schedule on this order carries no clock time — not a delivery window.'
+        : c - o <= 0 ? `NuVizz’s schedule reads ${raw} — a placeholder, not a delivery window.`
+          : o === 8 * 60 && c === 20 * 60 ? `NuVizz’s all-day default, ${raw} — not a delivery window.`
+            : c - o >= ALL_DAY_MIN ? `NuVizz’s schedule ${raw} spans a working day — not read as a delivery window.`
+              : `${raw} is the half hour NuVizz stamps on many unrelated orders on this board — not an appointment.`;
     }
   } else if (fromTs) {
     // A list row's scheduledFrom is NuVizz's Estimated Arrival, shared by the whole load — a
     // schedule, not this order's window. Said so, never dressed as a window.
-    window = { text: `around ${clockText(fromTs)}`, closeMin: null, appointment: false, estimateOnly: true, otherDay: '' };
+    const od = otherDayOf(fromTs);
+    window = { text: `around ${clockText(fromTs)}`, closeMin: null, appointment: false, estimateOnly: true, otherDay: od ? dayText(od, today) : '' };
   }
   // THE ETA, IN THE APP'S OWN ORDER (route-stop-line.js routeStopTime): our anchored estimate
   // first — eta-backtest put it 13-14 min off against NuVizz's 79 — then NuVizz's planned ETA.
@@ -501,7 +513,7 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
   const route = {
     name: t(s.routeName) || (t(s.loadNbr) && !/^\d+$/.test(t(s.loadNbr)) ? t(s.loadNbr) : ''),
     seq: num(s.routeSeq), driver, driverPhone: t(driverPhone), driverPhoneDisplay: formatPhone(driverPhone),
-    planned: routed,
+    planned: routed, held,
   };
   const podDocs = Array.isArray(s.podDocs) ? s.podDocs : [];
   const callAhead = cues.some((cu) => cu.key === 'call_ahead');
@@ -530,7 +542,8 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
     next = route.driverPhone && isDialable(route.driverPhone)
       ? { key: 'call-driver', label: `Call ${driver || 'the driver'}`, tone: 'calm', reason: `${STATUS_LABEL[k]}${route.name ? ` on ${route.name}${route.seq != null ? `, stop ${route.seq}` : ''}` : ''}.` }
       : driver ? { key: 'text-driver', label: `Text ${driver}`, tone: 'calm', reason: `${STATUS_LABEL[k]}${route.name ? ` on ${route.name}` : ''}. No driver number on file.` }
-        : { key: 'open-route', label: 'View the route', tone: 'calm', reason: STATUS_LABEL[k] };
+        : routed ? { key: 'open-route', label: 'View the route', tone: 'calm', reason: STATUS_LABEL[k] }
+          : { ...reachCustomer('Call the customer'), tone: contact.dialable ? 'calm' : 'act', reason: `${STATUS_LABEL[k]} — no route or driver on our board.` };
   } else if (!contact.dialable) {
     next = { key: 'add-contact', label: 'Add a customer number', tone: 'act', reason: contact.name ? `${contact.name} is on file, but no number to call.` : 'No customer contact on this order.' };
   } else if (note?.appointment_required) {
@@ -582,9 +595,9 @@ export function orderMessageDrafts(view) {
   if (k === 'ARRIVED') {
     out.push({ key: 'arrived', label: 'Driver has arrived', text: `${lead} our driver has arrived with your delivery.` });
   }
-  // "Scheduled" only for an order that is on a route — an unplanned order's day is NuVizz's
-  // estimate, not a schedule we have made.
-  if (view.when?.dayLabel && view.route?.planned && (k === 'SCHEDULED' || k === 'OUT_FOR_DEL')) {
+  // "Scheduled" only for an order on a truck's route — an unplanned order's day is NuVizz's
+  // estimate, and an order held on an appointment route is parked, not scheduled.
+  if (view.when?.dayLabel && view.route?.planned && !view.route?.held && (k === 'SCHEDULED' || k === 'OUT_FOR_DEL')) {
     const w = view.when.window;
     const win = w && !w.estimateOnly && !w.otherDay ? ` between ${w.text.replace(' – ', ' and ')}` : '';
     out.push({ key: 'scheduled', label: 'Delivery day', text: `${lead} your delivery is scheduled for ${view.when.dayLabel}${win}. Reply here with any questions.` });
