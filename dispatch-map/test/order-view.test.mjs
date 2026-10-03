@@ -290,6 +290,8 @@ test('our estimate after the window closes is raised as an estimate — only whe
   assert.equal(a.estimate, true);
   assert.equal(a.detail, 'About 1:58 PM ±25 min against a 10:10 AM close.');
   assert.equal(a.action.key, 'call-customer');
+  assert.equal(late.next.key, 'call-customer', 'the truck cannot make it: the customer is the call, ahead of texting the driver');
+  assert.equal(late.next.alertKey, 'eta-after-window');
   // Inside the band of the close: not raised — the estimate cannot say it is late.
   assert.equal(V(stop, { nowMin: 9 * 60 + 40, eta: { etaMin: 10 * 60 + 25, errorMin: 25, anchored: true } }).alerts.some((x) => x.key === 'eta-after-window'), false);
   // NuVizz's plan alone never raises it.

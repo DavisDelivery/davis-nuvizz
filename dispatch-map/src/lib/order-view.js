@@ -482,18 +482,9 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
         : routed ? { key: 'open-route', label: 'View the route' } : null,
     });
   }
-  // The window: only a real window (time-restrictions.js) dated this day, on today's board,
-  // and only before delivery.
-  if (!finished && isToday && window && window.closeMin != null && nowMin != null) {
-    const left = window.closeMin - nowMin;
-    if (left < 0) {
-      alert({ key: 'window-closed', tier: 'block', title: `Delivery window closed at ${minText(window.closeMin)}`, detail: 'Our board does not show it delivered. Delivered can lag the scan by a few minutes.', action: reachCustomer('Call the customer') });
-    } else if (left <= 60) {
-      alert({ key: 'window-closing', tier: 'warn', title: `Delivery window closes in ${left} min`, detail: `At ${minText(window.closeMin)}.`, action: reachDriver || reachCustomer('Call the customer') });
-    }
-  }
   // OUR ESTIMATE LANDS AFTER THE WINDOW. Only our anchored model (NuVizz's plan is a median 79 min
   // off), only when even the early edge of its band is past the close, and labelled an estimate.
+  // Raised before "closes in N min": when the truck cannot make it, the customer is the call.
   if (!finished && isToday && etaView?.basis === 'model' && window && window.closeMin != null && eta && num(eta.etaMin) != null) {
     const band = num(eta.errorMin) ?? 0;
     const early = num(eta.etaMin) - band;
@@ -502,6 +493,16 @@ export function buildOrderView({ stop, note = null, kind = null, flags = [], eta
         detail: `About ${minText(num(eta.etaMin))}${band ? ` ±${Math.round(band)} min` : ''} against a ${minText(window.closeMin)} close.`,
         basis: `${eta.anchored ? 'Measured from the truck’s last recorded stop today.' : 'Projected from the route’s usual departure — no truck time recorded yet today.'} Even the early edge of the estimate, ${minText(early)}, is after the close.`,
         action: reachCustomer('Call the customer') });
+    }
+  }
+  // The window: only a real window (time-restrictions.js) dated this day, on today's board,
+  // and only before delivery.
+  if (!finished && isToday && window && window.closeMin != null && nowMin != null) {
+    const left = window.closeMin - nowMin;
+    if (left < 0) {
+      alert({ key: 'window-closed', tier: 'block', title: `Delivery window closed at ${minText(window.closeMin)}`, detail: 'Our board does not show it delivered. Delivered can lag the scan by a few minutes.', action: reachCustomer('Call the customer') });
+    } else if (left <= 60) {
+      alert({ key: 'window-closing', tier: 'warn', title: `Delivery window closes in ${left} min`, detail: `At ${minText(window.closeMin)}.`, action: reachDriver || reachCustomer('Call the customer') });
     }
   }
   if (etaView?.stale) {
