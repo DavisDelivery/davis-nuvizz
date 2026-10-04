@@ -149,7 +149,8 @@ for (const device of DESKTOPS) {
       }
       const clicked = await page.evaluate((src) => {
         const re = new RegExp(src, 'i');
-        const b = [...document.querySelectorAll('button')].find((x) => re.test((x.innerText || '').trim()));
+        // a[href] too: every screen entry on the bar and under More is a link since v1.117.0 (new tab).
+        const b = [...document.querySelectorAll('button, a[href]')].find((x) => re.test((x.innerText || '').trim()));
         if (!b) return false;
         b.click();
         return true;

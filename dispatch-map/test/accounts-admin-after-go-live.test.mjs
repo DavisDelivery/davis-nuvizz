@@ -62,7 +62,8 @@ test('wired: Shell decides once, from the signed-in user and this build\'s login
 
 test('wired: both menus offer the screen only when accountsOpen, and no unconditional entry is left behind', () => {
   assert.match(APP, /\.\.\.\(accountsOpen \? \[\{ id: 'users', label: 'Account & logins'/, 'desktop More');
-  assert.match(APP, /\{showAccounts && \(\s*<button[\s\S]{0,300}?onSelectMenu\('users'\)/, 'phone menu');
+  // A link since v1.117.0, so it can open in a new tab (ScreenLink); the gate around it is the same.
+  assert.match(APP, /\{showAccounts && \(\s*<ScreenLink[\s\S]{0,300}?onSelectMenu\('users'\)/, 'phone menu');
   assert.match(APP, /showAccounts=\{accountsOpen\}/, 'the phone bar is told');
   assert.equal((APP.match(/id: 'users', label: 'Account & logins'/g) || []).length, 1);
   assert.equal((APP.match(/onSelectMenu\('users'\)/g) || []).length, 1);

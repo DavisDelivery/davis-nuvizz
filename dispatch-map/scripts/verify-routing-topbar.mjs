@@ -353,7 +353,8 @@ for (const width of [1180, 1194, 1366, STOPS_BAR_MIN_WIDTH - 1, STOPS_BAR_MIN_WI
       chipW: cr ? cr.width : null, chipR: cr ? cr.right : null,
       headerH: header.getBoundingClientRect().height,
       vw: window.innerWidth,
-      stopsOnBar: [...nav.querySelectorAll('button')].some((b) => (b.innerText || '').trim() === 'Stops'),
+      // The bar's screen tabs are links since v1.117.0 (so they can open in a new tab).
+      stopsOnBar: [...nav.querySelectorAll('a, button')].some((b) => (b.innerText || '').trim() === 'Stops'),
     };
     badge.remove();
     return out;

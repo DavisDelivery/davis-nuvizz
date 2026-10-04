@@ -64,7 +64,7 @@ const order = () => page.evaluate(() => [...document.querySelectorAll('button')]
   .filter((n) => Number.isFinite(n)));
 
 const openStops = async () => {
-  await page.locator('nav button', { hasText: /^Stops$/i }).first().click();
+  await page.locator('nav a, nav button', { hasText: /^Stops$/i }).first().click();   // a link since v1.117.0
   await page.waitForTimeout(700);
 };
 

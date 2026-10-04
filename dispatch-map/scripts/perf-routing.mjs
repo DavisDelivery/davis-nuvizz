@@ -106,7 +106,7 @@ const errors = []; page.on('pageerror', (e) => errors.push(e.message)); page.on(
 await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
 await page.waitForTimeout(800);
 // Open Routing (beta)
-const tClick = await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find((x) => /routing/i.test((x.innerText || '').trim())); if (!b) return null; const t = performance.now(); b.click(); return t; });
+const tClick = await page.evaluate(() => { const b = [...document.querySelectorAll('button, a[href]')].find((x) => /routing/i.test((x.innerText || '').trim())); if (!b) return null; const t = performance.now(); b.click(); return t; });   // the Routing tab is a link since v1.117.0
 if (tClick == null) { console.error('no Routing tab'); process.exit(1); }
 const settle = async (label) => {
   // Wait for the marker count to hold still for 600ms.

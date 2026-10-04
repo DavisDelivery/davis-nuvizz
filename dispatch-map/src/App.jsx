@@ -107,6 +107,7 @@ import { placeParams, placeQuery, placeQueryUsable } from './lib/stop-search.js'
 import { addRecent, parseRecent, recentAgo, recentEntry, recentKindLabel, recentKey } from './lib/stop-lookup-recent.js';
 import { weekOf, weekLabel, addDays, PERIODS, periodRange, loadForRow } from './lib/load-lookup.js';
 import { STOPS_BAR_QUERY, STOPS_MORE_ITEM } from './lib/stops-tab.js';
+import { isLinkableScreen, screenHref, screenFromSearch, searchWithoutScreen, isPlainLeftClick } from './lib/tab-links.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -227,7 +228,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.116.0';
+const APP_VERSION = '1.117.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -281,6 +282,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.117.0', 'RIGHT-CLICK A SCREEN TO OPEN IT IN A NEW TAB. Chad: \u201ccan you make it where you can right click things in the app to bring up in new tab like if I want to bring up the stops tab or quotes tab in another tab\u201d. Every screen in the navigation is now a link: the desktop bar (Map, Routing, Stops, New Order, Quote), every screen under More, and every screen row in the phone menu. Right-click \u2192 Open link in new tab, a middle-click or a Ctrl/\u2318-click opens that screen in a new browser tab; on a phone a long-press gets the browser\u2019s own menu for a link. A plain click still switches the screen in this tab exactly as before. The new tab starts on that screen, then its address bar goes back to \u201c/\u201d \u2014 so a reload of any tab still lands on the Map, as it always has. Messages, Debug this view, Sign out and Roll back the app act on the tab you are in, so they stay buttons. Opening a screen in a new tab runs exactly what opening it here runs: no new NuVizz call.'],
   ['1.116.0', 'THE COMPARE CARD\u2019S TWO ROAD BOXES SIT SIDE BY SIDE ON ONE ROW, WITH SHORT LABELS. Chad: \u201cI don\u2019t need a big description for them. I just need a label for them because I want them side by side on the same row in the compare panel.\u201d Under Re-sequence\u2026 the boxes now read \u201cGoogle roads ($1.13)\u201d \u2014 the same per-pick price as before, or ($) with one stop or none \u2014 and \u201cTruck roads (free)\u201d, on one row that never wraps. The old wording needed 446px of the card\u2019s 282px, so the truck box always dropped to a second line; these need about 250px. The long wording is each box\u2019s hover title. \u201c\u00b7 roads applied\u201d and \u201c\u00b7 truck roads applied\u201d keep their words, colour and conditions, on one line directly under the row. Nothing else on the card changes: same requests, messages, chip and fallbacks. The Build Panel\u2019s step 3 keeps its labels.'],
   ['1.115.1', 'A CORRECTED ADDRESS NO LONGER COMES BACK ORANGE BECAUSE OF THE BOL. Chad: \u201cstop the false alarm. i don\u2019t even need to go back and check.\u201d Every push that showed \u201cNuVizz also changed one other thing on the order (the BOL document) \u2014 check it in the portal\u201d was NuVizz replacing the BOL, not losing it: read live with 8 calls on 10/03, all eight orders had their BOL back \u2014 the same PDF named BOL, under a new file id created at the second of the push. NuVizz deletes the BOL and makes a fresh one whenever an order is updated, and our check reads the order back one second after the write, in between. Our push never sends the BOL at all. NOW: on an address push, a BOL missing from that read-back is not a warning \u2014 the push is green, and the write log still records that the BOL was being re-created. Anything ELSE that goes missing \u2014 another attachment, a freight line \u2014 is still orange. Still 3 NuVizz calls per corrected address (read, write, read back); this adds none. PUT IT BACK: ADDRESS_BOL_RECREATE_OK=off on the server \u2014 no redeploy.'],
   ['1.115.0', 'TRUCK ROAD TIMES ON THE COMPARE CARD, BESIDE GOOGLE\u2019S BOX. Chad: \u201cIn both places Google\u2019s \u2018real road distances / drive-times\u2019 checkbox appears, put \u2018Use truck road times (free)\u2019 on the same row, beside it, not stacked above.\u201d Under Re-sequence\u2026 on each Compare card the two boxes now share a row (they wrap on a narrow card): \u201cUse real road distances (costs money)\u201d with its per-pick price, exactly as before, and \u201cUse truck road times (free)\u201d with no cost line. Only one runs at a time, so ticking one unticks the other; both start unticked and the card remembers your pick, as it always has for Google\u2019s. With truck road times ticked, a re-sequence lands the straight-line order instantly as before, then asks our own routing service for truck-road distances and re-orders on them \u2014 \u201c\u00b7 truck roads applied\u201d on the card, \u201c\u00b7 truck road times\u201d on the line above. When the service is not set up, not answering or answers wrong, the server falls back and the card keeps the straight-line order and says \u201ctruck road times unavailable, straight-line order kept\u201d \u2014 the same path a Build takes. Not set up on this site, the box is greyed. Both unticked, the card is exactly what it was. This is a Route Workbench change, approved in Chad\u2019s words above; unset OSRM_TRUCK_URL and redeploy to grey the box out, or revert this one commit.'],
@@ -12184,39 +12186,47 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
             className="absolute top-full right-0 mt-1 bg-white text-slate-800 rounded shadow-lg border border-slate-200 text-xs w-max min-w-[200px] max-w-[calc(100vw-24px)] z-50"
             role="menu"
           >
+            {/* EVERY ROW THAT OPENS A SCREEN IS A LINK (v1.117.0), the same as on the desktop bar:
+                a tap switches the screen here as before, and a long-press gets whatever the phone's
+                browser offers for a link. Messages, Sign out, More, Roll back and Debug are actions on
+                this tab, not screens, and stay buttons. */}
             {/* MAP FIRST (Chad, v0.54.82). It is the screen you come back to between
                 every other one, and it was at the BOTTOM under two developer tools —
                 the longest reach in the menu for the most-used destination. */}
-            <button
+            <ScreenLink
+              screen="map"
               className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
               onClick={() => onSelectMenu('map')}
               role="menuitem"
             >
               <MapPin size={12} /> Map
-            </button>
+            </ScreenLink>
             {ROUTING_FLAG && (
-              <button
+              <ScreenLink
+                screen="routing"
                 className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
                 onClick={() => onSelectMenu('routing')}
                 role="menuitem"
               >
                 <MapPinned size={12} /> Routing (beta)
-              </button>
+              </ScreenLink>
             )}
-            <button
+            <ScreenLink
+              screen="neworder"
               className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('neworder')}
               role="menuitem"
             >
               <Package size={12} /> New Order
-            </button>
-            <button
+            </ScreenLink>
+            <ScreenLink
+              screen="quote"
               className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('quote')}
               role="menuitem"
             >
               <Calculator size={12} /> Quote
-            </button>
+            </ScreenLink>
             <button
               className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('messages')}
@@ -12262,21 +12272,23 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
             </button>
             {moreOpen && (
               <>
-                <button
+                <ScreenLink
+                  screen="manifest"
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('manifest')}
                   role="menuitem"
                 >
                   <FileCheck size={12} /> Manifest check
                   {manifestBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{manifestBadge > 99 ? '99+' : manifestBadge}</span>}
-                </button>
-                <button
+                </ScreenLink>
+                <ScreenLink
+                  screen="comms"
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('comms')}
                   role="menuitem"
                 >
                   <Mail size={12} /> Customer emails
-                </button>
+                </ScreenLink>
                 {/* THE PHONE MENU IS A SECOND LIST, and forgetting it is a documented
                     failure here: v0.54.50 shipped Manifest check visible on a laptop and
                     invisible on a phone, because the desktop nav row and this chip menu
@@ -12285,30 +12297,34 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                 {/* Stop lookup is the one on this list most likely to be opened ON a phone —
                     it is the screen you reach for with a customer talking, and the person
                     taking that call is not always at a desk. Same order as the desktop menu. */}
-                <button
+                <ScreenLink
+                  screen="stoplookup"
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('stoplookup')}
                   role="menuitem"
                 >
                   <Search size={12} /> Stop lookup
-                </button>
+                </ScreenLink>
                 {/* Print labels — the dock prints Estes, Averitt and SHP freight from a phone as
                     often as from a desk. Same order as the desktop menu. */}
-                <button
+                <ScreenLink
+                  screen="labels"
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('labels')}
                   role="menuitem"
                 >
                   <Tag size={12} /> Print labels
-                </button>
-                <button
+                </ScreenLink>
+                <ScreenLink
+                  screen="flaghistory"
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('flaghistory')}
                   role="menuitem"
                 >
                   <Flag size={12} /> Flag history
-                </button>
-                <button
+                </ScreenLink>
+                <ScreenLink
+                  screen="addrhistory"
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('addrhistory')}
                   role="menuitem"
@@ -12317,16 +12333,17 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                   {/* BOTH NAVIGATIONS OR NEITHER. A badge on the laptop and not the phone is
                       the v0.54.50 shape — dispatch runs on a phone. */}
                   {addrBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{addrBadge > 99 ? '99+' : addrBadge}</span>}
-                </button>
+                </ScreenLink>
                 {/* PERFORMANCE (v1.100.0) — the same place as on the desktop menu. Both navigations or
                     neither: a screen in one navigation only does not exist on a phone. */}
-                <button
+                <ScreenLink
+                  screen="performance"
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('performance')}
                   role="menuitem"
                 >
                   <TrendingUp size={12} /> Performance
-                </button>
+                </ScreenLink>
                 {/* Claude shadow is not here any more: it is Routing's third tab, Build | Engine |
                     Shadow (Chad, 2026-09-25). On a phone it is Routing → gear → Shadow view, and
                     the row on the Engine and Shadow screens — the same way Engine is reached. */}
@@ -12334,13 +12351,14 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                     and a screen added to one navigation and not the other is a screen that
                     does not exist on a phone. */}
                 {BENCH_ON && (
-                  <button
+                  <ScreenLink
+                    screen="uatbench"
                     className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                     onClick={() => onSelectMenu('uatbench')}
                     role="menuitem"
                   >
                     <Beaker size={12} /> UAT test bench
-                  </button>
+                  </ScreenLink>
                 )}
                 {/* Diagnostics and Debug moved UNDER More (Chad, v0.54.82). Both are
                     tools for looking into the app rather than screens for running the
@@ -12349,21 +12367,23 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                     Diagnostics. Both navigations or neither: dispatch runs on a phone. Admins only
                     once sign-in is live (v1.82.2, accountsTabVisible in lib/auth-gate.js). */}
                 {showAccounts && (
-                  <button
+                  <ScreenLink
+                    screen="users"
                     className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                     onClick={() => onSelectMenu('users')}
                     role="menuitem"
                   >
                     <KeyRound size={12} /> Account &amp; logins
-                  </button>
+                  </ScreenLink>
                 )}
-                <button
+                <ScreenLink
+                  screen="diag"
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('diagnostics')}
                   role="menuitem"
                 >
                   <Activity size={12} /> Diagnostics
-                </button>
+                </ScreenLink>
                 {/* DIRECTLY BELOW DIAGNOSTICS, because that is where Chad looked for it and did
                     not find it. It sat between Flag history and Address history, which reads as
                     unrelated to Diagnostics — and the section inside Diagnostics is the SEVENTH chip
@@ -32109,10 +32129,27 @@ function Shell() {
   // the outcome in the query string (see gmail-auth.mts). Land on the Manifest
   // check tab so the answer is on the screen that asked the question — returning
   // to the map would make a successful connect look like it did nothing at all.
+  //
+  // A TAB OPENED FROM THE NAVIGATION (right-click → Open link in new tab, v1.117.0) arrives as
+  // /?tab=quote and starts on that screen — only a screen this build offers (lib/tab-links.js);
+  // anything else starts on the Map, as every page load did before.
   const [tab, setTab] = useState(() => {
-    try { return new URLSearchParams(window.location.search).has('gmail') ? 'manifest' : 'map'; }
-    catch { return 'map'; }
+    try {
+      const search = window.location.search;
+      if (new URLSearchParams(search).has('gmail')) return 'manifest';
+      return screenFromSearch(search, { routing: ROUTING_FLAG, bench: BENCH_ON }) || 'map';
+    } catch { return 'map'; }
   });
+  // …and the address bar goes back to "/" once it is read, every other parameter kept. A URL still
+  // naming ?tab=quote after this tab has moved on to the Map would be the URL lying about the page,
+  // and a reload would land on the wrong screen — the rule /tv and the Gmail return already keep.
+  useEffect(() => {
+    try {
+      const rest = searchWithoutScreen(window.location.search);
+      if (rest == null) return;
+      window.history.replaceState(window.history.state, '', `${window.location.pathname}${rest}${window.location.hash}`);
+    } catch { /* the URL is a convenience, never the state */ }
+  }, []);
   // ── THE OFFICE WALL DISPLAY ─────────────────────────────────────────────────
   //
   // Chad wants the board on a 55" TV in the office. TV MODE IS ITS OWN VIEW, not the board
@@ -32275,7 +32312,10 @@ function Shell() {
   // Routing Build | Engine | Shadow sub-tab, lifted here so the toggle can render in the top nav
   // row (far right) on desktop while the Routing screen consumes the same state. Anything stored
   // that this build does not know opens Build.
+  // A tab that STARTS on Routing (opened from the bar's link) starts on Build, the same as openTab:
+  // the effect below only runs after a first render that would have mounted the stored sub-tab.
   const [routingTab, setRoutingTab] = useState(() => {
+    if (tab === 'routing') return 'build';
     try { const v = localStorage.getItem('routing.tab'); return v === 'engine' || v === 'shadow' ? v : 'build'; } catch { return 'build'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.tab', routingTab); } catch {} }, [routingTab]);
@@ -32454,8 +32494,8 @@ function Shell() {
               overflow menu can never scroll out of reach on a narrow window. */}
           <div className="flex items-center gap-1 min-w-0">
             <nav className="flex items-center gap-1 text-sm min-w-0 overflow-x-auto">
-              <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
-              {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => openTab('routing')} />}
+              <TabBtn label="Map" icon={<MapPin size={14} />} screen="map" active={tab === 'map'} onClick={() => setTab('map')} />
+              {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} screen="routing" active={tab === 'routing'} onClick={() => openTab('routing')} />}
               {/* STOP LOOKUP IS ON THE BAR NOW, beside Routing, and it is called STOPS (v1.99.11). Chad:
                   "take the stops out of the more tab drop down and I want to move it into the main bar on
                   desktop. Um, probably to the right of routing." — then "Just call it stops not stop lookup
@@ -32465,9 +32505,9 @@ function Shell() {
                   ONLY WHEN IT FITS (v1.104.3): under 1440px Routing's bar has no room for it — it pushed
                   Messages' unread badge off the end — so a narrower window finds Stops under More instead
                   (lib/stops-tab.js; Chad: "1 i like your idea"). Never both, never neither. */}
-              {stopsBar && <TabBtn label="Stops" icon={<Search size={14} />} active={tab === 'stoplookup'} onClick={() => setTab('stoplookup')} />}
-              <TabBtn label="New Order" icon={<Package size={14} />} active={tab === 'neworder'} onClick={() => setTab('neworder')} />
-              <TabBtn label="Quote" icon={<Calculator size={14} />} active={tab === 'quote'} onClick={() => setTab('quote')} />
+              {stopsBar && <TabBtn label="Stops" icon={<Search size={14} />} screen="stoplookup" active={tab === 'stoplookup'} onClick={() => setTab('stoplookup')} />}
+              <TabBtn label="New Order" icon={<Package size={14} />} screen="neworder" active={tab === 'neworder'} onClick={() => setTab('neworder')} />
+              <TabBtn label="Quote" icon={<Calculator size={14} />} screen="quote" active={tab === 'quote'} onClick={() => setTab('quote')} />
               <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             </nav>
             {/* THE ROUTING BOARD-STATUS CARD LANDS HERE — "0 of 805 stops", the pill that
@@ -42292,13 +42332,10 @@ function MoreMenu({ items, activeId, onPick, badge = 0 }) {
       </button>
       {open && (
         <div role="menu" className="absolute right-0 mt-1 w-64 bg-white border rounded-lg shadow-lg py-1 z-50">
-          {items.map((it) => (
-            <button
-              key={it.id}
-              role="menuitem"
-              onClick={() => { setOpen(false); onPick(it.id); }}
-              className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 ${activeId === it.id ? 'bg-blue-50 text-blue-800 font-semibold' : 'text-slate-700 hover:bg-slate-50'}`}
-            >
+          {items.map((it) => {
+            const pick = () => { setOpen(false); onPick(it.id); };
+            const className = `w-full text-left px-3 py-2 text-sm flex items-center gap-2 ${activeId === it.id ? 'bg-blue-50 text-blue-800 font-semibold' : 'text-slate-700 hover:bg-slate-50'}`;
+            const body = (<>
               {it.icon}
               <span className="flex-1 min-w-0">
                 <span className="block truncate">{it.label}</span>
@@ -42307,8 +42344,14 @@ function MoreMenu({ items, activeId, onPick, badge = 0 }) {
               {it.badge > 0 && (
                 <span className="min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{it.badge > 99 ? '99+' : it.badge}</span>
               )}
-            </button>
-          ))}
+            </>);
+            // A row that opens a SCREEN is a link, so it can open in a new tab (v1.117.0); Debug this
+            // view and Sign out are actions on this tab and stay buttons. The menu stays open after a
+            // new-tab open, so several screens can be opened one after another.
+            return isLinkableScreen(it.id)
+              ? <ScreenLink key={it.id} screen={it.id} role="menuitem" onClick={pick} className={className}>{body}</ScreenLink>
+              : <button key={it.id} role="menuitem" onClick={pick} className={className}>{body}</button>;
+          })}
         </div>
       )}
     </div>
@@ -45362,19 +45405,52 @@ function useMediaQuery(query, fallback = false) {
   return matches;
 }
 
-function TabBtn({ label, icon, active, onClick, badge = 0 }) {
+// A SCREEN ENTRY THE BROWSER TREATS AS A LINK (v1.117.0). Chad: "can you make it where you can right
+// click things in the app to bring up in new tab like if I want to bring up the stops tab or quotes
+// tab in another tab". A <button> gets nothing from a right-click; an <a href> gets the browser's own
+// "Open link in new tab", a middle-click, Ctrl/⌘-click and a phone's long-press — each opening
+// /?tab=<screen>, which the Shell reads once as the new tab starts (lib/tab-links.js).
+//
+// A PLAIN CLICK IS STILL THE APP'S: it is caught before the browser follows the link and runs the same
+// handler the button ran, so nothing about switching screens in this tab changes. The role is the one
+// the button had (a bar tab is a button, a menu row a menuitem), so a screen reader hears what it heard
+// before; Space works on it as it did on the button.
+//
+// target="_blank": EVERY WAY OF FOLLOWING IT THAT THE APP DOES NOT CATCH OPENS A NEW TAB, NEVER THIS ONE.
+// Safari's right-click "Open Link" and a phone's long-press "Open" would otherwise load the link in
+// THIS tab — a full reload that throws away whatever was unsaved here (a plan being built on Routing, a
+// half-typed order), and nothing in this app asks before a reload.
+function ScreenLink({ screen, onClick, role = 'button', className, style, children }) {
+  const open = (e) => { if (onClick) onClick(e); };
   return (
-    <button
-      onClick={onClick}
-      className={`relative shrink-0 whitespace-nowrap px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-      style={active ? { background: BRAND } : {}}
+    <a
+      href={screenHref(screen, typeof window !== 'undefined' ? window.location.search : '')}
+      target="_blank"
+      rel="noopener"
+      role={role}
+      className={className}
+      style={style}
+      onClick={(e) => { if (!isPlainLeftClick(e)) return; e.preventDefault(); open(e); }}
+      onKeyDown={(e) => { if (e.key === ' ' && !e.repeat) { e.preventDefault(); open(e); } }}
     >
-      {icon}{label}
-      {badge > 0 && (
-        <span className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{badge > 99 ? '99+' : badge}</span>
-      )}
-    </button>
+      {children}
+    </a>
   );
+}
+
+// `screen` makes the tab a ScreenLink — every bar tab that opens a screen. Messages opens a window over
+// the screen you are on, not a screen of its own, so it stays a button.
+function TabBtn({ label, icon, active, onClick, badge = 0, screen = null }) {
+  const className = `relative shrink-0 whitespace-nowrap px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`;
+  const style = active ? { background: BRAND } : {};
+  const body = (<>
+    {icon}{label}
+    {badge > 0 && (
+      <span className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{badge > 99 ? '99+' : badge}</span>
+    )}
+  </>);
+  if (screen) return <ScreenLink screen={screen} onClick={onClick} className={className} style={style}>{body}</ScreenLink>;
+  return <button onClick={onClick} className={className} style={style}>{body}</button>;
 }
 
 // ── THE SERVER ENFORCES AND THIS BUILD CANNOT SIGN IN ────────────────────────
