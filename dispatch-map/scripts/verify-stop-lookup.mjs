@@ -191,12 +191,13 @@ async function sweep(dev) {
 
   if (!dev.mobile) {
     await step(dev, 'the screen is the "Stops" tab on the bar, right of Routing, and More no longer lists it', async () => {
-      const tabs = await page.locator('header nav button').evaluateAll((els) => els.map((e) => e.innerText.trim()));
+      // The bar's screen tabs are links since v1.117.0 (so they can open in a new tab); Messages is a button.
+      const tabs = await page.locator('header nav a, header nav button').evaluateAll((els) => els.map((e) => e.innerText.trim()));
       const at = tabs.indexOf('Stops');
       must(at > 0 && /^Routing/.test(tabs[at - 1]), `the bar reads: ${tabs.join(' | ')}`);
       await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find((x) => /^more$/i.test((x.innerText || '').trim())); if (b) b.click(); });
       await page.waitForTimeout(300);
-      const inMore = await page.evaluate(() => [...document.querySelectorAll('button')].filter((x) => /^(stops|stop lookup)$/i.test((x.innerText || '').trim())).length);
+      const inMore = await page.evaluate(() => [...document.querySelectorAll('button, a[href]')].filter((x) => /^(stops|stop lookup)$/i.test((x.innerText || '').trim())).length);
       await page.keyboard.press('Escape');
       must(inMore === 1, `the screen is offered ${inMore} times with More open — once on the bar is the only place`);
     });

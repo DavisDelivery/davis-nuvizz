@@ -96,7 +96,7 @@ const FN_STUBS = (url) => {
 // a thing worth photographing side by side.
 const isPhoneLayout = (device) => device.startsWith('phone'); // < 768px; tablet takes the desktop layout
 const MOBILE_TAB = (label) => async (page) => {
-  await page.locator('nav button', { hasText: new RegExp(`^${label}$`, 'i') }).first().click();
+  await page.locator('nav a, nav button', { hasText: new RegExp(`^${label}$`, 'i') }).first().click();   // screen tabs are links since v1.117.0
 };
 const openChipMenu = async (page) => {
   await page.locator('button[title="Version menu"]').first().click();

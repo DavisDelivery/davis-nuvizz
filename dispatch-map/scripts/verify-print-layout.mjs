@@ -188,7 +188,8 @@ async function openManifestLayout(page, phone) {
   } else {
     await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find((x) => /^more$/i.test((x.innerText || '').trim())); if (b) b.click(); });
     await page.waitForTimeout(400);
-    await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find((x) => /^diagnostics/i.test((x.innerText || '').trim())); if (b) b.click(); });
+    // a[href]: More's screen rows are links since v1.117.0 (so they can open in a new tab).
+    await page.evaluate(() => { const b = [...document.querySelectorAll('button, a[href]')].find((x) => /^diagnostics/i.test((x.innerText || '').trim())); if (b) b.click(); });
   }
   await page.waitForTimeout(900);
   // The phone's chip row and the desktop's rail are both role=tab, drawn from one list.

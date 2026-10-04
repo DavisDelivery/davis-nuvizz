@@ -322,6 +322,15 @@ jobs:
       - run: npm run verify:stop-lookup
         env:
           SMOKE_PORT: '8819'
+      # RIGHT-CLICK A SCREEN, OPEN IT IN A NEW TAB (v1.117.0). Chad: "can you make it where you can right
+      # click things in the app to bring up in new tab like if I want to bring up the stops tab or quotes
+      # tab in another tab". Every screen entry on the desktop bar, under More and in the phone menu must
+      # be a link to /?tab=<screen>; a middle-click and a Ctrl-click (what the browser's right-click
+      # "Open link in new tab" follows) must open a new tab that starts on that screen; a plain click must
+      # still switch in place. Fails on the bundle before it: 42 checks, every entry a plain button.
+      - run: npm run verify:new-tab
+        env:
+          SMOKE_PORT: '8823'
       # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
       # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
       # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk
