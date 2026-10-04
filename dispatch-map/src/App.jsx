@@ -59,7 +59,7 @@ import { addressLooksOff, suggestAddressFix, keepsPin, notePinState } from './li
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn, selectionAfterBuildStage, planStopsOnCards, planRouteInfo, planRoutesToPaint, buildMatrixMode, matrixReadout, editedSequenceNote, truckRoadStatusLine } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, returnToWarehouse, returnToWarehouseOnMatrix, returnPickSummary, returnToWarehouseVisible, sweepModeFor, mergeReplyOrder, roadReplyDropsMovedStopsEnabled, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, compareRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn, selectionAfterBuildStage, planStopsOnCards, planRouteInfo, planRoutesToPaint, buildMatrixMode, matrixReadout, editedSequenceNote, truckRoadStatusLine, cardMatrixMode, cardRoadWords } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason, accountsTabVisible } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -228,7 +228,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.116.0';
+const APP_VERSION = '1.117.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -282,7 +282,10 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.116.0', 'ORDER VIEW \u2014 A FLOATING, CUSTOMER-SERVICE VIEW OF ONE ORDER (FOR REVIEW, NOT YET APPROVED FOR PRODUCTION). Chad, 10/03: \u201ci want to have a button that expands an order from the side bar to a floating window like when we hit the duplicate order button. I want to redesign the window to better present the full orders details from more of a customer service perspective.\u201d The expand button sits beside the \u2715 on the stop card (Map and Routing, desktop and phone). The window answers where, when, what, what needs attention and what to do next: a header with the customer, PRO, status and route; ONE next action with its reason (blockers first \u2014 two orders on one number, no pin, closed that day, a barred driver, a window already shut, an hours risk \u2014 then \u201cLoad the full order\u201d for a list-only row, then what the status calls for: call ahead, call the driver, view the proof of delivery); ranked alerts, each with its fix, estimates labelled with their basis; delivery day, window and ETA (only a real window counts \u2014 NuVizz\u2019s all-day and placeholder schedules are not shown as one; our estimate with its error band first, then NuVizz\u2019s plan \u201cas of\u201d when it was read, a plan from another day never shown as today\u2019s); the address with Copy, Navigate, Street View, Edit and Correct pin; pallets, loose, total pieces and weight that never show a missing number as zero; item lines, class and the L flag; references; requirements each tagged with where they came from (saved for this customer, auto-detected \u2014 verify, on the NuVizz order, or in this order\u2019s text) beside the full original instructions; the customer\u2019s contact with Call, Copy and Text \u2014 the Text menu starts from a draft built only from verified facts (never an estimated time), and nothing sends until you press Send in the composer; route and driver; the journey; and the order actions the card already had (refresh, date, note, pieces, duplicate, ticket, label). It never spends a NuVizz call by itself: loading the order, the photos or the activity is always a click with its cost on the button. Two views: two columns on a desktop, one column in call order on a phone.'],
+  ['1.117.0', 'ORDER VIEW \u2014 A FLOATING, CUSTOMER-SERVICE VIEW OF ONE ORDER (FOR REVIEW, NOT YET APPROVED FOR PRODUCTION). Chad, 10/03: \u201ci want to have a button that expands an order from the side bar to a floating window like when we hit the duplicate order button. I want to redesign the window to better present the full orders details from more of a customer service perspective.\u201d The expand button sits beside the \u2715 on the stop card (Map and Routing, desktop and phone). The window answers where, when, what, what needs attention and what to do next: a header with the customer, PRO, status and route; ONE next action with its reason (blockers first \u2014 two orders on one number, no pin, closed that day, a barred driver, a window already shut, an hours risk \u2014 then \u201cLoad the full order\u201d for a list-only row, then what the status calls for: call ahead, call the driver, view the proof of delivery); ranked alerts, each with its fix, estimates labelled with their basis; delivery day, window and ETA (only a real window counts \u2014 NuVizz\u2019s all-day and placeholder schedules are not shown as one; our estimate with its error band first, then NuVizz\u2019s plan \u201cas of\u201d when it was read, a plan from another day never shown as today\u2019s); the address with Copy, Navigate, Street View, Edit and Correct pin; pallets, loose, total pieces and weight that never show a missing number as zero; item lines, class and the L flag; references; requirements each tagged with where they came from (saved for this customer, auto-detected \u2014 verify, on the NuVizz order, or in this order\u2019s text) beside the full original instructions; the customer\u2019s contact with Call, Copy and Text \u2014 the Text menu starts from a draft built only from verified facts (never an estimated time), and nothing sends until you press Send in the composer; route and driver; the journey; and the order actions the card already had (refresh, date, note, pieces, duplicate, ticket, label). It never spends a NuVizz call by itself: loading the order, the photos or the activity is always a click with its cost on the button. Two views: two columns on a desktop, one column in call order on a phone.'],
+  ['1.116.0', 'THE COMPARE CARD\u2019S TWO ROAD BOXES SIT SIDE BY SIDE ON ONE ROW, WITH SHORT LABELS. Chad: \u201cI don\u2019t need a big description for them. I just need a label for them because I want them side by side on the same row in the compare panel.\u201d Under Re-sequence\u2026 the boxes now read \u201cGoogle roads ($1.13)\u201d \u2014 the same per-pick price as before, or ($) with one stop or none \u2014 and \u201cTruck roads (free)\u201d, on one row that never wraps. The old wording needed 446px of the card\u2019s 282px, so the truck box always dropped to a second line; these need about 250px. The long wording is each box\u2019s hover title. \u201c\u00b7 roads applied\u201d and \u201c\u00b7 truck roads applied\u201d keep their words, colour and conditions, on one line directly under the row. Nothing else on the card changes: same requests, messages, chip and fallbacks. The Build Panel\u2019s step 3 keeps its labels.'],
+  ['1.115.1', 'A CORRECTED ADDRESS NO LONGER COMES BACK ORANGE BECAUSE OF THE BOL. Chad: \u201cstop the false alarm. i don\u2019t even need to go back and check.\u201d Every push that showed \u201cNuVizz also changed one other thing on the order (the BOL document) \u2014 check it in the portal\u201d was NuVizz replacing the BOL, not losing it: read live with 8 calls on 10/03, all eight orders had their BOL back \u2014 the same PDF named BOL, under a new file id created at the second of the push. NuVizz deletes the BOL and makes a fresh one whenever an order is updated, and our check reads the order back one second after the write, in between. Our push never sends the BOL at all. NOW: on an address push, a BOL missing from that read-back is not a warning \u2014 the push is green, and the write log still records that the BOL was being re-created. Anything ELSE that goes missing \u2014 another attachment, a freight line \u2014 is still orange. Still 3 NuVizz calls per corrected address (read, write, read back); this adds none. PUT IT BACK: ADDRESS_BOL_RECREATE_OK=off on the server \u2014 no redeploy.'],
+  ['1.115.0', 'TRUCK ROAD TIMES ON THE COMPARE CARD, BESIDE GOOGLE\u2019S BOX. Chad: \u201cIn both places Google\u2019s \u2018real road distances / drive-times\u2019 checkbox appears, put \u2018Use truck road times (free)\u2019 on the same row, beside it, not stacked above.\u201d Under Re-sequence\u2026 on each Compare card the two boxes now share a row (they wrap on a narrow card): \u201cUse real road distances (costs money)\u201d with its per-pick price, exactly as before, and \u201cUse truck road times (free)\u201d with no cost line. Only one runs at a time, so ticking one unticks the other; both start unticked and the card remembers your pick, as it always has for Google\u2019s. With truck road times ticked, a re-sequence lands the straight-line order instantly as before, then asks our own routing service for truck-road distances and re-orders on them \u2014 \u201c\u00b7 truck roads applied\u201d on the card, \u201c\u00b7 truck road times\u201d on the line above. When the service is not set up, not answering or answers wrong, the server falls back and the card keeps the straight-line order and says \u201ctruck road times unavailable, straight-line order kept\u201d \u2014 the same path a Build takes. Not set up on this site, the box is greyed. Both unticked, the card is exactly what it was. This is a Route Workbench change, approved in Chad\u2019s words above; unset OSRM_TRUCK_URL and redeploy to grey the box out, or revert this one commit.'],
   ['1.114.0', 'TRUCK ROAD TIMES ON THE BUILD PANEL. Step 3 \u00b7 Plan has a second drive-time box, on the same row as Google\u2019s (Chad: \u201cput \u2018Use truck road times (free)\u2019 on the same row, beside it, not stacked above\u201d): \u201cUse truck road times (free)\u201d \u2014 real road miles and minutes on truck-legal roads from our own routing service, no traffic, no cost per build. Only one drive-time source can run, so ticking one box unticks the other; the Google box keeps its \u201c(costs money)\u201d and its price. When the panel opens it asks whether the service is set up on this site, without waking it; set up nowhere, the box is greyed and says so. Ticked, it checks the service and says what it found \u2014 Buford to Lawrenceville in miles and minutes when it answers, \u201cstarting up\u201d while Cloud Run wakes (it keeps asking for about a minute and a half), and when it cannot answer, that a build will fall back to the straight-line estimate and say so. The Build button reads \u201cBuild (truck road times)\u201d. Min time is offered on either kind of road times now, so its greyed label reads \u201cneeds road drive-times\u201d. THE RESULT SAYS WHAT THE BUILD USED: \u201cTruck road times (free)\u201d, with a count of stops off the truck map (outside Georgia, or not near a truck road) and legs with no truck route, whose times are straight-line estimates; and a build that asked for truck road times and did not get them reads \u201cFree estimate (straight-line)\u201d with a line saying the service did not answer. Both boxes unticked, the build is exactly what it was. Unset OSRM_TRUCK_URL and redeploy to grey the box out.'],
   ['1.113.0', 'TRUCK ROAD TIMES FOR A BUILD \u2014 THE SERVER SIDE, OFF UNTIL ITS ADDRESS IS SET. A Build sequences on a straight-line estimate (1.3 \u00d7 crow-flies at about 30 mph) unless it pays for Google, and a straight line cannot see a lake, a river or a limited-access highway \u2014 so the stop order and the ETAs behind the time-window flags are off wherever roads do not run straight. Our own routing service (OSRM on Cloud Run, Georgia map, tractor-trailer profile) gives real road miles and minutes on truck-legal roads at no cost per build. No traffic, and only the truck restrictions someone has put on the map. THIS RELEASE ADDS THE PLUMBING ONLY: a build can now ask for truck road times, and nothing on screen asks yet (the Build Panel checkbox is the next release). A stop the service had to move more than 1 km to reach a road (outside Georgia, or nowhere near a truck road) and a leg it has no truck route for take the straight-line estimate, never a free leg, and the build counts them. A service that is not set up, refuses the token, is still waking or answers wrong falls back to the straight-line estimate and the build says so. A new check, osrm-status, says whether the service answers and which account calls it. NOTHING CHANGES until OSRM_TRUCK_URL is set on the site; unset it and redeploy to put it back.'],
   ['1.112.1', 'A CORRECTED ORDER LEAVES PROBLEM ADDRESSES THE MOMENT THE PUSH LANDS. Chad, after correcting eight orders: \u201cLooks like all the ones i corrected are still left in my history needing correcting.\u201d They were \u2014 and every one of them was already right in NuVizz: read live with 8 calls on 10/03, all eight held the corrected address, nothing else on them had changed, the dispatcher note was on, and the BOL was back under a new file id. The list reads an order\u2019s address from OUR STORED COPY of it, which only a scan refreshes, and on a Saturday the next scan to re-read Monday\u2019s orders is Sunday at 8 PM \u2014 so each corrected order came straight back as \u201cNot in NuVizz\u201d, offering the same push again (24 calls to re-send what NuVizz already had). The orange banner also said those six were \u201coff this list\u201d while they sat on it: they had been pushed as Mis-split rows and came back under the Not in NuVizz name. NOW: when a push lands, NuVizz\u2019s read-back address is written onto our stored copy of the order (the same as the piece-count edit does with its counts) \u2014 field-masked, never creating a row, never onto another record that shares the number, and only for a delivery address. The order leaves the list as soon as it reloads, and the board shows NuVizz\u2019s lines straight away. It applies to pushes from now on: the eight already pushed today drop off at the next scan (Sunday 8 PM ET), or wave them off \u2014 they need nothing else. No NuVizz calls added. PUT IT BACK: ADDRESS_PUSH_BOARD_WRITE=off on the server \u2014 no redeploy.'],
@@ -1507,6 +1510,8 @@ const LS_LEGEND_EXPANDED = 'dispatchMap.legendExpanded';
 // Road-distance re-sequencing is OPT-IN and per browser: it spends Google matrix money, so it
 // must never be on because nobody looked. Unticking it is the whole way back.
 const LS_ROUTE_ROAD_MATRIX = 'dispatchMap.routeRoadMatrix';
+// The Compare card's truck-road box (v1.115.0), remembered like the Google one beside it.
+const LS_ROUTE_TRUCK_MATRIX = 'dispatchMap.routeTruckMatrix';
 const LS_TABLE_COLUMNS = 'dispatchMap.tableColumns';
 // Saved bottom-panel PROFILES — named snapshots of the grid's bar settings (view,
 // status filter, date window + range, driver, no-location filter, sort). The list now
@@ -23450,7 +23455,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLocs = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, savedAt = null, failedAt = null, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLocs = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, truckMatrixOn = false, onToggleTruckMatrix = null, truckMatrixOff = false, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, savedAt = null, failedAt = null, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -23645,15 +23650,34 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
             of half a mile, each a 3-6x longer drive to reach a bridge. Ticking this re-runs the
             SAME strategy on Google driving distances. The cost is shown because it is charged
             per pick, and the straight-line order still lands first either way. */}
+        {/* TRUCK ROAD TIMES, BESIDE IT (v1.115.0). Chad: "In both places Google's 'real road
+            distances / drive-times' checkbox appears, put 'Use truck road times (free)' on the same
+            row, beside it, not stacked above." One source at a time; the truck box has no cost line.
+            SHORT LABELS, ONE ROW (v1.116.0). Chad: "I don't need a big description for them. I just
+            need a label for them because I want them side by side on the same row in the compare
+            panel." The old wording needed 446px of a 282px row; these need 242-256px. The long
+            wording is each label's hover title, and the "applied" note sits on its own line below. */}
         {!route.collapsed && onToggleRoadMatrix && (
-          <label className="mt-1 flex items-start gap-1.5 text-[10px] text-slate-600 cursor-pointer">
-            <input type="checkbox" className="mt-0.5" checked={roadMatrixOn} onChange={(e) => onToggleRoadMatrix(e.target.checked)} />
-            <span>
-              Use real road distances <b>(costs money)</b>
-              {rows.length > 1 && <> — ≈ ${(((rows.length + 1) ** 2) / 1000 * BASIC_RATE_PER_1K_USD).toFixed(2)} per re-sequence</>}
-              {route.roadSequenced && <span className="ml-1 font-semibold text-green-700">· roads applied</span>}
-            </span>
-          </label>
+          <>
+            <div className="mt-1 flex flex-nowrap items-center gap-x-3 whitespace-nowrap text-[10px] text-slate-600" data-card-road-boxes>
+              <label className="flex items-center gap-1.5 cursor-pointer" title={`Re-sequence on Google driving distances. Costs about ${rows.length > 1 ? `$${(((rows.length + 1) ** 2) / 1000 * BASIC_RATE_PER_1K_USD).toFixed(2)}` : '$'} per re-sequence.`}>
+                <input type="checkbox" className="mt-0.5" checked={roadMatrixOn} onChange={(e) => onToggleRoadMatrix(e.target.checked)} />
+                <span>Google roads <b>({rows.length > 1 ? `$${(((rows.length + 1) ** 2) / 1000 * BASIC_RATE_PER_1K_USD).toFixed(2)}` : '$'})</b></span>
+              </label>
+              {onToggleTruckMatrix && (
+                <label className={`flex items-center gap-1.5 ${truckMatrixOff ? 'opacity-50' : 'cursor-pointer'}`} title={truckMatrixOff ? 'The truck routing service is not set up on this site yet.' : 'Re-sequence on our own truck routing service: truck-legal roads, no traffic, no cost.'}>
+                  <input type="checkbox" className="mt-0.5" checked={truckMatrixOn} disabled={truckMatrixOff} onChange={(e) => onToggleTruckMatrix(e.target.checked)} />
+                  <span>Truck roads <b>(free)</b></span>
+                </label>
+              )}
+            </div>
+            {route.roadSequenced && (
+              <div className="text-[10px]" data-card-road-applied>
+                {!route.truckSequenced && <span className="font-semibold text-green-700">· roads applied</span>}
+                {route.truckSequenced && <span className="font-semibold text-green-700">· truck roads applied</span>}
+              </div>
+            )}
+          </>
         )}
         {!route.collapsed && (
           <div className="mt-1 flex items-center justify-between gap-2">
@@ -23867,7 +23891,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, tractorLo
 // ungeocoded ones. Card membership, display, freight totals and the Save payload all use
 // boardStopById so what the card shows == what Save sends (a coord-less stop is still on
 // the load). Anything that needs geometry keeps using stopById.
-function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, tractorLocs = null, dayKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null, notice = null, onDismissNotice = null, maxCards = 6 }) {
+function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, tractorLocs = null, dayKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, truckMatrixOn = false, onToggleTruckMatrix = null, truckMatrixOff = false, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null, notice = null, onDismissNotice = null, maxCards = 6 }) {
   const lookup = boardStopById || stopById;
   // Save sends this whole board to NuVizz through nuvizz-write, which requires dispatcher.
   // Its own gate rather than a prop: this component owns the Save button and the confirm path,
@@ -24633,6 +24657,9 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, tract
             otherKeys={wbRoutes.map((x) => x.key).filter((k) => k !== r.key)}
             roadMatrixOn={roadMatrixOn}
             onToggleRoadMatrix={onToggleRoadMatrix}
+            truckMatrixOn={truckMatrixOn}
+            onToggleTruckMatrix={onToggleTruckMatrix}
+            truckMatrixOff={truckMatrixOff}
             ninjaMode={ninjaMode}
             isActive={activeKey === r.key}
             onSetActive={() => onSetActive(r.key)}
@@ -26431,6 +26458,13 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
   // exactly — the straight-line order is still what lands first either way.
   const [roadMatrixOn, setRoadMatrixOn] = useState(() => safeReadJSON(LS_ROUTE_ROAD_MATRIX, false) === true);
   useEffect(() => { safeWriteJSON(LS_ROUTE_ROAD_MATRIX, roadMatrixOn); }, [roadMatrixOn]);
+  // TRUCK ROAD TIMES ON THE CARD (v1.115.0): the second road box, beside Google's. Only one matrix
+  // source runs, so ticking either unticks the other. Unticked, the card is exactly what it was.
+  // Never both: two tabs can each leave their own key true; Google's box wins, as cardMatrixMode reads it.
+  const [truckMatrixOn, setTruckMatrixOn] = useState(() => safeReadJSON(LS_ROUTE_TRUCK_MATRIX, false) === true && safeReadJSON(LS_ROUTE_ROAD_MATRIX, false) !== true);
+  useEffect(() => { safeWriteJSON(LS_ROUTE_TRUCK_MATRIX, truckMatrixOn); }, [truckMatrixOn]);
+  const toggleRoadMatrix = useCallback((on) => { setRoadMatrixOn(on); if (on) setTruckMatrixOn(false); }, []);
+  const toggleTruckMatrix = useCallback((on) => { setTruckMatrixOn(on); if (on) setRoadMatrixOn(false); }, []);
   // Every stop id currently STAGED on an open Compare card, mapped to its card key. The map
   // selection tools must not grab these — selecting a staged stop and sending it to another
   // load double-plans it (the save-level guard now refuses, but the selection shouldn't
@@ -26515,7 +26549,8 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     let live = true;
     apiFetch('/.netlify/functions/osrm-status?check=config').then((r) => r.json()).then((j) => {
       if (!live) return;
-      if (j?.state === 'off') { setTruckRoadStatus({ state: 'off' }); setUseTruckRoads(false); }
+      // Not set up: neither truck box can run, the card's remembered one included (v1.115.0).
+      if (j?.state === 'off') { setTruckRoadStatus({ state: 'off' }); setUseTruckRoads(false); setTruckMatrixOn(false); }
       else if (j?.state === 'set') setTruckRoadStatus((st) => (st.state === 'unknown' ? { state: 'set' } : st));
     }).catch(() => {});
     return () => { live = false; truckCheckGen.current++; };
@@ -26873,9 +26908,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // The road order lands AFTER Google replies, onto the card as it is by then: a stop moved to
     // another card or removed while the reply was out stays gone (mergeReplyOrder). Ids the reply
     // did not place ride after it in the card's order — never dropped.
+    // 'truck' (v1.115.0) is a road order too; truckSequenced says which roads, and is absent
+    // otherwise so a card the truck box never touched is exactly the object it always was.
     const applyOrder = (ids, suffix) => setWbRoutes((prev) => prev.map((x) => {
       if (x.key !== key) return x;
-      return { ...x, order: mergeReplyOrder(ids, x.order, ROAD_REPLY_DROPS_MOVED_STOPS_ON), strategy, roadSequenced: suffix === 'road' };
+      const { truckSequenced: _wasTruck, ...rest } = x;
+      return { ...rest, order: mergeReplyOrder(ids, x.order, ROAD_REPLY_DROPS_MOVED_STOPS_ON), strategy, roadSequenced: suffix === 'road' || suffix === 'truck', ...(suffix === 'truck' ? { truckSequenced: true } : {}) };
     }));
     // The straight-line order lands INSTANTLY, exactly as it always has. Road distances (below)
     // only ever replace it a moment later — so the dropdown never feels slower than it did, and
@@ -26891,33 +26929,37 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
     // of them a 3-6x longer real drive to reach a bridge. Sequencing the SAME strategy on a
     // driving matrix cut it to one crossing and 4.4 road miles on the stops we could measure.
     // Off by default because it spends money per re-sequence; the tick box shows what.
-    if (!roadMatrixOn || strategy === 'reverse') return;
+    // TRUCK ROAD TIMES (v1.115.0) take the same path on our own routing service, free: the server
+    // falls back to the straight line when it cannot answer, and `source` says so below.
+    const matrixMode = cardMatrixMode({ roadMatrixOn, truckMatrixOn });
+    if (!matrixMode || strategy === 'reverse') return;
+    const words = cardRoadWords(matrixMode);
     const stopsForMatrix = pts.map((s) => ({ lat: s.lat, lng: s.lng }));
     (async () => {
       try {
         const resp = await apiFetch('/.netlify/functions/google-route-matrix', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ depot: ROUTING_DEPOT, stops: stopsForMatrix, mode: 'google' }),
+          body: JSON.stringify({ depot: ROUTING_DEPOT, stops: stopsForMatrix, mode: matrixMode }),
         });
         const j = await resp.json();
         const cost = j?.matrix?.distanceMeters;
         // `source` is the server telling us what it ACTUALLY used. It falls back to haversine
         // when the key is missing or Google errors, and re-sequencing on that would just redo
         // the order we already applied while claiming roads — an intent reported as an outcome.
-        if (j?.source !== 'google' || !Array.isArray(cost) || cost.length !== pts.length + 1) {
-          setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances unavailable, straight-line order kept${homePick ? ` (${returnPickSummary(homePick, 'straight-line')})` : ''}`);
+        if (j?.source !== matrixMode || !Array.isArray(cost) || cost.length !== pts.length + 1) {
+          setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — ${words.name} unavailable, straight-line order kept${homePick ? ` (${returnPickSummary(homePick, 'straight-line')})` : ''}`);
           return;
         }
         const roadPick = strategy === 'home' ? returnToWarehouseOnMatrix(pts, cost, ROUTING_DEPOT) : null;
         const roadOrder = (roadPick ? roadPick.order : resequenceOnMatrix(pts, cost, strategy, sweepModeOf(strategy))).map((s) => s.id);
-        applyOrder(roadOrder, 'road');
-        setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} · real road distances${roadPick ? ` — ${returnPickSummary(roadPick, 'road')}` : ''}`);
+        applyOrder(roadOrder, words.suffix);
+        setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} · ${words.applied}${roadPick ? ` — ${returnPickSummary(roadPick, 'road')}` : ''}`);
       } catch (e) {
-        setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances failed (${String(e?.message || e).slice(0, 60)}), straight-line order kept${homePick ? ` (${returnPickSummary(homePick, 'straight-line')})` : ''}`);
+        setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — ${words.name} failed (${String(e?.message || e).slice(0, 60)}), straight-line order kept${homePick ? ` (${returnPickSummary(homePick, 'straight-line')})` : ''}`);
       }
     })();
-  }, [wbRoutes, stopById, stops, roadMatrixOn, notes, selectedDate, travelInputs, departTable]);
+  }, [wbRoutes, stopById, stops, roadMatrixOn, truckMatrixOn, notes, selectedDate, travelInputs, departTable]);
   const wbMoveStop = useCallback((fromKey, stopNbr, toKey) => {
     if (!toKey || fromKey === toKey) return;
     const id = String(stopNbr);
@@ -30234,7 +30276,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
                     )}
                     {engineResultContent}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} tractorLocs={tractorLocs} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} roadMatrixOn={roadMatrixOn} onToggleRoadMatrix={setRoadMatrixOn} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} tractorLocs={tractorLocs} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} roadMatrixOn={roadMatrixOn} onToggleRoadMatrix={toggleRoadMatrix} truckMatrixOn={truckMatrixOn} onToggleTruckMatrix={toggleTruckMatrix} truckMatrixOff={truckRoadStatus.state === 'off'} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -30299,7 +30341,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, 
               flex-1/min-h-0 resolves to what is actually left. */}
           {engineResultContent && <div className="p-2 pb-0 shrink-0 max-h-[45%] overflow-y-auto">{engineResultContent}</div>}
           <div className="flex-1 min-h-0">
-          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} tractorLocs={tractorLocs} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} roadMatrixOn={roadMatrixOn} onToggleRoadMatrix={setRoadMatrixOn} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} notice={lastAction} onDismissNotice={() => setLastAction(null)} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} tractorLocs={tractorLocs} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} roadMatrixOn={roadMatrixOn} onToggleRoadMatrix={toggleRoadMatrix} truckMatrixOn={truckMatrixOn} onToggleTruckMatrix={toggleTruckMatrix} truckMatrixOff={truckRoadStatus.state === 'off'} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} notice={lastAction} onDismissNotice={() => setLastAction(null)} />
           </div>
         </div>
       ) : leftPanelOn ? (
